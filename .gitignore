@@ -1,0 +1,12 @@
+# build artifacts
+/quaver-astra
+quaver-astra-*
+/build/
+/dist/
+*.test
+*.out
+
+# editors
+/.qtcreator/
+.idea/
+.vscode/
