@@ -343,19 +343,21 @@ func (a *App) ensureGuess() {
 // ===== 歌单详情 =====
 
 type playlistState struct {
-	loaded   bool
-	loading  bool
-	err      string
-	info     backend.SonglistSummary
-	creator  backend.Creator
-	songs    []player.Song
-	total    int64
-	hasMore  bool
-	page     int
-	faved    bool
-	favKnown bool
-	expanded bool
-	list     songListState
+	loaded      bool
+	loading     bool
+	err         string
+	info        backend.SonglistSummary
+	creator     backend.Creator
+	songs       []player.Song
+	total       int64
+	hasMore     bool
+	page        int
+	faved       bool
+	favKnown    bool
+	expanded    bool
+	loadingMore bool
+	list        songListState
+	scroll      ui.ScrollState
 }
 
 func (a *App) playlistView(c *ui.Context, id int64) {
@@ -367,7 +369,7 @@ func (a *App) playlistView(c *ui.Context, id int64) {
 	a.ensurePlaylist(st, id)
 	t := c.Theme()
 
-	ui.Scroll(c).Fill().Padding(20, 24, 24, 24).Gap(16).Children(func() {
+	ui.Scroll(c).Fill().Padding(20, 24, 24, 24).Gap(16).TrackScroll(&st.scroll).Children(func() {
 		if st.err != "" {
 			ui.Text(c, st.err).FontSize(13).TextColor(t.TextMuted)
 			return
@@ -420,9 +422,22 @@ func (a *App) playlistView(c *ui.Context, id int64) {
 			})
 		})
 
-		st.list.songs = st.songs
-		a.songList(c, &st.list, func(page int) { a.loadPlaylistPage(st, id, page) },
-			func(i int) { a.playListNow(st.songs, i) })
+		// 歌曲行：整页滚动（原版行为），触底翻页
+		ui.Column(c).FillWidth().Children(func() {
+			for i := range st.songs {
+				a.songRow(c, &st.list, i, func(i int) { a.playListNow(st.songs, i) })
+			}
+			if st.loadingMore {
+				ui.Row(c).FillWidth().Center().Padding(14).Children(func() { ui.Spinner(c) })
+			}
+		})
+
+		// 接近底部：翻页
+		if st.hasMore && !st.loadingMore && st.scroll.MaxY > 0 && st.scroll.Y >= st.scroll.MaxY-300 {
+			st.loadingMore = true
+			st.page++
+			go a.loadPlaylistPage(st, id, st.page)
+		}
 	})
 }
 
@@ -455,7 +470,7 @@ func (a *App) loadPlaylistPage(st *playlistState, id int64, page int) {
 	go func() {
 		d, err := a.API.SonglistDetail(id, page, 100)
 		a.update(func() {
-			st.fetchingDone()
+			st.loadingMore = false
 			if err != nil {
 				return
 			}
@@ -465,8 +480,6 @@ func (a *App) loadPlaylistPage(st *playlistState, id int64, page int) {
 		})
 	}()
 }
-
-func (st *playlistState) fetchingDone() { st.list.fetching = false }
 
 func (a *App) togglePlaylistFav(st *playlistState, id int64) {
 	target := !st.faved

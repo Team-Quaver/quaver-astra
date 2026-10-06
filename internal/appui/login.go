@@ -14,6 +14,7 @@ type loginState struct {
 	qr       *backend.QRCode
 	status   string
 	expired  bool
+	auto     bool
 	gen      uint64 // 生成批次号，防止旧轮询写新状态
 	pollStop bool
 }
@@ -23,6 +24,10 @@ var loginChannels = []string{"mobile", "qq", "wx"}
 func (a *App) loginView(c *ui.Context) {
 	st := &a.login
 	t := c.Theme()
+	if !st.auto {
+		st.auto = true
+		a.genQR(st)
+	}
 	ui.Column(c).Fill().Center().Gap(14).Children(func() {
 		ui.Text(c, "登录 QQ 音乐").FontSize(22).FontWeight(800)
 		ui.Text(c, "扫码后凭证只驻留在本机后端内存中").FontSize(12.5).TextColor(t.TextMuted)
@@ -65,7 +70,7 @@ func (a *App) loginQRBox(c *ui.Context, st *loginState) {
 			if ui.Button(c, "生成二维码").Clicked() {
 				a.genQR(st)
 			}
-		}).Fill()
+		})
 	case st.expired:
 		ui.Box(c).Size(220, 220).Radius(12).Background(t.SurfaceHover).Border(1, t.Border).Center().Children(func() {
 			ui.Column(c).Center().Gap(8).Children(func() {
@@ -75,7 +80,7 @@ func (a *App) loginQRBox(c *ui.Context, st *loginState) {
 					a.genQR(st)
 				}
 			})
-		}).Fill()
+		})
 	default:
 		box := ui.Box(c).Size(220, 220).Radius(12).Border(1, t.Border).Clip().Background(t.Surface)
 		bmp := a.loginBmp(st)

@@ -1,107 +1,69 @@
-<p align="center">
-  <img src="img/quaver-astra.svg" width="96">
-</p>
+<p align="center"><strong>Quaver Music Astra · Native</strong></p>
 
-# Quaver Music Astra - 最美观/实用的 Q 音第三方客户端，现已为轻量化而生
+# Quaver Music Astra（Native 分支）
 
-Quaver Music Astra，是一款 QQ 音乐的第三方客户端，其目的是为了让 Linux DE / Wayland WM 用户能够爽用，基于 **MyGO** 实现。
+Quaver Music 的轻量化重写：**全 Go、原生 UI、无 WebView**。
 
-该项目定位为轻量化版本的 Quaver Music，因此部分功能并不会完整实现（见文末「与主项目的差异」）。
-
-名字取自于八分音符，对应了音乐，"QQ" 的 Q 字母。
-
-#### 主界面
-
-<p align="center">
-  <img src="img/preview-home.png" width="720">
-</p>
+- **UI**：[MyGo](https://github.com/egoist/mygo) 的原生 UI 工具包（`ui` 包）——视图是状态的函数，由 MyGo 在 GPU 上直接绘制（Linux 走 OpenGL），不开 WebKitGTK，窗口秒开、内存占用小。
+- **后端**：[Typhoeus-go](https://github.com/Team-Quaver/typhoeus-go)（子模块 `third_party/Typhoeus-go`）**进程内嵌**——不再是 sidecar 独立进程，`quaver-server` 的完整路由表直接挂在本进程 `127.0.0.1` 的随机端口上。
+- **音频**：纯 Go 播放引擎——[oto](https://github.com/ebitengine/oto) 输出（Linux 走 PulseAudio/PipeWire）+ [go-mp3](https://github.com/hajimehoshi/go-mp3) / [mewkiz/flac](https://github.com/mewkiz/flac) 解码，无 cgo、单二进制。
 
 > [!CAUTION]
 > 真爱音乐，尊重正版，音乐平台不易，该应用**不提供盗版 QQ 音乐曲目服务！**
->
-> 本软件系 Vibe Coding 的产物，虽然我会尽力尝试个人维护，但不提供可用性保证
 
-# 架构
+## 构建与运行
 
-```
-┌────────────────────────────────────────────┐
-│  QML UI（Qt Quick / Controls / Multimedia） │
-│   侧栏 · 路由视图 · 播放条 · 正在播放页      │
-└──────────────┬─────────────────────────────┘
-               │ http://127.0.0.1:<port>  （JSON 信封 + Range 流中继）
-┌──────────────▼─────────────────────────────┐
-│  Typhoeus Go sidecar（复用主项目后端）       │
-│                                           │
-└────────────────────────────────────────────┘
+依赖：Go 1.27+（Linux 需 GTK3；音频走 PulseAudio/PipeWire）。
+
+```sh
+git clone --recurse-submodules https://github.com/Team-Quaver/quaver-astra
+cd quaver-astra
+go build .
+./quaver-astra
 ```
 
-- **C++ 壳层**（`src/`）：拉起 sidecar（`BackendProcess`，含 HTTP 就绪探测与崩溃重启）、封面取色（`ColorProbe`，对齐主项目 `lib/color.ts` 算法）、配置/文件存储（`AppConfig`）。
-- **QML 层**（`src/qml/`）：全部界面与业务状态机。`Player.qml` 对齐主项目 `player.ts`（队列/回退链/歌词/收藏/会话存档），`Qrc.js` 实现行级 LRC 与逐字 QRC 解析。
-- **音频**：Qt Multimedia（ffmpeg 后端）直接播放 sidecar 中继流；解码失败沿档位链自动降级。
+测试：
 
-# 构建与运行
-
-依赖：Qt ≥ 6.5（Quick / QuickControls2 / Multimedia / Network / Svg）、CMake ≥ 3.21、Go ≥ 1.21（构建 sidecar）。
-
-```bash
-# 子模块只需初始化一次（vendor/Typhoeus-go）
-git submodule update --init
-
-# 一次性构建主程序 + sidecar（CMake 检测到 go 工具链会自动把 sidecar 编进 <build>/bin/）
-cmake -B build -DCMAKE_BUILD_TYPE=Release
-cmake --build build
-
-# 运行（sidecar 自动随包发现并拉起，无需手工启动）
-./build/quaver-astra
+```sh
+go test ./internal/...
 ```
 
-QtCreator：直接打开仓库根的 `CMakeLists.txt` 即可——构建时会自动产出 sidecar 到构建目录 `bin/`，
-运行时主进程按「应用目录/bin → 应用目录 → 源码树 vendor/Typhoeus-go（已编译产物或 `go run` 现编）」
-顺序找到它并拉起，不需要手工配置运行环境。
+## 功能（轻量版范围）
 
-开发态环境变量：
+- 首页：今日精选 hero、新歌速递、推荐歌单网格
+- 歌单详情：头部 + 歌曲列表，触底翻页、收藏歌单
+- 搜索：歌曲 / 歌单两个 tab，热搜词、翻页
+- 我喜欢 / 每日 30 首 / 猜你喜欢（换一批）
+- 登录：QQ / 微信 / 手机 三通道扫码（自动生成 + 轮询）
+- 正在播放页：模糊封面底、行级歌词 + 翻译（点击跳转、跟随高亮）、音质胶囊
+- 播放条：整条拖拽 seek、音量弹层、循环模式、随机播放（每日一套确定性顺序）、音质菜单（会话级切换）、红心收藏、队列面板（可拖拽排序）
+- 播放队列：插队播放 / 加入队列 / 删除 / 清空；双击歌曲即播
+- 封面动态取色：主题强调色随当前封面变化（含深浅色两套映射）
+- 明暗主题跟随系统（可在设置里强制）
 
-| 变量 | 说明 |
-|---|---|
-| `QUAVER_API` | 外接已运行的 sidecar（如 `http://127.0.0.1:3200`），本进程不自拉（该模式下凭证不交接、不落盘） |
-| `QUAVER_SIDECAR` | 指定 sidecar 二进制路径（默认找 应用目录/bin、应用目录、源码树 vendor） |
-| `QUAVER_SCREENSHOT` | 自检钩子：`[np:]<png路径>`，启动 8s 后抓窗存图再退出（`np:` 先展开正在播放页） |
-| `QUAVER_VAULT_SELFTEST` | 自检钩子：`1` 跑 SessionVault 回归（RFC 8439 向量 + 落盘回读），退出码 0/1 |
+## 架构
 
-配置与状态存于系统标准配置目录（Linux `~/.config/quaver/quaver-astra/`，Windows `%AppData%\quaver\quaver-astra`，macOS `~/Library/Application Support/quaver/quaver-astra/`）：`quaver-astra.conf` 是 INI 可手改；`session.json` 保存队列与播放进度；`loved.json` 保存红心。
+```
+main.go                 启动：内嵌后端 → 配置 → MyGo 窗口
+internal/backend/       quaver-server 进程内嵌 + HTTP 客户端（信封 {code,msg,data}）
+internal/player/        播放器状态机（队列/模式/随机/回退链/歌词/收藏），与 UI 解耦
+internal/audio/         oto + mp3/flac 解码（整曲缓冲模型，48k 立体声输出，重采样）
+internal/appui/         MyGo 原生 UI：外壳、侧栏、路由页、播放条、正在播放、队列
+internal/colorprobe/    封面主色提取 + 模糊底图
+internal/conf/          JSON 配置（quaver-astra.json）
+```
 
-# 逐字歌词
+自检钩子（开发用）：
 
-正在播放页支持**卡拉OK逐字扫色**：
+- `QUAVER_ROUTE=<path>` 启动后导航到指定路由
+- `QUAVER_SCREENSHOT=<png>` + `QUAVER_SCREENSHOT_DELAY=<秒>` 延时截图后退出
+- `QUAVER_PLAY_FIRST=1` 自动播一首新歌（验证播放链路）
+- `QUAVER_CONFIG_DIR=<dir>` 自定义配置目录
 
-- 拉取歌词时带 `qrc=1`，后端返回 QRC（XML 信封或纯文本，词级毫秒时间轴）；
-- `Qrc.js` 解析为词级行数据，并与翻译 LRC 按时间就近对齐；
-- `KaraokeView` / `KaraokeLineItem` 以 16ms 外推时钟逐帧驱动，当前句逐词扫色（染色取自封面主色），非当前句淡显，点击任意句 seek，滚轮翻阅 3s 后自动回跟；
-- 无逐字数据的歌曲自动回退行级 `LyricView`（字号可调、可关翻译）。
+## 与主项目（Quaver Music）的差异
 
-# CI
+轻量版刻意裁剪的部分：无逐字（QRC）歌词（仅行级 + 翻译）、无歌手/专辑页、无搜索联想、音质仅 MP3 128/320 与 FLAC（ogg/atmos 档位不做，`auto` 自动降级到支持集内最高档）、无 MPRIS / 桌面快捷键、无收藏歌单侧栏与歌单写侧、**登录凭证只驻后端内存（重启需重新扫码）**。
 
-`.github/workflows/build.yml` 六目标矩阵，各自随包构建对应 GOOS/GOARCH 的 sidecar：
+## 许可
 
-| 目标 | Runner | Qt | 产物 |
-|---|---|---|---|
-| Linux AMD64 | ubuntu-24.04 | aqt linux_gcc_64 | AppImage |
-| Linux ARM64 | ubuntu-24.04-arm | aqt linux_gcc_arm64 | AppImage |
-| Linux loong64 | ubuntu-24.04 + qemu + loong64 容器 | 容器内系统 Qt6 | tar.gz（依赖系统 Qt6） |
-| Windows AMD64 | windows-latest | aqt win64_msvc2022_64 | zip |
-| Windows ARM64 | windows-latest | aqt win64_msvc2022_arm64_cross | zip |
-| macOS Apple Silicon | macos-14 | aqt clang_64 | zip（.app） |
-
-版本三态：打 `v*` tag → 汇总为 Release **草稿**（人工核对后手动 Publish）；push / PR → 仅 artifact。
-
-# 与主项目（Electron 版）的差异
-
-- 无 Sparkle 插件系统；
-- 无 MPRIS / 画廊模式 / 歌单写侧管理 / 歌手·专辑页 / 热评；
-- 音频后端为 Qt Multimedia（无 mpv 引擎与音频设备选择、淡入淡出）。
-
-# 协议
-
-该项目使用 AGPLv3 及其未来版本协议，其使用的 API 上游使用 GPLv3 及其未来版本协议。
-
-与此同时，该项目依旧无法避免属于 QQ 音乐第三方客户端，请尊重 QQ 音乐的最终用户协议，禁止破解 QQ 音乐的曲库，本应用仅提供流媒体服务，不提供任何下载服务。
+AGPL-3.0（见 [LICENSE](LICENSE)）。第三方依赖见 go.mod；MyGo（MIT）、Typhoeus-go、oto、go-mp3、mewkiz/flac。

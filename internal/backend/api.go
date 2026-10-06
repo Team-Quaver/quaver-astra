@@ -420,29 +420,35 @@ func (c *Client) SearchHotkey() ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	// 上游形状不稳定（数组或 {hotkey:[...]}）：两种都容。
+	// 上游透传形状：{vec_hotkey:[{query,...}]}；容错 {hotkey:[...]}
 	var flexible struct {
+		VecHotkey []struct {
+			Query string `json:"query"`
+			K     string `json:"k"`
+			N     string `json:"n"`
+		} `json:"vec_hotkey"`
 		Hotkey []struct {
 			K string `json:"k"`
 			N string `json:"n"`
 		} `json:"hotkey"`
 	}
-	if err := json.Unmarshal(raw, &flexible); err == nil && len(flexible.Hotkey) > 0 {
-		out := make([]string, 0, len(flexible.Hotkey))
-		for _, h := range flexible.Hotkey {
-			if h.K != "" {
-				out = append(out, h.K)
-			} else if h.N != "" {
-				out = append(out, h.N)
-			}
+	if err := json.Unmarshal(raw, &flexible); err != nil {
+		return nil, nil
+	}
+	out := make([]string, 0, len(flexible.VecHotkey)+len(flexible.Hotkey))
+	for _, h := range flexible.VecHotkey {
+		if h.Query != "" {
+			out = append(out, h.Query)
 		}
-		return out, nil
 	}
-	var list []string
-	if err := json.Unmarshal(raw, &list); err == nil {
-		return list, nil
+	for _, h := range flexible.Hotkey {
+		if h.K != "" {
+			out = append(out, h.K)
+		} else if h.N != "" {
+			out = append(out, h.N)
+		}
 	}
-	return nil, nil
+	return out, nil
 }
 
 func (c *Client) RecommendSonglists(page, num int) (struct {
