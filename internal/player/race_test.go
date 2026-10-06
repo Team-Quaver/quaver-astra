@@ -1,6 +1,8 @@
 package player
 
 import (
+	"io"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -20,10 +22,10 @@ type fakeEngine struct {
 	onLoadOK func()
 }
 
-func (e *fakeEngine) Load([]byte) error {
+func (e *fakeEngine) OpenStream(srcf func(int64) (io.ReadCloser, error), size int64, startFrac, dur float64, autoplay bool) error {
 	e.mu.Lock()
 	e.loaded++
-	e.playing, e.paused, e.eof, e.pos = true, false, false, 0
+	e.playing, e.paused, e.eof, e.pos = autoplay, !autoplay, false, startFrac*dur
 	e.mu.Unlock()
 	if e.onLoadOK != nil {
 		e.onLoadOK()
@@ -93,7 +95,9 @@ func (b *liveBackend) LikeSong(int64, int64, bool) error {
 	b.mu.Unlock()
 	return b.likeErr
 }
-func (b *liveBackend) StreamBytes(string) ([]byte, error) { return []byte("ID3fakemp3data"), nil }
+func (b *liveBackend) StreamOpen(string, int64) (io.ReadCloser, error) {
+	return io.NopCloser(strings.NewReader("ID3fakemp3data")), nil
+}
 
 func newRacePlayer(t *testing.T) (*Player, *fakeEngine, *liveBackend) {
 	t.Helper()

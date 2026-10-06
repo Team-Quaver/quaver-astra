@@ -2,6 +2,7 @@ package player
 
 import (
 	"errors"
+	"io"
 	"strings"
 	"sync"
 	"time"
@@ -106,7 +107,8 @@ type Backend interface {
 	Resolve(mid, mediaMid string, songType int64, tier string, deprioritize []string) (*StreamInfo, error)
 	FetchLyric(mid string, trans bool) (lrc, translation string, err error)
 	LikeSong(songID int64, writeType int64, like bool) error
-	StreamBytes(url string) ([]byte, error)
+	// StreamOpen 打开一段可读流（offset>0 时发 HTTP Range 请求）。
+	StreamOpen(url string, offset int64) (io.ReadCloser, error)
 }
 
 // PlaylistRef 侧栏歌单项。
@@ -117,7 +119,7 @@ type PlaylistRef struct {
 
 // Engine 是 player 需要的音频能力（实际由 *audio.Engine 适配）。
 type Engine interface {
-	Load(data []byte) error
+	OpenStream(srcf func(offset int64) (io.ReadCloser, error), size int64, startFrac, dur float64, autoplay bool) error
 	Play()
 	Pause()
 	Stop()
@@ -710,7 +712,7 @@ func (p *Player) Stream() *StreamInfo {
 func (p *Player) SeekTo(frac float64) {
 	p.mu.Lock()
 	p.eng.SeekTo(frac, p.dur)
-	p.pos = p.eng.Position()
+	p.pos = frac * p.dur // 位置由墙钟推算（见 tick），此处重锚定
 	p.mu.Unlock()
 	p.notifyChange()
 }
@@ -764,9 +766,9 @@ func (p *Player) loadTiers() {
 	p.notifyChange()
 }
 
-// pickTier 把 "auto" 换算成本引擎支持的最高档位（mp3/flac）。
+// pickTier 把 "auto" 换算成本引擎支持的最高档位（mp3/flac/ogg-vorbis）。
 func pickTier(table *TierTable, want string) string {
-	supported := map[string]bool{"128": true, "320": true, "flac": true}
+	supported := map[string]bool{"128": true, "320": true, "320ogg": true, "640ogg": true, "flac": true}
 	if want != "auto" {
 		return want
 	}
@@ -831,35 +833,36 @@ func (p *Player) startCurrent(resumeTo float64, autoplay bool, overrideTier stri
 	// 会话局部回退集合：只被本次起播的协程链访问，避免跨会话共享竞争
 	fallback := map[string]bool{}
 	go func() {
-		info, tier, err := p.resolveWithFallback(song, want, dep, seq, fallback)
-		if err != nil {
-			p.failWithErr(seq, err)
-			return
-		}
-		data, err := p.api.StreamBytes(info.URL)
-		if err != nil {
-			info2, tier2, err2 := p.resolveWithFallback(song, want, dep, seq, fallback)
-			if err2 != nil {
-				p.failWithErr(seq, err)
-				return
-			}
-			data, err = p.api.StreamBytes(info2.URL)
+		// 解析 → 打开流 → 解码；任何一环失败（解码失败=档位不被支持，如
+		// atmos/DTS——嗅探在下载前就否掉）都继续走回退链换下一档。
+		var info *StreamInfo
+		for {
+			i, tier, err := p.resolveWithFallback(song, want, dep, seq, fallback)
 			if err != nil {
 				p.failWithErr(seq, err)
 				return
 			}
-			info, tier = info2, tier2
+			p.mu.Lock()
+			stale := seq != p.playSeq
+			dur, resume := p.dur, resumeTo
+			p.mu.Unlock()
+			if stale {
+				return
+			}
+			url := i.URL
+			srcf := func(off int64) (io.ReadCloser, error) {
+				return p.api.StreamOpen(url, off)
+			}
+			if lerr := p.eng.OpenStream(srcf, i.Size, resume/dur, dur, autoplay); lerr != nil {
+				continue // 该档已标记 tried，下一轮自动换档
+			}
+			info = i
+			_ = tier
+			break
 		}
 		p.mu.Lock()
 		if seq != p.playSeq {
 			p.mu.Unlock()
-			return
-		}
-		if lerr := p.eng.Load(data); lerr != nil {
-			p.loading = false
-			p.err = lerr.Error()
-			p.mu.Unlock()
-			p.notifyChange()
 			return
 		}
 		if !autoplay {
@@ -875,7 +878,6 @@ func (p *Player) startCurrent(resumeTo float64, autoplay bool, overrideTier stri
 		}
 		p.loading = false
 		p.stream = info
-		_ = tier
 		p.failStreak = 0
 		p.mu.Unlock()
 		p.notifyChange()
@@ -914,9 +916,13 @@ func (p *Player) resolveWithFallback(song Song, want string, dep []string, seq u
 // fallbackChain 从高档到低档的回退链（引擎支持集内）。
 func fallbackChain(want string) []string {
 	switch want {
-	case "flac":
-		return []string{"flac", "320", "128"}
-	case "320", "640ogg", "320ogg":
+	case "flac", "master":
+		return []string{"flac", "640ogg", "320ogg", "320", "128"}
+	case "640ogg":
+		return []string{"640ogg", "320ogg", "320", "128"}
+	case "320ogg":
+		return []string{"320ogg", "320", "128"}
+	case "320":
 		return []string{"320", "128"}
 	default:
 		return []string{"128"}
@@ -1073,18 +1079,22 @@ func (p *Player) StartTicker() {
 	}()
 }
 
+// tick 推进播放位置。不能靠“源消费量”当位置——oto 会大量预读源数据
+// （整曲在内存时几乎瞬间读完），位置会远超实际播放进度。这里用墙钟
+// 推算：tick +0.2s，seek/起播/换歌时重锚定；到时长 +0.3s（设备缓冲
+// 排空余量）再切下一首。
 func (p *Player) tick() {
 	p.mu.Lock()
-	if p.index < 0 || p.index >= len(p.queue) {
+	if p.index < 0 || p.index >= len(p.queue) || !p.playing || p.eng.Paused() {
 		p.mu.Unlock()
 		return
 	}
-	if p.eng.Ended() {
+	p.pos += 0.2
+	if p.dur > 0 && p.pos >= p.dur+0.3 {
 		p.mu.Unlock()
 		p.Next(true)
 		return
 	}
-	p.pos = p.eng.Position()
 	p.mu.Unlock()
 	p.notifyChange()
 }

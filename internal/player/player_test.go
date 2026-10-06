@@ -1,6 +1,7 @@
 package player
 
 import (
+	"io"
 	"testing"
 )
 
@@ -143,4 +144,4 @@ func (stubBackend) Resolve(string, string, int64, string, []string) (*StreamInfo
 }
 func (stubBackend) FetchLyric(string, bool) (string, string, error) { return "", "", nil }
 func (stubBackend) LikeSong(int64, int64, bool) error               { return nil }
-func (stubBackend) StreamBytes(string) ([]byte, error)              { return nil, nil }
+func (stubBackend) StreamOpen(string, int64) (io.ReadCloser, error) { return nil, nil }
