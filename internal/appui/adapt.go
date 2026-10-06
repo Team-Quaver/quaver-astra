@@ -136,18 +136,6 @@ func (a apiAdapter) LikeSong(songID, writeType int64, like bool) error {
 	return a.c.SongLike(songID, writeType, like)
 }
 
-// streamClient 是长连接音频流客户端：不设整体超时（流要一直读），
-// 只对连接/响应头限时。
-var streamClient = &http.Client{
-	Timeout: 0,
-	Transport: &http.Transport{
-		Proxy:                 http.ProxyFromEnvironment,
-		TLSHandshakeTimeout:   10 * time.Second,
-		ResponseHeaderTimeout: 15 * time.Second,
-		IdleConnTimeout:       90 * time.Second,
-	},
-}
-
 // StreamOpen 打开音频流；offset>0 时发 HTTP Range 请求（seek/降档重试共用）。
 func (a apiAdapter) StreamOpen(url string, offset int64) (io.ReadCloser, error) {
 	req, err := http.NewRequest(http.MethodGet, url, nil)
@@ -157,7 +145,7 @@ func (a apiAdapter) StreamOpen(url string, offset int64) (io.ReadCloser, error) 
 	if offset > 0 {
 		req.Header.Set("Range", "bytes="+strconv.FormatInt(offset, 10)+"-")
 	}
-	resp, err := streamClient.Do(req)
+	resp, err := backend.StreamClient.Do(req)
 	if err != nil {
 		return nil, err
 	}

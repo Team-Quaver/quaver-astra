@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"os"
 	"sync"
 	"sync/atomic"
 
@@ -42,7 +43,8 @@ type Engine struct {
 	size    int64  // mp3 seek 的字节总量（来自 resolve 探测）
 	data    []byte // 仅 ogg：一次性解码后的 s16 PCM
 
-	chain atomic.Pointer[streamChain]
+	chain   atomic.Pointer[streamChain]
+	seekGen uint64 // 最近一次 seek 的世代号（乱序完成的旧链会被丢弃）
 }
 
 // StreamSource 按 byte 偏移打开音频流（实现方发 HTTP Range 请求）。
@@ -133,7 +135,10 @@ func (e *Engine) OpenStream(srcf func(offset int64) (io.ReadCloser, error), size
 		e.mu.Unlock()
 	}
 
-	ch, err := e.buildChain(startFrac, dur)
+	e.mu.Lock()
+	kind, srcf, size, data := e.kind, e.srcf, e.size, e.data
+	e.mu.Unlock()
+	ch, err := e.buildChainAt(kind, srcf, size, data, startFrac, dur)
 	if err != nil {
 		e.mu.Lock()
 		e.kind, e.srcf, e.size, e.data = "", nil, 0, nil
@@ -176,25 +181,29 @@ func sniffKind(head []byte) string {
 	return ""
 }
 
-// buildChain 建一条起点为 frac（0..1）× dur 秒的解码链。
-// mp3/flac 从 rangeReader 流式读（seek 由新的 Range GET 承担）；
-// ogg 读整曲 PCM。必须在持有 e.mu 时调用（写 e.srcRate）。
-func (e *Engine) buildChain(frac float64, dur float64) (*streamChain, error) {
+// buildChainAt 按给定会话参数建链（seek 在网络协程里调用，读写 srcRate
+// 需要短暂持有 e.mu）。
+func (e *Engine) buildChainAt(kind string, srcf func(offset int64) (io.ReadCloser, error), size int64, data []byte, frac float64, dur float64) (*streamChain, error) {
 	frac = math.Max(0, math.Min(1, frac))
 	var src io.Reader
 	var closer io.Closer
-	switch e.kind {
+	var rate int
+	switch kind {
 	case "mp3":
-		rr := newRangeReader(e.srcf, int64(frac*float64(e.size)))
-		dec, err := mp3.NewDecoder(rr) // go-mp3 会跳过垃圾头同步到帧
+		rr := newRangeReader(srcf, int64(frac*float64(size)))
+		// 用只暴露 io.Reader 的包装隐藏 Seeker：go-mp3 检测到 Seeker 会
+		// 在 NewDecoder 里全曲扫描建帧索引再 rewind（网络源上时变错位，
+		// 产生假同步帧→雪花噪音/解析失败）。纯顺序解码无此问题；seek
+		// 由本引擎的换链承担，不依赖 Decoder.Seek。
+		dec, err := mp3.NewDecoder(struct{ io.Reader }{rr})
 		if err != nil {
 			rr.Close()
 			return nil, err
 		}
-		e.srcRate = dec.SampleRate()
+		rate = dec.SampleRate()
 		src, closer = dec, rr
 	case "flac":
-		rr := newRangeReader(e.srcf, 0) // 先过元数据
+		rr := newRangeReader(srcf, 0) // 先过元数据
 		st, err := flac.NewSeek(rr)
 		if err != nil {
 			rr.Close()
@@ -210,24 +219,28 @@ func (e *Engine) buildChain(frac float64, dur float64) (*streamChain, error) {
 		if ch <= 0 {
 			ch = 2
 		}
-		e.srcRate = int(st.Info.SampleRate)
+		rate = int(st.Info.SampleRate)
 		src = &flacReader{st: st, channels: ch, bits: int(st.Info.BitsPerSample)}
 		closer = rr
 	case "ogg":
-		br := bytes.NewReader(e.data)
+		br := bytes.NewReader(data)
 		if frac > 0 && br.Size() > 0 {
 			off := int64(frac * float64(br.Size()))
 			off -= off % 4 // 4 字节帧对齐
 			_, _ = br.Seek(off, io.SeekStart)
 		}
 		src = br
+		rate = e.currentRate()
 	default:
 		return nil, fmt.Errorf("没有可播放的音频")
 	}
+	e.mu.Lock()
+	e.srcRate = rate
+	e.mu.Unlock()
 	// 链路：解码器 →（重采样）→ 计数。计数在 oto 侧，位置才是输出时间轴。
 	var feed io.Reader = src
-	if e.srcRate != ctxRate {
-		feed = &resampler{src: src, ratio: float64(e.srcRate) / float64(ctxRate)}
+	if rate != ctxRate {
+		feed = &resampler{src: src, ratio: float64(rate) / float64(ctxRate)}
 	}
 	cnt := &countReader{r: feed}
 	// 位置以 seek 目标为基准重新累计
@@ -235,6 +248,13 @@ func (e *Engine) buildChain(frac float64, dur float64) (*streamChain, error) {
 		cnt.add(int64(t * float64(ctxRate*ctxCh*2)))
 	}
 	return &streamChain{dec: src, closer: closer, cnt: cnt}, nil
+}
+
+// currentRate 读取当前 srcRate（ogg 路径在 OpenStream 时已定）。
+func (e *Engine) currentRate() int {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.srcRate
 }
 
 // Play / Pause 恢复或暂停。
@@ -290,25 +310,45 @@ func (e *Engine) Position() float64 {
 	return float64(c.cnt.n.Load()) / float64(ctxRate*ctxCh*2)
 }
 
-// SeekTo 跳到 frac（0..1）× dur 秒：整条解码链重建后原子换上。
+// SeekTo 跳到 frac（0..1）× dur 秒。解码链在网络协程里异步重建（mp3 探头
+// /flac 元数据都是网络读，不能卡调用线程），旧链继续供给直到新链就绪；
+// 只有最新一次 seek 的链会被换上。
 func (e *Engine) SeekTo(frac, dur float64) {
 	frac = math.Max(0, math.Min(1, frac))
 	e.mu.Lock()
-	defer e.mu.Unlock()
-	if e.data == nil {
+	if e.kind == "" {
+		e.mu.Unlock()
 		return
 	}
-	ch, err := e.buildChain(frac, dur)
-	if err != nil {
-		return
-	}
-	e.chain.Store(ch)
-	if e.op != nil {
-		e.op.Reset() // 丢掉 oto 缓冲里的旧音频
-		if !e.paused {
-			e.op.Play()
+	e.seekGen++
+	gen := e.seekGen
+	paused := e.paused
+	kind, srcf, size := e.kind, e.srcf, e.size
+	data := e.data
+	e.mu.Unlock()
+
+	go func() {
+		ch, err := e.buildChainAt(kind, srcf, size, data, frac, dur)
+		if err != nil {
+			return // seek 失败保持原链（位置时钟已锚定到目标）
 		}
-	}
+		e.mu.Lock()
+		if gen != e.seekGen {
+			e.mu.Unlock()
+			if c, ok := ch.closer.(io.Closer); ok && c != nil {
+				_ = c.Close()
+			}
+			return
+		}
+		e.chain.Store(ch)
+		if e.op != nil {
+			e.op.Reset() // 丢掉 oto 缓冲里的旧音频
+			if !paused {
+				e.op.Play()
+			}
+		}
+		e.mu.Unlock()
+	}()
 }
 
 // SetVolume 0..1。
@@ -376,8 +416,16 @@ type rangeReader struct {
 func newRangeReader(srcf StreamSource, start int64) *rangeReader {
 	r := &rangeReader{srcf: srcf, pos: start, gate: 512 << 10}
 	r.cond = sync.NewCond(&r.mu)
+	rrDebug("open gen=0 start=%d", start)
 	go r.fill()
 	return r
+}
+
+// rrDebug 是 rangeReader 的追踪日志（QAA_AUDIO_DEBUG=1 开启，仅诊断用）。
+func rrDebug(format string, args ...any) {
+	if os.Getenv("QAA_AUDIO_DEBUG") == "1" {
+		fmt.Fprintf(os.Stderr, "rr: "+format+"\n", args...)
+	}
 }
 
 // fill 在后台拉取数据进缓冲；每次世代（seek/Close）只有一个活跃 fill。
@@ -392,6 +440,7 @@ func (r *rangeReader) fill() {
 			r.mu.Lock()
 			if r.gen == gen {
 				r.err = err
+				rrDebug("open ERR gen=%d start=%d: %v", gen, start, err)
 				r.cond.Broadcast()
 			}
 			r.mu.Unlock()
@@ -419,12 +468,14 @@ func (r *rangeReader) fill() {
 		}
 		if err == io.EOF {
 			r.eof = true
+			rrDebug("eof gen=%d start=%d fetched=%d served=%d", gen, start, len(r.buf), r.pos)
 			r.cond.Broadcast()
 			r.mu.Unlock()
 			return
 		}
 		if err != nil {
 			r.err = err
+			rrDebug("read ERR gen=%d: %v", gen, err)
 			r.cond.Broadcast()
 			r.mu.Unlock()
 			return
@@ -475,6 +526,7 @@ func (r *rangeReader) Seek(off int64, whence int) (int64, error) {
 		r.mu.Unlock()
 		return 0, fmt.Errorf("audio: rangeReader 不支持该 whence")
 	}
+	rrDebug("seek to=%d (served=%d buffered=%d)", abs, r.pos, len(r.buf)-r.off)
 	if abs < 0 {
 		r.mu.Unlock()
 		return 0, fmt.Errorf("audio: 负偏移")

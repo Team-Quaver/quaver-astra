@@ -4,10 +4,11 @@ import (
 	"bytes"
 	"io"
 	"math"
-
-	flac "github.com/mewkiz/flac"
 	"os"
 	"testing"
+	"time"
+
+	flac "github.com/mewkiz/flac"
 )
 
 // readAll 从引擎解码链路里读出全部 s16 PCM（绕过 oto：直接驱动 cnt 的源）。
@@ -89,8 +90,15 @@ func TestOggSeek(t *testing.T) {
 		t.Fatal(err)
 	}
 	e.Detach()
-	// 引擎级 seek 到 60%
-	e.SeekTo(0.6, 10) // dur 无所谓：PCM 路径按字节偏移
+	// 引擎级 seek 到 60%（异步换链：轮询位置锚定后再读）
+	e.SeekTo(0.6, 10)
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if p := e.Position(); p >= 5.9 && p <= 6.1 {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
 	after, err := drainReader(e)
 	if err != nil {
 		t.Fatalf("read after seek: %v", err)

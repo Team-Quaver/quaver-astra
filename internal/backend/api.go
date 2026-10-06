@@ -507,3 +507,15 @@ func decode(raw json.RawMessage, out any) error {
 	}
 	return json.Unmarshal(raw, out)
 }
+
+// StreamClient 是长连接音频流客户端：不设整体超时（流要一直读），
+// 只对连接/响应头限时。
+var StreamClient = &http.Client{
+	Timeout: 0,
+	Transport: &http.Transport{
+		Proxy:                 http.ProxyFromEnvironment,
+		TLSHandshakeTimeout:   10 * time.Second,
+		ResponseHeaderTimeout: 15 * time.Second,
+		IdleConnTimeout:       90 * time.Second,
+	},
+}
