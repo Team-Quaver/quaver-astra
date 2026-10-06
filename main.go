@@ -9,6 +9,7 @@ import (
 	"github.com/Team-Quaver/quaver-astra/internal/appui"
 	"github.com/Team-Quaver/quaver-astra/internal/backend"
 	"github.com/Team-Quaver/quaver-astra/internal/conf"
+	"github.com/Team-Quaver/quaver-astra/internal/vault"
 
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/ui"
@@ -20,15 +21,15 @@ func main() {
 		fatal(err)
 	}
 
-	// 内嵌后端（必须在构造前设好 QUAVER_CONFIG_DIR；凭证保持 memory 模式）
-	srv, err := backend.Start(cfgDir)
+	// 内嵌后端（必须在构造前设好 QUAVER_CONFIG_DIR）；凭证经管道交接、加密落盘
+	srv, err := backend.Start(cfgDir, vault.Open(cfgDir))
 	if err != nil {
 		fatal(err)
 	}
 	defer srv.Shutdown()
 
 	store := conf.Open(cfgDir)
-	app := appui.New(srv.BaseURL(), store)
+	app := appui.New(srv.BaseURL(), store, vault.Open(cfgDir))
 
 	mygo.App.WhenReady(func() {
 		win := mygo.NewWindow(mygo.WindowOptions{

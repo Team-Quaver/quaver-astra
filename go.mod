@@ -8,6 +8,7 @@ require (
 	github.com/hajimehoshi/go-mp3 v0.3.4
 	github.com/mewkiz/flac v1.0.14
 	github.com/team-quaver/typhoeus-go v0.0.0-00010101000000-000000000000
+	golang.org/x/crypto v0.57.0
 	golang.org/x/image v0.46.0
 )
 

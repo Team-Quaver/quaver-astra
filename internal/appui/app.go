@@ -13,6 +13,7 @@ import (
 	"github.com/Team-Quaver/quaver-astra/internal/colorprobe"
 	"github.com/Team-Quaver/quaver-astra/internal/conf"
 	"github.com/Team-Quaver/quaver-astra/internal/player"
+	"github.com/Team-Quaver/quaver-astra/internal/vault"
 
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/ui"
@@ -23,6 +24,7 @@ type App struct {
 	Win    *mygo.Window
 	API    *backend.Client
 	Conf   *conf.Store
+	Vault  *vault.Vault
 	PL     *player.Player
 	Router *ui.Router
 	Covers *CoverCache
@@ -55,8 +57,8 @@ type App struct {
 	settings settingsState
 }
 
-// New 组装应用（后端已由 main 启动）。
-func New(base string, store *conf.Store) *App {
+// New 组装应用（后端已由 main 启动；v 为凭证加密存储，可 nil）。
+func New(base string, store *conf.Store, v *vault.Vault) *App {
 	api := backend.NewClient(base)
 	eng := audio.New()
 	pl := player.New(newAPIAdapter(api), eng, store)

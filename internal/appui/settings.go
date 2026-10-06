@@ -149,22 +149,34 @@ func (a *App) settingsAbout(c *ui.Context, t *ui.Theme) {
 	if a.PL.LoggedIn() {
 		logged = "已登录：" + a.PL.Me().Name
 	}
+	saved := "无保存凭证（登录后自动加密保存）"
+	if a.Vault != nil && a.Vault.HasSaved() {
+		saved = "已加密保存（重启自动恢复登录）"
+	}
 	ui.Column(c).FillWidth().Gap(10).MaxWidth(560).Children(func() {
 		ui.Text(c, "Quaver Astra · Native").FontSize(16).FontWeight(800)
 		ui.Text(c, "轻量化的 Quaver Music：Go 原生 UI（MyGo），Typhoeus-go 后端进程内嵌，无 WebView。")
 		ui.Text(c, "AGPL-3.0 License").FontSize(12.5).TextColor(t.TextMuted)
 		ui.Divider(c)
 		ui.Textf(c, "登录状态：%s", logged).FontSize(13)
-		ui.Textf(c, "凭证模式：%s（memory = 只驻内存，重启后需重新扫码）", mode).FontSize(13)
+		ui.Textf(c, "凭证交接：%s（external 模式，登录/自动刷新/登出实时交接）", mode).FontSize(13)
+		ui.Textf(c, "本地凭证：%s", saved).FontSize(13)
 		ui.Textf(c, "后端：%s", a.API.Base).FontSize(13)
-		if a.PL.LoggedIn() {
-			if ui.Button(c, "退出登录").Clicked() {
-				go func() {
-					_ = a.API.Logout()
-					a.update(func() { a.PL.RefreshUser() })
-				}()
+		ui.Row(c).Gap(8).Children(func() {
+			if a.PL.LoggedIn() {
+				if ui.Button(c, "退出登录").Clicked() {
+					go func() {
+						_ = a.API.Logout()
+						a.update(func() { a.PL.RefreshUser() })
+					}()
+				}
 			}
-		}
+			if a.Vault != nil && a.Vault.HasSaved() {
+				if ui.Button(c, "清除已保存的凭证").Clicked() {
+					_ = a.Vault.Clear()
+				}
+			}
+		})
 	})
 }
 

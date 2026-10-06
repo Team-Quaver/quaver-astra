@@ -6,6 +6,7 @@ Quaver Music 的轻量化重写：**全 Go、原生 UI、无 WebView**。
 
 - **UI**：[MyGo](https://github.com/egoist/mygo) 的原生 UI 工具包（`ui` 包）——视图是状态的函数，由 MyGo 在 GPU 上直接绘制（Linux 走 OpenGL），不开 WebKitGTK，窗口秒开、内存占用小。
 - **后端**：[Typhoeus-go](https://github.com/Team-Quaver/typhoeus-go)（子模块 `third_party/Typhoeus-go`）**进程内嵌**——不再是 sidecar 独立进程，`quaver-server` 的完整路由表直接挂在本进程 `127.0.0.1` 的随机端口上。
+- **凭证持久化**：复用后端 external 模式的 QCRED1 管道交接协议（登录/自动刷新/登出实时回写），凭证以 ChaCha20-Poly1305 加密落盘（`credential.enc` + 随机主密钥 `session.key`，0600），明文绝不落盘；登出或"清除已保存的凭证"即删。
 - **音频**：纯 Go 播放引擎——[oto](https://github.com/ebitengine/oto) 输出（Linux 走 PulseAudio/PipeWire）+ [go-mp3](https://github.com/hajimehoshi/go-mp3) / [mewkiz/flac](https://github.com/mewkiz/flac) 解码，无 cgo、单二进制。
 
 > [!CAUTION]
@@ -34,7 +35,7 @@ go test ./internal/...
 - 歌单详情：头部 + 歌曲列表，触底翻页、收藏歌单
 - 搜索：歌曲 / 歌单两个 tab，热搜词、翻页
 - 我喜欢 / 每日 30 首 / 猜你喜欢（换一批）
-- 登录：QQ / 微信 / 手机 三通道扫码（自动生成 + 轮询）
+- 登录：QQ / 微信 / 手机 三通道扫码（自动生成 + 轮询），凭证加密保存、重启自动恢复
 - 正在播放页：模糊封面底、行级歌词 + 翻译（点击跳转、跟随高亮）、音质胶囊
 - 播放条：整条拖拽 seek、音量弹层、循环模式、随机播放（每日一套确定性顺序）、音质菜单（会话级切换）、红心收藏、队列面板（可拖拽排序）
 - 播放队列：插队播放 / 加入队列 / 删除 / 清空；双击歌曲即播
@@ -50,6 +51,7 @@ internal/player/        播放器状态机（队列/模式/随机/回退链/歌�
 internal/audio/         oto + mp3/flac 解码（整曲缓冲模型，48k 立体声输出，重采样）
 internal/appui/         MyGo 原生 UI：外壳、侧栏、路由页、播放条、正在播放、队列
 internal/colorprobe/    封面主色提取 + 模糊底图
+internal/vault/         登录凭证加密持久化（ChaCha20-Poly1305 + 随机主密钥）
 internal/conf/          JSON 配置（quaver-astra.json）
 ```
 
@@ -62,7 +64,7 @@ internal/conf/          JSON 配置（quaver-astra.json）
 
 ## 与主项目（Quaver Music）的差异
 
-轻量版刻意裁剪的部分：无逐字（QRC）歌词（仅行级 + 翻译）、无歌手/专辑页、无搜索联想、音质仅 MP3 128/320 与 FLAC（ogg/atmos 档位不做，`auto` 自动降级到支持集内最高档）、无 MPRIS / 桌面快捷键、无收藏歌单侧栏与歌单写侧、**登录凭证只驻后端内存（重启需重新扫码）**。
+轻量版刻意裁剪的部分：无逐字（QRC）歌词（仅行级 + 翻译）、无歌手/专辑页、无搜索联想、音质仅 MP3 128/320 与 FLAC（ogg/atmos 档位不做，`auto` 自动降级到支持集内最高档）、无 MPRIS / 桌面快捷键、无收藏歌单侧栏与歌单写侧。凭证保存为本机文件加密（密钥与密文同目录，防拷贝不防本机 root；后续可升级 OS 密钥环）。
 
 ## 许可
 
