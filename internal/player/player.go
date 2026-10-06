@@ -18,10 +18,10 @@ type Player struct {
 	eng  Engine
 	conf Preferences
 
-	queue  []Song
-	index  int
-	mode   string // off | all | one
-	shuf   bool
+	queue     []Song
+	index     int
+	mode      string // off | all | one
+	shuf      bool
 	shufOrder []int
 	shufDay   string
 

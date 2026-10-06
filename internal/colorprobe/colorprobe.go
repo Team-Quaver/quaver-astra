@@ -3,6 +3,7 @@
 package colorprobe
 
 import (
+	"bytes"
 	"image"
 	"image/color"
 	"image/draw"
@@ -18,6 +19,15 @@ const small = 32
 
 // Result 是提取出的主题色：HSL 各分量 0..1。
 type Result struct{ H, S, L float64 }
+
+// DominantFromBytes 解码图片字节并提取主色。
+func DominantFromBytes(data []byte) (Result, bool) {
+	img, _, err := image.Decode(bytes.NewReader(data))
+	if err != nil {
+		return Result{}, false
+	}
+	return Dominant(img)
+}
 
 // Dominant 提取封面主色。没有足够彩色像素时返回 ok=false。
 func Dominant(img image.Image) (Result, bool) {
@@ -209,7 +219,13 @@ func hueToRGB(p, q, t float64) float64 {
 	return p
 }
 
-func norm360(h float64) float64 { h = math.Mod(h, 360); if h < 0 { h += 360 }; return h }
+func norm360(h float64) float64 {
+	h = math.Mod(h, 360)
+	if h < 0 {
+		h += 360
+	}
+	return h
+}
 
 func clamp(v, lo, hi float64) float64 {
 	if v < lo {
