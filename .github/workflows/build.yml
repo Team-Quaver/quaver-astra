@@ -2,10 +2,10 @@ name: build
 
 on:
   push:
-    branches: [astra-native]
+    branches: [main]
     tags: ["v*"]
   pull_request:
-    branches: [astra-native]
+    branches: [main]
   workflow_dispatch:
 
 jobs:

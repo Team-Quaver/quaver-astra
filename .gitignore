@@ -10,3 +10,7 @@ quaver-astra-*
 /.qtcreator/
 .idea/
 .vscode/
+
+# editor swaps
+*.kate-swp
+*.swp
