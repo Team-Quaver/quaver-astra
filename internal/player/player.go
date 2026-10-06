@@ -48,7 +48,6 @@ type Player struct {
 
 	playlists  []PlaylistRef
 	playSeq    uint64
-	fallback   map[string]bool // 当前歌已试过的档位
 	failStreak int
 	vol        float64
 	muted      bool
@@ -148,7 +147,6 @@ func New(b Backend, e Engine, prefs Preferences) *Player {
 		index:      -1,
 		lyricState: "idle",
 		loved:      map[string]Song{},
-		fallback:   map[string]bool{},
 		showTrans:  prefs.Bool("Style.ShowTranslation", true),
 	}
 	return p
@@ -240,8 +238,8 @@ func (p *Player) LoadLoved() {
 			}
 		}
 		p.mu.Lock()
-		defer p.mu.Unlock()
 		if seq != p.likedSeq {
+			p.mu.Unlock()
 			return
 		}
 		p.loved = all
@@ -827,19 +825,20 @@ func (p *Player) startCurrent(resumeTo float64, autoplay bool, overrideTier stri
 	if p.conf.Bool("Quality.FallbackToQMAtmos", false) {
 		dep = []string{"atmos51", "atmos71"}
 	}
-	p.fallback = map[string]bool{}
 	p.mu.Unlock()
 	p.notifyChange()
 
+	// 会话局部回退集合：只被本次起播的协程链访问，避免跨会话共享竞争
+	fallback := map[string]bool{}
 	go func() {
-		info, tier, err := p.resolveWithFallback(song, want, dep, seq)
+		info, tier, err := p.resolveWithFallback(song, want, dep, seq, fallback)
 		if err != nil {
 			p.failWithErr(seq, err)
 			return
 		}
 		data, err := p.api.StreamBytes(info.URL)
 		if err != nil {
-			info2, tier2, err2 := p.resolveWithFallback(song, want, dep, seq)
+			info2, tier2, err2 := p.resolveWithFallback(song, want, dep, seq, fallback)
 			if err2 != nil {
 				p.failWithErr(seq, err)
 				return
@@ -884,18 +883,18 @@ func (p *Player) startCurrent(resumeTo float64, autoplay bool, overrideTier stri
 	}()
 }
 
-// resolveWithFallback 按回退链尝试解析（档位受限支持集）。
-func (p *Player) resolveWithFallback(song Song, want string, dep []string, seq uint64) (*StreamInfo, string, error) {
+// resolveWithFallback 按回退链尝试解析（档位受限支持集）。fallback 由调用方持有（会话局部）。
+func (p *Player) resolveWithFallback(song Song, want string, dep []string, seq uint64, fallback map[string]bool) (*StreamInfo, string, error) {
 	var lastErr error
 	for _, tier := range fallbackChain(want) {
-		p.mu.Lock()
-		tried := p.fallback[tier]
-		p.fallback[tier] = true
-		p.mu.Unlock()
-		if tried {
+		if fallback[tier] {
 			continue
 		}
-		if seq != p.playSeq {
+		fallback[tier] = true
+		p.mu.RLock()
+		stale := seq != p.playSeq
+		p.mu.RUnlock()
+		if stale {
 			return nil, "", errStale
 		}
 		info, err := p.api.Resolve(song.Mid, "", song.SongType, tier, dep)
