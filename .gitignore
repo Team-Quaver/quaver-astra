@@ -20,3 +20,6 @@ quaver-astra-*
 # editor swaps
 *.kate-swp
 *.swp
+
+# Workbuddy
+.workbuddy/
