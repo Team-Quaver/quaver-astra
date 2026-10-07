@@ -230,6 +230,14 @@ type Tier struct {
 	Locked    bool   `json:"locked"`
 }
 
+// FavSonglists /user/fav-songlists 响应（我收藏的歌单）。
+type FavSonglists struct {
+	Total     int64             `json:"total"`
+	Number    int64             `json:"number"`
+	Hasmore   bool              `json:"hasmore"`
+	Playlists []SonglistSummary `json:"playlists"`
+}
+
 // Tiers /stream/tiers 响应。
 type Tiers struct {
 	Membership      int    `json:"membership"`
@@ -350,6 +358,13 @@ func (c *Client) CreatedSonglists() (struct {
 		Hasmore   bool              `json:"hasmore"`
 	}
 	err := c.getJSON("/user/created-songlists", nil, &out)
+	return out, err
+}
+
+// FavSonglists 我收藏的歌单（他人创建的）。需登录。
+func (c *Client) FavSonglists(page, num int) (FavSonglists, error) {
+	var out FavSonglists
+	err := c.getJSON("/user/fav-songlists", q("page", page, "num", num), &out)
 	return out, err
 }
 

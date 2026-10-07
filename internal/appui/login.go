@@ -29,8 +29,8 @@ func (a *App) loginView(c *ui.Context) {
 		a.genQR(st)
 	}
 	ui.Column(c).Fill().Center().Gap(14).Children(func() {
-		ui.Text(c, "登录 QQ 音乐").FontSize(22).FontWeight(800)
-		ui.Text(c, "扫码后凭证只驻留在本机后端内存中").FontSize(12.5).TextColor(t.TextMuted)
+		ui.Text(c, "登录 QQ 音乐").FontSize(fz(22)).FontWeight(800)
+		ui.Text(c, "扫码后凭证只驻留在本机后端内存中").FontSize(fz(12.5)).TextColor(t.TextMuted)
 
 		seg := ui.Row(c).Gap(6).Padding(4).Radius(10).Background(t.SurfaceHover)
 		seg.Children(func() {
@@ -38,7 +38,7 @@ func (a *App) loginView(c *ui.Context) {
 				idx := i
 				btn := ui.ButtonBase(c).Padding(6, 16).Radius(8)
 				btn.Children(func() {
-					ui.Text(c, ch).FontSize(13)
+					ui.Text(c, ch).FontSize(fz(13))
 				})
 				if idx == st.channel {
 					btn.Background(t.Surface).Shadow(0, 1, 3, 0, ui.RGBA(0, 0, 0, 0.1))
@@ -57,7 +57,7 @@ func (a *App) loginView(c *ui.Context) {
 		a.loginQRBox(c, st)
 
 		if st.status != "" {
-			ui.Text(c, st.status).FontSize(12.5).TextColor(t.TextMuted)
+			ui.Text(c, st.status).FontSize(fz(12.5)).TextColor(t.TextMuted)
 		}
 	})
 }
@@ -74,7 +74,7 @@ func (a *App) loginQRBox(c *ui.Context, st *loginState) {
 	case st.expired:
 		ui.Box(c).Size(220, 220).Radius(12).Background(t.SurfaceHover).Border(1, t.Border).Center().Children(func() {
 			ui.Column(c).Center().Gap(8).Children(func() {
-				ui.Text(c, "二维码已过期").FontSize(13).TextColor(t.TextMuted).AlignSelf(ui.Center)
+				ui.Text(c, "二维码已过期").FontSize(fz(13)).TextColor(t.TextMuted).AlignSelf(ui.Center)
 				if ui.Button(c, "重新生成").Clicked() {
 					st.expired = false
 					a.genQR(st)

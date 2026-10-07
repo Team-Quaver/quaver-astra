@@ -2,7 +2,6 @@ package player
 
 import (
 	"errors"
-	"io"
 	"strings"
 	"sync"
 	"time"
@@ -107,8 +106,6 @@ type Backend interface {
 	Resolve(mid, mediaMid string, songType int64, tier string, deprioritize []string) (*StreamInfo, error)
 	FetchLyric(mid string, trans bool) (lrc, translation string, err error)
 	LikeSong(songID int64, writeType int64, like bool) error
-	// StreamOpen 打开一段可读流（offset>0 时发 HTTP Range 请求）。
-	StreamOpen(url string, offset int64) (io.ReadCloser, error)
 }
 
 // PlaylistRef 侧栏歌单项。
@@ -117,18 +114,24 @@ type PlaylistRef struct {
 	Title string
 }
 
-// Engine 是 player 需要的音频能力（实际由 *audio.Engine 适配）。
+// Engine 是 player 需要的音频能力（由 *audio.Engine 基于 mpv 实现）。
+// 位置/时长由引擎直接从 mpv 取，player 不再自己推算。
 type Engine interface {
-	OpenStream(srcf func(offset int64) (io.ReadCloser, error), size int64, startFrac, dur float64, autoplay bool) error
+	// OpenURL 异步载入并起播；载入结果由 LoadError 回报。
+	OpenURL(url string, startFrac, dur float64, autoplay bool) error
 	Play()
 	Pause()
 	Stop()
+	Close()
 	IsPlaying() bool
 	Ended() bool
 	Paused() bool
 	Position() float64
+	Duration(fallback float64) float64
 	SeekTo(frac, dur float64)
 	SetVolume(v float64)
+	LoadError() string
+	OnObserve(fn func())
 }
 
 // Preferences 是持久化配置读写接口。
@@ -708,12 +711,12 @@ func (p *Player) Stream() *StreamInfo {
 	return p.stream
 }
 
-// SeekTo 按 0..1 比例跳转。
+// SeekTo 按 0..1 比例跳转。位置由引擎回报，这里不再自行重锚定。
 func (p *Player) SeekTo(frac float64) {
-	p.mu.Lock()
-	p.eng.SeekTo(frac, p.dur)
-	p.pos = frac * p.dur // 位置由墙钟推算（见 tick），此处重锚定
-	p.mu.Unlock()
+	p.mu.RLock()
+	dur := p.dur
+	p.mu.RUnlock()
+	p.eng.SeekTo(frac, dur)
 	p.notifyChange()
 }
 
@@ -766,9 +769,11 @@ func (p *Player) loadTiers() {
 	p.notifyChange()
 }
 
-// pickTier 把 "auto" 换算成本引擎支持的最高档位（mp3/flac/ogg-vorbis）。
+// pickTier 把 "auto" 换算成本机可播放的最高档位。
+//
+// 换了 mpv 之后支持集是全档位（含 atmos / DTS / FLAC / AAC），
+// 因此这里直接取未锁定档位里 rank 最高的一档。
 func pickTier(table *TierTable, want string) string {
-	supported := map[string]bool{"128": true, "320": true, "320ogg": true, "640ogg": true, "flac": true}
 	if want != "auto" {
 		return want
 	}
@@ -777,7 +782,10 @@ func pickTier(table *TierTable, want string) string {
 	}
 	best, bestRank := "128", -1
 	for _, t := range table.Tiers {
-		if supported[t.ID] && t.Rank > bestRank {
+		if t.Locked {
+			continue
+		}
+		if t.Rank > bestRank {
 			best, bestRank = t.ID, t.Rank
 		}
 	}
@@ -833,8 +841,8 @@ func (p *Player) startCurrent(resumeTo float64, autoplay bool, overrideTier stri
 	// 会话局部回退集合：只被本次起播的协程链访问，避免跨会话共享竞争
 	fallback := map[string]bool{}
 	go func() {
-		// 解析 → 打开流 → 解码；任何一环失败（解码失败=档位不被支持，如
-		// atmos/DTS——嗅探在下载前就否掉）都继续走回退链换下一档。
+		// 解析 → 交给 mpv 载入 → 等载入结果。任何一环失败（档位不被支持、
+		// 网络错误）都继续走回退链换下一档。
 		var info *StreamInfo
 		for {
 			i, tier, err := p.resolveWithFallback(song, want, dep, seq, fallback)
@@ -849,12 +857,14 @@ func (p *Player) startCurrent(resumeTo float64, autoplay bool, overrideTier stri
 			if stale {
 				return
 			}
-			url := i.URL
-			srcf := func(off int64) (io.ReadCloser, error) {
-				return p.api.StreamOpen(url, off)
+			if lerr := p.eng.OpenURL(i.URL, resume/dur, dur, autoplay); lerr != nil {
+				continue // 引擎拒绝（mpv 未运行等），下一轮换档
 			}
-			if lerr := p.eng.OpenStream(srcf, i.Size, resume/dur, dur, autoplay); lerr != nil {
-				continue // 该档已标记 tried，下一轮自动换档
+			// mpv 载入是异步的：网络流可能慢，要等它给出结果才能判断这档
+			// 能不能播。等不到（超时）或报错都视为该档失败，继续降档。
+			if lerr := p.awaitLoaded(seq); lerr != nil {
+				_ = lerr
+				continue
 			}
 			info = i
 			_ = tier
@@ -872,10 +882,6 @@ func (p *Player) startCurrent(resumeTo float64, autoplay bool, overrideTier stri
 			p.eng.Play()
 			p.playing = true
 		}
-		if resumeTo > 0 && resumeTo < p.dur {
-			p.eng.SeekTo(resumeTo/p.dur, p.dur)
-			p.pos = resumeTo
-		}
 		p.loading = false
 		p.stream = info
 		p.failStreak = 0
@@ -884,6 +890,38 @@ func (p *Player) startCurrent(resumeTo float64, autoplay bool, overrideTier stri
 		p.fetchLyric(song, seq)
 	}()
 }
+
+// awaitLoaded 等 mpv 报出本次载入的结果。
+//
+// mpv 的 loadfile 是异步的：命令立刻返回，真正的结果（打开成功/失败、
+// 时长就位）随后以属性事件的形式到来。这里轮询到「拿到时长」或「报错」
+// 为止；超时就按失败处理，让调用方降档——总比卡住整条起播链好。
+func (p *Player) awaitLoaded(seq uint64) error {
+	deadline := time.Now().Add(loadWaitTimeout)
+	for time.Now().Before(deadline) {
+		p.mu.RLock()
+		stale := seq != p.playSeq
+		p.mu.RUnlock()
+		if stale {
+			return errStale
+		}
+		if e := p.eng.LoadError(); e != "" {
+			return errors.New(e)
+		}
+		// 时长就位即视为打开成功（>0 且不是我们塞进去的兜底值）
+		if p.eng.Duration(0) > 0 {
+			return nil
+		}
+		time.Sleep(40 * time.Millisecond)
+	}
+	return errLoadTimeout
+}
+
+// loadWaitTimeout 是单档位的载入等待上限。首帧通常几百毫秒，网络差时
+// 给到几秒；再久就不如换下一档重试。
+const loadWaitTimeout = 8 * time.Second
+
+var errLoadTimeout = errors.New("载入超时")
 
 // resolveWithFallback 按回退链尝试解析（档位受限支持集）。fallback 由调用方持有（会话局部）。
 func (p *Player) resolveWithFallback(song Song, want string, dep []string, seq uint64, fallback map[string]bool) (*StreamInfo, string, error) {
@@ -913,20 +951,24 @@ func (p *Player) resolveWithFallback(song Song, want string, dep []string, seq u
 	return nil, "", lastErr
 }
 
-// fallbackChain 从高档到低档的回退链（引擎支持集内）。
+// fallbackChain 从高档到低档的回退链（mpv 可解全部档位，这里按上游
+// 的 rank 顺序逐级让位；换档由起播协程的 fallback 集合去重）。
 func fallbackChain(want string) []string {
-	switch want {
-	case "flac", "master":
-		return []string{"flac", "640ogg", "320ogg", "320", "128"}
-	case "640ogg":
-		return []string{"640ogg", "320ogg", "320", "128"}
-	case "320ogg":
-		return []string{"320ogg", "320", "128"}
-	case "320":
-		return []string{"320", "128"}
-	default:
-		return []string{"128"}
+	order := []string{
+		"master", "atmos71", "atmos51", "atmos2", "flac",
+		"640ogg", "320ogg", "320", "128",
 	}
+	at := -1
+	for i, id := range order {
+		if id == want {
+			at = i
+			break
+		}
+	}
+	if at < 0 {
+		return []string{want}
+	}
+	return order[at:]
 }
 
 var errStale = errors.New("已切换歌曲")
@@ -1068,7 +1110,11 @@ func (p *Player) ToggleLove(song Song) {
 
 // ===== 心跳 =====
 
-// StartTicker 启动位置心跳（200ms；自然播完时自动切下一首）。
+// StartTicker 启动播放状态监听（200ms）。
+//
+// 位置直接读 mpv 的 time-pos，不再用墙钟推算——旧实现必须自己累加
+// 位置并处理 seek/换歌时的重锚定，误差会累积；mpv 是唯一真相源。
+// 本循环只负责：同步位置/时长、检测自然播完切下一首、驱动 UI 重绘。
 func (p *Player) StartTicker() {
 	go func() {
 		t := time.NewTicker(200 * time.Millisecond)
@@ -1079,23 +1125,39 @@ func (p *Player) StartTicker() {
 	}()
 }
 
-// tick 推进播放位置。不能靠“源消费量”当位置——oto 会大量预读源数据
-// （整曲在内存时几乎瞬间读完），位置会远超实际播放进度。这里用墙钟
-// 推算：tick +0.2s，seek/起播/换歌时重锚定；到时长 +0.3s（设备缓冲
-// 排空余量）再切下一首。
+// tick 同步播放位置并处理自然播完。
 func (p *Player) tick() {
 	p.mu.Lock()
-	if p.index < 0 || p.index >= len(p.queue) || !p.playing || p.eng.Paused() {
+	if p.index < 0 || p.index >= len(p.queue) || !p.playing {
 		p.mu.Unlock()
 		return
 	}
-	p.pos += 0.2
-	if p.dur > 0 && p.pos >= p.dur+0.3 {
-		p.mu.Unlock()
+	paused := p.eng.Paused()
+	fallback := p.dur
+	p.mu.Unlock()
+
+	if paused {
+		p.notifyChange()
+		return
+	}
+
+	// 从引擎同步真实位置与时长（mpv 的 time-pos / duration）
+	pos := p.eng.Position()
+	dur := p.eng.Duration(fallback)
+
+	p.mu.Lock()
+	p.pos = pos
+	if dur > 0 {
+		p.dur = dur
+	}
+	ended := p.eng.Ended()
+	atEnd := p.dur > 0 && p.pos >= p.dur-0.05
+	p.mu.Unlock()
+
+	if ended || atEnd {
 		p.Next(true)
 		return
 	}
-	p.mu.Unlock()
 	p.notifyChange()
 }
 
@@ -1143,7 +1205,7 @@ func (p *Player) Muted() bool {
 	return p.muted
 }
 
-// Boot 载入持久化音量并启动心跳。
+// Boot 载入持久化音量、挂上引擎观察回调并启动心跳。
 func (p *Player) Boot() {
 	p.mu.Lock()
 	p.vol = p.conf.Float("Playing.Volume", 0.8)
@@ -1153,5 +1215,7 @@ func (p *Player) Boot() {
 		p.eng.SetVolume(p.vol)
 	}
 	p.mu.Unlock()
+	// mpv 属性变化即刻通知，让进度条/歌词不等到下一个心跳才动
+	p.eng.OnObserve(p.notifyChange)
 	p.StartTicker()
 }

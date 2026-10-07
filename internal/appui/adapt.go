@@ -1,23 +1,17 @@
 package appui
 
 import (
-	"io"
-	"net/http"
-	"strconv"
-	"time"
-
 	"github.com/Team-Quaver/quaver-astra/internal/backend"
 	"github.com/Team-Quaver/quaver-astra/internal/player"
 )
 
 // apiAdapter 把 *backend.Client 适配成 player.Backend。
 type apiAdapter struct {
-	c  *backend.Client
-	hc *http.Client
+	c *backend.Client
 }
 
 func newAPIAdapter(c *backend.Client) apiAdapter {
-	return apiAdapter{c: c, hc: &http.Client{Timeout: 90 * time.Second}}
+	return apiAdapter{c: c}
 }
 
 func (a apiAdapter) LoginStatus() (bool, error) {
@@ -134,24 +128,4 @@ func (a apiAdapter) FetchLyric(mid string, trans bool) (string, string, error) {
 
 func (a apiAdapter) LikeSong(songID, writeType int64, like bool) error {
 	return a.c.SongLike(songID, writeType, like)
-}
-
-// StreamOpen 打开音频流；offset>0 时发 HTTP Range 请求（seek/降档重试共用）。
-func (a apiAdapter) StreamOpen(url string, offset int64) (io.ReadCloser, error) {
-	req, err := http.NewRequest(http.MethodGet, url, nil)
-	if err != nil {
-		return nil, err
-	}
-	if offset > 0 {
-		req.Header.Set("Range", "bytes="+strconv.FormatInt(offset, 10)+"-")
-	}
-	resp, err := backend.StreamClient.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	if resp.StatusCode >= 400 {
-		resp.Body.Close()
-		return nil, &backend.APIError{Status: resp.StatusCode, Msg: "音频流请求失败"}
-	}
-	return resp.Body, nil
 }

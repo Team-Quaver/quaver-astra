@@ -36,7 +36,7 @@ func (a *App) homeView(c *ui.Context) {
 	ui.Scroll(c).Fill().Padding(20, 24, 24, 24).Gap(18).Children(func() {
 		if st.err != "" {
 			ui.Column(c).FillWidth().Center().Gap(8).Padding(40).Children(func() {
-				ui.Text(c, st.err).FontSize(13).TextColor(t.TextMuted)
+				ui.Text(c, st.err).FontSize(fz(13)).TextColor(t.TextMuted)
 				plainBtn(c, "重试", func() { st.loaded = false; st.err = "" })
 			})
 			return
@@ -46,12 +46,14 @@ func (a *App) homeView(c *ui.Context) {
 			return
 		}
 
-		// 两栏头部：今日精选 hero + 新歌速递
-		ui.Row(c).FillWidth().Gap(16).AlignItems(ui.Stretch).Children(func() {
+		// 两栏头部：今日精选 hero + 新歌速递。
+		// hero 带 MinWidth、容器 Wrap：内容区不够同时放下「hero 最小宽 +
+		// 新歌速递 430」时，新歌速递折到下一行整行铺开，hero 不再被挤瘪。
+		ui.Row(c).FillWidth().Wrap().Gap(16).AlignItems(ui.Stretch).Children(func() {
 			a.homeHero(c, st.recs[0])
 			ui.Column(c).Width(430).Gap(2).Children(func() {
 				ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(8).Children(func() {
-					ui.Text(c, "新歌速递").FontSize(15).FontWeight(800).Grow(1)
+					ui.Text(c, "新歌速递").FontSize(fz(15)).FontWeight(800).Grow(1)
 					linkButton(c, "播放全部", func() {
 						a.playListNow(st.newsong, 0)
 					})
@@ -76,19 +78,19 @@ func (a *App) homeView(c *ui.Context) {
 func (a *App) homeHero(c *ui.Context, pl backend.SonglistSummary) {
 	t := c.Theme()
 	art := a.Covers.Get(pl.Picurl, a.invalidate)
-	card := ui.Row(c).Grow(1).Gap(18).Padding(18).Radius(14).
+	card := ui.Row(c).Grow(1).MinWidth(460).Gap(18).Padding(18).Radius(14).
 		Background(t.Surface).Border(1, t.Border).AlignItems(ui.Center)
 	card.Children(func() {
 		if art != nil {
 			ui.Image(c, art).Size(160, 160).Fit(ui.Cover).Radius(10)
 		} else {
 			ui.Box(c).Size(160, 160).Radius(10).Background(t.SurfaceHover).Center().Children(func() {
-				ui.Icon(c, Icons["note"]).FontSize(44).TextColor(t.TextMuted).AlignSelf(ui.Center)
+				ui.Icon(c, Icons["note"]).FontSize(fz(44)).TextColor(t.TextMuted).AlignSelf(ui.Center)
 			})
 		}
 		ui.Column(c).Grow(1).Gap(8).Children(func() {
-			ui.Text(c, "PLAYLIST · 今日精选").FontSize(11).FontWeight(600).TextColor(t.Accent)
-			ui.Text(c, pl.Title).FontSize(20).FontWeight(800).MaxLines(2).Ellipsis("…")
+			ui.Text(c, "PLAYLIST · 今日精选").FontSize(fz(11)).FontWeight(600).TextColor(t.Accent)
+			ui.Text(c, pl.Title).FontSize(fz(20)).FontWeight(800).MaxLines(2).Ellipsis("…")
 			meta := ""
 			if pl.Nickname != "" {
 				meta = pl.Nickname
@@ -99,9 +101,9 @@ func (a *App) homeHero(c *ui.Context, pl backend.SonglistSummary) {
 				}
 				meta += strconv.FormatInt(pl.Songnum, 10) + " 首"
 			}
-			ui.Text(c, meta).FontSize(12.5).TextColor(t.TextMuted)
+			ui.Text(c, meta).FontSize(fz(12.5)).TextColor(t.TextMuted)
 			if pl.Desc != "" {
-				ui.Text(c, pl.Desc).FontSize(12).TextColor(t.TextMuted).MaxLines(2).Ellipsis("…")
+				ui.Text(c, pl.Desc).FontSize(fz(12)).TextColor(t.TextMuted).MaxLines(2).Ellipsis("…")
 			}
 			ui.Row(c).Gap(8).Margin(6, 0, 0, 0).Children(func() {
 				primaryBtn(c, "播放歌单", func() { a.openPlaylistAndPlay(pl.ID) })
@@ -120,9 +122,9 @@ func (a *App) compactSongRow(c *ui.Context, songs []player.Song, i int) {
 	s := songs[i]
 	row := ui.Row(c).FillWidth().Height(40).PaddingX(10).Gap(10).AlignItems(ui.Center).Radius(8)
 	row.Children(func() {
-		ui.Textf(c, "%02d", i+1).FontSize(11).TextColor(t.TextMuted).Width(22)
-		ui.Text(c, s.DisplayName()).FontSize(13).SingleLine().Ellipsis("…").Grow(1)
-		ui.Text(c, s.Artists).FontSize(11.5).TextColor(t.TextMuted).SingleLine().Ellipsis("…").Width(120).TextAlign(ui.End)
+		ui.Textf(c, "%02d", i+1).FontSize(fz(11)).TextColor(t.TextMuted).Width(22)
+		ui.Text(c, s.DisplayName()).FontSize(fz(13)).SingleLine().Ellipsis("…").Grow(1)
+		ui.Text(c, s.Artists).FontSize(fz(11.5)).TextColor(t.TextMuted).SingleLine().Ellipsis("…").Width(120).TextAlign(ui.End)
 	})
 	if row.Hovered() {
 		row.Background(t.SurfaceHover)
@@ -180,14 +182,14 @@ func (a *App) playlistCard(c *ui.Context, pl backend.SonglistSummary) {
 				ui.Image(c, art).Fill().Fit(ui.Cover)
 			} else {
 				ui.Box(c).Fill().Center().Children(func() {
-					ui.Icon(c, Icons["note"]).FontSize(34).TextColor(t.TextMuted).AlignSelf(ui.Center)
+					ui.Icon(c, Icons["note"]).FontSize(fz(34)).TextColor(t.TextMuted).AlignSelf(ui.Center)
 				})
 			}
 			// 悬停播放按钮
 			play := ui.Box(c).Absolute().Bottom(8).Right(8).Size(34, 34).Radius(17).
 				Background(ui.RGBA(0, 0, 0, 0.55)).Center().Opacity(0)
 			play.Children(func() {
-				ui.Icon(c, Icons["play"]).FontSize(16).TextColor(ui.Hex("#ffffff")).AlignSelf(ui.Center)
+				ui.Icon(c, Icons["play"]).FontSize(fz(16)).TextColor(ui.Hex("#ffffff")).AlignSelf(ui.Center)
 			})
 			if box.Hovered() {
 				play.Opacity(1)
@@ -196,9 +198,9 @@ func (a *App) playlistCard(c *ui.Context, pl backend.SonglistSummary) {
 				a.openPlaylistAndPlay(pl.ID)
 			}
 		})
-		ui.Text(c, pl.Title).FontSize(12.5).MaxLines(2).Ellipsis("…").LineHeight(1.35)
+		ui.Text(c, pl.Title).FontSize(fz(12.5)).MaxLines(2).Ellipsis("…").LineHeight(1.35)
 		sub := strconv.FormatInt(pl.Listennum, 10) + " 次播放"
-		ui.Text(c, sub).FontSize(11).TextColor(t.TextMuted).SingleLine().Ellipsis("…")
+		ui.Text(c, sub).FontSize(fz(11)).TextColor(t.TextMuted).SingleLine().Ellipsis("…")
 	})
 	if card.Clicked() {
 		a.Router.Push("/playlist/" + strconv.FormatInt(pl.ID, 10))
@@ -211,14 +213,14 @@ func (a *App) likedView(c *ui.Context) {
 	t := c.Theme()
 	ui.Column(c).Fill().Padding(20, 24, 24, 24).Gap(14).Children(func() {
 		ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(10).Children(func() {
-			ui.Text(c, "我喜欢").FontSize(24).FontWeight(800)
+			ui.Text(c, "我喜欢").FontSize(fz(24)).FontWeight(800)
 			if n := a.PL.LikedTotal(); n > 0 {
-				ui.Textf(c, "%d 首", n).FontSize(13).TextColor(t.TextMuted)
+				ui.Textf(c, "%d 首", n).FontSize(fz(13)).TextColor(t.TextMuted)
 			}
 		})
 		if !a.PL.LoggedIn() {
 			ui.Column(c).FillWidth().Center().Gap(10).Padding(48).Children(func() {
-				ui.Text(c, "登录后同步你收藏的音乐").FontSize(13).TextColor(t.TextMuted)
+				ui.Text(c, "登录后同步你收藏的音乐").FontSize(fz(13)).TextColor(t.TextMuted)
 				plainBtn(c, "去登录", func() { a.Router.Push("/login") })
 			})
 			return
@@ -241,14 +243,14 @@ func (a *App) dailyView(c *ui.Context) {
 	a.ensureDaily()
 	ui.Column(c).Fill().Padding(20, 24, 24, 24).Gap(14).Children(func() {
 		ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(10).Children(func() {
-			ui.Text(c, "每日 30 首").FontSize(24).FontWeight(800)
+			ui.Text(c, "每日 30 首").FontSize(fz(24)).FontWeight(800)
 			ui.Spacer(c)
 			if len(st.songs) > 0 {
 				primaryBtn(c, "播放全部", func() { a.playListNow(st.songs, 0) })
 			}
 		})
 		if st.err != "" {
-			ui.Text(c, st.err).FontSize(13).TextColor(c.Theme().TextMuted).Padding(24)
+			ui.Text(c, st.err).FontSize(fz(13)).TextColor(c.Theme().TextMuted).Padding(24)
 			return
 		}
 		if len(st.songs) == 0 {
@@ -291,7 +293,7 @@ func (a *App) guessView(c *ui.Context) {
 	a.ensureGuess()
 	ui.Column(c).Fill().Padding(20, 24, 24, 24).Gap(14).Children(func() {
 		ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(10).Children(func() {
-			ui.Text(c, "猜你喜欢").FontSize(24).FontWeight(800)
+			ui.Text(c, "猜你喜欢").FontSize(fz(24)).FontWeight(800)
 			ui.Spacer(c)
 			plainBtn(c, "换一批", func() {
 				st.list.songs = nil
@@ -302,7 +304,7 @@ func (a *App) guessView(c *ui.Context) {
 			}
 		})
 		if st.list.err != "" {
-			ui.Text(c, st.list.err).FontSize(13).TextColor(c.Theme().TextMuted).Padding(24)
+			ui.Text(c, st.list.err).FontSize(fz(13)).TextColor(c.Theme().TextMuted).Padding(24)
 			return
 		}
 		if len(st.list.songs) == 0 {
@@ -371,7 +373,7 @@ func (a *App) playlistView(c *ui.Context, id int64) {
 
 	ui.Scroll(c).Fill().Padding(20, 24, 24, 24).Gap(16).TrackScroll(&st.scroll).Children(func() {
 		if st.err != "" {
-			ui.Text(c, st.err).FontSize(13).TextColor(t.TextMuted)
+			ui.Text(c, st.err).FontSize(fz(13)).TextColor(t.TextMuted)
 			return
 		}
 		if st.info.Title == "" {
@@ -385,11 +387,11 @@ func (a *App) playlistView(c *ui.Context, id int64) {
 				ui.Image(c, art).Size(168, 168).Fit(ui.Cover).Radius(14)
 			} else {
 				ui.Box(c).Size(168, 168).Radius(14).Background(t.SurfaceHover).Center().Children(func() {
-					ui.Icon(c, Icons["note"]).FontSize(48).TextColor(t.TextMuted).AlignSelf(ui.Center)
+					ui.Icon(c, Icons["note"]).FontSize(fz(48)).TextColor(t.TextMuted).AlignSelf(ui.Center)
 				})
 			}
 			ui.Column(c).Grow(1).Gap(8).Children(func() {
-				ui.Text(c, st.info.Title).FontSize(26).FontWeight(800).MaxLines(2).Ellipsis("…")
+				ui.Text(c, st.info.Title).FontSize(fz(26)).FontWeight(800).MaxLines(2).Ellipsis("…")
 				meta := st.creator.Nick
 				if meta == "" {
 					meta = st.info.Nickname
@@ -397,7 +399,7 @@ func (a *App) playlistView(c *ui.Context, id int64) {
 				if n := st.info.Songnum; n > 0 {
 					meta += " · " + strconv.FormatInt(n, 10) + " 首"
 				}
-				ui.Text(c, meta).FontSize(13).TextColor(t.TextMuted)
+				ui.Text(c, meta).FontSize(fz(13)).TextColor(t.TextMuted)
 				if st.info.Desc != "" {
 					lines := 2
 					toggle := "展开"
@@ -405,7 +407,7 @@ func (a *App) playlistView(c *ui.Context, id int64) {
 						lines = 0
 						toggle = "收起"
 					}
-					body := ui.Text(c, st.info.Desc).FontSize(12.5).TextColor(t.TextMuted)
+					body := ui.Text(c, st.info.Desc).FontSize(fz(12.5)).TextColor(t.TextMuted)
 					if lines > 0 {
 						body = body.MaxLines(lines).Ellipsis("…")
 					}
@@ -533,7 +535,7 @@ func (a *App) searchView(c *ui.Context, kw string) {
 
 	ui.Column(c).Fill().Padding(20, 24, 24, 24).Gap(14).Children(func() {
 		ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(10).Children(func() {
-			ui.Text(c, "搜索").FontSize(24).FontWeight(800)
+			ui.Text(c, "搜索").FontSize(fz(24)).FontWeight(800)
 			ui.Spacer(c)
 			ui.Tabs(c, &st.tab, "歌曲", "歌单")
 		})
@@ -544,7 +546,7 @@ func (a *App) searchView(c *ui.Context, kw string) {
 					for _, h := range st.hot {
 						hk := h
 						chip := ui.ButtonBase(c).Padding(4, 12).Radius(999).Border(1, c.Theme().Border)
-						chip.Children(func() { ui.Text(c, hk).FontSize(12.5) })
+						chip.Children(func() { ui.Text(c, hk).FontSize(fz(12.5)) })
 						if chip.Hovered() {
 							chip.Background(c.Theme().SurfaceHover)
 						}
@@ -554,12 +556,12 @@ func (a *App) searchView(c *ui.Context, kw string) {
 					}
 				})
 			} else {
-				ui.Text(c, "输入关键词搜索").FontSize(13).TextColor(c.Theme().TextMuted).Padding(24)
+				ui.Text(c, "输入关键词搜索").FontSize(fz(13)).TextColor(c.Theme().TextMuted).Padding(24)
 			}
 			return
 		}
 		if st.err != "" {
-			ui.Text(c, st.err).FontSize(13).TextColor(c.Theme().TextMuted)
+			ui.Text(c, st.err).FontSize(fz(13)).TextColor(c.Theme().TextMuted)
 			return
 		}
 		if st.loading && len(st.songs) == 0 && len(st.songlists) == 0 {

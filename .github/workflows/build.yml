@@ -18,7 +18,16 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: "1.27"
+      # 播放后端是 mpv 外部进程；装上它才能跑真实往返测试。
+      - name: Install mpv
+        run: sudo apt-get update && sudo apt-get install -y mpv
       - run: go test ./internal/...
+      # 无声卡的 runner 上用 null AO 验证 IPC 与时间轴
+      - name: Test mpv engine
+        env:
+          QAA_TEST_MPV: "1"
+          QAA_MPV_AO: "null"
+        run: go test -run TestEngineRealMPV -v ./internal/audio/
 
   build:
     needs: test

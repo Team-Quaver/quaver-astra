@@ -37,7 +37,9 @@ func (a *App) playerBar(c *ui.Context, t *ui.Theme) {
 		frac = a.seekFrac
 	}
 
-	bar := ui.Row(c).FillWidth().Height(64).PaddingX(16).Gap(12).
+	// 不设 FillWidth：100% 全宽会把 Margin 解析在其外，条子向右溢出
+	// 10px（右圆角被窗口裁掉、左边却留有空隙）；默认 Stretch 会先扣边距。
+	bar := ui.Row(c).Height(64).PaddingX(16).Gap(12).
 		AlignItems(ui.Center).Background(a.barBg(t)).Margin(8, 10, 10, 10).Radius(14)
 	bar.Draw(func(p *ui.Painter, r ui.Rect) {
 		// 进度填充：整个条高的圆角矩形
@@ -48,7 +50,7 @@ func (a *App) playerBar(c *ui.Context, t *ui.Theme) {
 	})
 
 	bar.Children(func() {
-		a.barSeek(c, bar, t)
+		a.barSeek(c, bar)
 
 		// 左：封面 + 标题
 		cover := ui.ButtonBase(c).Size(46, 46).Radius(10).Clip()
@@ -58,7 +60,7 @@ func (a *App) playerBar(c *ui.Context, t *ui.Theme) {
 			cover.Background(t.SurfaceHover)
 			cover.Children(func() {
 				ui.Box(c).Fill().Center().Children(func() {
-					ui.Icon(c, Icons["note"]).FontSize(20).TextColor(t.TextMuted).AlignSelf(ui.Center)
+					ui.Icon(c, Icons["note"]).FontSize(fz(20)).TextColor(t.TextMuted).AlignSelf(ui.Center)
 				})
 			})
 		}
@@ -80,8 +82,8 @@ func (a *App) playerBar(c *ui.Context, t *ui.Theme) {
 				title = "Quaver Astra"
 				sub = "双击歌曲开始播放"
 			}
-			ui.Text(c, title).FontSize(13.5).FontWeight(600).SingleLine().Ellipsis("…")
-			ui.Text(c, sub).FontSize(11.5).TextColor(t.TextMuted).SingleLine().Ellipsis("…")
+			ui.Text(c, title).FontSize(fz(13.5)).FontWeight(600).SingleLine().Ellipsis("…")
+			ui.Text(c, sub).FontSize(fz(11.5)).TextColor(t.TextMuted).SingleLine().Ellipsis("…")
 		})
 
 		// 中：上一首 / 播放 / 下一首
@@ -93,7 +95,7 @@ func (a *App) playerBar(c *ui.Context, t *ui.Theme) {
 
 		// 右：时间 / 音量 / 模式 / 随机 / 音质 / 红心 / 队列
 		ui.Textf(c, "%s / %s", fmtTime(a.PL.Position()), fmtTime(a.PL.Duration())).
-			FontSize(11.5).TextColor(t.TextMuted).Font("monospace")
+			FontSize(fz(11.5)).TextColor(t.TextMuted).Font("monospace")
 		a.volumeCtl(c, t)
 		a.modeBtn(c, t)
 		a.qualityPill(c, t)
@@ -106,10 +108,9 @@ func (a *App) playerBar(c *ui.Context, t *ui.Theme) {
 }
 
 // barSeek 是覆盖整条播放条的 seek 面（在子控件之下拿指针）。
-func (a *App) barSeek(c *ui.Context, bar *ui.Element, t *ui.Theme) {
+// 它只挂事件、不渲染内容；子控件优先拿到指针。
+func (a *App) barSeek(c *ui.Context, bar *ui.Element) {
 	_ = c
-	_ = t
-	// 注意：barSeek 不渲染东西，只挂事件；子控件优先拿指针。
 	if bar.Pressed() {
 		if !a.seekDragging {
 			a.seekDragging = true
@@ -149,7 +150,7 @@ func (a *App) playBtn(c *ui.Context, t *ui.Theme) {
 		if a.PL.Playing() {
 			name = "pause"
 		}
-		ui.Icon(c, Icons[name]).FontSize(20).TextColor(t.Background).AlignSelf(ui.Center)
+		ui.Icon(c, Icons[name]).FontSize(fz(20)).TextColor(t.Background).AlignSelf(ui.Center)
 	})
 	if btn.Hovered() {
 		btn.Opacity(0.85)
@@ -161,19 +162,23 @@ func (a *App) playBtn(c *ui.Context, t *ui.Theme) {
 	}
 }
 
+// iconBtn 是播放条上的圆形图标按钮。label 用于无障碍 tooltip——
+// 纯图标按钮没有文字说明，键盘/读屏用户无从得知其作用。
 func (a *App) iconBtn(c *ui.Context, icon, label string, size float32, fn func()) {
 	t := c.Theme()
 	b := ui.ButtonBase(c).Size(32, 32).Radius(16).Center()
 	b.Children(func() {
-		ui.Icon(c, Icons[icon]).FontSize(size).AlignSelf(ui.Center)
+		ui.Icon(c, Icons[icon]).FontSize(fz(size)).AlignSelf(ui.Center)
 	})
 	if b.Hovered() {
 		b.Background(t.SurfaceHover)
 	}
+	if label != "" {
+		b.Tooltip(label)
+	}
 	if b.Clicked() {
 		fn()
 	}
-	_ = label
 }
 
 func (a *App) volumeCtl(c *ui.Context, t *ui.Theme) {
@@ -188,10 +193,11 @@ func (a *App) volumeCtl(c *ui.Context, t *ui.Theme) {
 		icon = "volMid"
 	}
 	b := ui.ButtonBase(c).Size(32, 32).Radius(16).Center()
-	b.Children(func() { ui.Icon(c, Icons[icon]).FontSize(17).AlignSelf(ui.Center) })
+	b.Children(func() { ui.Icon(c, Icons[icon]).FontSize(fz(17)).AlignSelf(ui.Center) })
 	if b.Hovered() {
 		b.Background(t.SurfaceHover)
 	}
+	b.Tooltip("音量")
 	if b.Clicked() {
 		a.volOpen = !a.volOpen
 	}
@@ -207,7 +213,7 @@ func (a *App) volumeCtl(c *ui.Context, t *ui.Theme) {
 			ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(8).Children(func() {
 				linkButton(c, "静音", func() { a.PL.ToggleMute() })
 				ui.Spacer(c)
-				ui.Textf(c, "%d%%", int(vol*100)).FontSize(12).TextColor(t.TextMuted)
+				ui.Textf(c, "%d%%", int(vol*100)).FontSize(fz(12)).TextColor(t.TextMuted)
 			})
 		})
 	})
@@ -225,7 +231,7 @@ func (a *App) modeBtn(c *ui.Context, t *ui.Theme) {
 
 	shuf := ui.ButtonBase(c).Size(32, 32).Radius(16).Center()
 	shuf.Children(func() {
-		ic := ui.Icon(c, Icons["shuffle"]).FontSize(16).AlignSelf(ui.Center)
+		ic := ui.Icon(c, Icons["shuffle"]).FontSize(fz(16)).AlignSelf(ui.Center)
 		if a.PL.Shuffle() {
 			ic.TextColor(t.Accent)
 		}
@@ -233,47 +239,63 @@ func (a *App) modeBtn(c *ui.Context, t *ui.Theme) {
 	if shuf.Hovered() {
 		shuf.Background(t.SurfaceHover)
 	}
+	shuf.Tooltip("随机播放")
 	if shuf.Clicked() {
 		a.PL.SetShuffle(!a.PL.Shuffle())
 	}
 }
 
+// qualityPill 是播放条上的音质胶囊（浅色底，跟随主题）。
 func (a *App) qualityPill(c *ui.Context, t *ui.Theme) {
-	st := a.PL.Stream()
-	tier := a.PL.Quality()
-	degraded := false
-	if st != nil {
-		tier = st.Tier
-		degraded = st.Degraded
-	}
 	pill := ui.ButtonBase(c).Padding(3, 10).Radius(999).Border(1, t.Border)
 	pill.Children(func() {
-		ui.Text(c, qualityLabel(tier, degraded)).FontSize(11).FontWeight(600)
+		ui.Text(c, a.qualityText()).FontSize(fz(11)).FontWeight(600)
 	})
 	if pill.Hovered() {
 		pill.Background(t.SurfaceHover)
 	}
+	pill.Tooltip("音质")
 	if pill.Clicked() {
 		a.qualityOpen = !a.qualityOpen
 	}
-	ui.Popover(c, pill, &a.qualityOpen, func() {
+	a.qualityMenu(c, pill, t.Text, t.Accent.Alpha(0.12), t.SurfaceHover)
+}
+
+// qualityText 当前生效音质的展示文本（会话覆盖优先于配置）。
+func (a *App) qualityText() string {
+	tier := a.PL.Quality()
+	degraded := false
+	if st := a.PL.Stream(); st != nil {
+		tier = st.Tier
+		degraded = st.Degraded
+	}
+	return qualityLabel(tier, degraded)
+}
+
+// qualityMenu 是音档选择菜单。播放条与正在播放页共用——两处只有配色不同，
+// 逻辑（选中项高亮、切换后关闭、写回配置）完全一致。
+func (a *App) qualityMenu(c *ui.Context, anchor *ui.Element, fg ui.Color, activeBg, hoverBg ui.Color) {
+	ui.Popover(c, anchor, &a.qualityOpen, func() {
+		t := c.Theme()
 		panel := ui.Column(c).Width(210).Padding(6).
-			Background(t.Surface).Radius(12).Border(1, t.Border).Shadow(0, 10, 32, 0, ui.RGBA(0, 0, 0, 0.18))
+			Background(t.Surface).Radius(12).Border(1, t.Border).
+			Shadow(0, 10, 32, 0, ui.RGBA(0, 0, 0, 0.18))
 		panel.Children(func() {
 			ids, labels := tierLabels(a.PL.TierTable())
 			cur := a.PL.Quality()
 			for i, id := range ids {
 				item := ui.ButtonBase(c).FillWidth().Padding(7, 10).Radius(8)
+				sel := cur == id
 				item.Children(func() {
-					ui.Text(c, labels[i]).FontSize(13).Grow(1)
-					if cur == id {
-						ui.Icon(c, Icons["play"]).FontSize(13).TextColor(t.Accent).AlignSelf(ui.Center)
+					ui.Text(c, labels[i]).FontSize(fz(13)).Grow(1)
+					if sel {
+						ui.Icon(c, Icons["play"]).FontSize(fz(13)).TextColor(fg).AlignSelf(ui.Center)
 					}
 				})
-				if cur == id {
-					item.Background(t.Accent.Alpha(0.12))
+				if sel {
+					item.Background(activeBg)
 				} else if item.Hovered() {
-					item.Background(t.SurfaceHover)
+					item.Background(hoverBg)
 				}
 				if item.Clicked() {
 					a.qualityOpen = false
@@ -301,10 +323,15 @@ func (a *App) loveBtn(c *ui.Context, s player.Song, hasCur bool, t *ui.Theme) {
 			name = "heartFill"
 			col = t.Danger
 		}
-		ui.Icon(c, Icons[name]).FontSize(17).TextColor(col).AlignSelf(ui.Center)
+		ui.Icon(c, Icons[name]).FontSize(fz(17)).TextColor(col).AlignSelf(ui.Center)
 	})
 	if !loved && b.Hovered() {
 		b.Background(t.SurfaceHover)
+	}
+	if loved {
+		b.Tooltip("取消收藏")
+	} else {
+		b.Tooltip("收藏")
 	}
 	if b.Clicked() {
 		a.PL.ToggleLove(s)

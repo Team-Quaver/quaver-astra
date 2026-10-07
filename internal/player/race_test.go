@@ -1,31 +1,35 @@
 package player
 
 import (
-	"io"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 )
 
-// fakeEngine 可控的假音频引擎。
+// fakeEngine 可控的假音频引擎（模拟 mpv：位置/时长由引擎持有）。
 type fakeEngine struct {
-	mu       sync.Mutex
-	playing  bool
-	paused   bool
-	eof      bool
-	pos      float64
-	loaded   int
-	seekTo   int
-	vol      float64
-	onLoadOK func()
+	mu        sync.Mutex
+	playing   bool
+	paused    bool
+	eof       bool
+	pos       float64
+	dur       float64
+	loaded    int
+	seekTo    int
+	vol       float64
+	loadErr   string
+	failURL   map[string]string // url → 载入错误（模拟 mpv 打不开）
+	onLoadOK  func()
+	onObserve func()
 }
 
-func (e *fakeEngine) OpenStream(srcf func(int64) (io.ReadCloser, error), size int64, startFrac, dur float64, autoplay bool) error {
+func (e *fakeEngine) OpenURL(url string, startFrac, dur float64, autoplay bool) error {
 	e.mu.Lock()
 	e.loaded++
 	e.playing, e.paused, e.eof, e.pos = autoplay, !autoplay, false, startFrac*dur
+	e.dur = dur
+	e.loadErr = e.failURL[url]
 	e.mu.Unlock()
 	if e.onLoadOK != nil {
 		e.onLoadOK()
@@ -35,6 +39,7 @@ func (e *fakeEngine) OpenStream(srcf func(int64) (io.ReadCloser, error), size in
 func (e *fakeEngine) Play()  { e.mu.Lock(); e.paused = false; e.mu.Unlock() }
 func (e *fakeEngine) Pause() { e.mu.Lock(); e.paused = true; e.mu.Unlock() }
 func (e *fakeEngine) Stop()  { e.mu.Lock(); e.playing, e.eof, e.pos = false, false, 0; e.mu.Unlock() }
+func (e *fakeEngine) Close() { e.mu.Lock(); e.playing = false; e.mu.Unlock() }
 func (e *fakeEngine) IsPlaying() bool {
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -47,13 +52,39 @@ func (e *fakeEngine) Position() float64 {
 	defer e.mu.Unlock()
 	return e.pos
 }
+
+// Duration 模拟 mpv：载入失败时不报时长（awaitLoaded 据此判成功）。
+func (e *fakeEngine) Duration(fallback float64) float64 {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.loadErr != "" {
+		return 0
+	}
+	if e.dur > 0 {
+		return e.dur
+	}
+	return fallback
+}
 func (e *fakeEngine) SeekTo(frac, dur float64) {
 	e.mu.Lock()
 	e.seekTo++
 	e.pos = frac * dur
+	e.eof = false
 	e.mu.Unlock()
 }
 func (e *fakeEngine) SetVolume(v float64) { e.mu.Lock(); e.vol = v; e.mu.Unlock() }
+func (e *fakeEngine) OnObserve(fn func()) {
+	e.mu.Lock()
+	e.onObserve = fn
+	e.mu.Unlock()
+}
+
+// LoadError 模拟 mpv 的异步载入失败上报。
+func (e *fakeEngine) LoadError() string {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.loadErr
+}
 
 // liveBackend 可控假后端。
 type liveBackend struct {
@@ -62,6 +93,9 @@ type liveBackend struct {
 	lyricOK  bool
 	likeErr  error
 	likes    int
+	tiers    *TierTable
+	// loadFail 指定哪些档位在引擎侧载入失败（模拟 mpv 打不开该流）。
+	loadFail map[string]bool
 }
 
 func (b *liveBackend) LoginStatus() (bool, error) {
@@ -78,10 +112,24 @@ func (b *liveBackend) LikedPage(page, num int) ([]Song, int64, bool, error) {
 }
 func (b *liveBackend) Playlists() ([]PlaylistRef, error) { return nil, nil }
 func (b *liveBackend) Tiers() (*TierTable, error) {
+	b.mu.Lock()
+	t := b.tiers
+	b.mu.Unlock()
+	if t != nil {
+		return t, nil
+	}
 	return &TierTable{Tiers: []Tier{{ID: "128", Rank: 10}, {ID: "320", Rank: 20}, {ID: "flac", Rank: 30}}}, nil
 }
 func (b *liveBackend) Resolve(mid, mediaMid string, songType int64, tier string, dep []string) (*StreamInfo, error) {
-	return &StreamInfo{URL: "http://x/" + mid, Tier: tier, TierLabel: tier}, nil
+	// URL 里带上档位，测试才能按档位模拟「这一档 mpv 打不开」
+	return &StreamInfo{URL: "http://x/" + mid + "/" + tier, Tier: tier, TierLabel: tier}, nil
+}
+
+// LoadFailFor 报告该档位是否应模拟为载入失败。
+func (b *liveBackend) LoadFailFor(tier string) bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.loadFail[tier]
 }
 func (b *liveBackend) FetchLyric(mid string, trans bool) (string, string, error) {
 	if b.lyricOK {
@@ -94,9 +142,6 @@ func (b *liveBackend) LikeSong(int64, int64, bool) error {
 	b.likes++
 	b.mu.Unlock()
 	return b.likeErr
-}
-func (b *liveBackend) StreamOpen(string, int64) (io.ReadCloser, error) {
-	return io.NopCloser(strings.NewReader("ID3fakemp3data")), nil
 }
 
 func newRacePlayer(t *testing.T) (*Player, *fakeEngine, *liveBackend) {

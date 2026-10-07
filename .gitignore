@@ -6,6 +6,12 @@ quaver-astra-*
 *.test
 *.out
 
+# Go 链接器在受限环境下的临时目录（TMPDIR 不可用时的本地退路）
+/.gotmp/
+
+# 删除操作产生的回收站
+.Trash-*/
+
 # editors
 /.qtcreator/
 .idea/

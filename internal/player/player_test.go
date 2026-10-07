@@ -3,6 +3,7 @@ package player
 import (
 	"io"
 	"testing"
+	"time"
 )
 
 func TestParseLrc(t *testing.T) {
@@ -145,3 +146,54 @@ func (stubBackend) Resolve(string, string, int64, string, []string) (*StreamInfo
 func (stubBackend) FetchLyric(string, bool) (string, string, error) { return "", "", nil }
 func (stubBackend) LikeSong(int64, int64, bool) error               { return nil }
 func (stubBackend) StreamOpen(string, int64) (io.ReadCloser, error) { return nil, nil }
+
+// TestFallbackOnLoadError 验证降级链：mpv 异步载入失败（LoadError 非空）
+// 时自动换下一档重试，而不是把失败暴露给用户。
+//
+// 这是换用 mpv 后最容易回归的一环——引擎载入是异步的，拿不到同步错误
+// 返回，只能靠 awaitLoaded 轮询后回退。
+func TestFallbackOnLoadError(t *testing.T) {
+	eng := &fakeEngine{
+		// URL 形如 http://x/<mid>/<tier>，据此模拟前两档打不开
+		failURL: map[string]string{
+			"http://x/a/master":  "mpv 载入失败",
+			"http://x/a/atmos71": "mpv 载入失败",
+		},
+	}
+	be := &liveBackend{loggedIn: true}
+	be.tiers = &TierTable{Tiers: []Tier{
+		{ID: "master", Rank: 90},
+		{ID: "atmos71", Rank: 80},
+		{ID: "atmos51", Rank: 75},
+		{ID: "flac", Rank: 70},
+	}}
+	p := New(be, eng, fakePrefs{})
+	p.OnNotify(func() {})
+	p.Boot()
+	p.tiers = be.tiers
+	p.PlayList([]Song{{Mid: "a", SongID: 1, SongType: 1, Interval: 100}}, 0)
+
+	// 回退链按固定 rank 顺序往下让位：master → atmos71 → atmos51 → flac…
+	// 前两档被标记为打不开，所以应停在第一个可播的 atmos51。
+	const want = "atmos51"
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if st := p.Stream(); st != nil && st.Tier == want && !p.Loading() {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if err := p.Error(); err != "" {
+		t.Fatalf("降级成功后不应报错，实际: %s", err)
+	}
+	st := p.Stream()
+	if st == nil {
+		t.Fatal("未解析出流")
+	}
+	if st.Tier != want {
+		t.Fatalf("应降级到 %s，实际 %s", want, st.Tier)
+	}
+	if n := eng.loadedCount(); n < 3 {
+		t.Errorf("应至少尝试 3 档，实际 %d", n)
+	}
+}

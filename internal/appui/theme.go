@@ -80,7 +80,17 @@ func (t *tintState) reset() {
 	t.mu.Unlock()
 }
 
-// buildTheme 组装 Quaver 风格主题（跟随系统明暗 + 封面色覆盖）。
+// baseFontSize 是应用设计的基准字号（DIP）：界面上写死的字号都以它为参照。
+const baseFontSize = 14
+
+// fontScale 是系统字号设置对应用字号的缩放，每帧随主题更新：桌面界面
+// 字号（GTK gtk-font-name 的磅值）相对基准字号，再乘桌面的文字缩放
+// （GNOME 的 text-scaling-factor）。字号跟着系统设置走，fz 负责折算。
+var fontScale float32 = 1
+
+func fz(v float32) float32 { return v * fontScale }
+
+// buildTheme 组装 Quaver 风格主题（跟随系统明暗 + 系统字号 + 封面色覆盖）。
 func (a *App) buildTheme(c *ui.Context) *ui.Theme {
 	base := c.Theme()
 	dark := base.Dark
@@ -99,7 +109,15 @@ func (a *App) buildTheme(c *ui.Context) *ui.Theme {
 	t.AccentText = ui.Hex("#ffffff")
 	t.Danger = p.heart
 	t.Radius = 8
-	t.FontSize = 14
+	prefs := c.Preferences()
+	fontScale = prefs.TextScale
+	if ui := prefs.UIFontSize; ui > 0 {
+		fontScale *= ui / baseFontSize
+	}
+	if fontScale <= 0 {
+		fontScale = 1
+	}
+	t.FontSize = fz(baseFontSize)
 	if accent, glow, ok := a.tint.get(); ok {
 		t.Accent = accent
 		a.glowNow = glow

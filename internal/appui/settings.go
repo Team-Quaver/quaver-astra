@@ -1,6 +1,7 @@
 package appui
 
 import (
+	"github.com/Team-Quaver/quaver-astra/internal/audio"
 	"github.com/Team-Quaver/quaver-astra/internal/player"
 
 	"github.com/egoist/mygo"
@@ -21,7 +22,7 @@ func (a *App) settingsView(c *ui.Context) {
 	t := c.Theme()
 
 	ui.Column(c).Fill().Padding(20, 24, 24, 24).Gap(14).Children(func() {
-		ui.Text(c, "设置").FontSize(24).FontWeight(800)
+		ui.Text(c, "设置").FontSize(fz(24)).FontWeight(800)
 		ui.Tabs(c, &st.tab, "外观", "播放", "关于")
 		switch st.tab {
 		case 0:
@@ -36,12 +37,12 @@ func (a *App) settingsView(c *ui.Context) {
 
 func (a *App) settingsAppearance(c *ui.Context, t *ui.Theme) {
 	ui.Column(c).FillWidth().Gap(16).MaxWidth(560).Children(func() {
-		ui.Text(c, "主题").FontSize(14).FontWeight(700)
+		ui.Text(c, "主题").FontSize(fz(14)).FontWeight(700)
 		cur := a.Conf.String("Style.Theme", "system")
 		ui.Row(c).Gap(8).Children(func() {
 			for _, th := range themeNames {
 				btn := ui.ButtonBase(c).Padding(8, 14).Radius(8).Border(1, t.Border)
-				btn.Children(func() { ui.Text(c, th.name).FontSize(13) })
+				btn.Children(func() { ui.Text(c, th.name).FontSize(fz(13)) })
 				if cur == th.key {
 					btn.Background(t.Accent.Alpha(0.14))
 					btn.TextColor(t.Accent)
@@ -58,7 +59,7 @@ func (a *App) settingsAppearance(c *ui.Context, t *ui.Theme) {
 
 		ui.Divider(c)
 
-		ui.Text(c, "侧栏").FontSize(14).FontWeight(700)
+		ui.Text(c, "侧栏").FontSize(fz(14)).FontWeight(700)
 		a.prefRow(c, "收起侧栏", func() bool { return a.sbCollapsed }, func(v bool) {
 			a.sbCollapsed = v
 			a.Conf.Set("Window.SidebarCollapsed", v)
@@ -107,7 +108,7 @@ func (a *App) settingsPlayback(c *ui.Context, t *ui.Theme) {
 		ui.Divider(c)
 
 		// 上一首按钮
-		ui.Text(c, "上一首按钮").FontSize(14).FontWeight(700)
+		ui.Text(c, "上一首按钮").FontSize(fz(14)).FontWeight(700)
 		prevKeys := []string{"replay", "previous"}
 		prevLabels := []string{"重放当前曲", "跳到上一首"}
 		curPrev := a.Conf.String("Playing.PrevReplay", "replay")
@@ -128,28 +129,48 @@ func (a *App) settingsPlayback(c *ui.Context, t *ui.Theme) {
 		}
 
 		// 音量
-		ui.Text(c, "音量").FontSize(14).FontWeight(700)
+		ui.Text(c, "音量").FontSize(fz(14)).FontWeight(700)
 		ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(10).Children(func() {
 			vol := a.PL.Volume()
 			sl := ui.Slider(c, &vol, 0, 1).Grow(1)
 			if sl.Changed() {
 				a.PL.SetVolume(vol)
 			}
-			ui.Textf(c, "%d%%", int(vol*100)).FontSize(12.5).TextColor(t.TextMuted).Width(40)
+			ui.Textf(c, "%d%%", int(vol*100)).FontSize(fz(12.5)).TextColor(t.TextMuted).Width(40)
 		})
 	})
 }
 
 func (a *App) settingsAbout(c *ui.Context, t *ui.Theme) {
 	ui.Column(c).FillWidth().Gap(10).MaxWidth(560).Children(func() {
-		ui.Text(c, "Quaver Astra").FontSize(16).FontWeight(800)
+		ui.Text(c, "Quaver Astra").FontSize(fz(16)).FontWeight(800)
 		ui.Text(c, "现代，流畅的 Q 音第三方客户端，现已轻装上阵")
-		// ui.Text(c, "AGPL-3.0 License").FontSize(12.5).TextColor(t.TextMuted)
+
 		ui.Divider(c)
-		// ui.Textf(c, "登录状态：%s", logged).FontSize(13)
-		// ui.Textf(c, "凭证交接：%s（external 模式，登录/自动刷新/登出实时交接）", mode).FontSize(13)
-		// ui.Textf(c, "本地凭证：%s", saved).FontSize(13)
-		// ui.Textf(c, "后端：%s", a.API.Base).FontSize(13)
+
+		// 播放后端：换用 mpv 后它成了外部依赖，必须让用户看得见摸得着。
+		ui.Text(c, "播放后端").FontSize(fz(14)).FontWeight(700)
+		mpv := audio.MPVInfoFor()
+		ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(8).Children(func() {
+			dot := ui.Box(c).Size(8, 8).Radius(4)
+			if mpv.OK {
+				dot.Background(ui.Hex("#2ea043"))
+			} else {
+				dot.Background(ui.Hex("#e81123"))
+			}
+			ui.Text(c, "mpv").FontSize(fz(13))
+			ui.Text(c, mpv.Detail).FontSize(fz(12)).TextColor(t.TextMuted)
+			ui.Spacer(c)
+			ui.Text(c, mpv.Path).FontSize(fz(11.5)).TextColor(t.TextMuted).SingleLine().Ellipsis("…")
+		})
+		if !mpv.OK {
+			ui.Text(c, mpv.Detail).FontSize(fz(12)).TextColor(t.TextMuted).MaxLines(3)
+		}
+		ui.Text(c, "查找顺序：QAA_MPV 显式路径 → QAA_MPV_DIR 随包目录 → PATH。").
+			FontSize(fz(11.5)).TextColor(t.TextMuted).MaxLines(2)
+
+		ui.Divider(c)
+
 		ui.Row(c).Gap(8).Children(func() {
 			if a.PL.LoggedIn() {
 				if ui.Button(c, "退出登录").Clicked() {
@@ -184,18 +205,8 @@ func (a *App) setTheme(key string) {
 	}
 }
 
-// prefRow 是一行“标签 + 开关”。
-func (a *App) prefRow(c *ui.Context, label string, get func() bool, set func(bool)) {
-	ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(12).Children(func() {
-		ui.Text(c, label).FontSize(13).Grow(1)
-		v := get()
-		if ui.Switch(c, &v).Changed() {
-			set(v)
-		}
-	})
-}
-
-// qualityTier 保留给质量菜单复用（playerbar 的档位弹出）。
+// tierLabels 把档位表摊平成「id 列表 + 展示标签列表」，供选择器与
+// 档位弹出菜单共用。
 func tierLabels(tt *player.TierTable) ([]string, []string) {
 	ids := []string{"auto"}
 	labels := []string{"自动（最高可播）"}
@@ -210,4 +221,15 @@ func tierLabels(tt *player.TierTable) ([]string, []string) {
 		}
 	}
 	return ids, labels
+}
+
+// prefRow 是一行“标签 + 开关”。
+func (a *App) prefRow(c *ui.Context, label string, get func() bool, set func(bool)) {
+	ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(12).Children(func() {
+		ui.Text(c, label).FontSize(fz(13)).Grow(1)
+		v := get()
+		if ui.Switch(c, &v).Changed() {
+			set(v)
+		}
+	})
 }
