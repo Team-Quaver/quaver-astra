@@ -1,6 +1,8 @@
 package appui
 
 import (
+	"time"
+
 	"github.com/Team-Quaver/quaver-astra/internal/player"
 
 	"github.com/egoist/mygo/ui"
@@ -41,10 +43,16 @@ func (a *App) playerBar(c *ui.Context, t *ui.Theme) {
 	// 10px（右圆角被窗口裁掉、左边却留有空隙）；默认 Stretch 会先扣边距。
 	bar := ui.Row(c).Height(64).PaddingX(16).Gap(12).
 		AlignItems(ui.Center).Background(a.barBg(t)).Margin(8, 10, 10, 10).Radius(14)
+	// 进度填充要缓动：位置采样只有 5Hz（player tick 200ms），直接用采样值画
+	// 会一格一格跳。拖拽时不做缓动，要跟手。
+	fill := frac
+	if !a.seekDragging {
+		fill = bar.Animate("seek-fill", frac, 260*time.Millisecond)
+	}
 	bar.Draw(func(p *ui.Painter, r ui.Rect) {
 		// 进度填充：整个条高的圆角矩形
-		if frac > 0.001 {
-			w := r.W * frac
+		if fill > 0.001 {
+			w := r.W * fill
 			p.Fill(ui.Rect{X: r.X, Y: r.Y, W: w, H: r.H}, a.glowNow.Alpha(0.28), 14)
 		}
 	})
@@ -53,7 +61,7 @@ func (a *App) playerBar(c *ui.Context, t *ui.Theme) {
 		a.barSeek(c, bar)
 
 		// 左：封面 + 标题
-		cover := ui.ButtonBase(c).Size(46, 46).Radius(10).Clip()
+		cover := ui.ButtonBase(c).Size(46, 46).Radius(10).Clip().Transition(hoverFade)
 		if art := a.Covers.Get(coverURL(cur.AlbumPmid, cur.AlbumMid, 300), a.invalidate); art != nil {
 			cover.Children(func() { ui.Image(c, art).Fill().Fit(ui.Cover) })
 		} else {
@@ -140,6 +148,13 @@ func clampF32(v float32) float32 {
 
 func (a *App) playBtn(c *ui.Context, t *ui.Theme) {
 	btn := ui.ButtonBase(c).Size(40, 40).Radius(20).Center().Background(t.Text)
+	// 悬停压暗（主项目 .pb-play 是 transform: scale，MyGo 的元素没有缩放，
+	// 用透明度做同一件事），走 Animate 让它是缓动的而不是硬切。
+	o := float32(1)
+	if btn.Hovered() {
+		o = 0.85
+	}
+	btn.Opacity(btn.Animate("hover", o, 120*time.Millisecond))
 	btn.Children(func() {
 		if a.PL.Loading() {
 			sp := ui.Spinner(c)
@@ -152,11 +167,6 @@ func (a *App) playBtn(c *ui.Context, t *ui.Theme) {
 		}
 		ui.Icon(c, Icons[name]).FontSize(fz(20)).TextColor(t.Background).AlignSelf(ui.Center)
 	})
-	if btn.Hovered() {
-		btn.Opacity(0.85)
-	} else {
-		btn.Opacity(1)
-	}
 	if btn.Clicked() {
 		a.PL.PlayOrPause()
 	}
@@ -166,7 +176,7 @@ func (a *App) playBtn(c *ui.Context, t *ui.Theme) {
 // 纯图标按钮没有文字说明，键盘/读屏用户无从得知其作用。
 func (a *App) iconBtn(c *ui.Context, icon, label string, size float32, fn func()) {
 	t := c.Theme()
-	b := ui.ButtonBase(c).Size(32, 32).Radius(16).Center()
+	b := ui.ButtonBase(c).Size(32, 32).Radius(16).Center().Transition(hoverFade)
 	b.Children(func() {
 		ui.Icon(c, Icons[icon]).FontSize(fz(size)).AlignSelf(ui.Center)
 	})
@@ -192,7 +202,7 @@ func (a *App) volumeCtl(c *ui.Context, t *ui.Theme) {
 	case v < 0.66:
 		icon = "volMid"
 	}
-	b := ui.ButtonBase(c).Size(32, 32).Radius(16).Center()
+	b := ui.ButtonBase(c).Size(32, 32).Radius(16).Center().Transition(hoverFade)
 	b.Children(func() { ui.Icon(c, Icons[icon]).FontSize(fz(17)).AlignSelf(ui.Center) })
 	if b.Hovered() {
 		b.Background(t.SurfaceHover)
@@ -229,7 +239,7 @@ func (a *App) modeBtn(c *ui.Context, t *ui.Theme) {
 	}
 	a.iconBtn(c, icon, "循环模式", 17, func() { a.PL.CycleMode() })
 
-	shuf := ui.ButtonBase(c).Size(32, 32).Radius(16).Center()
+	shuf := ui.ButtonBase(c).Size(32, 32).Radius(16).Center().Transition(hoverFade)
 	shuf.Children(func() {
 		ic := ui.Icon(c, Icons["shuffle"]).FontSize(fz(16)).AlignSelf(ui.Center)
 		if a.PL.Shuffle() {
@@ -247,7 +257,7 @@ func (a *App) modeBtn(c *ui.Context, t *ui.Theme) {
 
 // qualityPill 是播放条上的音质胶囊（浅色底，跟随主题）。
 func (a *App) qualityPill(c *ui.Context, t *ui.Theme) {
-	pill := ui.ButtonBase(c).Padding(3, 10).Radius(999).Border(1, t.Border)
+	pill := ui.ButtonBase(c).Padding(3, 10).Radius(999).Border(1, t.Border).Transition(hoverFade)
 	pill.Children(func() {
 		ui.Text(c, a.qualityText()).FontSize(fz(11)).FontWeight(600)
 	})
@@ -284,7 +294,7 @@ func (a *App) qualityMenu(c *ui.Context, anchor *ui.Element, fg ui.Color, active
 			ids, labels := tierLabels(a.PL.TierTable())
 			cur := a.PL.Quality()
 			for i, id := range ids {
-				item := ui.ButtonBase(c).FillWidth().Padding(7, 10).Radius(8)
+				item := ui.ButtonBase(c).FillWidth().Padding(7, 10).Radius(8).Transition(hoverFade)
 				sel := cur == id
 				item.Children(func() {
 					ui.Text(c, labels[i]).FontSize(fz(13)).Grow(1)
@@ -309,23 +319,25 @@ func (a *App) qualityMenu(c *ui.Context, anchor *ui.Element, fg ui.Color, active
 	})
 }
 
+// loveBtn 是播放条上的红心。
+//
+// 未收藏态用正文色（t.Text）而不是 t.TextMuted：这是一枚只有轮廓的线框图标，
+// 深色底上再降一档亮度就没什么可读性了（用户报的「无红心状态的红心在深色
+// 模式无可读性」）。正文色在浅/深两套主题下都有 10:1 以上的对比度；悬停时
+// 预演红心色（告诉用户点下去会变成什么），收藏后是实心红心。
 func (a *App) loveBtn(c *ui.Context, s player.Song, hasCur bool, t *ui.Theme) {
 	if !hasCur {
 		ui.Box(c).Size(32, 32)
 		return
 	}
 	loved := a.PL.IsLoved(s.Mid)
-	b := ui.ButtonBase(c).Size(32, 32).Radius(16).Center()
+	b := ui.ButtonBase(c).Size(32, 32).Radius(16).Center().Transition(hoverFade)
+	hover := b.Hovered()
 	b.Children(func() {
-		name := "heart"
-		col := t.TextMuted
-		if loved {
-			name = "heartFill"
-			col = t.Danger
-		}
+		name, col := heartStyle(loved, hover, t)
 		ui.Icon(c, Icons[name]).FontSize(fz(17)).TextColor(col).AlignSelf(ui.Center)
 	})
-	if !loved && b.Hovered() {
+	if !loved && hover {
 		b.Background(t.SurfaceHover)
 	}
 	if loved {

@@ -119,7 +119,10 @@ func (a apiAdapter) Resolve(mid, mediaMid string, songType int64, tier string, d
 }
 
 func (a apiAdapter) FetchLyric(mid string, trans bool) (string, string, error) {
-	l, err := a.c.Lyric(mid, trans)
+	// qrc=true：上游把逐字歌词塞在同一个 Lyric 字段里（XML 信封），
+	// 没有逐字时间轴时自动回落普通 LRC。player 侧先按 QRC 解析、
+	// 解析不出逐字再按行级解析（见 player.ParseQRC）。
+	l, err := a.c.Lyric(mid, trans, true)
 	if err != nil {
 		return "", "", err
 	}

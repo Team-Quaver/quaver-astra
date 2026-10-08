@@ -388,13 +388,19 @@ func (c *Client) ResolveStream(mid, mediaMid string, songType int, tier string, 
 	return out, err
 }
 
-func (c *Client) Lyric(mid string, trans bool) (Lyric, error) {
-	t := ""
+// Lyric 取歌词。qrc=true 时向上游要逐字（QRC）歌词——上游会把它塞在
+// 同一个 Lyric 字段里（XML 信封形态，服务端已解密），歌词没有逐字
+// 时间轴时上游自动回落到普通 LRC，所以这个开关总是安全可开的。
+func (c *Client) Lyric(mid string, trans, qrc bool) (Lyric, error) {
+	t, qc := "", ""
 	if trans {
 		t = "1"
 	}
+	if qrc {
+		qc = "1"
+	}
 	var out Lyric
-	err := c.getJSON("/song/"+mid+"/lyric", q("trans", t), &out)
+	err := c.getJSON("/song/"+mid+"/lyric", q("trans", t, "qrc", qc), &out)
 	return out, err
 }
 

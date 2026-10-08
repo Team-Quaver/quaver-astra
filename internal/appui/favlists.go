@@ -28,7 +28,7 @@ func (a *App) favListsView(c *ui.Context) {
 	a.ensureFavLists(st)
 	t := c.Theme()
 
-	ui.Scroll(c).Fill().Padding(20, 24, 24, 24).Gap(16).Children(func() {
+	a.pageEnter(c, ui.Scroll(c).Fill().Padding(20, 24, 24, 24).Gap(16)).Children(func() {
 		ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(10).Children(func() {
 			ui.Text(c, "收藏的歌单").FontSize(fz(24)).FontWeight(800)
 			if st.total > 0 {

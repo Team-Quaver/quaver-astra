@@ -4,7 +4,6 @@ import (
 	"github.com/Team-Quaver/quaver-astra/internal/audio"
 	"github.com/Team-Quaver/quaver-astra/internal/player"
 
-	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/ui"
 )
 
@@ -21,7 +20,7 @@ func (a *App) settingsView(c *ui.Context) {
 	st := &a.settings
 	t := c.Theme()
 
-	ui.Column(c).Fill().Padding(20, 24, 24, 24).Gap(14).Children(func() {
+	a.pageEnter(c, ui.Column(c).Fill().Padding(20, 24, 24, 24).Gap(14)).Children(func() {
 		ui.Text(c, "设置").FontSize(fz(24)).FontWeight(800)
 		ui.Tabs(c, &st.tab, "外观", "播放", "关于")
 		switch st.tab {
@@ -41,7 +40,7 @@ func (a *App) settingsAppearance(c *ui.Context, t *ui.Theme) {
 		cur := a.Conf.String("Style.Theme", "system")
 		ui.Row(c).Gap(8).Children(func() {
 			for _, th := range themeNames {
-				btn := ui.ButtonBase(c).Padding(8, 14).Radius(8).Border(1, t.Border)
+				btn := ui.ButtonBase(c).Padding(8, 14).Radius(8).Border(1, t.Border).Transition(hoverFade)
 				btn.Children(func() { ui.Text(c, th.name).FontSize(fz(13)) })
 				if cur == th.key {
 					btn.Background(t.Accent.Alpha(0.14))
@@ -50,7 +49,7 @@ func (a *App) settingsAppearance(c *ui.Context, t *ui.Theme) {
 					btn.Background(t.SurfaceHover)
 				}
 				if btn.Clicked() {
-					a.setTheme(th.key)
+					a.setTheme(c, th.key)
 				}
 			}
 		})
@@ -189,20 +188,26 @@ func (a *App) settingsAbout(c *ui.Context, t *ui.Theme) {
 	})
 }
 
-func (a *App) setTheme(key string) {
+// setTheme 写回外观设置。
+//
+// 关键：应用自己的明暗由 App.appearance（读 Style.Theme）决定，不走
+// mygo.Theme.IsDark()。根因是 mygo 的 Linux 后端：
+//
+//	SetSource("light") 只清了 GTK 的 gtk-application-prefer-dark-theme，
+//	紧接着 IsDark() 又去问 XDG portal 的 color-scheme——深色桌面上 portal
+//	说是深色，于是「强制浅色」被 portal 覆盖，浅色模式完全无法生效
+//	（darwin / windows 后端没有这个问题）。
+//
+// 所以这里对桌面说的 SetSource 只是「尽力而为」（让原生窗口底色/标题栏
+// 尽量跟上），真正的明暗一律看 a.appearance / a.dark。
+func (a *App) setTheme(c *ui.Context, key string) {
 	a.Conf.Set("Style.Theme", key)
-	switch key {
-	case "light":
-		mygo.Theme.SetSource(mygo.ThemeLight)
-	case "dark":
-		mygo.Theme.SetSource(mygo.ThemeDark)
-	default:
-		mygo.Theme.SetSource(mygo.ThemeSystem)
-	}
-	// 明暗切换后取色结果需要重新映射
+	a.ApplyThemeSource()
+	// 明暗切换后封面取色结果要按新明暗重新映射。
 	if res, ok := a.tint.result(); ok {
-		a.tint.set(res, mygo.Theme.IsDark())
+		a.tint.set(res, a.appearance(c))
 	}
+	a.invalidate()
 }
 
 // tierLabels 把档位表摊平成「id 列表 + 展示标签列表」，供选择器与

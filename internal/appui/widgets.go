@@ -73,7 +73,8 @@ func (a *App) songRow(c *ui.Context, st *songListState, i int, doubleClick func(
 	playing := a.PL.Playing() && isCur
 	loved := a.PL.IsLoved(s.Mid)
 
-	row := ui.Row(c).FillWidth().Height(54).PaddingX(10).Gap(12).AlignItems(ui.Center).Radius(8)
+	row := ui.Row(c).FillWidth().Height(54).PaddingX(10).Gap(12).AlignItems(ui.Center).Radius(8).
+		Transition(hoverFade)
 	row.Children(func() {
 		// 序号列
 		ui.Box(c).Width(26).Center().Children(func() {
@@ -103,13 +104,13 @@ func (a *App) songRow(c *ui.Context, st *songListState, i int, doubleClick func(
 		})
 		// 红心
 		if loved || row.Hovered() {
-			hb := ui.ButtonBase(c).Size(28, 28).Radius(14).Center()
+			hb := ui.ButtonBase(c).Size(28, 28).Radius(14).Center().Transition(hoverFade)
 			hb.Children(func() {
-				name := "heart"
-				if loved {
-					name = "heartFill"
-				}
-				ui.Icon(c, Icons[name]).FontSize(fz(16)).TextColor(palLight.heart).AlignSelf(ui.Center)
+				// 配色统一走 heartStyle：未收藏用正文色（原来写死 palLight.heart
+				// —— 浅色主题的硬编码红，深色底上对比度不够，也没区分已收藏/
+				// 未收藏），已收藏是实心红心。
+				name, col := heartStyle(loved, false, t)
+				ui.Icon(c, Icons[name]).FontSize(fz(16)).TextColor(col).AlignSelf(ui.Center)
 			})
 			if hb.Hovered() {
 				hb.Background(t.SurfaceHover)

@@ -2,6 +2,7 @@ package appui
 
 import (
 	"strconv"
+	"time"
 
 	"github.com/Team-Quaver/quaver-astra/internal/backend"
 	"github.com/Team-Quaver/quaver-astra/internal/player"
@@ -35,21 +36,27 @@ func (a *App) homeView(c *ui.Context) {
 
 	ui.Scroll(c).Fill().Padding(20, 24, 24, 24).Gap(18).Children(func() {
 		if st.err != "" {
-			ui.Column(c).FillWidth().Center().Gap(8).Padding(40).Children(func() {
+			blk := ui.Column(c).FillWidth().Center().Gap(8).Padding(40)
+			a.enterBlock(c, 0, blk)
+			blk.Children(func() {
 				ui.Text(c, st.err).FontSize(fz(13)).TextColor(t.TextMuted)
 				plainBtn(c, "重试", func() { st.loaded = false; st.err = "" })
 			})
 			return
 		}
 		if len(st.recs) == 0 {
-			ui.Column(c).FillWidth().Center().Padding(40).Children(func() { ui.Spinner(c) })
+			blk := ui.Column(c).FillWidth().Center().Padding(40)
+			a.enterBlock(c, 0, blk)
+			blk.Children(func() { ui.Spinner(c) })
 			return
 		}
 
 		// 两栏头部：今日精选 hero + 新歌速递。
 		// hero 带 MinWidth、容器 Wrap：内容区不够同时放下「hero 最小宽 +
 		// 新歌速递 430」时，新歌速递折到下一行整行铺开，hero 不再被挤瘪。
-		ui.Row(c).FillWidth().Wrap().Gap(16).AlignItems(ui.Stretch).Children(func() {
+		head := ui.Row(c).FillWidth().Wrap().Gap(16).AlignItems(ui.Stretch)
+		a.enterBlock(c, 0, head)
+		head.Children(func() {
 			a.homeHero(c, st.recs[0])
 			ui.Column(c).Width(430).Gap(2).Children(func() {
 				ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(8).Children(func() {
@@ -66,11 +73,15 @@ func (a *App) homeView(c *ui.Context) {
 		})
 
 		// 推荐歌单网格（flex wrap 自适应列数）
-		sectionHeader(c, "推荐歌单", nil)
-		ui.Row(c).FillWidth().Wrap().Gap(16).Children(func() {
-			for i := range st.recs {
-				a.playlistCard(c, st.recs[i])
-			}
+		recs := ui.Column(c).FillWidth().Gap(10)
+		a.enterBlock(c, 1, recs)
+		recs.Children(func() {
+			sectionHeader(c, "推荐歌单", nil)
+			ui.Row(c).FillWidth().Wrap().Gap(16).Children(func() {
+				for i := range st.recs {
+					a.playlistCard(c, st.recs[i])
+				}
+			})
 		})
 	})
 }
@@ -79,7 +90,8 @@ func (a *App) homeHero(c *ui.Context, pl backend.SonglistSummary) {
 	t := c.Theme()
 	art := a.Covers.Get(pl.Picurl, a.invalidate)
 	card := ui.Row(c).Grow(1).MinWidth(460).Gap(18).Padding(18).Radius(14).
-		Background(t.Surface).Border(1, t.Border).AlignItems(ui.Center)
+		Background(t.Surface).Border(1, t.Border).AlignItems(ui.Center).
+		Transition(ui.ElementTransition{Colors: true, Duration: 160 * time.Millisecond})
 	card.Children(func() {
 		if art != nil {
 			ui.Image(c, art).Size(160, 160).Fit(ui.Cover).Radius(10)
@@ -120,7 +132,8 @@ func (a *App) homeHero(c *ui.Context, pl backend.SonglistSummary) {
 func (a *App) compactSongRow(c *ui.Context, songs []player.Song, i int) {
 	t := c.Theme()
 	s := songs[i]
-	row := ui.Row(c).FillWidth().Height(40).PaddingX(10).Gap(10).AlignItems(ui.Center).Radius(8)
+	row := ui.Row(c).FillWidth().Height(40).PaddingX(10).Gap(10).AlignItems(ui.Center).Radius(8).
+		Transition(hoverFade)
 	row.Children(func() {
 		ui.Textf(c, "%02d", i+1).FontSize(fz(11)).TextColor(t.TextMuted).Width(22)
 		ui.Text(c, s.DisplayName()).FontSize(fz(13)).SingleLine().Ellipsis("…").Grow(1)
@@ -176,7 +189,8 @@ func (a *App) playlistCard(c *ui.Context, pl backend.SonglistSummary) {
 	art := a.Covers.Get(pl.Picurl, a.invalidate)
 	card := ui.Column(c).Width(150).Gap(6)
 	card.Children(func() {
-		box := ui.Box(c).Size(150, 150).Clip().Radius(10).Background(t.SurfaceHover)
+		box := ui.Box(c).Size(150, 150).Clip().Radius(10).Background(t.SurfaceHover).
+			Transition(hoverFade)
 		box.Children(func() {
 			if art != nil {
 				ui.Image(c, art).Fill().Fit(ui.Cover)
@@ -187,13 +201,16 @@ func (a *App) playlistCard(c *ui.Context, pl backend.SonglistSummary) {
 			}
 			// 悬停播放按钮
 			play := ui.Box(c).Absolute().Bottom(8).Right(8).Size(34, 34).Radius(17).
-				Background(ui.RGBA(0, 0, 0, 0.55)).Center().Opacity(0)
+				Background(ui.RGBA(0, 0, 0, 0.55)).Center()
+			// 悬停淡入而不是硬切（主项目 .card:hover .art .play 同一件事）。
+			vis := float32(0)
+			if box.Hovered() {
+				vis = 1
+			}
+			play.Opacity(play.Animate("hover", vis, 160*time.Millisecond))
 			play.Children(func() {
 				ui.Icon(c, Icons["play"]).FontSize(fz(16)).TextColor(ui.Hex("#ffffff")).AlignSelf(ui.Center)
 			})
-			if box.Hovered() {
-				play.Opacity(1)
-			}
 			if play.Clicked() {
 				a.openPlaylistAndPlay(pl.ID)
 			}
@@ -211,7 +228,7 @@ func (a *App) playlistCard(c *ui.Context, pl backend.SonglistSummary) {
 
 func (a *App) likedView(c *ui.Context) {
 	t := c.Theme()
-	ui.Column(c).Fill().Padding(20, 24, 24, 24).Gap(14).Children(func() {
+	a.pageEnter(c, ui.Column(c).Fill().Padding(20, 24, 24, 24).Gap(14)).Children(func() {
 		ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(10).Children(func() {
 			ui.Text(c, "我喜欢").FontSize(fz(24)).FontWeight(800)
 			if n := a.PL.LikedTotal(); n > 0 {
@@ -241,7 +258,7 @@ func (a *App) likedView(c *ui.Context) {
 func (a *App) dailyView(c *ui.Context) {
 	st := &a.daily
 	a.ensureDaily()
-	ui.Column(c).Fill().Padding(20, 24, 24, 24).Gap(14).Children(func() {
+	a.pageEnter(c, ui.Column(c).Fill().Padding(20, 24, 24, 24).Gap(14)).Children(func() {
 		ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(10).Children(func() {
 			ui.Text(c, "每日 30 首").FontSize(fz(24)).FontWeight(800)
 			ui.Spacer(c)
@@ -291,7 +308,7 @@ type guessState struct {
 func (a *App) guessView(c *ui.Context) {
 	st := &a.guess
 	a.ensureGuess()
-	ui.Column(c).Fill().Padding(20, 24, 24, 24).Gap(14).Children(func() {
+	a.pageEnter(c, ui.Column(c).Fill().Padding(20, 24, 24, 24).Gap(14)).Children(func() {
 		ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(10).Children(func() {
 			ui.Text(c, "猜你喜欢").FontSize(fz(24)).FontWeight(800)
 			ui.Spacer(c)
@@ -371,7 +388,7 @@ func (a *App) playlistView(c *ui.Context, id int64) {
 	a.ensurePlaylist(st, id)
 	t := c.Theme()
 
-	ui.Scroll(c).Fill().Padding(20, 24, 24, 24).Gap(16).TrackScroll(&st.scroll).Children(func() {
+	a.pageEnter(c, ui.Scroll(c).Fill().Padding(20, 24, 24, 24).Gap(16).TrackScroll(&st.scroll)).Children(func() {
 		if st.err != "" {
 			ui.Text(c, st.err).FontSize(fz(13)).TextColor(t.TextMuted)
 			return
@@ -533,7 +550,7 @@ func (a *App) searchView(c *ui.Context, kw string) {
 		}()
 	}
 
-	ui.Column(c).Fill().Padding(20, 24, 24, 24).Gap(14).Children(func() {
+	a.pageEnter(c, ui.Column(c).Fill().Padding(20, 24, 24, 24).Gap(14)).Children(func() {
 		ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(10).Children(func() {
 			ui.Text(c, "搜索").FontSize(fz(24)).FontWeight(800)
 			ui.Spacer(c)

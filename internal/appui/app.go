@@ -6,6 +6,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/Team-Quaver/quaver-astra/internal/audio"
@@ -42,6 +43,21 @@ type App struct {
 	seekFrac      float32
 	probedMid     string
 	lastLyricLine int
+
+	// dark 是本帧的明暗外观（buildTheme 每帧刷新）。取色 goroutine 要读它，
+	// 所以走原子量而不是裸 bool。
+	dark atomic.Bool
+
+	// enter 是路由页错峰入场的时钟；pos 把低频采样位置外推成每帧连续值；
+	// karaBuf/karaSpans 是逐字高亮的复用缓冲（每帧都要算，不该每帧分配）。
+	enter     enterState
+	pos       posSmoother
+	karaBuf   []float32
+	karaSpans []ui.Span
+
+	// npBlurKey/npBlurAt 是正在播放页模糊底图的换曲淡入时钟。
+	npBlurKey string
+	npBlurAt  time.Time
 
 	npList    ui.ListState // 正在播放页歌词列表
 	queueList ui.ListState // 播放队列列表
@@ -103,6 +119,8 @@ func (a *App) Attach(win *mygo.Window) {
 func (a *App) View(c *ui.Context) {
 	t := a.buildTheme(c)
 	c.SetTheme(t)
+	// 每帧推进路由入场时钟（页面里没有入场区块时也要走，否则路径变化会被漏掉）。
+	a.routeEnter(c)
 
 	if a.npOpen && c.Shortcut(0, ui.KeyEscape) {
 		a.npOpen = false
@@ -220,6 +238,11 @@ const (
 	sideAvatarSize  = 26.0
 )
 
+// sideLabelMin 是「还放得下文字标签」的宽度下限。收起/展开是宽度过渡，
+// 标签若跟 a.sbCollapsed 布尔量走，动画中段就会突兀地出现/消失；
+// 以实际宽度为准，标签与裁剪同步进出。
+const sideLabelMin = 132.0
+
 // sidePad 是当前形态下的水平内边距：收起态按钮要居中，缩进更小。
 func (a *App) sidePad() float32 {
 	if a.sbCollapsed {
@@ -230,11 +253,17 @@ func (a *App) sidePad() float32 {
 
 func (a *App) sidebar(c *ui.Context) {
 	t := c.Theme()
-	w := float32(sideWidth)
+	target := float32(sideWidth)
 	if a.sbCollapsed {
-		w = sideWidthSmall
+		target = sideWidthSmall
 	}
-	side := ui.Column(c).Width(w).PaddingY(10).Gap(2).Background(a.sideBg(t)).Clip()
+	side := ui.Column(c).PaddingY(10).Gap(2).Background(a.sideBg(t)).Clip()
+	// 收起/展开是宽度过渡，不是宽度硬切（主项目 .sidebar width .24s）。
+	// 第一帧 Animate 直接返回目标值，所以启动画面与测试环境拿到的就是终态宽度。
+	w := side.AnimateWith("sidebar-w", target, 220*time.Millisecond, easePage)
+	side.Width(w)
+	label := w > sideLabelMin
+	collapsed := !label
 	side.Children(func() {
 		// 用户区。
 		//
@@ -251,12 +280,13 @@ func (a *App) sidebar(c *ui.Context) {
 		loggedIn := a.PL.LoggedIn()
 
 		userBtn := ui.ButtonBase(c).Height(sideBtnHeight).Padding(0, a.sidePad()).
-			Margin(0, a.sidePad(), 6, a.sidePad()).Radius(10).AlignItems(ui.Center).Gap(10)
+			Margin(0, a.sidePad(), 6, a.sidePad()).Radius(10).AlignItems(ui.Center).Gap(10).
+			Transition(hoverFade)
 		if loggedIn {
 			ava := a.Covers.Get(me.Avatar, a.invalidate)
 			userBtn.Children(func() {
 				ui.Avatar(c, me.Name, ava).Size(sideAvatarSize, sideAvatarSize)
-				if !a.sbCollapsed {
+				if label {
 					ui.Column(c).Grow(1).Gap(0).Children(func() {
 						ui.Text(c, me.Name).FontSize(fz(13)).FontWeight(600).SingleLine().Ellipsis("…")
 						if me.VipLabel != "" {
@@ -271,7 +301,7 @@ func (a *App) sidebar(c *ui.Context) {
 		} else {
 			userBtn.Children(func() {
 				ui.Icon(c, Icons["user"]).FontSize(fz(sideIconSize))
-				if !a.sbCollapsed {
+				if label {
 					ui.Text(c, "点击登录").FontSize(fz(13)).TextColor(t.TextMuted)
 				}
 			})
@@ -281,27 +311,29 @@ func (a *App) sidebar(c *ui.Context) {
 		}
 
 		for _, it := range navItems {
-			a.sideNavItem(c, t, it)
+			a.sideNavItem(c, t, it, label)
 		}
 
 		// 歌单列表（收起态只留图标）
 		pls := a.PL.Playlists()
-		if len(pls) > 0 && !a.sbCollapsed {
+		if len(pls) > 0 && label {
 			ui.Text(c, "我创建的歌单").FontSize(fz(11)).TextColor(t.TextMuted).
 				Padding(10, 12, 4, 14)
 		}
 		for _, pl := range pls {
 			path := fmt.Sprintf("/playlist/%d", pl.ID)
+			// growFade：歌单是登录后异步到的，让它撑开入场而不是凭空出现。
 			btn := ui.ButtonBase(c).Height(sideBtnHeight).Padding(0, a.sidePad()).
-				MarginX(a.sidePad()).Radius(8).AlignItems(ui.Center).Gap(10)
+				MarginX(a.sidePad()).Radius(8).AlignItems(ui.Center).Gap(10).
+				Transition(growFade)
 			active := a.Router.Path() == path
 			btn.Children(func() {
 				ui.Icon(c, Icons["note"]).FontSize(fz(16)).AlignSelf(ui.Center)
-				if !a.sbCollapsed {
+				if label {
 					ui.Text(c, pl.Title).FontSize(fz(13)).SingleLine().Ellipsis("…").Grow(1)
 				}
 			})
-			if a.sbCollapsed {
+			if collapsed {
 				btn.Center()
 			}
 			a.styleSideBtn(btn, active, c)
@@ -312,7 +344,7 @@ func (a *App) sidebar(c *ui.Context) {
 
 		ui.Spacer(c)
 
-		a.sideFooter(c, t)
+		a.sideFooter(c, t, collapsed, w)
 	})
 }
 
@@ -322,36 +354,47 @@ func (a *App) sidebar(c *ui.Context) {
 // 横排会被挤出边界、与上方导航项的图标列错位。纵排后每个按钮都与展开态
 // 的图标占据同一条中心线。
 //
+// collapsed 由实际宽度算出（见 sidebar），过渡中段宽度不够就提前排成纵排，
+// 免得两个按钮被挤出侧栏。w 用于收起/展开图标的旋转进度。
+//
 // 返回容器元素，供布局测试读实际位置（测试不该硬编码 y 坐标——播放器条
 // 占掉底部高度，靠算常数极易与真实布局脱节）。
-func (a *App) sideFooter(c *ui.Context, t *ui.Theme) *ui.Element {
-	if a.sbCollapsed {
+func (a *App) sideFooter(c *ui.Context, t *ui.Theme, collapsed bool, w float32) *ui.Element {
+	// 收起/展开图标按宽度进度旋转 180°（主项目是同一个 chevron 转 180°，
+	// 而不是在两个方向上硬换图标）。0 = 收起态指右（提示「展开」），
+	// 180 = 展开态指左（提示「收起」）。
+	k := float32(0)
+	if d := float32(sideWidth - sideWidthSmall); d > 0 {
+		k = clampF32((w - sideWidthSmall) / d)
+	}
+	if collapsed {
 		// 纵排：与上方 40 高的导航项共用同一条中心线
 		return ui.Column(c).FillWidth().PaddingX(a.sidePad()).Gap(2).Children(func() {
-			a.sideIconBtn(c, t, "settings", "设置", func() {
+			a.sideIconBtn(c, t, "settings", "设置", 0, func() {
 				a.Router.Push("/settings")
 			})
-			a.sideIconBtn(c, t, "expand", "展开侧栏", func() {
-				a.toggleSidebar()
-			})
+			a.sideIconBtn(c, t, "expand", "展开侧栏", 180*k, a.toggleSidebar)
 		})
 	}
 
 	return ui.Row(c).FillWidth().PaddingX(a.sidePad()).Gap(4).Children(func() {
-		a.sideIconBtn(c, t, "settings", "设置", func() {
+		a.sideIconBtn(c, t, "settings", "设置", 0, func() {
 			a.Router.Push("/settings")
 		})
-		a.sideIconBtn(c, t, "collapse", "收起侧栏", func() {
-			a.toggleSidebar()
-		})
+		a.sideIconBtn(c, t, "expand", "收起侧栏", 180*k, a.toggleSidebar)
 	})
 }
 
 // sideIconBtn 是侧栏底部/收起态用的纯图标按钮（带 tooltip）。
-func (a *App) sideIconBtn(c *ui.Context, t *ui.Theme, icon, tip string, onClick func()) {
-	b := ui.ButtonBase(c).Size(sideFootBtnSize, sideFootBtnSize).Radius(8).Center()
+// rot 是图标的旋转角度（度），0 为不转。
+func (a *App) sideIconBtn(c *ui.Context, t *ui.Theme, icon, tip string, rot float32, onClick func()) {
+	b := ui.ButtonBase(c).Size(sideFootBtnSize, sideFootBtnSize).Radius(8).Center().
+		Transition(hoverFade)
 	b.Children(func() {
-		ui.Icon(c, Icons[icon]).FontSize(fz(sideIconSize)).AlignSelf(ui.Center)
+		ic := ui.Icon(c, Icons[icon]).FontSize(fz(sideIconSize)).AlignSelf(ui.Center)
+		if rot != 0 {
+			ic.Rotate(rot)
+		}
 	})
 	if b.Hovered() {
 		b.Background(t.SurfaceHover)
@@ -367,17 +410,18 @@ func (a *App) toggleSidebar() {
 	a.Conf.Set("Window.SidebarCollapsed", a.sbCollapsed)
 }
 
-func (a *App) sideNavItem(c *ui.Context, t *ui.Theme, it navItem) {
+func (a *App) sideNavItem(c *ui.Context, t *ui.Theme, it navItem, label bool) {
 	active := a.Router.Path() == it.path
 	btn := ui.ButtonBase(c).Height(sideBtnHeight).Padding(0, a.sidePad()).
-		MarginX(a.sidePad()).Radius(8).AlignItems(ui.Center).Gap(10)
+		MarginX(a.sidePad()).Radius(8).AlignItems(ui.Center).Gap(10).
+		Transition(hoverFade)
 	btn.Children(func() {
 		ui.Icon(c, Icons[it.icon]).FontSize(fz(sideIconSize)).AlignSelf(ui.Center)
-		if !a.sbCollapsed {
+		if label {
 			ui.Text(c, it.label).FontSize(fz(13.5)).Grow(1)
 		}
 	})
-	if a.sbCollapsed {
+	if !label {
 		// 收起态无标题：ButtonBase 默认主轴居中，图标落在按钮正中。
 		btn.Center()
 	} else {
@@ -505,7 +549,10 @@ func (a *App) probeCover(url string) {
 		if !ok {
 			return
 		}
-		a.tint.set(r, mygo.Theme.IsDark())
+		// 明暗取 a.dark（由 buildTheme 按 Style.Theme 定），不用
+		// mygo.Theme.IsDark()——Linux 上后者会被桌面的 portal 覆盖，
+		// 强制浅色时取色映射也会跟着错。
+		a.tint.set(r, a.dark.Load())
 		a.invalidate()
 	}()
 }

@@ -1,37 +1,71 @@
 package appui
 
 import (
+	"time"
+
 	"github.com/Team-Quaver/quaver-astra/internal/player"
 
 	"github.com/egoist/mygo/ui"
 )
 
+// 正在播放页的布局常量：内容层与歌词列宽都从它们推导，不能各写一份
+// （逐字高亮要先按歌词列宽量行高，宽度对不上换行的行就会错位）。
+const (
+	npPadY  = 40.0  // 内容层上下内边距
+	npPadX  = 52.0  // 内容层左右内边距
+	npGap   = 48.0  // 歌词列与封面列的间距
+	npSideW = 340.0 // 右侧封面/信息列宽
+)
+
+// npLyricWidth 是歌词列的可排宽度：内容层宽 − 两侧内边距 − 列间距 − 封面列。
+func npLyricWidth(c *ui.Context) float32 {
+	w, _ := c.Size()
+	v := w - 2*npPadX - npGap - npSideW
+	if v < 120 {
+		v = 120
+	}
+	return v
+}
+
 // nowPlaying 是正在播放页：绝对定位覆盖内容区（播放条仍在其下方可见）。
+//
+// 动效（对齐主项目 .np）：整体上滑 + 淡入，.34s cubic-bezier(.32,.72,.24,1)；
+// 关闭时同样滑回下方（MyGo 的 Exit 会给退场元素留一份副本，兄弟不为它留位）。
 func (a *App) nowPlaying(c *ui.Context, t *ui.Theme) {
 	cur, hasCur := a.PL.Current()
-	coverURLLarge := ""
+	coverLarge := ""
 	if hasCur {
-		coverURLLarge = coverURL(cur.AlbumPmid, cur.AlbumMid, 500)
+		coverLarge = coverURL(cur.AlbumPmid, cur.AlbumMid, 500)
 	}
 
-	np := ui.Box(c).Absolute().Fill().Background(a.npBg(t))
+	np := ui.Box(c).Key("nowplaying").Absolute().Fill().Background(npBase).
+		Transition(ui.ElementTransition{
+			Duration: 340 * time.Millisecond,
+			Ease:     easePanel,
+			Enter:    &ui.Motion{Y: 56, Opacity: 0},
+			Exit:     &ui.Motion{Y: 56, Opacity: 0},
+		})
 	np.Children(func() {
-		// 模糊封面底 + 渐变压暗（均为绝对定位背景层，内容行是唯一流式子元素）
-		if blur := a.Covers.GetBlur(coverURLLarge, a.invalidate); blur != nil {
-			ui.Image(c, blur).Absolute().Fill().Fit(ui.Cover).Opacity(0.5)
-		}
-		ui.Box(c).Absolute().Fill().
-			Gradient(ui.RGBA(0, 0, 0, 0.35), ui.RGBA(0, 0, 0, 0.78), 90)
+		a.npBackdrop(c, coverLarge)
 
-		// 内容：左歌词 + 右封面/信息
-		ui.Row(c).Fill().Padding(40, 52, 40, 52).Gap(48).AlignItems(ui.Center).Children(func() {
+		// 内容层：必须也是绝对定位。
+		//
+		// 根因（用户报的「正在播放页封面渲染透明化」）：MyGo 里 Absolute 子元素
+		// 绘制在流式子元素【之上】（ui/paint.go：先画 flow、再画 absolute，与
+		// CSS 定位元素的层叠关系一致）。背景层只做绝对定位的话，模糊封面图与
+		// 黑色遮罩就会压在歌词和封面上——封面看着像掺进背景里、半透明。
+		// 让内容层同样绝对定位，绘制顺序就回到「底图 → 遮罩 → 内容」；
+		// 关闭按钮建在最后，仍然最上。
+		content := ui.Row(c).Absolute().Fill().
+			Padding(npPadY, npPadX, npPadY, npPadX).Gap(npGap).AlignItems(ui.Center)
+		content.Children(func() {
 			a.lyricColumn(c, t)
 			a.npSide(c, t, cur, hasCur)
 		})
 
 		// 右上关闭
 		closeBtn := ui.Box(c).Absolute().Top(14).Right(14).Size(30, 30).Radius(15).
-			Background(ui.RGBA(255, 255, 255, 0.12)).Center()
+			Background(ui.RGBA(255, 255, 255, 0.12)).Center().Transition(hoverFade)
 		closeBtn.Children(func() {
 			ui.Icon(c, Icons["clear"]).FontSize(fz(15)).TextColor(ui.Hex("#ffffff")).AlignSelf(ui.Center)
 		})
@@ -44,8 +78,33 @@ func (a *App) nowPlaying(c *ui.Context, t *ui.Theme) {
 	})
 }
 
-func (a *App) npBg(t *ui.Theme) ui.Color {
-	return ui.Hex("#0b0e19")
+// npBackdrop 画正在播放页的背景两层：模糊封面底 + 轻度压暗遮罩。
+//
+// 换曲时按封面地址重置淡入时钟：旧图的模糊底会消失、新图要等下载，中间空出
+// 的那一拍就是主项目注释里说的「切歌闪一下」——淡入把它盖过去。这里只淡入
+// 装饰层、不动内容层，所以哪怕动画没跑完，封面与歌词也始终是实心的。
+func (a *App) npBackdrop(c *ui.Context, cover string) {
+	if blur := a.Covers.GetBlur(cover, a.invalidate); blur != nil {
+		if a.npBlurKey != cover {
+			a.npBlurKey, a.npBlurAt = cover, c.Now()
+		}
+		img := ui.Image(c, blur).Absolute().Fill().Fit(ui.Cover)
+		styleFade(c, motion{
+			start: a.npBlurAt,
+			dur:   420 * time.Millisecond,
+			ease:  ui.EaseOut,
+		}, img, 0, npBlurOpacity)
+	}
+
+	// 压暗遮罩：上浅下深（主项目 .np-scrim 的 180° 渐变）。注意角度是 180
+	// 而不是 90——MyGo 与 CSS 同口径，90° 是「向右」，那样渐变会横过来。
+	ui.Box(c).Absolute().Fill().Gradient(npScrimTop, npScrimBottom, 180)
+
+	// 左缘再压一层：歌词列是纯白文字，背景却是任意色相的模糊封面，亮暖封面
+	// 下会撞色。主项目同样为逐字模式加深左缘（.np.kara .np-scrim），这里
+	// 行级/逐字都用，向右 60% 收干净。
+	ui.Box(c).Absolute().Fill().
+		Gradient(ui.RGBA(11, 14, 25, 0.7), ui.RGBA(11, 14, 25, 0), 90)
 }
 
 // lyricColumn 左侧歌词列（行级歌词 + 翻译 + 跟随滚动）。
@@ -70,7 +129,7 @@ func (a *App) lyricColumn(c *ui.Context, t *ui.Theme) {
 			a.npList.Key = nil
 			a.npList.Label = func(i int) string { return lines[i].Text }
 			ui.List(c, &a.npList, len(lines), func(i int) {
-				a.lyricLine(c, lines[i], i == cur)
+				a.lyricLine(c, lines[i], i)
 			}).Grow(1)
 			if len(lines) == 0 {
 				ui.Column(c).Fill().Center().Children(func() {
@@ -82,29 +141,36 @@ func (a *App) lyricColumn(c *ui.Context, t *ui.Theme) {
 	})
 }
 
-func (a *App) lyricLine(c *ui.Context, line player.LyricLine, isCur bool) {
-	t := c.Theme()
-	_ = t
+func (a *App) lyricLine(c *ui.Context, line player.LyricLine, index int) {
+	cur := a.PL.LyricIndex(a.PL.Position())
+	isCur := index == cur
 	scale := a.Conf.Float("Style.LyricScale", 100) / 100
 	size := 17 * float32(scale)
 	if isCur {
 		size = 20 * float32(scale)
 	}
 	row := ui.Column(c).FillWidth().Padding(6, 0).Gap(2)
+	// 行间过渡：非当前句压暗（主项目 .np-ly-line 是 opacity .34 + blur(1.6px)；
+	// MyGo 的元素没有模糊滤镜，用透明度把同一件事做出来）。走 Animate 而不是
+	// 硬切色值，「成为当前句 / 不再是当前句」这一跳就是缓动的。
+	target := float32(0.42)
+	if isCur {
+		target = 1
+	}
+	row.Opacity(row.Animate("lyric-line", target, 260*time.Millisecond))
 	row.Children(func() {
-		txt := ui.Text(c, line.Text).FontSize(fz(size))
-		if isCur {
-			txt.FontWeight(800).TextColor(ui.Hex("#ffffff"))
-		} else {
-			txt.TextColor(ui.RGBA(255, 255, 255, 0.45))
+		if !(isCur && a.karaokeLineAt(c, index, size)) {
+			txt := ui.Text(c, line.Text).FontSize(fz(size)).TextColor(ui.Hex("#ffffff"))
+			if isCur {
+				txt.FontWeight(800)
+			}
 		}
 		if line.Trans != "" && a.PL.ShowTranslation() {
-			tr := ui.Text(c, line.Trans).FontSize(fz(size * 0.7)).SingleLine()
-			if isCur {
-				tr.TextColor(ui.RGBA(255, 255, 255, 0.85))
-			} else {
-				tr.TextColor(ui.RGBA(255, 255, 255, 0.4))
+			col := ui.RGBA(255, 255, 255, 0.8)
+			if !isCur {
+				col = ui.RGBA(255, 255, 255, 0.55)
 			}
+			ui.Text(c, line.Trans).FontSize(fz(size * 0.7)).SingleLine().TextColor(col)
 		}
 	})
 	// 点击行跳转
@@ -115,10 +181,21 @@ func (a *App) lyricLine(c *ui.Context, line player.LyricLine, isCur bool) {
 	}
 }
 
+// karaokeLineAt 在「这一行有词级时间轴」时画逐字高亮，返回是否接管渲染。
+// index 是行号，不能用「当前行」反查——列表在建别的行时也会调到这里。
+func (a *App) karaokeLineAt(c *ui.Context, index int, size float32) bool {
+	ql, ok := a.PL.QrcLineAt(index)
+	if !ok || len(ql.Words) == 0 {
+		return false
+	}
+	a.karaokeLine(c, ql, size, npLyricWidth(c))
+	return true
+}
+
 // npSide 右侧：封面、标题、音质、操作。
 func (a *App) npSide(c *ui.Context, t *ui.Theme, cur player.Song, hasCur bool) {
 	_ = t
-	ui.Column(c).Width(340).Gap(12).AlignItems(ui.Center).Children(func() {
+	ui.Column(c).Width(npSideW).Gap(12).AlignItems(ui.Center).Children(func() {
 		if !hasCur {
 			return
 		}
@@ -144,7 +221,7 @@ func (a *App) npSide(c *ui.Context, t *ui.Theme, cur player.Song, hasCur bool) {
 		ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(8).Children(func() {
 			a.qualityPillNP(c)
 			ui.Spacer(c)
-			more := ui.ButtonBase(c).Size(30, 30).Radius(15).Center()
+			more := ui.ButtonBase(c).Size(30, 30).Radius(15).Center().Transition(hoverFade)
 			more.Children(func() {
 				ui.Icon(c, Icons["more"]).FontSize(fz(17)).TextColor(ui.Hex("#ffffff")).AlignSelf(ui.Center)
 			})
@@ -167,7 +244,8 @@ func (a *App) npSide(c *ui.Context, t *ui.Theme, cur player.Song, hasCur bool) {
 // qualityPillNP 在深色背景上的音质胶囊。菜单逻辑与播放条共用
 // （见 qualityMenu），这里只负责胶囊本身的反白配色。
 func (a *App) qualityPillNP(c *ui.Context) {
-	pill := ui.ButtonBase(c).Padding(3, 10).Radius(999).Border(1, ui.RGBA(255, 255, 255, 0.35))
+	pill := ui.ButtonBase(c).Padding(3, 10).Radius(999).Border(1, ui.RGBA(255, 255, 255, 0.35)).
+		Transition(hoverFade)
 	pill.Children(func() {
 		ui.Text(c, a.qualityText()).FontSize(fz(11)).FontWeight(600).TextColor(ui.Hex("#ffffff"))
 	})
@@ -198,7 +276,7 @@ func (a *App) queuePanel(c *ui.Context) {
 	panel.Children(func() {
 		ui.Row(c).FillWidth().Height(44).PaddingX(12).AlignItems(ui.Center).Gap(8).Children(func() {
 			ui.Textf(c, "播放列表 · %d 首", len(queue)).FontSize(fz(13)).FontWeight(700).Grow(1)
-			clearBtn := ui.ButtonBase(c).Size(26, 26).Radius(13).Center()
+			clearBtn := ui.ButtonBase(c).Size(26, 26).Radius(13).Center().Transition(hoverFade)
 			clearBtn.Children(func() { ui.Icon(c, Icons["trash"]).FontSize(fz(14)).AlignSelf(ui.Center) })
 			if clearBtn.Hovered() {
 				clearBtn.Background(t.SurfaceHover)
@@ -206,7 +284,7 @@ func (a *App) queuePanel(c *ui.Context) {
 			if clearBtn.Clicked() {
 				a.PL.ClearQueue()
 			}
-			colBtn := ui.ButtonBase(c).Size(26, 26).Radius(13).Center()
+			colBtn := ui.ButtonBase(c).Size(26, 26).Radius(13).Center().Transition(hoverFade)
 			colBtn.Children(func() { ui.Icon(c, Icons["clear"]).FontSize(fz(14)).AlignSelf(ui.Center) })
 			if colBtn.Hovered() {
 				colBtn.Background(t.SurfaceHover)
@@ -228,7 +306,8 @@ func (a *App) queueRow(c *ui.Context, queue []player.Song, i int, curMid string)
 	t := c.Theme()
 	s := queue[i]
 	isCur := s.Mid == curMid
-	row := ui.Row(c).FillWidth().Height(46).PaddingX(10).Gap(10).AlignItems(ui.Center).Radius(8)
+	row := ui.Row(c).FillWidth().Height(46).PaddingX(10).Gap(10).AlignItems(ui.Center).Radius(8).
+		Transition(hoverFade)
 	row.Children(func() {
 		ui.Box(c).Width(22).Center().Children(func() {
 			if isCur && a.PL.Playing() {
@@ -247,7 +326,7 @@ func (a *App) queueRow(c *ui.Context, queue []player.Song, i int, curMid string)
 			ui.Text(c, s.Artists).FontSize(fz(11)).TextColor(t.TextMuted).SingleLine().Ellipsis("…")
 		})
 		if row.Hovered() {
-			del := ui.ButtonBase(c).Size(24, 24).Radius(12).Center()
+			del := ui.ButtonBase(c).Size(24, 24).Radius(12).Center().Transition(hoverFade)
 			del.Children(func() { ui.Icon(c, Icons["clear"]).FontSize(fz(12)).AlignSelf(ui.Center) })
 			if del.Clicked() {
 				a.PL.RemoveAt(i)

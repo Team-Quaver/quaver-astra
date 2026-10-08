@@ -40,7 +40,8 @@ type Player struct {
 	likedSeq   uint64
 
 	lyrics     []LyricLine
-	lyricState string // idle|loading|ok|none
+	qrc        []QrcLine // 逐字时间轴，与 lyrics 同源同序；无逐字歌词时为空
+	lyricState string    // idle|loading|ok|none
 	showTrans  bool
 
 	loggedIn bool
@@ -1003,23 +1004,58 @@ func (p *Player) fetchLyric(song Song, seq uint64) {
 	p.lyricState = "loading"
 	p.mu.Unlock()
 	p.notifyChange()
-	lrc, trans, err := p.api.FetchLyric(song.Mid, p.ShowTranslation())
+	src, trans, err := p.api.FetchLyric(song.Mid, p.ShowTranslation())
 	p.mu.Lock()
 	if seq != p.playSeq {
 		p.mu.Unlock()
 		return
 	}
-	if err != nil || strings.TrimSpace(lrc) == "" {
-		p.lyrics = nil
+	if err != nil || strings.TrimSpace(src) == "" {
+		p.lyrics, p.qrc = nil, nil
 		p.lyricState = "none"
 		p.mu.Unlock()
 		p.notifyChange()
 		return
 	}
-	p.lyrics = ParseLrc(lrc, trans)
-	p.lyricState = "ok"
+	// 先按逐字（QRC）解析：后端请求时带了 qrc=1，有逐字时间轴时 src 就是
+	// QRC 明文（XML 信封或纯文本）。解析不出词级时间轴就按行级 LRC 走。
+	//
+	// 逐字歌词仍以「行级视图」喂给列表（滚动/索引/点击跳转那一套不用改），
+	// 词级时间轴平行存在 p.qrc 里，按行号回查。
+	if ql := ParseQRC(src); HasWordTiming(ql) {
+		alignQrcTrans(ql, lrcLines(trans))
+		p.qrc = ql
+		p.lyrics = qrcToLines(ql)
+	} else {
+		p.qrc = nil
+		p.lyrics = ParseLrc(src, trans)
+	}
+	if len(p.lyrics) == 0 {
+		p.lyrics, p.qrc = nil, nil
+		p.lyricState = "none"
+	} else {
+		p.lyricState = "ok"
+	}
 	p.mu.Unlock()
 	p.notifyChange()
+}
+
+// QrcLines 返回逐字时间轴（与 LyricLines 同源同序）。长度为 0 表示这首
+// 歌没有词级时间轴，调用方走行级渲染。
+func (p *Player) QrcLines() []QrcLine {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.qrc
+}
+
+// QrcLineAt 返回第 i 行的逐字时间轴。
+func (p *Player) QrcLineAt(i int) (QrcLine, bool) {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	if i < 0 || i >= len(p.qrc) {
+		return QrcLine{}, false
+	}
+	return p.qrc[i], true
 }
 
 func (p *Player) LyricLines() ([]LyricLine, string) {

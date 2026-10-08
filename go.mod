@@ -4,6 +4,7 @@ go 1.27.1
 
 require (
 	github.com/egoist/mygo v0.2.12
+	github.com/jixunmoe-go/qrc v0.0.0-20230917162828-866e996416b0
 	github.com/team-quaver/typhoeus-go v0.0.0-00010101000000-000000000000
 	golang.org/x/crypto v0.57.0
 	golang.org/x/image v0.46.0
