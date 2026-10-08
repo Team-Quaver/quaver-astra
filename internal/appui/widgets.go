@@ -2,6 +2,8 @@ package appui
 
 import (
 	"fmt"
+	"net/url"
+	"strings"
 
 	"github.com/Team-Quaver/quaver-astra/internal/player"
 
@@ -136,14 +138,27 @@ func (a *App) songRow(c *ui.Context, st *songListState, i int, doubleClick func(
 		doubleClick(i)
 	}
 	row.ContextMenu(func(m *ui.Menu) {
-		if m.Item("插队播放").Chosen() {
-			a.PL.PlayNextNow(s)
-			c.Toast("已插队播放")
-		}
-		if m.Item("加入队列").Chosen() {
+		// 下一首播放：排到当前曲之后等着，不打断当前播放（主项目
+		// enqueueNext 的语义）。队列还空着时 EnqueueNext 会直接起播，
+		// toast 文案跟着分叉，否则「什么都没发生」。
+		if m.Item("下一首播放").Chosen() {
+			name := s.DisplayName()
+			if name == "" {
+				name = "这首歌"
+			}
+			_, playing := a.PL.Current()
 			a.PL.EnqueueNext(s)
+			if playing {
+				c.Toast("已插队：" + name + "（下一首播放）")
+			} else {
+				c.Toast("开始播放：" + name)
+			}
+		}
+		if m.Item("添加到队列").Chosen() {
+			a.PL.EnqueueMany([]player.Song{s})
 			c.Toast("已加入队列")
 		}
+		m.Separator()
 		label := "收藏"
 		if loved {
 			label = "取消收藏"
@@ -151,9 +166,60 @@ func (a *App) songRow(c *ui.Context, st *songListState, i int, doubleClick func(
 		if m.Item(label).Chosen() {
 			a.PL.ToggleLove(s)
 		}
-		if m.Item("同名搜索").Chosen() {
-			a.Router.Push("/search?kw=" + s.DisplayName())
-		}
+		m.Separator()
+		m.Submenu("跳转至", func(m *ui.Menu) {
+			m.Submenu("歌手", func(m *ui.Menu) {
+				shown := false
+				for _, g := range s.Singers {
+					if g.Mid == "" {
+						continue
+					}
+					shown = true
+					g := g
+					if m.Item(g.Name).Chosen() {
+						a.Router.Push("/singer/" + g.Mid + "?name=" + url.QueryEscape(g.Name))
+					}
+				}
+				if !shown {
+					m.Item("没有歌手信息").Disabled(true)
+				}
+			})
+			m.Submenu("专辑", func(m *ui.Menu) {
+				amid := s.AlbumMid
+				if amid == "" {
+					// 有些条目只有 pmid（形如 004xxx_1），接口吃基名。
+					amid = strings.SplitN(s.AlbumPmid, "_", 2)[0]
+				}
+				name := s.Album
+				if name == "" {
+					name = "专辑"
+				}
+				if m.Item(name).Disabled(amid == "").Chosen() {
+					a.Router.Push("/album/" + amid + "?name=" + url.QueryEscape(name))
+				}
+			})
+			kw := s.Name
+			if kw == "" {
+				kw = s.DisplayName()
+			}
+			if m.Item("同名搜索").Disabled(kw == "").Chosen() {
+				a.Router.Push("/search?kw=" + url.QueryEscape(kw))
+			}
+		})
+		m.Submenu("更多操作", func(m *ui.Menu) {
+			if m.Item("复制歌曲链接").Disabled(s.Mid == "").Chosen() {
+				c.WriteClipboard("https://y.qq.com/n/ryqq/songDetail/" + s.Mid)
+				c.Toast("已复制歌曲链接")
+			}
+			if m.Item("复制歌曲名称").Chosen() {
+				text := s.DisplayName()
+				if s.Subtitle != "" {
+					text += " " + s.Subtitle
+				}
+				c.WriteClipboard(text)
+				c.Toast("已复制：" + s.DisplayName())
+			}
+		})
 	})
 }
 

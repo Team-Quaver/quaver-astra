@@ -59,11 +59,17 @@ type Player struct {
 type Song struct {
 	Mid, Name, Title, Subtitle string
 	Artists                    string
+	Singers                    []Singer // 逐个歌手（跳歌手页用，Artists 是它们的拼接）
 	Album                      string
 	AlbumPmid, AlbumMid        string
 	Interval                   float64
 	SongID                     int64
 	SongType                   int64 // 读侧枚举
+}
+
+// Singer 歌手引用（跳歌手页需要 mid，不能只有拼好的名字）。
+type Singer struct {
+	Mid, Name string
 }
 
 func (s Song) DisplayName() string {
@@ -326,13 +332,18 @@ func (p *Player) Jump(i int) {
 	p.startCurrent(0, true, "")
 }
 
-// EnqueueNext 插队（当前曲之后）。
+// EnqueueNext 「下一首播放」：排到当前曲之后等着播，不切歌、不打断当前曲。
+//
+// 队列还空着（没播过任何东西）时没有「下一首」可言，退化成单曲起播
+//（与主项目 player.enqueueNext 同一语义分叉）。
 func (p *Player) EnqueueNext(s Song) {
 	p.mu.Lock()
-	at := p.index + 1
-	if p.index < 0 {
-		at = len(p.queue)
+	if p.index < 0 || len(p.queue) == 0 {
+		p.mu.Unlock()
+		p.PlayList([]Song{s}, 0)
+		return
 	}
+	at := p.index + 1
 	p.queue = append(p.queue[:at], append([]Song{s}, p.queue[at:]...)...)
 	p.mu.Unlock()
 	p.notifyChange()

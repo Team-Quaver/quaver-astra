@@ -72,6 +72,8 @@ type App struct {
 	search   searchState
 	login    loginState
 	settings settingsState
+	singers  map[string]*singerState // 歌手页（按 mid 缓存）
+	albums   map[string]*albumState  // 专辑页（按 mid 缓存）
 
 	// wasLoggedIn 记录上一次通知时的登录态，用来识别「登录/登出」这一跳变
 	wasLoggedIn bool
@@ -183,6 +185,12 @@ func (a *App) routeArea(c *ui.Context) {
 			r.Title("歌单")
 			id, _ := strconv.ParseInt(r.Param("id"), 10, 64)
 			a.playlistView(c, id)
+		case r.Match("/singer/{mid}"):
+			r.Title("歌手")
+			a.singerView(c, r.Param("mid"), r.Query("name"))
+		case r.Match("/album/{mid}"):
+			r.Title("专辑")
+			a.albumView(c, r.Param("mid"), r.Query("name"))
 		case r.Match("/search"):
 			r.Title("搜索")
 			a.searchView(c, r.Query("kw"))

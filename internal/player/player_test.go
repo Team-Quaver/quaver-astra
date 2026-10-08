@@ -125,6 +125,49 @@ func TestNextIndexModes(t *testing.T) {
 
 type fakePrefs struct{}
 
+// TestEnqueueNextSemantics 钉住「下一首播放」的两分支语义（对齐主项目
+//
+//  1. 队列非空：插到当前曲之后（index+1），index 与当前曲不动，引擎不再
+//     载入——插队不打断当前播放；
+//  2. 队列空：没有「下一首」可言，退化成单曲起播。
+//
+// 旧实现的「插队播放」走 PlayNextNow（立即切歌），右键一次当前曲就被打断，
+// 这条测试就是那次语义改动的回归保护。
+func TestEnqueueNextSemantics(t *testing.T) {
+	eng := &fakeEngine{}
+	p := New(stubBackend{}, eng, fakePrefs{})
+	p.queue = []Song{{Mid: "a"}, {Mid: "b"}, {Mid: "c"}}
+	p.index = 0
+
+	p.EnqueueNext(Song{Mid: "x"})
+	q := p.Queue()
+	if len(q) != 4 || q[1].Mid != "x" {
+		t.Fatalf("插入后队列 = %v，期望 [a x b c]", q)
+	}
+	if p.Index() != 0 {
+		t.Errorf("index = %d，插入不应切换当前曲", p.Index())
+	}
+	if cur, ok := p.Current(); !ok || cur.Mid != "a" {
+		t.Errorf("当前曲 = %v/%v，插入打断了播放", cur, ok)
+	}
+	if n := eng.loadedCount(); n != 0 {
+		t.Errorf("引擎载入了 %d 次——「下一首播放」不该触发起播", n)
+	}
+
+	// 空队列：退化为直接起播这一首。
+	p2 := New(stubBackend{}, &fakeEngine{}, fakePrefs{})
+	p2.EnqueueNext(Song{Mid: "s"})
+	if q := p2.Queue(); len(q) != 1 || q[0].Mid != "s" {
+		t.Errorf("空队列退化后的队列 = %v，期望 [s]", q)
+	}
+	if p2.Index() != 0 {
+		t.Errorf("空队列退化后 index = %d，期望 0", p2.Index())
+	}
+	if cur, ok := p2.Current(); !ok || cur.Mid != "s" {
+		t.Errorf("空队列退化后当前曲 = %v/%v，期望 s 起播", cur, ok)
+	}
+}
+
 func (fakePrefs) String(key, def string) string { return def }
 func (fakePrefs) Float(key string, def float64) float64 {
 	return def

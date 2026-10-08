@@ -269,6 +269,112 @@ type SearchResults struct {
 	Nextpage  int64             `json:"nextpage"`
 }
 
+// SingerBase 歌手主页基本信息（/singer/{mid}/info 的 base_info）。
+type SingerBase struct {
+	Name         string `json:"name"`
+	Avatar       string `json:"avatar"`
+	EncryptedUin string `json:"encrypted_uin"`
+	UserType     int    `json:"user_type"`
+	IsSinger     bool   `json:"is_singer"`
+}
+
+// SingerProfile 歌手百科详情（/singer/{mid}/desc，服务端已规整 area/identity）。
+type SingerProfile struct {
+	Name        string `json:"name"`
+	Mid         string `json:"mid"`
+	Pic         string `json:"pic"`
+	BigPic      string `json:"big_pic"`
+	Desc        string `json:"desc"`
+	ForeignName string `json:"foreign_name"`
+	Birthday    string `json:"birthday"`
+	Area        string `json:"area"`
+	Identity    string `json:"identity"`
+}
+
+// SingerSongs 歌手歌曲（/singer/{mid}/songs；order 1=热门 2=最新发布）。
+// song_list 与歌单详情的 songs 同形状（上游扁平 Song）。
+type SingerSongs struct {
+	SingerMid string `json:"singer_mid"`
+	TotalNum  int64  `json:"total_num"`
+	SongList  []Song `json:"song_list"`
+}
+
+// SingerAlbum 歌手专辑条目（/singer/{mid}/albums，服务端已平铺驼峰归一）。
+type SingerAlbum struct {
+	Mid        string `json:"mid"`
+	Pmid       string `json:"pmid"`
+	Name       string `json:"name"`
+	TranName   string `json:"tran_name"`
+	AlbumType  string `json:"album_type"`
+	TimePublic string `json:"time_public"`
+	SingerName string `json:"singer_name"`
+	TotalNum   int64  `json:"total_num"`
+}
+
+// SingerAlbums 歌手专辑列表。
+type SingerAlbums struct {
+	SingerMid string        `json:"singer_mid"`
+	Total     int64         `json:"total"`
+	AlbumList []SingerAlbum `json:"album_list"`
+}
+
+// AlbumInfo 专辑详情（/album/{value}/detail 的 album）。
+type AlbumInfo struct {
+	ID         json.Number `json:"id"`
+	Mid        string      `json:"mid"`
+	Pmid       string      `json:"pmid"`
+	Name       string      `json:"name"`
+	Subtitle   string      `json:"subtitle"`
+	Desc       string      `json:"desc"`
+	AlbumType  string      `json:"album_type"`
+	TimePublic string      `json:"time_public"`
+	Genre      string      `json:"genre"`
+	Language   string      `json:"language"`
+	Singer     string      `json:"singer"`
+}
+
+// AlbumSinger 专辑详情里的歌手项。上游 singerList 的键名不稳
+//（name / singer_name / singerMID 各处不同），做多别名容错。
+type AlbumSinger struct {
+	Mid  string `json:"mid"`
+	Name string `json:"name"`
+}
+
+func (s *AlbumSinger) UnmarshalJSON(b []byte) error {
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal(b, &m); err != nil {
+		return err
+	}
+	str := func(keys ...string) string {
+		for _, k := range keys {
+			if v, ok := m[k]; ok {
+				var out string
+				if json.Unmarshal(v, &out) == nil && out != "" {
+					return out
+				}
+			}
+		}
+		return ""
+	}
+	s.Mid = str("mid", "singer_mid", "singerMID", "singerMid")
+	s.Name = str("name", "singer_name", "singerName")
+	return nil
+}
+
+// AlbumDetail /album/{value}/detail。
+type AlbumDetail struct {
+	Album   AlbumInfo     `json:"album"`
+	Company string        `json:"company"`
+	Singers []AlbumSinger `json:"singers"`
+}
+
+// AlbumSongs /album/{value}/songs（song_list 与歌单详情同形状）。
+type AlbumSongs struct {
+	AlbumMid string `json:"album_mid"`
+	TotalNum int64  `json:"total_num"`
+	SongList []Song `json:"song_list"`
+}
+
 // UserMe /user/me。
 type UserMe struct {
 	BaseInfo struct {
@@ -428,6 +534,50 @@ func (c *Client) SongLike(songID int64, writeType int64, like bool) error {
 	}
 	_, err := c.postJSON(path, body)
 	return err
+}
+
+// SingerInfo 歌手主页基本信息。
+func (c *Client) SingerInfo(mid string) (SingerBase, error) {
+	var out struct {
+		BaseInfo SingerBase `json:"base_info"`
+	}
+	err := c.getJSON("/singer/"+mid+"/info", nil, &out)
+	return out.BaseInfo, err
+}
+
+// SingerDesc 歌手百科详情（简介/外文名/生日/地区/立绘）。
+func (c *Client) SingerDesc(mid string) (SingerProfile, error) {
+	var out SingerProfile
+	err := c.getJSON("/singer/"+mid+"/desc", nil, &out)
+	return out, err
+}
+
+// SingerSongs 歌手歌曲。order 必须显式传：1=按热度（热门），2=按发行时间倒序（最新发布）。
+func (c *Client) SingerSongs(mid string, page, num, order int) (SingerSongs, error) {
+	var out SingerSongs
+	err := c.getJSON("/singer/"+mid+"/songs", q("page", page, "num", num, "order", order), &out)
+	return out, err
+}
+
+// SingerAlbums 歌手专辑。
+func (c *Client) SingerAlbums(mid string, page, num int) (SingerAlbums, error) {
+	var out SingerAlbums
+	err := c.getJSON("/singer/"+mid+"/albums", q("page", page, "num", num), &out)
+	return out, err
+}
+
+// AlbumDetail 专辑详情。value 是专辑 mid。
+func (c *Client) AlbumDetail(value string) (AlbumDetail, error) {
+	var out AlbumDetail
+	err := c.getJSON("/album/"+value+"/detail", nil, &out)
+	return out, err
+}
+
+// AlbumSongs 专辑歌曲。value 是专辑 mid。
+func (c *Client) AlbumSongs(value string, page, num int) (AlbumSongs, error) {
+	var out AlbumSongs
+	err := c.getJSON("/album/"+value+"/songs", q("page", page, "num", num), &out)
+	return out, err
 }
 
 func (c *Client) Search(keyword string, typ, page, num int) (SearchResults, error) {

@@ -48,6 +48,9 @@ func toPlayerSong(s backend.Song) player.Song {
 		Interval: s.Duration(),
 		SongType: int64(s.Type),
 	}
+	for _, g := range s.Singer {
+		out.Singers = append(out.Singers, player.Singer{Mid: g.Mid, Name: g.Name})
+	}
 	if s.ID != "" {
 		if v, err := s.ID.Int64(); err == nil {
 			out.SongID = v
