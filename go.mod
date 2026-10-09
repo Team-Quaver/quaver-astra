@@ -3,7 +3,7 @@ module github.com/Team-Quaver/quaver-astra
 go 1.27.1
 
 require (
-	github.com/egoist/mygo v0.2.12
+	github.com/egoist/mygo v0.2.15
 	github.com/jixunmoe-go/qrc v0.0.0-20230917162828-866e996416b0
 	github.com/team-quaver/typhoeus-go v0.0.0-00010101000000-000000000000
 	golang.org/x/crypto v0.57.0
@@ -20,5 +20,3 @@ require (
 
 // Typhoeus-go（QQ 音乐后端）以子模块形式随仓库分发，进程内嵌入。
 replace github.com/team-quaver/typhoeus-go => ./third_party/Typhoeus-go
-
-replace github.com/egoist/mygo => ../mygo

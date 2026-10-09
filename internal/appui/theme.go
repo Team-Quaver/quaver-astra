@@ -124,9 +124,8 @@ func (a *App) appearance(c *ui.Context) bool {
 // baseFontSize 是应用设计的基准字号（DIP）：界面上写死的字号都以它为参照。
 const baseFontSize = 14
 
-// fontScale 是系统字号设置对应用字号的缩放，每帧随主题更新：桌面界面
-// 字号（GTK gtk-font-name 的磅值）相对基准字号，再乘桌面的文字缩放
-// （GNOME 的 text-scaling-factor）。字号跟着系统设置走，fz 负责折算。
+// fontScale 是系统文字缩放对应用字号的缩放，每帧随主题更新；字号跟着
+// 系统设置走，fz 负责折算。
 var fontScale float32 = 1
 
 func fz(v float32) float32 { return v * fontScale }
@@ -195,9 +194,6 @@ func (a *App) buildTheme(c *ui.Context) *ui.Theme {
 
 	prefs := c.Preferences()
 	fontScale = prefs.TextScale
-	if ui := prefs.UIFontSize; ui > 0 {
-		fontScale *= ui / baseFontSize
-	}
 	if fontScale <= 0 {
 		fontScale = 1
 	}
