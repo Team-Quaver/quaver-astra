@@ -15,6 +15,13 @@ const (
 	npPadX  = 52.0  // 内容层左右内边距
 	npGap   = 48.0  // 歌词列与封面列的间距
 	npSideW = 340.0 // 右侧封面/信息列宽
+
+	// 歌词列首尾留白：主项目 .np-lyrics 用 38% 的伪元素留白，MyGo 没有
+	// mask-image，改用等价的上下 padding。留白随窗口高度缩放，但夹在
+	// 72~160px：小窗口不把列表挤没，大窗口也不会让首行飘到画面外。
+	npPadMin    = 72.0
+	npPadMax    = 160.0
+	npPadFactor = 0.22
 )
 
 // npLyricWidth 是歌词列的可排宽度：内容层宽 − 两侧内边距 − 列间距 − 封面列。
@@ -25,6 +32,21 @@ func npLyricWidth(c *ui.Context) float32 {
 		v = 120
 	}
 	return v
+}
+
+// npListPadding 返回歌词列表首尾留白（上下对称）。用窗口高度而不是列表
+// 的实时高度：列表此时还没布局，MyGo 的 Context.Size 只给窗口尺寸；
+// 对称 padding 也保证 ScrollTo(Center) 的居中语义不受它影响。
+func npListPadding(c *ui.Context) float32 {
+	_, h := c.Size()
+	pad := float32(npPadFactor) * h
+	if pad < npPadMin {
+		pad = npPadMin
+	}
+	if pad > npPadMax {
+		pad = npPadMax
+	}
+	return pad
 }
 
 // nowPlaying 是正在播放页：绝对定位覆盖内容区（播放条仍在其下方可见）。
@@ -128,22 +150,28 @@ func (a *App) lyricColumn(c *ui.Context, t *ui.Theme) {
 				ui.Text(c, "暂无歌词").FontSize(fz(14)).TextColor(ui.RGBA(255, 255, 255, 0.6))
 			})
 		default:
-			a.npList.Key = nil
-			a.npList.Label = func(i int) string { return lines[i].Text }
-			ui.List(c, &a.npList, len(lines), func(i int) {
-				a.lyricLine(c, lines[i], i)
-			}).Grow(1)
 			if len(lines) == 0 {
 				ui.Column(c).Fill().Center().Children(func() {
 					ui.Text(c, "Quaver Astra").FontSize(fz(15)).FontWeight(700).
 						TextColor(ui.RGBA(255, 255, 255, 0.7))
 				})
+				break
 			}
+			a.npList.Key = nil
+			a.npList.Label = func(i int) string { return lines[i].Text }
+			// 首尾 padding 负责留白；不再叠加 Absolute 渐变——渐变只要横跨
+			// 内容层就会在右侧模糊底上切出硬边（用户反馈过这条异常分界）。
+			// 列表自身负责裁切滚动内容，背景保持原本连续的模糊渐变。
+			pad := npListPadding(c)
+			ui.List(c, &a.npList, len(lines), func(i int) {
+				a.lyricColumnLine(c, lines[i], i)
+			}).Grow(1).Padding(pad, 0, pad, 0)
 		}
 	})
 }
 
-func (a *App) lyricLine(c *ui.Context, line player.LyricLine, index int) {
+// lyricColumnLine 是歌词列表的一行（与列表容器分开命名，便于单独维护行样式）。
+func (a *App) lyricColumnLine(c *ui.Context, line player.LyricLine, index int) {
 	cur := a.PL.LyricIndex(a.PL.Position())
 	isCur := index == cur
 	scale := a.Conf.Float("Style.LyricScale", 100) / 100
@@ -151,7 +179,8 @@ func (a *App) lyricLine(c *ui.Context, line player.LyricLine, index int) {
 	if isCur {
 		size = 20 * float32(scale)
 	}
-	row := ui.Column(c).FillWidth().Padding(6, 0).Gap(2)
+	row := ui.Column(c).FillWidth().Padding(6, 0).Gap(2).Radius(8).
+		Cursor(ui.CursorPointer).Transition(hoverFade)
 	// 行间过渡：非当前句压暗（主项目 .np-ly-line 是 opacity .34 + blur(1.6px)；
 	// MyGo 的元素没有模糊滤镜，用透明度把同一件事做出来）。走 Animate 而不是
 	// 硬切色值，「成为当前句 / 不再是当前句」这一跳就是缓动的。
@@ -163,6 +192,9 @@ func (a *App) lyricLine(c *ui.Context, line player.LyricLine, index int) {
 	row.Children(func() {
 		if !(isCur && a.karaokeLineAt(c, index, size)) {
 			txt := ui.Text(c, line.Text).FontSize(fz(size)).TextColor(ui.Hex("#ffffff"))
+			// 主项目行级歌词给非当前句 500；原生只给 400 会在模糊底上
+			// 过早失去笔画，当前句再升到 800，层级才和 AMLL 的前后景一致。
+			txt.FontWeight(500)
 			if isCur {
 				txt.FontWeight(800)
 			}
@@ -172,9 +204,14 @@ func (a *App) lyricLine(c *ui.Context, line player.LyricLine, index int) {
 			if !isCur {
 				col = ui.RGBA(255, 255, 255, 0.55)
 			}
-			ui.Text(c, line.Trans).FontSize(fz(size * 0.7)).SingleLine().TextColor(col)
+			// 翻译允许换行：长译文被 SingleLine 截断时，用户看不到完整信息；
+			// 列表会按行高重新居中，滚动跟随不受影响。
+			ui.Text(c, line.Trans).FontSize(fz(size * 0.7)).TextColor(col)
 		}
 	})
+	if row.Hovered() && !isCur {
+		row.Background(ui.RGBA(255, 255, 255, 0.055))
+	}
 	// 点击行跳转
 	if row.Clicked() {
 		if d := a.PL.Duration(); d > 0 {

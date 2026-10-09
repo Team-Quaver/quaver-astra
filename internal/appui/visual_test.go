@@ -6,6 +6,7 @@ import (
 	"image/color"
 	"image/png"
 	"math"
+	"strings"
 	"testing"
 	"time"
 
@@ -212,7 +213,10 @@ const testQRCXML = `<?xml version="1.0" encoding="utf-8"?><QrcInfos><LyricInfo L
 // 配 loadEngine：Resolve 给一个假的流地址，OpenURL 直接成功、Duration
 // 立刻为正，awaitLoaded 便判定「打开成功」，起播链走到底并触发 fetchLyric。
 // 不触网、不碰 mpv。
-type npBackend struct{ qrc string }
+type npBackend struct {
+	qrc   string
+	trans string
+}
 
 // loadEngine 是「载入立刻成功」的假引擎：awaitLoaded 靠 Duration>0 判定
 // 打开成功，所以这里必须给出正的时长——否则起播协程会一直降档重试，
@@ -231,14 +235,20 @@ func (npBackend) Tiers() (*player.TierTable, error)        { return nil, nil }
 func (npBackend) Resolve(string, string, int64, string, []string) (*player.StreamInfo, error) {
 	return &player.StreamInfo{URL: "test://stream", Tier: "flac", TierLabel: "FLAC"}, nil
 }
-func (b npBackend) FetchLyric(string, bool) (string, string, error) { return b.qrc, "", nil }
+func (b npBackend) FetchLyric(string, bool) (string, string, error) { return b.qrc, b.trans, nil }
 func (npBackend) LikeSong(int64, int64, bool) error                 { return nil }
 
 // npTestApp 渲染一张正在播放页，封面是一整块纯色，便于按像素断言。
 func npTestApp(t *testing.T, cover color.RGBA) (*App, *ui.Tester) {
 	t.Helper()
+	return npTestAppLyrics(t, cover, testQRCXML, "")
+}
+
+// npTestAppLyrics 允许测试注入翻译 LRC（版式回归用：长译文必须换行）。
+func npTestAppLyrics(t *testing.T, cover color.RGBA, qrc, trans string) (*App, *ui.Tester) {
+	t.Helper()
 	const pmid = "001Qu4I30VtaFH"
-	p := player.New(npBackend{qrc: testQRCXML}, loadEngine{}, &nullPrefs{})
+	p := player.New(npBackend{qrc: qrc, trans: trans}, loadEngine{}, &nullPrefs{})
 	p.PlayList([]player.Song{{
 		Mid: "m1", Title: "晴天", Artists: "周杰伦", Album: "叶惠美",
 		AlbumPmid: pmid, Interval: 269,
@@ -334,6 +344,62 @@ func TestNowPlayingCoverIsNotVeiled(t *testing.T) {
 	if best < 290 {
 		t.Errorf("画面里最宽的纯红横段只有 %dpx（封面宽 300）——"+
 			"背景层（模糊底图/遮罩）盖在了封面上", best)
+	}
+}
+
+// TestNowPlayingLyricsHaveBreathingRoom：歌词首尾要留出舞台，不能贴着
+// 内容层顶边；同时整行给出 pointer，告诉用户点行可以跳转。
+func TestNowPlayingLyricsHaveBreathingRoom(t *testing.T) {
+	_, tester := npTestApp(t, color.RGBA{R: 96, G: 148, B: 210, A: 255})
+	time.Sleep(450 * time.Millisecond)
+	tester.Frame()
+
+	r, ok := tester.Find("那一年")
+	if !ok {
+		t.Fatalf("找不到首行歌词；当前帧文本：%v", tester.Texts())
+	}
+	// 1000×720 的定妆照里首行应落在约 218px：既不贴顶，也没有被推到下半屏。
+	if r.Y < 100 || r.Y > 400 {
+		t.Errorf("首行歌词 Y=%v，应在 100~400（上下留白失效）", r.Y)
+	}
+
+	tester.Move(r.X+4, r.Y+4)
+	tester.Frame()
+	if got := tester.Cursor(); got != ui.CursorPointer {
+		t.Errorf("歌词行上的指针是 %v，期望 pointer（点击跳转提示）", got)
+	}
+}
+
+// TestNowPlayingTranslationWraps：翻译不再 SingleLine 截断；长译文要折行，
+// 完整信息必须能读到。
+func TestNowPlayingTranslationWraps(t *testing.T) {
+	body := strings.Repeat("这是一段很长的译文", 12)
+	trans := "[00:00.00]" + body
+	app, tester := npTestAppLyrics(t, color.RGBA{R: 96, G: 148, B: 210, A: 255}, testQRCXML, trans)
+	app.PL.SetShowTranslation(true)
+
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		lines, _ := app.PL.LyricLines()
+		if len(lines) > 0 && lines[0].Trans != "" {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("开启翻译后未对齐进首行")
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+	time.Sleep(450 * time.Millisecond)
+	tester.Frame()
+
+	r, ok := tester.Find(body)
+	if !ok {
+		t.Fatalf("找不到翻译文本；当前帧文本：%v", tester.Texts())
+	}
+	// 单行中文字号约 12px（MyGo 的行盒约 20px）；这段文案按歌词列宽
+	// 至少折两行，行盒高度应明显超过单行。
+	if r.H <= 20 {
+		t.Errorf("翻译只占 %.1fpx 高——仍被压成单行截断", r.H)
 	}
 }
 

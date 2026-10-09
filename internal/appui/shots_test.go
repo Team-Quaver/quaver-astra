@@ -1,6 +1,7 @@
 package appui
 
 import (
+	"image/color"
 	"image/png"
 	"os"
 	"path/filepath"
@@ -12,7 +13,7 @@ import (
 	"github.com/egoist/mygo/ui"
 )
 
-// TestUIShots 把正在播放页的浮层离屏渲染成 PNG 定妆照，写进
+// TestUIShots 把正在播放页与浮层离屏渲染成 PNG 定妆照，写进
 // $QUAVER_SHOTS_DIR。无显示服务的环境（CI/无头容器）没有别的目视验证手段，
 // 改完 UI 想看实际效果就靠它：
 //
@@ -38,6 +39,12 @@ func TestUIShots(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+
+	// 正在播放页（歌词跟随态）
+	base, baseTester := npTestApp(t, color.RGBA{R: 96, G: 148, B: 210, A: 255})
+	base.PL.SeekTo(2.0 / 269)
+	time.Sleep(450 * time.Millisecond)
+	shot(baseTester, "np-lyrics.png")
 
 	// ⋮ 菜单
 	_, _, tester := npMenuApp(t, testQRCXML)
