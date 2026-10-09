@@ -191,7 +191,7 @@ func (a *App) lyricColumnLine(c *ui.Context, line player.LyricLine, index int) {
 	row.Opacity(row.Animate("lyric-line", target, 260*time.Millisecond))
 	row.Children(func() {
 		if !(isCur && a.karaokeLineAt(c, index, size)) {
-			txt := ui.Text(c, line.Text).FontSize(fz(size)).TextColor(ui.Hex("#ffffff"))
+			txt := ui.Text(c, line.Text).Font(a.lyricFontFamily()).FontSize(fz(size)).TextColor(ui.Hex("#ffffff"))
 			// 主项目行级歌词给非当前句 500；原生只给 400 会在模糊底上
 			// 过早失去笔画，当前句再升到 800，层级才和 AMLL 的前后景一致。
 			txt.FontWeight(500)
@@ -206,7 +206,7 @@ func (a *App) lyricColumnLine(c *ui.Context, line player.LyricLine, index int) {
 			}
 			// 翻译允许换行：长译文被 SingleLine 截断时，用户看不到完整信息；
 			// 列表会按行高重新居中，滚动跟随不受影响。
-			ui.Text(c, line.Trans).FontSize(fz(size * 0.7)).TextColor(col)
+			ui.Text(c, line.Trans).Font(a.lyricFontFamily()).FontSize(fz(size * 0.7)).TextColor(col)
 		}
 	})
 	if row.Hovered() && !isCur {

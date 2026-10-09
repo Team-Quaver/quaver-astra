@@ -1,6 +1,7 @@
 package appui
 
 import (
+	"strings"
 	"sync"
 
 	"github.com/Team-Quaver/quaver-astra/internal/colorprobe"
@@ -162,6 +163,39 @@ func heartStyle(loved, hover bool, t *ui.Theme) (icon string, col ui.Color) {
 	return "heart", t.Text
 }
 
+// fontModeNames 是字体设置的模式值与展示名。system 使用 Fontconfig 的默认
+// sans-serif，避免 MyGo 的 system-ui 展开把 CJK fallback 错选到日文字体。
+var fontModeNames = []struct{ key, label string }{
+	{"system", "系统"},
+	{"serif", "衬线"},
+	{"sans-serif", "非衬线"},
+	{"monospace", "等宽"},
+	{"custom", "自定义"},
+}
+
+// configuredFont 把设置里的字体模式解析成传给 MyGo 的 family list。
+// 自定义模式允许写 family list（逗号分隔），空值回到系统默认。
+func (a *App) configuredFont(modeKey, customKey string) string {
+	switch a.Conf.String(modeKey, "system") {
+	case "serif":
+		return "serif"
+	case "sans-serif":
+		return "sans-serif"
+	case "monospace":
+		return "monospace"
+	case "custom":
+		if family := strings.TrimSpace(a.Conf.String(customKey, "")); family != "" {
+			return family
+		}
+	}
+	return "sans-serif"
+}
+
+// lyricFontFamily 是歌词文字（包括翻译和逐字高亮）的 family list。
+func (a *App) lyricFontFamily() string {
+	return a.configuredFont("Style.LyricFontMode", "Style.LyricFontCustom")
+}
+
 // buildTheme 组装 Quaver 风格主题（明暗按 Style.Theme + 系统字号 + 封面色）。
 func (a *App) buildTheme(c *ui.Context) *ui.Theme {
 	base := c.Theme()
@@ -197,6 +231,7 @@ func (a *App) buildTheme(c *ui.Context) *ui.Theme {
 	if fontScale <= 0 {
 		fontScale = 1
 	}
+	t.Font = a.configuredFont("Style.FontMode", "Style.FontCustom")
 	t.FontSize = fz(baseFontSize)
 	return &t
 }

@@ -297,6 +297,7 @@ func (a *App) karaokeLine(c *ui.Context, ql player.QrcLine, size float32, width 
 		}
 		spans = append(spans, ui.Span{
 			Text:   w.Text,
+			Font:   a.lyricFontFamily(),
 			Size:   fz(size),
 			Weight: 800,
 			Color:  karaokeColor(fills[i]),

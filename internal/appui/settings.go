@@ -9,6 +9,11 @@ import (
 
 type settingsState struct {
 	tab int
+
+	// 自定义字体输入框的草稿；TextInput 需要跨帧稳定地持有可编辑字符串。
+	fontDraft      string
+	lyricFontDraft string
+	draftsLoaded   bool
 }
 
 var themeNames = []struct {
@@ -19,6 +24,11 @@ var themeNames = []struct {
 func (a *App) settingsView(c *ui.Context) {
 	st := &a.settings
 	t := c.Theme()
+	if !st.draftsLoaded {
+		st.fontDraft = a.Conf.String("Style.FontCustom", "")
+		st.lyricFontDraft = a.Conf.String("Style.LyricFontCustom", "")
+		st.draftsLoaded = true
+	}
 
 	a.pageEnter(c, ui.Column(c).Fill().Padding(20, 24, 24, 24).Gap(14)).Children(func() {
 		ui.Text(c, "设置").FontSize(fz(24)).FontWeight(800)
@@ -53,6 +63,16 @@ func (a *App) settingsAppearance(c *ui.Context, t *ui.Theme) {
 				}
 			}
 		})
+
+		ui.Text(c, "字体").FontSize(fz(14)).FontWeight(700)
+
+		// 字体模式与自定义 family list。system 映射到 Fontconfig 的默认
+		// sans-serif，避免 MyGo 的 system-ui 展开导致 CJK fallback 错选日文字体。
+		a.fontSettingRow(c, t, "界面字体", "Style.FontMode", "Style.FontCustom", &a.settings.fontDraft)
+		a.fontSettingRow(c, t, "歌词字体", "Style.LyricFontMode", "Style.LyricFontCustom", &a.settings.lyricFontDraft)
+
+		ui.Text(c, "自定义字体填写字体 family 名，可用逗号写多个候选，例如「Noto Sans CJK SC, sans-serif」。").
+			FontSize(fz(11.5)).TextColor(t.TextMuted).MaxLines(2)
 
 		a.prefRow(c, "显示歌词翻译", func() bool { return a.PL.ShowTranslation() }, func(v bool) { a.PL.SetShowTranslation(v) })
 
@@ -91,6 +111,39 @@ func (a *App) settingsAppearance(c *ui.Context, t *ui.Theme) {
 		}
 		ui.Text(c, "「关闭窗口」收进托盘，音乐继续播放；「退出应用」关闭窗口并退出 Quaver Astra。").
 			FontSize(fz(11.5)).TextColor(t.TextMuted).MaxLines(2)
+	})
+}
+
+// fontSettingRow 是一组字体模式选择；custom 模式展开 family list 输入框。
+func (a *App) fontSettingRow(c *ui.Context, t *ui.Theme, title, modeKey, customKey string, draft *string) {
+	ui.Column(c).FillWidth().Gap(6).Children(func() {
+		ui.Text(c, title).FontSize(fz(12.5)).TextColor(t.TextMuted)
+		mode := a.Conf.String(modeKey, "system")
+		label := "系统"
+		options := make([]string, 0, len(fontModeNames))
+		for _, option := range fontModeNames {
+			options = append(options, option.label)
+			if option.key == mode {
+				label = option.label
+			}
+		}
+		sel := ui.Select(c, &label, options).Width(280)
+		if sel.Changed() {
+			for _, option := range fontModeNames {
+				if option.label == label {
+					a.Conf.Set(modeKey, option.key)
+					a.invalidate()
+					break
+				}
+			}
+		}
+		if a.Conf.String(modeKey, "system") == "custom" {
+			in := ui.TextInput(c, draft).Label("自定义字体 family").Placeholder("例如：Noto Sans CJK SC").Width(280)
+			if in.Changed() {
+				a.Conf.Set(customKey, *draft)
+				a.invalidate()
+			}
+		}
 	})
 }
 
