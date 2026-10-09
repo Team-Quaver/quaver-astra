@@ -2,6 +2,8 @@ package appui
 
 import (
 	"bytes"
+	"context"
+	"errors"
 	"image"
 	_ "image/jpeg"
 	_ "image/png"
@@ -24,15 +26,40 @@ type CoverCache struct {
 	blur     map[string]*ui.Bitmap
 	inflight map[string]bool
 	hc       *http.Client
+	ctx      context.Context
+	cancel   context.CancelFunc
+	slots    chan struct{}
 }
 
+const (
+	// maxCoverBytes 限制单张封面响应。异常大图在读取阶段直接拒绝，避免
+	// io.ReadAll 把不可信响应一次性放大成超大临时切片。
+	maxCoverBytes = 4 << 20
+	// coverWorkers 限制同时下载/解码的封面数量，快速滚动列表时不会瞬间
+	// 创建几十个大图解码缓冲区。
+	coverWorkers = 3
+)
+
+var errCoverTooLarge = errors.New("cover response too large")
+
 func NewCoverCache() *CoverCache {
+	ctx, cancel := context.WithCancel(context.Background())
 	return &CoverCache{
 		m:        map[string]*ui.Bitmap{},
 		raw:      map[string][]byte{},
 		blur:     map[string]*ui.Bitmap{},
 		inflight: map[string]bool{},
 		hc:       &http.Client{Timeout: 20 * time.Second},
+		ctx:      ctx,
+		cancel:   cancel,
+		slots:    make(chan struct{}, coverWorkers),
+	}
+}
+
+// Close 取消尚未完成的封面下载，并阻止新任务开始。幂等。
+func (cc *CoverCache) Close() {
+	if cc.cancel != nil {
+		cc.cancel()
 	}
 }
 
@@ -62,6 +89,12 @@ func (cc *CoverCache) load(url string, redraw func()) {
 		delete(cc.inflight, url)
 		cc.mu.Unlock()
 	}()
+	select {
+	case cc.slots <- struct{}{}:
+		defer func() { <-cc.slots }()
+	case <-cc.ctx.Done():
+		return
+	}
 	data, err := cc.fetch(url)
 	if err != nil {
 		return
@@ -80,7 +113,11 @@ func (cc *CoverCache) load(url string, redraw func()) {
 }
 
 func (cc *CoverCache) fetch(url string) ([]byte, error) {
-	resp, err := cc.hc.Get(url)
+	req, err := http.NewRequestWithContext(cc.ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := cc.hc.Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -88,7 +125,14 @@ func (cc *CoverCache) fetch(url string) ([]byte, error) {
 	if resp.StatusCode >= 400 {
 		return nil, io.EOF
 	}
-	return io.ReadAll(resp.Body)
+	data, err := io.ReadAll(io.LimitReader(resp.Body, maxCoverBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(data) > maxCoverBytes {
+		return nil, errCoverTooLarge
+	}
+	return data, nil
 }
 
 // GetBlur 返回模糊底图（正在播放页背景）；独立缓存，仅派生一次。

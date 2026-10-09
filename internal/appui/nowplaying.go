@@ -307,7 +307,7 @@ func (a *App) qualityPillNP(c *ui.Context) {
 
 func (a *App) queuePanel(c *ui.Context) {
 	t := c.Theme()
-	queue := a.PL.Queue()
+	queueLen := a.PL.QueueLen()
 	a.queueList.Key = nil
 	a.queueList.Reorder = func(rows []int, to int) {
 		a.PL.MoveInQueue(rows, to)
@@ -316,7 +316,7 @@ func (a *App) queuePanel(c *ui.Context) {
 	panel := ui.Column(c).Width(300).Background(a.sideBg(t)).BorderWidth(1, 0, 0, 1).BorderColor(t.Border)
 	panel.Children(func() {
 		ui.Row(c).FillWidth().Height(44).PaddingX(12).AlignItems(ui.Center).Gap(8).Children(func() {
-			ui.Textf(c, "播放列表 · %d 首", len(queue)).FontSize(fz(13)).FontWeight(700).Grow(1)
+			ui.Textf(c, "播放列表 · %d 首", queueLen).FontSize(fz(13)).FontWeight(700).Grow(1)
 			clearBtn := ui.ButtonBase(c).Size(26, 26).Radius(13).Center().Transition(hoverFade)
 			clearBtn.Children(func() { ui.Icon(c, Icons["trash"]).FontSize(fz(14)).AlignSelf(ui.Center) })
 			if clearBtn.Hovered() {
@@ -336,16 +336,23 @@ func (a *App) queuePanel(c *ui.Context) {
 			}
 		})
 		cur, _ := a.PL.Current()
-		a.queueList.Label = func(i int) string { return queue[i].DisplayName() }
-		ui.List(c, &a.queueList, len(queue), func(i int) {
-			a.queueRow(c, queue, i, cur.Mid)
+		a.queueList.Label = func(i int) string {
+			row, ok := a.PL.QueueRow(i)
+			if !ok {
+				return ""
+			}
+			return row.DisplayName()
+		}
+		ui.List(c, &a.queueList, queueLen, func(i int) {
+			if row, ok := a.PL.QueueRow(i); ok {
+				a.queueRow(c, row, i, cur.Mid)
+			}
 		}).Grow(1)
 	})
 }
 
-func (a *App) queueRow(c *ui.Context, queue []player.Song, i int, curMid string) {
+func (a *App) queueRow(c *ui.Context, s player.QueueRowView, i int, curMid string) {
 	t := c.Theme()
-	s := queue[i]
 	isCur := s.Mid == curMid
 	row := ui.Row(c).FillWidth().Height(46).PaddingX(10).Gap(10).AlignItems(ui.Center).Radius(8).
 		Transition(hoverFade)

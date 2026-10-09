@@ -215,7 +215,7 @@ func (a *App) settingsAbout(c *ui.Context, t *ui.Theme) {
 			if a.PL.LoggedIn() {
 				if ui.Button(c, "退出登录").Clicked() {
 					go func() {
-						_ = a.API.Logout()
+						a.withAPILimit(func() { _ = a.API.Logout() })
 						a.update(func() { a.PL.RefreshUser() })
 					}()
 				}

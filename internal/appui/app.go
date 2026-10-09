@@ -79,17 +79,25 @@ type App struct {
 	closeOnce   sync.Once
 
 	// 各页面的数据态（历史上往返保留数据本身）
-	home     homeState
-	liked    songListState
-	favLists favListsState
-	daily    songListState
-	guess    guessState
-	playlist map[int64]*playlistState
-	search   searchState
-	login    loginState
-	settings settingsState
-	singers  map[string]*singerState // 歌手页（按 mid 缓存）
-	albums   map[string]*albumState  // 专辑页（按 mid 缓存）
+	home        homeState
+	liked       songListState
+	favLists    favListsState
+	daily       songListState
+	guess       guessState
+	playlist    map[int64]*playlistState
+	playlistRec []int64
+	search      searchState
+	login       loginState
+	settings    settingsState
+	singers     map[string]*singerState // 歌手页（按 mid 缓存）
+	singerRec   []string
+	albums      map[string]*albumState // 专辑页（按 mid 缓存）
+	albumRec    []string
+
+	// apiSlots 限制 UI 侧同时进行的 HTTP 请求，避免快速浏览时多个大响应
+	// 同时驻留。请求本身仍由各页面后台 goroutine 发起。
+	apiOnce  sync.Once
+	apiSlots chan struct{}
 
 	// wasLoggedIn 记录上一次通知时的登录态，用来识别「登录/登出」这一跳变
 	wasLoggedIn bool
@@ -133,11 +141,25 @@ func (a *App) Close() {
 		a.quitStarted.Store(true)
 		a.sleep.close()
 		a.PL.Close()
+		if a.Covers != nil {
+			a.Covers.Close()
+		}
 		if a.tray != nil {
 			a.tray.Destroy()
 			a.tray = nil
 		}
 	})
+}
+
+const uiRequestLimit = 6
+
+// withAPILimit 在 UI 侧 HTTP 调用外加一个全局并发闸门，限制响应解析和
+// 临时对象同时占用的内存。闸门初始化是幂等的，测试中直接构造 App 也可用。
+func (a *App) withAPILimit(fn func()) {
+	a.apiOnce.Do(func() { a.apiSlots = make(chan struct{}, uiRequestLimit) })
+	a.apiSlots <- struct{}{}
+	defer func() { <-a.apiSlots }()
+	fn()
 }
 
 // syncSleep 只在「设置开启 + mpv 实际出声」时持有系统睡眠禁止。
@@ -621,7 +643,11 @@ func (a *App) maybeSelfCheck() {
 	if os.Getenv("QUAVER_PLAY_FIRST") == "1" {
 		go func() {
 			time.Sleep(2 * time.Second)
-			res, err := a.API.RecommendNewsong()
+			var res struct {
+				Songs []backend.Song `json:"songs"`
+			}
+			var err error
+			a.withAPILimit(func() { res, err = a.API.RecommendNewsong() })
 			if err != nil {
 				fmt.Fprintln(os.Stderr, "play-first:", err)
 				return

@@ -109,7 +109,9 @@ func (a *App) genQR(st *loginState) {
 	ch := loginChannels[st.channel]
 	st.status = "正在获取二维码…"
 	go func() {
-		qr, err := a.API.LoginQR(ch)
+		var qr backend.QRCode
+		var err error
+		a.withAPILimit(func() { qr, err = a.API.LoginQR(ch) })
 		a.update(func() {
 			if gen != st.gen {
 				return
@@ -141,7 +143,9 @@ func (a *App) pollQR(st *loginState, ch, identifier string, gen uint64) {
 		if done {
 			return
 		}
-		status, err := a.API.LoginQRStatus(ch, identifier)
+		var status backend.QRStatus
+		var err error
+		a.withAPILimit(func() { status, err = a.API.LoginQRStatus(ch, identifier) })
 		a.update(func() {
 			if gen != st.gen || st.pollStop {
 				return

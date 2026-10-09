@@ -34,7 +34,7 @@ type Player struct {
 	sessionQ string // 会话级音质覆盖
 	tiers    *TierTable
 
-	loved      map[string]Song // mid → 歌
+	loved      map[string]struct{} // mid → 是否收藏；完整歌曲只留在 likedCache
 	likedCache []Song
 	likedTotal int64
 	likedSeq   uint64
@@ -158,7 +158,7 @@ func New(b Backend, e Engine, prefs Preferences) *Player {
 		mode:       "all",
 		index:      -1,
 		lyricState: "idle",
-		loved:      map[string]Song{},
+		loved:      map[string]struct{}{},
 		showTrans:  prefs.Bool("Style.ShowTranslation", true),
 	}
 	return p
@@ -230,7 +230,7 @@ func (p *Player) LoadLoved() {
 	seq := p.likedSeq
 	p.mu.Unlock()
 	go func() {
-		all := map[string]Song{}
+		all := map[string]struct{}{}
 		var first []Song
 		total := int64(0)
 		for page := 1; page <= 2; page++ {
@@ -243,7 +243,7 @@ func (p *Player) LoadLoved() {
 				first = songs
 			}
 			for _, s := range songs {
-				all[s.Mid] = s
+				all[s.Mid] = struct{}{}
 			}
 			if !hasmore {
 				break
@@ -275,6 +275,44 @@ func (p *Player) Me() UserInfo {
 }
 
 // ===== 队列 =====
+
+// QueueLen 返回队列长度；只需要数量时避免复制整份队列。
+func (p *Player) QueueLen() int {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return len(p.queue)
+}
+
+// QueueRowView 是队列/托盘渲染需要的紧凑歌曲形状。按索引取一行只复制少量
+// 字符串头，不复制整个 Song（其中还包含 Singers 切片）。
+type QueueRowView struct {
+	Mid, Title, Name, Artists, AlbumPmid, AlbumMid string
+}
+
+func (s QueueRowView) DisplayName() string {
+	if s.Title != "" {
+		return s.Title
+	}
+	return s.Name
+}
+
+// QueueRow 返回第 i 行的紧凑视图。
+func (p *Player) QueueRow(i int) (QueueRowView, bool) {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	if i < 0 || i >= len(p.queue) {
+		return QueueRowView{}, false
+	}
+	s := p.queue[i]
+	return QueueRowView{
+		Mid:       s.Mid,
+		Title:     s.Title,
+		Name:      s.Name,
+		Artists:   s.Artists,
+		AlbumPmid: s.AlbumPmid,
+		AlbumMid:  s.AlbumMid,
+	}, true
+}
 
 func (p *Player) Queue() []Song {
 	p.mu.RLock()
@@ -344,7 +382,9 @@ func (p *Player) EnqueueNext(s Song) {
 		return
 	}
 	at := p.index + 1
-	p.queue = append(p.queue[:at], append([]Song{s}, p.queue[at:]...)...)
+	p.queue = append(p.queue, Song{})
+	copy(p.queue[at+1:], p.queue[at:])
+	p.queue[at] = s
 	p.mu.Unlock()
 	p.notifyChange()
 }
@@ -356,7 +396,9 @@ func (p *Player) PlayNextNow(s Song) {
 	if p.index < 0 {
 		at = len(p.queue)
 	}
-	p.queue = append(p.queue[:at], append([]Song{s}, p.queue[at:]...)...)
+	p.queue = append(p.queue, Song{})
+	copy(p.queue[at+1:], p.queue[at:])
+	p.queue[at] = s
 	p.index = at
 	p.mu.Unlock()
 	p.notifyChange()
@@ -423,33 +465,36 @@ func (p *Player) MoveInQueue(rows []int, to int) {
 	if p.index >= 0 && p.index < len(p.queue) {
 		cur = p.queue[p.index].Mid
 	}
-	moved := make([]Song, 0, len(rows))
-	rm := map[int]bool{}
+	rm := make([]bool, len(p.queue))
 	for _, r := range rows {
 		if r >= 0 && r < len(p.queue) {
-			moved = append(moved, p.queue[r])
 			rm[r] = true
 		}
 	}
-	out := make([]Song, 0, len(p.queue))
-	for i, s := range p.queue {
-		if !rm[i] {
-			out = append(out, s)
-		}
-	}
 	adjusted := to
-	for r := range rm {
-		if r < to {
+	for i := 0; i < to && i < len(rm); i++ {
+		if rm[i] {
 			adjusted--
 		}
 	}
-	if adjusted < 0 {
-		adjusted = 0
+	out := make([]Song, 0, len(p.queue))
+	sourcePos := 0
+	for sourcePos < len(p.queue) && len(out) < adjusted {
+		if !rm[sourcePos] {
+			out = append(out, p.queue[sourcePos])
+		}
+		sourcePos++
 	}
-	if adjusted > len(out) {
-		adjusted = len(out)
+	for _, r := range rows {
+		if r >= 0 && r < len(p.queue) {
+			out = append(out, p.queue[r])
+		}
 	}
-	out = append(out[:adjusted], append(append([]Song(nil), moved...), out[adjusted:]...)...)
+	for ; sourcePos < len(p.queue); sourcePos++ {
+		if !rm[sourcePos] {
+			out = append(out, p.queue[sourcePos])
+		}
+	}
 	p.queue = out
 	if cur != "" {
 		for i, s := range p.queue {
@@ -1153,7 +1198,7 @@ func (p *Player) ToggleLove(song Song) {
 	if was {
 		delete(p.loved, song.Mid)
 	} else {
-		p.loved[song.Mid] = song
+		p.loved[song.Mid] = struct{}{}
 	}
 	p.mu.Unlock()
 	p.notifyChange()
@@ -1165,7 +1210,7 @@ func (p *Player) ToggleLove(song Song) {
 		if err := p.api.LikeSong(song.SongID, writeType, !was); err != nil {
 			p.mu.Lock()
 			if was {
-				p.loved[song.Mid] = song
+				p.loved[song.Mid] = struct{}{}
 			} else {
 				delete(p.loved, song.Mid)
 			}

@@ -34,7 +34,7 @@ func (a *App) homeView(c *ui.Context) {
 	a.ensureHome()
 	t := c.Theme()
 
-	ui.Scroll(c).Fill().Padding(20, 24, 24, 24).Gap(18).Children(func() {
+	ui.Scroll(c).Fill().Padding(20, 24, 28, 24).Gap(20).Children(func() {
 		if st.err != "" {
 			blk := ui.Column(c).FillWidth().Center().Gap(8).Padding(40)
 			a.enterBlock(c, 0, blk)
@@ -52,13 +52,13 @@ func (a *App) homeView(c *ui.Context) {
 		}
 
 		// 两栏头部：今日精选 hero + 新歌速递。
-		// hero 带 MinWidth、容器 Wrap：内容区不够同时放下「hero 最小宽 +
-		// 新歌速递 430」时，新歌速递折到下一行整行铺开，hero 不再被挤瘪。
-		head := ui.Row(c).FillWidth().Wrap().Gap(16).AlignItems(ui.Stretch)
+		// hero 带 MinWidth，新歌速递用基准宽 + Grow：内容区不够同时放下
+		// 两栏时新歌速递折到下一行并铺开，hero 不再被挤瘪。
+		head := ui.Row(c).FillWidth().Wrap().GapX(18).GapY(20).AlignItems(ui.Start)
 		a.enterBlock(c, 0, head)
 		head.Children(func() {
 			a.homeHero(c, st.recs[0])
-			ui.Column(c).Width(430).Gap(2).Children(func() {
+			ui.Column(c).Grow(1).Basis(430).MinWidth(360).Gap(2).Children(func() {
 				ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(8).Children(func() {
 					ui.Text(c, "新歌速递").FontSize(fz(15)).FontWeight(800).Grow(1)
 					linkButton(c, "播放全部", func() {
@@ -73,15 +73,15 @@ func (a *App) homeView(c *ui.Context) {
 		})
 
 		// 推荐歌单网格（flex wrap 自适应列数）
-		recs := ui.Column(c).FillWidth().Gap(10)
+		recs := ui.Column(c).FillWidth().Gap(12)
 		a.enterBlock(c, 1, recs)
 		recs.Children(func() {
-			sectionHeader(c, "推荐歌单", nil)
-			ui.Row(c).FillWidth().Wrap().Gap(16).Children(func() {
-				for i := range st.recs {
-					a.playlistCard(c, st.recs[i])
-				}
-			})
+			// 首条已经作为今日精选 hero 展示，下面的网格从第二条开始，
+			// 避免同一个歌单在同一屏里出现两次。
+			if len(st.recs) > 1 {
+				sectionHeader(c, "推荐歌单", nil)
+				a.playlistGrid(c, st.recs[1:])
+			}
 		})
 	})
 }
@@ -154,26 +154,30 @@ func (a *App) ensureHome() {
 	}
 	st.loading = true
 	go func() {
-		recs, err1 := a.API.RecommendSonglists(1, 13)
-		newsong, err2 := a.API.RecommendNewsong()
-		a.update(func() {
-			st.loading = false
-			st.loaded = true
-			if err1 != nil {
-				st.err = err1.Error()
-			} else {
-				st.recs = recs.Songlists
-			}
-			if err2 == nil {
-				st.newsong = toPlayerSongs(newsong.Songs)
-			}
+		a.withAPILimit(func() {
+			recs, err1 := a.API.RecommendSonglists(1, 13)
+			newsong, err2 := a.API.RecommendNewsong()
+			a.update(func() {
+				st.loading = false
+				st.loaded = true
+				if err1 != nil {
+					st.err = err1.Error()
+				} else {
+					st.recs = recs.Songlists
+				}
+				if err2 == nil {
+					st.newsong = toPlayerSongs(newsong.Songs)
+				}
+			})
 		})
 	}()
 }
 
 func (a *App) openPlaylistAndPlay(id int64) {
 	go func() {
-		d, err := a.API.SonglistDetail(id, 1, 100)
+		var d backend.SonglistDetail
+		var err error
+		a.withAPILimit(func() { d, err = a.API.SonglistDetail(id, 1, 100) })
 		a.update(func() {
 			if err != nil {
 				return
@@ -183,13 +187,31 @@ func (a *App) openPlaylistAndPlay(id int64) {
 	}()
 }
 
-// playlistCard 歌单卡片（150 宽）。
+// playlistGrid 是歌单卡片的自适应换行网格。
+//
+// 卡片宽度统一由 playlistCardWidth 决定，末行数量不足时也不会被 flex 拉宽；
+// 标题区与元信息区固定高度，一/两行标题都不会把同排卡片的后续内容顶歪。
+func (a *App) playlistGrid(c *ui.Context, lists []backend.SonglistSummary) {
+	ui.Row(c).FillWidth().Wrap().GapX(18).GapY(24).AlignItems(ui.Start).Children(func() {
+		for i := range lists {
+			a.playlistCard(c, lists[i])
+		}
+	})
+}
+
+// playlistCardWidth 是歌单卡片的统一宽度。
+//
+// 网格卡片必须跨行保持同宽；如果让最后一行继续 Grow，末行只有两三张时
+// 会把卡片拉宽，看起来就像“后面几张突然变大”。
+const playlistCardWidth = 172
+
+// playlistCard 歌单卡片：封面 1:1，文字区占高固定，所有行使用同一宽度。
 func (a *App) playlistCard(c *ui.Context, pl backend.SonglistSummary) {
 	t := c.Theme()
 	art := a.Covers.Get(pl.Picurl, a.invalidate)
-	card := ui.Column(c).Width(150).Gap(6)
+	card := ui.Column(c).Width(playlistCardWidth).Shrink(0).Gap(7).Label(pl.Title)
 	card.Children(func() {
-		box := ui.Box(c).Size(150, 150).Clip().Radius(10).Background(t.SurfaceHover).
+		box := ui.Box(c).FillWidth().AspectRatio(1).Clip().Radius(10).Background(t.SurfaceHover).
 			Transition(hoverFade)
 		box.Children(func() {
 			if art != nil {
@@ -215,9 +237,13 @@ func (a *App) playlistCard(c *ui.Context, pl backend.SonglistSummary) {
 				a.openPlaylistAndPlay(pl.ID)
 			}
 		})
-		ui.Text(c, pl.Title).FontSize(fz(12.5)).MaxLines(2).Ellipsis("…").LineHeight(1.35)
+		ui.Box(c).FillWidth().Height(fz(35)).Children(func() {
+			ui.Text(c, pl.Title).FontSize(fz(12.5)).MaxLines(2).Ellipsis("…").LineHeight(1.35)
+		})
 		sub := strconv.FormatInt(pl.Listennum, 10) + " 次播放"
-		ui.Text(c, sub).FontSize(fz(11)).TextColor(t.TextMuted).SingleLine().Ellipsis("…")
+		ui.Box(c).FillWidth().Height(fz(16)).Children(func() {
+			ui.Text(c, sub).FontSize(fz(11)).TextColor(t.TextMuted).SingleLine().Ellipsis("…")
+		})
 	})
 	if card.Clicked() {
 		a.Router.Push("/playlist/" + strconv.FormatInt(pl.ID, 10))
@@ -285,7 +311,9 @@ func (a *App) ensureDaily() {
 	}
 	st.loading = true
 	go func() {
-		d, err := a.API.RecommendDaily()
+		var d backend.SonglistDetail
+		var err error
+		a.withAPILimit(func() { d, err = a.API.RecommendDaily() })
 		a.update(func() {
 			st.loading = false
 			st.loaded = true
@@ -346,15 +374,17 @@ func (a *App) ensureGuess() {
 	}
 	st.rounds = rounds
 	go func() {
-		res, err := a.API.RecommendGuess(rounds)
-		a.update(func() {
-			st.list.loading = false
-			st.list.loaded = true
-			if err != nil {
-				st.list.err = err.Error()
-				return
-			}
-			st.list.songs = toPlayerSongs(res.Songs)
+		a.withAPILimit(func() {
+			res, err := a.API.RecommendGuess(rounds)
+			a.update(func() {
+				st.list.loading = false
+				st.list.loaded = true
+				if err != nil {
+					st.list.err = err.Error()
+					return
+				}
+				st.list.songs = toPlayerSongs(res.Songs)
+			})
 		})
 	}()
 }
@@ -380,11 +410,10 @@ type playlistState struct {
 }
 
 func (a *App) playlistView(c *ui.Context, id int64) {
-	st, ok := a.playlist[id]
-	if !ok {
-		st = &playlistState{}
-		a.playlist[id] = st
+	if a.playlist == nil {
+		a.playlist = map[int64]*playlistState{}
 	}
+	st := getOrCreatePage(a.playlist, &a.playlistRec, id, func() *playlistState { return &playlistState{} })
 	a.ensurePlaylist(st, id)
 	t := c.Theme()
 
@@ -467,7 +496,9 @@ func (a *App) ensurePlaylist(st *playlistState, id int64) {
 	st.loading = true
 	st.page = 1
 	go func() {
-		d, err := a.API.SonglistDetail(id, 1, 100)
+		var d backend.SonglistDetail
+		var err error
+		a.withAPILimit(func() { d, err = a.API.SonglistDetail(id, 1, 100) })
 		a.update(func() {
 			st.loading = false
 			st.loaded = true
@@ -487,7 +518,9 @@ func (a *App) ensurePlaylist(st *playlistState, id int64) {
 
 func (a *App) loadPlaylistPage(st *playlistState, id int64, page int) {
 	go func() {
-		d, err := a.API.SonglistDetail(id, page, 100)
+		var d backend.SonglistDetail
+		var err error
+		a.withAPILimit(func() { d, err = a.API.SonglistDetail(id, page, 100) })
 		a.update(func() {
 			st.loadingMore = false
 			if err != nil {
@@ -504,7 +537,9 @@ func (a *App) togglePlaylistFav(st *playlistState, id int64) {
 	target := !st.faved
 	st.faved = target
 	go func() {
-		if err := a.API.SonglistFav(id, target); err != nil {
+		var err error
+		a.withAPILimit(func() { err = a.API.SonglistFav(id, target) })
+		if err != nil {
 			a.update(func() { st.faved = !target })
 		}
 	}()
@@ -513,18 +548,19 @@ func (a *App) togglePlaylistFav(st *playlistState, id int64) {
 // ===== 搜索 =====
 
 type searchState struct {
-	kw        string
-	tab       int // 0 歌曲 1 歌单
-	songs     []player.Song
-	songlists []backend.SonglistSummary
-	total     int64
-	page      int
-	nextpage  int64
-	loading   bool
-	err       string
-	hot       []string
-	hotLoaded bool
-	list      songListState
+	kw         string
+	requestSeq uint64
+	tab        int // 0 歌曲 1 歌单
+	songs      []player.Song
+	songlists  []backend.SonglistSummary
+	total      int64
+	page       int
+	nextpage   int64
+	loading    bool
+	err        string
+	hot        []string
+	hotLoaded  bool
+	list       songListState
 }
 
 func (a *App) searchView(c *ui.Context, kw string) {
@@ -536,12 +572,15 @@ func (a *App) searchView(c *ui.Context, kw string) {
 		st.page = 0
 		st.err = ""
 		st.list.songs = nil
+		st.requestSeq++
 		a.ensureSearch(st)
 	}
 	if kw == "" && !st.hotLoaded {
 		st.hotLoaded = true
 		go func() {
-			hot, err := a.API.SearchHotkey()
+			var hot []string
+			var err error
+			a.withAPILimit(func() { hot, err = a.API.SearchHotkey() })
 			a.update(func() {
 				if err == nil {
 					st.hot = hot
@@ -590,11 +629,7 @@ func (a *App) searchView(c *ui.Context, kw string) {
 			a.songList(c, &st.list, func(page int) { a.loadSearchPage(st, page) },
 				func(i int) { a.playListNow(st.songs, i) })
 		} else {
-			ui.Row(c).FillWidth().Wrap().Gap(16).Children(func() {
-				for i := range st.songlists {
-					a.playlistCard(c, st.songlists[i])
-				}
-			})
+			a.playlistGrid(c, st.songlists)
 			if st.nextpage > 0 {
 				linkButton(c, "加载更多", func() { a.loadSearchPage(st, st.page+1) })
 			}
@@ -609,9 +644,16 @@ func (a *App) ensureSearch(st *searchState) {
 	st.loading = true
 	st.tab = 0
 	kw := st.kw
+	st.requestSeq++
+	seq := st.requestSeq
 	go func() {
-		res, err := a.API.Search(kw, 0, 1, 30)
+		var res backend.SearchResults
+		var err error
+		a.withAPILimit(func() { res, err = a.API.Search(kw, 0, 1, 30) })
 		a.update(func() {
+			if st.requestSeq != seq || st.kw != kw {
+				return
+			}
 			st.loading = false
 			if err != nil {
 				st.err = err.Error()
@@ -637,9 +679,16 @@ func (a *App) loadSearchPage(st *searchState, page int) {
 		typ = 3
 	}
 	kw := st.kw
+	st.requestSeq++
+	seq := st.requestSeq
 	go func() {
-		res, err := a.API.Search(kw, typ, page, 30)
+		var res backend.SearchResults
+		var err error
+		a.withAPILimit(func() { res, err = a.API.Search(kw, typ, page, 30) })
 		a.update(func() {
+			if st.requestSeq != seq || st.kw != kw {
+				return
+			}
 			st.list.fetching = false
 			if err != nil {
 				return

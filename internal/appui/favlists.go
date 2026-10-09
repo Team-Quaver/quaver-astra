@@ -28,7 +28,7 @@ func (a *App) favListsView(c *ui.Context) {
 	a.ensureFavLists(st)
 	t := c.Theme()
 
-	a.pageEnter(c, ui.Scroll(c).Fill().Padding(20, 24, 24, 24).Gap(16)).Children(func() {
+	a.pageEnter(c, ui.Scroll(c).Fill().Padding(20, 24, 28, 24).Gap(18)).Children(func() {
 		ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(10).Children(func() {
 			ui.Text(c, "收藏的歌单").FontSize(fz(24)).FontWeight(800)
 			if st.total > 0 {
@@ -64,18 +64,16 @@ func (a *App) favListsView(c *ui.Context) {
 			return
 		}
 
-		ui.Row(c).FillWidth().Wrap().Gap(16).Children(func() {
-			for i := range st.lists {
-				a.playlistCard(c, st.lists[i])
-			}
-		})
+		a.playlistGrid(c, st.lists)
 
 		if st.loadingMore {
 			ui.Row(c).FillWidth().Center().Padding(14).Children(func() { ui.Spinner(c) })
 			return
 		}
 		if st.hasMore {
-			plainBtn(c, "加载更多", func() { a.loadMoreFavLists(st) })
+			ui.Row(c).FillWidth().Center().Padding(10, 0, 2, 0).Children(func() {
+				plainBtn(c, "加载更多", func() { a.loadMoreFavLists(st) })
+			})
 		}
 	})
 }
@@ -86,7 +84,9 @@ func (a *App) ensureFavLists(st *favListsState) {
 	}
 	st.loading = true
 	go func() {
-		res, err := a.API.FavSonglists(1, 30)
+		var res backend.FavSonglists
+		var err error
+		a.withAPILimit(func() { res, err = a.API.FavSonglists(1, 30) })
 		a.update(func() {
 			st.loading = false
 			st.loaded = true
@@ -109,7 +109,9 @@ func (a *App) loadMoreFavLists(st *favListsState) {
 	st.loadingMore = true
 	page := st.page + 1
 	go func() {
-		res, err := a.API.FavSonglists(page, 30)
+		var res backend.FavSonglists
+		var err error
+		a.withAPILimit(func() { res, err = a.API.FavSonglists(page, 30) })
 		a.update(func() {
 			st.loadingMore = false
 			if err != nil {

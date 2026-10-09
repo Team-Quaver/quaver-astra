@@ -102,11 +102,11 @@ type trayView struct {
 }
 
 func (a *App) traySnapshot() trayView {
-	queue := a.PL.Queue()
+	queueLen := a.PL.QueueLen()
 	cur, has := a.PL.Current()
 	v := trayView{
 		track:   trayIdleLabel,
-		enabled: len(queue) > 0,
+		enabled: queueLen > 0,
 		playing: a.PL.Playing(),
 		mode:    a.PL.Mode(),
 		shuf:    a.PL.Shuffle(),

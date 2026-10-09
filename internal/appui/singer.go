@@ -74,12 +74,9 @@ func (a *App) singerStateAt(mid, name string) *singerState {
 	if a.singers == nil {
 		a.singers = map[string]*singerState{}
 	}
-	st, ok := a.singers[mid]
-	if !ok {
-		st = &singerState{name: name}
-		a.singers[mid] = st
-	}
-	return st
+	return getOrCreatePage(a.singers, &a.singerRec, mid, func() *singerState {
+		return &singerState{name: name}
+	})
 }
 
 // displayName 真名优先：info → desc → URL 占位名。
@@ -289,11 +286,11 @@ func (a *App) ensureSinger(st *singerState, mid string) {
 		)
 		var wg sync.WaitGroup
 		wg.Add(5)
-		go func() { defer wg.Done(); info, _ = a.API.SingerInfo(mid) }()
-		go func() { defer wg.Done(); profile, _ = a.API.SingerDesc(mid) }()
-		go func() { defer wg.Done(); hot, hotErr = a.API.SingerSongs(mid, 1, 50, 1) }()
-		go func() { defer wg.Done(); news, _ = a.API.SingerSongs(mid, 1, 30, 2) }()
-		go func() { defer wg.Done(); albums, _ = a.API.SingerAlbums(mid, 1, 30) }()
+		go func() { defer wg.Done(); a.withAPILimit(func() { info, _ = a.API.SingerInfo(mid) }) }()
+		go func() { defer wg.Done(); a.withAPILimit(func() { profile, _ = a.API.SingerDesc(mid) }) }()
+		go func() { defer wg.Done(); a.withAPILimit(func() { hot, hotErr = a.API.SingerSongs(mid, 1, 50, 1) }) }()
+		go func() { defer wg.Done(); a.withAPILimit(func() { news, _ = a.API.SingerSongs(mid, 1, 30, 2) }) }()
+		go func() { defer wg.Done(); a.withAPILimit(func() { albums, _ = a.API.SingerAlbums(mid, 1, 30) }) }()
 		wg.Wait()
 		a.update(func() {
 			st.loading = false
@@ -350,12 +347,9 @@ func (a *App) albumStateAt(mid, name string) *albumState {
 	if a.albums == nil {
 		a.albums = map[string]*albumState{}
 	}
-	st, ok := a.albums[mid]
-	if !ok {
-		st = &albumState{name: name}
-		a.albums[mid] = st
-	}
-	return st
+	return getOrCreatePage(a.albums, &a.albumRec, mid, func() *albumState {
+		return &albumState{name: name}
+	})
 }
 
 func (st *albumState) displayName() string {
@@ -488,8 +482,8 @@ func (a *App) ensureAlbum(st *albumState, mid string) {
 		)
 		var wg sync.WaitGroup
 		wg.Add(2)
-		go func() { defer wg.Done(); detail, dErr = a.API.AlbumDetail(mid) }()
-		go func() { defer wg.Done(); songs, sErr = a.API.AlbumSongs(mid, 1, 100) }()
+		go func() { defer wg.Done(); a.withAPILimit(func() { detail, dErr = a.API.AlbumDetail(mid) }) }()
+		go func() { defer wg.Done(); a.withAPILimit(func() { songs, sErr = a.API.AlbumSongs(mid, 1, 100) }) }()
 		wg.Wait()
 		a.update(func() {
 			st.loading = false
@@ -512,7 +506,9 @@ func (a *App) ensureAlbum(st *albumState, mid string) {
 
 func (a *App) loadAlbumPage(st *albumState, mid string, page int) {
 	go func() {
-		d, err := a.API.AlbumSongs(mid, page, 100)
+		var d backend.AlbumSongs
+		var err error
+		a.withAPILimit(func() { d, err = a.API.AlbumSongs(mid, page, 100) })
 		a.update(func() {
 			st.loadingMore = false
 			if err != nil {

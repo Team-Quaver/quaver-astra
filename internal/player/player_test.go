@@ -2,6 +2,7 @@ package player
 
 import (
 	"io"
+	"strings"
 	"testing"
 	"time"
 )
@@ -261,5 +262,56 @@ func TestSetModeAndClose(t *testing.T) {
 	p.Close()
 	if p.Playing() || !eng.closed {
 		t.Fatalf("Close 未停止播放引擎: playing=%v closed=%v", p.Playing(), eng.closed)
+	}
+}
+
+func TestQueueRowViewAvoidsFullSongSnapshot(t *testing.T) {
+	p := New(stubBackend{}, nil, fakePrefs{})
+	p.queue = []Song{
+		{Mid: "a", Name: "A", Artists: "x", Singers: []Singer{{Mid: "x", Name: "x"}}},
+		{Mid: "b", Title: "B", AlbumPmid: "cover"},
+	}
+
+	if got := p.QueueLen(); got != 2 {
+		t.Fatalf("QueueLen = %d, want 2", got)
+	}
+	row, ok := p.QueueRow(1)
+	if !ok || row.Mid != "b" || row.DisplayName() != "B" || row.AlbumPmid != "cover" {
+		t.Fatalf("QueueRow(1) = %+v/%v", row, ok)
+	}
+	if _, ok := p.QueueRow(2); ok {
+		t.Fatal("QueueRow accepted an out-of-range index")
+	}
+}
+
+func TestMoveInQueuePreservesOrder(t *testing.T) {
+	p := New(stubBackend{}, nil, fakePrefs{})
+	p.queue = []Song{{Mid: "a"}, {Mid: "b"}, {Mid: "c"}, {Mid: "d"}}
+	p.index = 2
+
+	p.MoveInQueue([]int{2, 0}, 3)
+	q := p.Queue()
+	got := make([]string, 0, len(q))
+	for _, s := range q {
+		got = append(got, s.Mid)
+	}
+	want := []string{"b", "c", "a", "d"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("MoveInQueue order = %v, want %v", got, want)
+	}
+	if cur, _ := p.Current(); cur.Mid != "c" {
+		t.Fatalf("current song moved unexpectedly: %+v", cur)
+	}
+
+	p.queue = []Song{{Mid: "a"}, {Mid: "b"}, {Mid: "c"}, {Mid: "d"}}
+	p.index = 0
+	p.MoveInQueue([]int{1, 1}, 3)
+	q = p.Queue()
+	got = got[:0]
+	for _, s := range q {
+		got = append(got, s.Mid)
+	}
+	if strings.Join(got, ",") != "a,c,b,b,d" {
+		t.Fatalf("duplicate MoveInQueue order = %v, want [a c b b d]", got)
 	}
 }
