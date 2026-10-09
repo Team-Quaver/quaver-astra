@@ -9,7 +9,7 @@ import (
 	"strings"
 )
 
-// mpv 可执行文件的定位策略，与 Quaver Music 本体
+// mpv 可执行文件的定位策略，与 Quaver Astra 本体
 // （ui/electron/audio/dist/bins.js）保持一致：
 //
 //	显式路径（QAA_MPV）→ 随包目录（QAA_MPV_DIR）→ PATH

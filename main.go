@@ -1,10 +1,11 @@
-// Quaver Astra（Native）—— 轻量化的 Quaver Music 客户端。
+// Quaver Astra（Native）—— 轻量化的 Quaver Astra 客户端。
 // 全 Go：MyGo 原生 UI（无 WebView）+ Typhoeus-go 后端进程内嵌。
 package main
 
 import (
 	"os"
 	"path/filepath"
+	_ "unsafe"
 
 	"github.com/Team-Quaver/quaver-astra/internal/appui"
 	"github.com/Team-Quaver/quaver-astra/internal/backend"
@@ -15,7 +16,20 @@ import (
 	"github.com/egoist/mygo/ui"
 )
 
+// appIdentifier 是系统侧应用 ID（Windows 资源、macOS bundle、Linux XDG
+// 注册共用）。MyGo 只从打包元数据/链接期变量读取它，裸 go build 也要保持
+// 稳定，因此这里在 init 前写入 MyGo 的包级元数据。
+const appIdentifier = "red.0w0.quaver-astra"
+
+//go:linkname mygoPackageIdentifier github.com/egoist/mygo.packageIdentifier
+var mygoPackageIdentifier string
+
+func init() { mygoPackageIdentifier = appIdentifier }
+
 func main() {
+	// 桌面壳/二进制注册名统一为 Quaver Astra（应用菜单、托盘与系统注册表）。
+	mygo.App.SetName("Quaver Astra")
+
 	cfgDir := configDir()
 	if err := os.MkdirAll(cfgDir, 0o700); err != nil {
 		fatal(err)
@@ -30,6 +44,10 @@ func main() {
 
 	store := conf.Open(cfgDir)
 	app := appui.New(srv.BaseURL(), store, vault.Open(cfgDir))
+	// 正常退出与异常返回两条路径都收口 mpv；OnQuit 在事件循环结束后执行，
+	// 不会被窗口关闭到托盘误触发。
+	defer app.Close()
+	mygo.App.OnQuit(app.Close)
 
 	mygo.App.WhenReady(func() {
 		win := mygo.NewWindow(mygo.WindowOptions{
@@ -46,6 +64,8 @@ func main() {
 		app.Attach(win)
 	})
 	if err := mygo.App.Run(); err != nil {
+		// fatal 会直接 os.Exit，普通 defer 不再有机会执行；先收掉 mpv。
+		app.Close()
 		fatal(err)
 	}
 }

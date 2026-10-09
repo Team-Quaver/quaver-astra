@@ -335,7 +335,7 @@ func (p *Player) Jump(i int) {
 // EnqueueNext 「下一首播放」：排到当前曲之后等着播，不切歌、不打断当前曲。
 //
 // 队列还空着（没播过任何东西）时没有「下一首」可言，退化成单曲起播
-//（与主项目 player.enqueueNext 同一语义分叉）。
+// （与主项目 player.enqueueNext 同一语义分叉）。
 func (p *Player) EnqueueNext(s Song) {
 	p.mu.Lock()
 	if p.index < 0 || len(p.queue) == 0 {
@@ -484,6 +484,20 @@ func (p *Player) CycleMode() {
 	}
 	p.mu.Unlock()
 	p.notifyChange()
+}
+
+// SetMode 直接设置播放模式（托盘菜单的单选项用；非法值忽略）。
+func (p *Player) SetMode(mode string) {
+	if mode != "off" && mode != "all" && mode != "one" {
+		return
+	}
+	p.mu.Lock()
+	changed := p.mode != mode
+	p.mode = mode
+	p.mu.Unlock()
+	if changed {
+		p.notifyChange()
+	}
 }
 
 func (p *Player) Shuffle() bool {
@@ -691,6 +705,14 @@ func (p *Player) Playing() bool {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 	return p.playing && !p.eng.Paused()
+}
+
+// PlayingAudio 报告 mpv 是否正在实际出声。Loading/缓冲开始前不算播放，
+// 「播放时禁止睡眠」按这个真实口径持有系统请求。
+func (p *Player) PlayingAudio() bool {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.playing && !p.eng.Paused() && p.eng.IsPlaying()
 }
 
 func (p *Player) Loading() bool {
@@ -1250,6 +1272,19 @@ func (p *Player) Muted() bool {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 	return p.muted
+}
+
+// Close 终止播放引擎。应用退出时调用，确保 mpv 子进程不成为孤儿。
+func (p *Player) Close() {
+	p.mu.Lock()
+	p.playing = false
+	p.loading = false
+	eng := p.eng
+	p.mu.Unlock()
+	if eng != nil {
+		eng.Close()
+	}
+	p.notifyChange()
 }
 
 // Boot 载入持久化音量、挂上引擎观察回调并启动心跳。

@@ -39,10 +39,10 @@ func (a *App) playerBar(c *ui.Context, t *ui.Theme) {
 		frac = a.seekFrac
 	}
 
-	// 不设 FillWidth：100% 全宽会把 Margin 解析在其外，条子向右溢出
-	// 10px（右圆角被窗口裁掉、左边却留有空隙）；默认 Stretch 会先扣边距。
+	// 播放条贴满窗口底部：左右顶到窗口边缘，上边紧接内容区/菜单栏。
+	// 默认 Stretch 会把容器宽度完整交给条子，不额外留浮动卡片式外边距。
 	bar := ui.Row(c).Height(64).PaddingX(16).Gap(12).
-		AlignItems(ui.Center).Background(a.barBg(t)).Margin(8, 10, 10, 10).Radius(14)
+		AlignItems(ui.Center).Background(a.barBg(t)).Margin(0).Radius(0)
 	// 进度填充要缓动：位置采样只有 5Hz（player tick 200ms），直接用采样值画
 	// 会一格一格跳。拖拽时不做缓动，要跟手。
 	fill := frac
@@ -50,10 +50,10 @@ func (a *App) playerBar(c *ui.Context, t *ui.Theme) {
 		fill = bar.Animate("seek-fill", frac, 260*time.Millisecond)
 	}
 	bar.Draw(func(p *ui.Painter, r ui.Rect) {
-		// 进度填充：整个条高的圆角矩形
+		// 进度填充跟随播放条外形，保持整条直角。
 		if fill > 0.001 {
 			w := r.W * fill
-			p.Fill(ui.Rect{X: r.X, Y: r.Y, W: w, H: r.H}, a.glowNow.Alpha(0.28), 14)
+			p.Fill(ui.Rect{X: r.X, Y: r.Y, W: w, H: r.H}, a.glowNow.Alpha(0.28), 0)
 		}
 	})
 

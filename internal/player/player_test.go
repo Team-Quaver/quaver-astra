@@ -240,3 +240,26 @@ func TestFallbackOnLoadError(t *testing.T) {
 		t.Errorf("应至少尝试 3 档，实际 %d", n)
 	}
 }
+
+func TestSetModeAndClose(t *testing.T) {
+	eng := &fakeEngine{}
+	notify := 0
+	p := New(stubBackend{}, eng, fakePrefs{})
+	p.OnNotify(func() { notify++ })
+
+	p.SetMode("one")
+	if p.Mode() != "one" || notify == 0 {
+		t.Fatalf("SetMode 未生效/未通知: mode=%s notify=%d", p.Mode(), notify)
+	}
+	before := notify
+	p.SetMode("bogus")
+	if p.Mode() != "one" || notify != before {
+		t.Fatalf("非法模式不应生效: mode=%s notify=%d", p.Mode(), notify)
+	}
+
+	p.playing = true
+	p.Close()
+	if p.Playing() || !eng.closed {
+		t.Fatalf("Close 未停止播放引擎: playing=%v closed=%v", p.Playing(), eng.closed)
+	}
+}

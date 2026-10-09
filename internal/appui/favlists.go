@@ -11,7 +11,7 @@ import (
 // favListsState 是「我收藏的歌单」页的状态。
 //
 // 与「我创建的歌单」分开：前者是别人建的、只读；后者能编辑。这里
-// 跟进 Quaver Music 本体的分栏逻辑：网格展示 + 悬停播放 + 点开进详情。
+// 跟进 Quaver Astra 本体的分栏逻辑：网格展示 + 悬停播放 + 点开进详情。
 type favListsState struct {
 	loaded      bool
 	loading     bool

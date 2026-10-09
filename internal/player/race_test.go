@@ -9,6 +9,7 @@ import (
 
 // fakeEngine 可控的假音频引擎（模拟 mpv：位置/时长由引擎持有）。
 type fakeEngine struct {
+	closed    bool
 	mu        sync.Mutex
 	playing   bool
 	paused    bool
@@ -39,7 +40,12 @@ func (e *fakeEngine) OpenURL(url string, startFrac, dur float64, autoplay bool) 
 func (e *fakeEngine) Play()  { e.mu.Lock(); e.paused = false; e.mu.Unlock() }
 func (e *fakeEngine) Pause() { e.mu.Lock(); e.paused = true; e.mu.Unlock() }
 func (e *fakeEngine) Stop()  { e.mu.Lock(); e.playing, e.eof, e.pos = false, false, 0; e.mu.Unlock() }
-func (e *fakeEngine) Close() { e.mu.Lock(); e.playing = false; e.mu.Unlock() }
+func (e *fakeEngine) Close() {
+	e.mu.Lock()
+	e.playing = false
+	e.closed = true
+	e.mu.Unlock()
+}
 func (e *fakeEngine) IsPlaying() bool {
 	e.mu.Lock()
 	defer e.mu.Unlock()

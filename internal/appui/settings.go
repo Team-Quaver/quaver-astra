@@ -63,6 +63,34 @@ func (a *App) settingsAppearance(c *ui.Context, t *ui.Theme) {
 			a.sbCollapsed = v
 			a.Conf.Set("Window.SidebarCollapsed", v)
 		})
+
+		ui.Divider(c)
+
+		ui.Text(c, "关闭窗口行为").FontSize(fz(14)).FontWeight(700)
+		closeActions := []struct{ key, label string }{
+			{"tray", "关闭窗口"},
+			{"quit", "退出应用"},
+		}
+		closeLabels := []string{closeActions[0].label, closeActions[1].label}
+		closeKey := a.Conf.String("Window.CloseAction", "tray")
+		closeLabel := closeActions[0].label
+		for _, action := range closeActions {
+			if action.key == closeKey {
+				closeLabel = action.label
+				break
+			}
+		}
+		cs := ui.Select(c, &closeLabel, closeLabels).Width(280)
+		if cs.Changed() {
+			for _, action := range closeActions {
+				if action.label == closeLabel {
+					a.Conf.Set("Window.CloseAction", action.key)
+					break
+				}
+			}
+		}
+		ui.Text(c, "「关闭窗口」收进托盘，音乐继续播放；「退出应用」关闭窗口并退出 Quaver Astra。").
+			FontSize(fz(11.5)).TextColor(t.TextMuted).MaxLines(2)
 	})
 }
 
@@ -126,6 +154,19 @@ func (a *App) settingsPlayback(c *ui.Context, t *ui.Theme) {
 				}
 			}
 		}
+
+		ui.Divider(c)
+
+		// 播放期间阻止系统睡眠；屏幕熄灭与锁屏策略不受影响。
+		ui.Text(c, "播放音频时睡眠禁止").FontSize(fz(14)).FontWeight(700)
+		a.prefRow(c, "播放期间阻止系统睡眠", func() bool {
+			return a.Conf.Bool(sleepInhibitKey, true)
+		}, func(v bool) {
+			a.Conf.Set(sleepInhibitKey, v)
+			a.syncSleep()
+		})
+		ui.Text(c, "暂停或停止即恢复正常睡眠策略；屏幕仍会按系统电源计划熄灭。").
+			FontSize(fz(11.5)).TextColor(t.TextMuted).MaxLines(2)
 
 		// 音量
 		ui.Text(c, "音量").FontSize(fz(14)).FontWeight(700)

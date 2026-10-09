@@ -6,6 +6,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -69,6 +70,14 @@ type App struct {
 	npList    ui.ListState // 正在播放页歌词列表
 	queueList ui.ListState // 播放队列列表
 
+	// 托盘与应用级资源。Close 幂等：OnQuit 与 main 的 defer 都会走一次。
+	tray        *mygo.Tray
+	trayItems   *trayMenu
+	traySig     string
+	sleep       *sleepBlocker
+	quitStarted atomic.Bool
+	closeOnce   sync.Once
+
 	// 各页面的数据态（历史上往返保留数据本身）
 	home     homeState
 	liked    songListState
@@ -95,6 +104,7 @@ func New(base string, store *conf.Store, v *vault.Vault) *App {
 		API:           api,
 		Conf:          store,
 		PL:            pl,
+		sleep:         newSystemSleepBlocker(),
 		Router:        ui.NewRouter("/"),
 		Covers:        NewCoverCache(),
 		sbCollapsed:   store.Bool("Window.SidebarCollapsed", false),
@@ -102,6 +112,7 @@ func New(base string, store *conf.Store, v *vault.Vault) *App {
 		playlist:      map[int64]*playlistState{},
 		lastLyricLine: -2,
 	}
+	mygo.App.OnBeforeQuit(func(*mygo.QuitEvent) { a.quitStarted.Store(true) })
 	pl.OnNotify(func() {
 		// 登录态变化时，收藏的歌单依赖登录态，缓存要作废重来。
 		// （player 不知道 appui 的页面状态，所以在 App 层做。）
@@ -109,18 +120,48 @@ func New(base string, store *conf.Store, v *vault.Vault) *App {
 			a.wasLoggedIn = a.PL.LoggedIn()
 			a.favLists = favListsState{}
 		}
-		if a.Win != nil {
-			a.Win.Update(func() {})
-		}
+		a.syncSleep()
+		a.syncTray()
+		a.invalidate()
 	})
 	return a
+}
+
+// Close 应用退出时释放睡眠禁止并终止 mpv。幂等，可同时挂 OnQuit 与 defer。
+func (a *App) Close() {
+	a.closeOnce.Do(func() {
+		a.quitStarted.Store(true)
+		a.sleep.close()
+		a.PL.Close()
+		if a.tray != nil {
+			a.tray.Destroy()
+			a.tray = nil
+		}
+	})
+}
+
+// syncSleep 只在「设置开启 + mpv 实际出声」时持有系统睡眠禁止。
+// 暂停、停止、载入中和关闭开关都会立即释放。
+func (a *App) syncSleep() {
+	want := a.Conf != nil && a.Conf.Bool(sleepInhibitKey, true) && a.PL.PlayingAudio()
+	a.sleep.set(want)
 }
 
 // Attach 绑定窗口：接上重绘通知、启动播放器与登录态刷新、跑自检钩子。
 func (a *App) Attach(win *mygo.Window) {
 	a.Win = win
+	// 系统标题栏/Alt+F4 走 OnClose，与自绘关闭按钮共用「关闭窗口行为」设置。
+	// 真正退出时 OnBeforeQuit 已置 quitStarted，放行原生关闭流程。
+	win.OnClose(func(e *mygo.CloseEvent) {
+		if a.quitStarted.Load() {
+			return
+		}
+		e.PreventDefault()
+		a.closeWindow()
+	})
 	a.PL.Boot()
 	a.PL.RefreshUser()
+	a.setupTray()
 	a.maybeSelfCheck()
 }
 
@@ -538,7 +579,7 @@ func (a *App) windowButtons(c *ui.Context) {
 	} else {
 		mk("winMax", "最大化", false, func() { a.Win.ToggleMaximize() })
 	}
-	mk("winClose", "关闭", true, func() { a.Win.Close() })
+	mk("winClose", "关闭", true, a.closeWindow)
 }
 
 // invalidate 是给异步回调用的重绘入口。

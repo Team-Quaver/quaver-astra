@@ -33,14 +33,16 @@ import (
 // 本地不缓存位置，这消除了旧实现里「墙钟推算 vs 源消费量」的偏差，
 // 也让 seek 的位置立即准确，无需重锚定。
 type Engine struct {
-	mu     sync.Mutex // 保护进程/连接/本地状态
-	readMu sync.Mutex // 串行化对 socket 的读（握手命令与观察协程共用）
-	cmd    *exec.Cmd
-	conn   net.Conn
-	rd     *bufio.Reader
-	wr     *bufio.Writer
-	nextID int64
-	closed bool
+	mu       sync.Mutex // 保护进程/连接/本地状态
+	readMu   sync.Mutex // 串行化对 socket 的读（握手命令与观察协程共用）
+	cmd      *exec.Cmd
+	done     chan struct{} // cmd.Wait 完成；Close 等它确认子进程已回收
+	doneOnce sync.Once
+	conn     net.Conn
+	rd       *bufio.Reader
+	wr       *bufio.Writer
+	nextID   int64
+	closed   bool
 
 	// 本地意图 + mpv 观测（Paused 取二者或）
 	wantPaused bool
@@ -79,9 +81,10 @@ type ipcResp struct {
 // New 启动 mpv 子进程并完成 IPC 握手。失败时返回哑引擎：所有操作退化为
 // 返回错误，调用方无需区分「无音频设备」与「无 mpv」。
 func New() *Engine {
-	e := &Engine{volume: 0.8, obsCh: make(chan struct{}, 1)}
+	e := &Engine{volume: 0.8, obsCh: make(chan struct{}, 1), done: make(chan struct{})}
 	if err := e.spawn(); err != nil {
 		e.closed = true
+		e.markDone()
 		fmt.Fprintf(os.Stderr, "audio: mpv 不可用（%v），播放功能禁用\n", err)
 		return e
 	}
@@ -174,7 +177,15 @@ func (e *Engine) spawn() error {
 	e.cmd = cmd
 
 	// exited 是一个原子标志：mpv 进程退出时置位，用于建连失败时快速诊断。
+	// Wait 必须紧跟 Start：连接握手期间 mpv 自己退出也要立刻被观察到，
+	// 同时负责回收进程，避免 spawn 失败路径留下僵尸子进程。
 	var exited atomic.Bool
+	go func() {
+		_ = cmd.Wait()
+		exited.Store(true)
+		os.RemoveAll(dir)
+		e.markDone()
+	}()
 
 	var conn net.Conn
 	deadline := time.Now().Add(5 * time.Second)
@@ -234,11 +245,6 @@ func (e *Engine) spawn() error {
 
 	// 握手完成，此刻才让观察协程接管 socket。
 	go e.observe()
-	go func() {
-		_ = cmd.Wait()
-		exited.Store(true)
-		os.RemoveAll(dir)
-	}()
 	return nil
 }
 
@@ -601,6 +607,15 @@ func (e *Engine) Stop() {
 	e.commandQuiet("stop")
 }
 
+// markDone 只关闭一次退出信号；spawn 失败与 Wait 回收可能同时收口。
+func (e *Engine) markDone() {
+	e.doneOnce.Do(func() {
+		if e.done != nil {
+			close(e.done)
+		}
+	})
+}
+
 // Close 终止 mpv 进程（应用退出时调用）。
 func (e *Engine) Close() {
 	e.mu.Lock()
@@ -615,8 +630,18 @@ func (e *Engine) Close() {
 	if conn != nil {
 		_ = conn.Close()
 	}
-	if cmd != nil && cmd.Process != nil {
+	killed := cmd != nil && cmd.Process != nil
+	if killed {
 		_ = cmd.Process.Kill()
+	}
+	// 等 Wait 回收子进程再返回，应用退出后不留 mpv 孤儿/僵尸。
+	// spawn 失败时 done 已关；进程早已退出时同样立即返回。
+	if killed && e.done != nil {
+		select {
+		case <-e.done:
+		case <-time.After(2 * time.Second):
+			fmt.Fprintln(os.Stderr, "audio: 等待 mpv 退出超时")
+		}
 	}
 }
 
