@@ -74,6 +74,9 @@ func (a *App) playerBar(c *ui.Context, t *ui.Theme) {
 		}
 		if cover.Clicked() && hasCur {
 			a.npOpen = !a.npOpen
+			// 正在播放页的浮层跟着页走：不然重新打开时旧菜单/浮窗还挂着。
+			a.npMoreOpen = false
+			a.npQInfoOpen = false
 		}
 		ui.Column(c).Width(200).Gap(1).Children(func() {
 			title := ""

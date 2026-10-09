@@ -74,6 +74,8 @@ func (a *App) nowPlaying(c *ui.Context, t *ui.Theme) {
 		}
 		if closeBtn.Clicked() {
 			a.npOpen = false
+			a.npMoreOpen = false
+			a.npQInfoOpen = false
 		}
 	})
 }
@@ -196,10 +198,10 @@ func (a *App) karaokeLineAt(c *ui.Context, index int, size float32) bool {
 func (a *App) npSide(c *ui.Context, t *ui.Theme, cur player.Song, hasCur bool) {
 	_ = t
 	ui.Column(c).Width(npSideW).Gap(12).AlignItems(ui.Center).Children(func() {
-		if !hasCur {
-			return
+		var art *ui.Bitmap
+		if hasCur {
+			art = a.Covers.Get(coverURL(cur.AlbumPmid, cur.AlbumMid, 500), a.invalidate)
 		}
-		art := a.Covers.Get(coverURL(cur.AlbumPmid, cur.AlbumMid, 500), a.invalidate)
 		if art != nil {
 			ui.Image(c, art).Size(300, 300).Fit(ui.Cover).Radius(18).
 				Shadow(0, 20, 60, 0, ui.RGBA(0, 0, 0, 0.4))
@@ -209,15 +211,21 @@ func (a *App) npSide(c *ui.Context, t *ui.Theme, cur player.Song, hasCur bool) {
 			})
 		}
 		ui.Column(c).FillWidth().Gap(4).Children(func() {
-			ui.Text(c, cur.DisplayName()).FontSize(fz(21)).FontWeight(800).
-				TextColor(ui.Hex("#ffffff")).SingleLine().Ellipsis("…")
-			sub := cur.Artists
-			if cur.Album != "" {
-				sub += " - " + cur.Album
+			title := "未在播放"
+			sub := ""
+			if hasCur {
+				title = cur.DisplayName()
+				sub = cur.Artists
+				if cur.Album != "" {
+					sub += " - " + cur.Album
+				}
 			}
+			ui.Text(c, title).FontSize(fz(21)).FontWeight(800).
+				TextColor(ui.Hex("#ffffff")).SingleLine().Ellipsis("…")
 			ui.Text(c, sub).FontSize(fz(13)).TextColor(ui.RGBA(255, 255, 255, 0.72)).SingleLine().Ellipsis("…")
 		})
-		// 音质 + 更多
+		// 音质 + 更多。未在播放时也在：两个浮层各自的空态文案（未在播放 /
+		// 等待播放流…）才有着落，主项目的 np-morewrap 同样常驻。
 		ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(8).Children(func() {
 			a.qualityPillNP(c)
 			ui.Spacer(c)
@@ -228,21 +236,19 @@ func (a *App) npSide(c *ui.Context, t *ui.Theme, cur player.Song, hasCur bool) {
 			if more.Hovered() {
 				more.Background(ui.RGBA(255, 255, 255, 0.14))
 			}
-			more.ContextMenu(func(m *ui.Menu) {
-				if m.Item("同名搜索").Chosen() {
-					a.npOpen = false
-					a.Router.Push("/search?kw=" + cur.DisplayName())
-				}
-				if m.Item("显示翻译").Checked(a.PL.ShowTranslation()).Chosen() {
-					a.PL.SetShowTranslation(!a.PL.ShowTranslation())
-				}
-			})
+			more.Tooltip("更多操作").Label("更多操作")
+			if more.Clicked() {
+				a.npMoreOpen = !a.npMoreOpen
+				a.npQInfoOpen = false // 同一锚区只开一个（主项目 closeQMenu 的互斥）
+			}
+			a.npMoreMenu(c, more)
 		})
 	})
 }
 
-// qualityPillNP 在深色背景上的音质胶囊。菜单逻辑与播放条共用
-// （见 qualityMenu），这里只负责胶囊本身的反白配色。
+// qualityPillNP 在深色背景上的音质胶囊。它是【只读】的音频流参数入口：
+// 点开的是流信息浮窗（编码/采样率/采样精度/码率/声道 + 档位徽标），不是
+// 音质切换菜单——切档在播放条胶囊上（qualityMenu），两者状态互相独立。
 func (a *App) qualityPillNP(c *ui.Context) {
 	pill := ui.ButtonBase(c).Padding(3, 10).Radius(999).Border(1, ui.RGBA(255, 255, 255, 0.35)).
 		Transition(hoverFade)
@@ -252,14 +258,12 @@ func (a *App) qualityPillNP(c *ui.Context) {
 	if pill.Hovered() {
 		pill.Background(ui.RGBA(255, 255, 255, 0.12))
 	}
-	pill.Tooltip("音质")
+	pill.Tooltip("音质").Label("音质")
 	if pill.Clicked() {
-		a.qualityOpen = !a.qualityOpen
+		a.npQInfoOpen = !a.npQInfoOpen
+		a.npMoreOpen = false // 同一锚区只开一个
 	}
-	a.qualityMenu(c, pill,
-		ui.Hex("#ffffff"),
-		ui.RGBA(255, 255, 255, 0.16),
-		ui.RGBA(255, 255, 255, 0.08))
+	a.npQualityInfo(c, pill)
 }
 
 // ===== 播放队列面板 =====

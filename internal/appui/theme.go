@@ -53,6 +53,18 @@ var (
 	npBlurOpacity float32 = 0.55
 )
 
+// npPop* 是正在播放页浮层（⋮ 菜单、音频流信息）的深玻璃口径，对齐主项目
+// .np-menu / .np-qinfo：这一页恒为深色，浮层跟着走白字，不随明暗主题翻面。
+var (
+	npPopBg     = ui.RGBA(0x10, 0x13, 0x1c, 0.85) // #10131cd9
+	npPopBorder = ui.RGBA(255, 255, 255, 0.1)     // #ffffff1a
+	npPopText   = ui.Hex("#ffffff")               // 悬停/强调字
+	npPopDim    = ui.RGBA(255, 255, 255, 0.73)    // #fffb 常规项字
+	npPopText2  = ui.RGBA(255, 255, 255, 0.53)    // #fff8 次级字
+	npPopHover  = ui.RGBA(255, 255, 255, 0.08)    // #ffffff14 项悬停底
+	npPopLine   = ui.RGBA(255, 255, 255, 0.1)     // 头行下的分隔线
+)
+
 // tintState 是封面取色的动态主题色。
 type tintState struct {
 	mu     sync.Mutex

@@ -33,12 +33,19 @@ type App struct {
 	// glowNow 是本帧使用的辅色（进度条/氛围），由 buildTheme 刷新。
 	glowNow ui.Color
 
-	npOpen        bool
-	queueOpen     bool
-	sbCollapsed   bool
-	searchDraft   string
-	volOpen       bool
-	qualityOpen   bool
+	npOpen      bool
+	queueOpen   bool
+	sbCollapsed bool
+	searchDraft string
+	volOpen     bool
+	qualityOpen bool
+	// npMoreOpen / npQInfoOpen 是正在播放页「⋮ 菜单」与「音质胶囊浮窗」的开合。
+	// 与播放条的 qualityOpen 各管各的：音质胶囊在正在播放页只展示音频流参数
+	//（只读），切档仍只发生在播放条胶囊上，两个浮层互不联动。
+	npMoreOpen  bool
+	npQInfoOpen bool
+	// npQInfo 是音质胶囊浮窗的流参数探测缓存（后台探测、回填重绘）。
+	npQInfo       qinfoProbe
 	seekDragging  bool
 	seekFrac      float32
 	probedMid     string
