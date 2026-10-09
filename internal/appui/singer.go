@@ -268,6 +268,71 @@ func (a *App) albumCard(c *ui.Context, al backend.SingerAlbum) {
 	}
 }
 
+// singerAlbumPageSize 是歌手专辑接口的单页大小。专辑总数没有可靠上限，
+// 必须按页拉完；只取第一页会让后发行的专辑（例如周杰伦《太阳之子》）漏出
+// 歌手页的「专辑」标签。
+const singerAlbumPageSize = 30
+
+type singerAlbumPageFunc func(page, num int) (backend.SingerAlbums, error)
+
+// fetchAllSingerAlbums 按页拉取完整歌手专辑列表。优先用响应 total 判断终点，
+// total 缺失时继续请求，遇到空页或不再增加新专辑的页面即停止。
+// 后续分页失败时保留已经取到的专辑，避免网络抖动把整个「专辑」标签清空。
+func fetchAllSingerAlbums(fetch singerAlbumPageFunc, pageSize int) (backend.SingerAlbums, error) {
+	if pageSize <= 0 {
+		pageSize = singerAlbumPageSize
+	}
+	first, err := fetch(1, pageSize)
+	if err != nil {
+		return first, err
+	}
+
+	out := first
+	out.AlbumList = append([]backend.SingerAlbum(nil), first.AlbumList...)
+	seen := make(map[string]struct{}, len(out.AlbumList))
+	for _, album := range out.AlbumList {
+		seen[singerAlbumKey(album)] = struct{}{}
+	}
+	if out.Total <= 0 {
+		out.Total = first.Total
+	}
+
+	for page := 2; ; page++ {
+		if out.Total > 0 && int64(len(out.AlbumList)) >= out.Total {
+			break
+		}
+		next, err := fetch(page, pageSize)
+		if err != nil {
+			return out, err
+		}
+		before := len(out.AlbumList)
+		for _, album := range next.AlbumList {
+			key := singerAlbumKey(album)
+			if _, ok := seen[key]; ok {
+				continue
+			}
+			seen[key] = struct{}{}
+			out.AlbumList = append(out.AlbumList, album)
+		}
+		if out.Total <= 0 {
+			out.Total = next.Total
+		}
+		if len(next.AlbumList) == 0 || len(out.AlbumList) == before || len(next.AlbumList) < pageSize {
+			break
+		}
+	}
+	return out, nil
+}
+
+// singerAlbumKey 跨页去重。mid 是稳定标识；极少数条目缺 mid 时退化为专辑
+// 展示属性，既能识别重复页，也不会把同名的不同版本误合并。
+func singerAlbumKey(album backend.SingerAlbum) string {
+	if album.Mid != "" {
+		return "mid:" + album.Mid
+	}
+	return strings.Join([]string{"brief", album.Pmid, album.Name, album.TranName, album.AlbumType, album.TimePublic, album.SingerName}, "\x00")
+}
+
 // ensureSinger 五路并拉（info / desc / 热歌 / 新歌 / 专辑）：简介与专辑失败
 // 不阻塞主内容，热歌是页面主体，拉不到才算整页失败。
 func (a *App) ensureSinger(st *singerState, mid string) {
@@ -290,7 +355,15 @@ func (a *App) ensureSinger(st *singerState, mid string) {
 		go func() { defer wg.Done(); a.withAPILimit(func() { profile, _ = a.API.SingerDesc(mid) }) }()
 		go func() { defer wg.Done(); a.withAPILimit(func() { hot, hotErr = a.API.SingerSongs(mid, 1, 50, 1) }) }()
 		go func() { defer wg.Done(); a.withAPILimit(func() { news, _ = a.API.SingerSongs(mid, 1, 30, 2) }) }()
-		go func() { defer wg.Done(); a.withAPILimit(func() { albums, _ = a.API.SingerAlbums(mid, 1, 30) }) }()
+		go func() {
+			defer wg.Done()
+			albums, _ = fetchAllSingerAlbums(func(page, num int) (backend.SingerAlbums, error) {
+				var result backend.SingerAlbums
+				var err error
+				a.withAPILimit(func() { result, err = a.API.SingerAlbums(mid, page, num) })
+				return result, err
+			}, singerAlbumPageSize)
+		}()
 		wg.Wait()
 		a.update(func() {
 			st.loading = false
