@@ -94,12 +94,8 @@ func New() *Engine {
 // mpvPath 找可用的 mpv 可执行文件。
 //
 // 三级定位（见 bins.go）：显式路径 → 随包目录 → PATH。
-func mpvPath() (string, error) {
-	bin, err := resolveMPV()
-	if err != nil {
-		return "", err
-	}
-	return bin.Path, nil
+func mpvPath() (mpvExecutable, error) {
+	return resolveMPV()
 }
 
 // mpvArgs 构造 mpv 子进程参数。逐条都有出处，别随手改：
@@ -166,10 +162,11 @@ func (e *Engine) spawn() error {
 	}
 	sock := filepath.Join(dir, "ipc.sock")
 
-	cmd := exec.Command(bin, mpvArgs(sock)...)
+	cmd := exec.Command(bin.command[0], bin.args(mpvArgs(sock)...)...)
 	cmd.Stderr = os.Stderr
-	// 随包 mpv 是「目录形态」时把它的 lib 追加进 LD_LIBRARY_PATH
+	// quick-sharun 由包内 loader 隔离；旧式目录布局才追加 lib 路径。
 	cmd.Env = childEnv(bin)
+	configureMPVProcess(cmd)
 	if err := cmd.Start(); err != nil {
 		os.RemoveAll(dir)
 		return err
@@ -632,7 +629,7 @@ func (e *Engine) Close() {
 	}
 	killed := cmd != nil && cmd.Process != nil
 	if killed {
-		_ = cmd.Process.Kill()
+		terminateMPVProcess(cmd)
 	}
 	// 等 Wait 回收子进程再返回，应用退出后不留 mpv 孤儿/僵尸。
 	// spawn 失败时 done 已关；进程早已退出时同样立即返回。

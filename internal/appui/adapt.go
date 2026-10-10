@@ -26,16 +26,23 @@ func (a apiAdapter) UserInfo() (player.UserInfo, error) {
 	}
 	out := player.UserInfo{Name: me.BaseInfo.Name, Avatar: me.BaseInfo.Avatar}
 	if vip, err := a.c.UserVIP(); err == nil {
-		switch {
-		case vip.Identity.HugeVip != 0:
-			out.VipLabel = "超级会员"
-		case vip.Identity.Vip >= 9:
-			out.VipLabel = "豪华绿钻"
-		case vip.Identity.Vip > 0:
-			out.VipLabel = "绿钻"
-		}
+		out.VipLabel = vipLabel(vip)
 	}
 	return out, nil
+}
+
+// vipLabel 按后端稳定权益契约取最高有效档位。三个字段是独立布尔权益，
+// 不能沿用旧 vip_login_base 里 svip/HugeVip 的同名异义，也不能把 level 当档位。
+func vipLabel(vip backend.VIPInfo) string {
+	switch {
+	case vip.Svip != 0:
+		return "超级会员"
+	case vip.Identity.HugeVip != 0:
+		return "豪华绿钻"
+	case vip.Identity.Vip != 0:
+		return "绿钻"
+	}
+	return ""
 }
 
 func toPlayerSong(s backend.Song) player.Song {

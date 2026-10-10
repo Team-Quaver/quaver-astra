@@ -15,6 +15,7 @@ import (
 	"github.com/Team-Quaver/quaver-astra/internal/colorprobe"
 	"github.com/Team-Quaver/quaver-astra/internal/conf"
 	"github.com/Team-Quaver/quaver-astra/internal/player"
+	"github.com/Team-Quaver/quaver-astra/internal/smedia"
 	"github.com/Team-Quaver/quaver-astra/internal/vault"
 
 	"github.com/egoist/mygo"
@@ -70,10 +71,15 @@ type App struct {
 	npList    ui.ListState // 正在播放页歌词列表
 	queueList ui.ListState // 播放队列列表
 
+	// media 是系统媒体控制中心会话（Linux MPRIS / Windows SMTC），
+	// 在 New 建立会话，Attach 时补窗口句柄，Close 时注销。
+	media smedia.Controller
 	// 托盘与应用级资源。Close 幂等：OnQuit 与 main 的 defer 都会走一次。
 	tray        *mygo.Tray
 	trayItems   *trayMenu
 	traySig     string
+	trayClickMu sync.Mutex
+	trayPending bool
 	sleep       *sleepBlocker
 	quitStarted atomic.Bool
 	closeOnce   sync.Once
@@ -120,6 +126,7 @@ func New(base string, store *conf.Store, v *vault.Vault) *App {
 		playlist:      map[int64]*playlistState{},
 		lastLyricLine: -2,
 	}
+	a.initMedia()
 	mygo.App.OnBeforeQuit(func(*mygo.QuitEvent) { a.quitStarted.Store(true) })
 	pl.OnNotify(func() {
 		// 登录态变化时，收藏的歌单依赖登录态，缓存要作废重来。
@@ -130,6 +137,7 @@ func New(base string, store *conf.Store, v *vault.Vault) *App {
 		}
 		a.syncSleep()
 		a.syncTray()
+		a.syncMedia()
 		a.invalidate()
 	})
 	return a
@@ -139,6 +147,9 @@ func New(base string, store *conf.Store, v *vault.Vault) *App {
 func (a *App) Close() {
 	a.closeOnce.Do(func() {
 		a.quitStarted.Store(true)
+		if a.media != nil {
+			a.media.Close()
+		}
 		a.sleep.close()
 		a.PL.Close()
 		if a.Covers != nil {
@@ -184,6 +195,10 @@ func (a *App) Attach(win *mygo.Window) {
 	a.PL.Boot()
 	a.PL.RefreshUser()
 	a.setupTray()
+	// SMTC 需要窗口句柄；MPRIS 忽略此调用。
+	if a.media != nil {
+		a.media.AttachWindow(win.NativeHandle())
+	}
 	a.maybeSelfCheck()
 }
 

@@ -8,6 +8,7 @@ import (
 	"image/png"
 	"os"
 	"strings"
+	"time"
 	"unicode"
 
 	"github.com/Team-Quaver/quaver-astra/internal/player"
@@ -86,9 +87,9 @@ func (a *App) setupTray() {
 	}
 	a.tray = tray
 	a.trayItems = menu
-	// Windows/macOS 可区分左右键：左键切换窗口，右键自然弹菜单。
-	// Linux AppIndicator 只提供菜单，因此保留菜单里的显示/隐藏入口。
-	tray.OnClick(a.toggleWindow)
+	// Windows/macOS 会把图标点击送到这里；Linux AppIndicator 只提供菜单，
+	// 菜单中的「显示/隐藏」是该平台的可靠入口。
+	tray.OnClick(a.toggleWindowFromTray)
 	a.syncTray()
 }
 
@@ -144,6 +145,27 @@ func (a *App) syncTray() {
 		it.all.SetChecked(v.mode == "all")
 		it.one.SetChecked(v.mode == "one")
 		it.shuf.SetChecked(v.shuf)
+	})
+}
+
+// toggleWindowFromTray 合并 220ms 内的单击/双击。托盘双击原生层会送来
+// 两次 Activate/Click；若不合并，窗口会隐藏后立刻重新显示，看起来像失效。
+func (a *App) toggleWindowFromTray() {
+	a.trayClickMu.Lock()
+	if a.trayPending {
+		a.trayClickMu.Unlock()
+		return
+	}
+	a.trayPending = true
+	a.trayClickMu.Unlock()
+	time.AfterFunc(220*time.Millisecond, func() {
+		a.trayClickMu.Lock()
+		a.trayPending = false
+		a.trayClickMu.Unlock()
+		if a.quitStarted.Load() {
+			return
+		}
+		a.update(a.toggleWindow)
 	})
 }
 

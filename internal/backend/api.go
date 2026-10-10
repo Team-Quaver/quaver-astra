@@ -334,7 +334,7 @@ type AlbumInfo struct {
 }
 
 // AlbumSinger 专辑详情里的歌手项。上游 singerList 的键名不稳
-//（name / singer_name / singerMID 各处不同），做多别名容错。
+// （name / singer_name / singerMID 各处不同），做多别名容错。
 type AlbumSinger struct {
 	Mid  string `json:"mid"`
 	Name string `json:"name"`
@@ -409,17 +409,31 @@ type QRStatus struct {
 	Error string `json:"error"`
 }
 
-// VIPInfo 归一化 VIP 响应里 UI 关心的部分。
+// VIPInfo 是后端稳定的会员权益契约。svip=超级会员、identity.huge_vip=豪华绿钻、
+// identity.vip=绿钻；它们是各自独立且已经按到期时间过滤的有效标志，不是档位数值。
 type VIPInfo struct {
-	Identity struct {
-		Vip        int    `json:"vip"`
-		HugeVip    int    `json:"huge_vip"`
-		HugeVipEnd string `json:"huge_vip_end"`
-	} `json:"identity"`
-	Userinfo struct {
-		Expire string `json:"expire"`
-		Score  int    `json:"score"`
-	} `json:"userinfo"`
+	Svip      int         `json:"svip"`
+	SvipStart string      `json:"svip_start"`
+	SvipEnd   string      `json:"svip_end"`
+	Identity  VIPIdentity `json:"identity"`
+	Userinfo  VIPUserinfo `json:"userinfo"`
+}
+
+// VIPIdentity 是绿钻/豪华绿钻权益；Level 只是成长等级，不代表会员档位。
+type VIPIdentity struct {
+	Vip          int    `json:"vip"`
+	VipStart     string `json:"vip_start"`
+	VipEnd       string `json:"vip_end"`
+	HugeVip      int    `json:"huge_vip"`
+	HugeVipStart string `json:"huge_vip_start"`
+	HugeVipEnd   string `json:"huge_vip_end"`
+	Level        int    `json:"level"`
+}
+
+// VIPUserinfo 是会员页的辅助信息。
+type VIPUserinfo struct {
+	Expire string `json:"expire"`
+	Score  int    `json:"score"`
 }
 
 // ===================== 端点 =====================

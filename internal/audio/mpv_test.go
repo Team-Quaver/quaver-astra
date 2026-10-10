@@ -76,7 +76,7 @@ func TestEngineHelpers(t *testing.T) {
 
 	t.Run("childEnv", func(t *testing.T) {
 		// 裸名字 → 沿用宿主环境，不设 LD_LIBRARY_PATH
-		if env := childEnv("mpv"); env != nil {
+		if env := childEnv(mpvExecutable{Path: "mpv", command: []string{"mpv"}}); env != nil {
 			t.Error("裸名字不应改写环境")
 		}
 		// 目录形态：存在 lib 子目录才追加
@@ -85,13 +85,13 @@ func TestEngineHelpers(t *testing.T) {
 		if err := os.WriteFile(bin, []byte("#!/bin/sh\n"), 0o755); err != nil {
 			t.Fatal(err)
 		}
-		if env := childEnv(bin); env != nil {
+		if env := childEnv(mpvExecutable{Path: bin, command: []string{bin}}); env != nil {
 			t.Error("没有 lib 目录时不应改写环境")
 		}
 		if err := os.Mkdir(filepath.Join(dir, "lib"), 0o755); err != nil {
 			t.Fatal(err)
 		}
-		env := childEnv(bin)
+		env := childEnv(mpvExecutable{Path: bin, command: []string{bin}})
 		if env == nil {
 			t.Fatal("有 lib 目录时应追加 LD_LIBRARY_PATH")
 		}
@@ -281,4 +281,51 @@ func writeTestWAV(path string, seconds float64) error {
 	put32(dataLen)
 	buf = append(buf, make([]byte, dataLen)...)
 	return os.WriteFile(path, buf, 0o644)
+}
+
+func TestQuickSharunBundledMPV(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "shared", "bin"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, "lib", "pulseaudio"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	payload := filepath.Join(root, "shared", "bin", "mpv")
+	loader := filepath.Join(root, "lib", "ld-linux-x86-64.so.2")
+	for _, p := range []string{payload, loader} {
+		if err := os.WriteFile(p, []byte("#!/bin/sh\n"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(root, "lib", "lib.path"), []byte("+\n+/pulseaudio\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	bin, ok := resolveBundled(root)
+	if !ok {
+		t.Fatal("quick-sharun runtime was not resolved")
+	}
+	if !bin.bundledQuickSharun || bin.Path != payload {
+		t.Fatalf("unexpected resolved runtime: %+v", bin)
+	}
+	if len(bin.command) < 4 || bin.command[0] != loader || bin.command[1] != "--library-path" ||
+		bin.command[3] != payload {
+		t.Fatalf("unexpected command: %#v", bin.command)
+	}
+	if !strings.Contains(bin.command[2], filepath.Join(root, "lib", "pulseaudio")) {
+		t.Fatalf("library path does not include lib.path entry: %q", bin.command[2])
+	}
+	if env := childEnv(bin); containsEnv(env, "LD_LIBRARY_PATH") {
+		t.Fatal("quick-sharun must not inherit LD_LIBRARY_PATH")
+	}
+}
+
+func containsEnv(env []string, key string) bool {
+	for _, kv := range env {
+		if strings.HasPrefix(kv, key+"=") {
+			return true
+		}
+	}
+	return false
 }

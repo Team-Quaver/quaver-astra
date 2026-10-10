@@ -1,28 +1,83 @@
-name: build
+name: Build and Release
 
 on:
   push:
-    branches: [main]
+    branches: ["**"]
     tags: ["v*"]
   pull_request:
-    branches: [main]
   workflow_dispatch:
 
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  test:
-    runs-on: ubuntu-latest
+  version:
+    name: Resolve version
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.resolve.outputs.version }}
+      release_tag: ${{ steps.resolve.outputs.release_tag }}
+      is_release: ${{ steps.resolve.outputs.is_release }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - id: resolve
+        shell: bash
+        run: |
+          set -euo pipefail
+          sha="${GITHUB_SHA:0:12}"
+          base="$(git describe --tags --abbrev=0 2>/dev/null | sed -E 's/^[vV]//' || true)"
+          if [[ -z "$base" ]]; then base=0.0.0; fi
+
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            version="${GITHUB_REF#refs/tags/v}"
+            release_tag="$GITHUB_REF_NAME"
+            is_release=true
+          elif [[ "$GITHUB_EVENT_NAME" == push ]]; then
+            version="${base}-${sha}-snapshot"
+            release_tag="snapshot-${sha}"
+            is_release=true
+          elif [[ "$GITHUB_EVENT_NAME" == pull_request ]]; then
+            version="${base}-${sha}-pr.${{ github.event.pull_request.number }}"
+            release_tag=""
+            is_release=false
+          else
+            version="${base}-${sha}-build"
+            release_tag=""
+            is_release=false
+          fi
+
+          {
+            echo "version=$version"
+            echo "release_tag=$release_tag"
+            echo "is_release=$is_release"
+          } >> "$GITHUB_OUTPUT"
+          echo "Resolved version: $version"
+
+  test:
+    name: Test
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
         with:
           submodules: recursive
-      - uses: actions/setup-go@v5
+
+      - uses: actions/setup-go@v6
         with:
-          go-version: "1.27"
-      # 播放后端是 mpv 外部进程；装上它才能跑真实往返测试。
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+
       - name: Install mpv
         run: sudo apt-get update && sudo apt-get install -y mpv
+
       - run: go test ./internal/...
-      # 无声卡的 runner 上用 null AO 验证 IPC 与时间轴
+
       - name: Test mpv engine
         env:
           QAA_TEST_MPV: "1"
@@ -30,30 +85,246 @@ jobs:
         run: go test -run TestEngineRealMPV -v ./internal/audio/
 
   build:
-    needs: test
+    name: Build (${{ matrix.target }})
+    needs: [version, test]
+    runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
         include:
-          - { os: ubuntu-latest, goos: linux, goarch: amd64, ext: "" }
-          - { os: ubuntu-latest, goos: linux, goarch: arm64, ext: "" }
-          - { os: windows-latest, goos: windows, goarch: amd64, ext: ".exe" }
-          - { os: macos-latest, goos: darwin, goarch: arm64, ext: "" }
-    runs-on: ${{ matrix.os }}
+          - { target: linux-amd64, goos: linux, goarch: amd64, binary: quaver-astra-linux-amd64, machine: "x86-64" }
+          - { target: linux-arm64, goos: linux, goarch: arm64, binary: quaver-astra-linux-arm64, machine: "aarch64|ARM aarch64" }
+          - { target: linux-loong64, goos: linux, goarch: loong64, binary: quaver-astra-linux-loong64, machine: "LoongArch" }
+          - { target: windows-amd64, goos: windows, goarch: amd64, binary: quaver-astra-windows-amd64.exe, machine: "x86-64" }
+          - { target: windows-arm64, goos: windows, goarch: arm64, binary: quaver-astra-windows-arm64.exe, machine: "aarch64|ARM64|Aarch64" }
+          - { target: macos-arm64, goos: darwin, goarch: arm64, binary: quaver-astra-macos-arm64, machine: "arm64|aarch64" }
+
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           submodules: recursive
-      - uses: actions/setup-go@v5
+
+      - uses: actions/setup-go@v6
         with:
-          go-version: "1.27"
-      - name: Build
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+
+      - name: Cross-compile
         env:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
-          CGO_ENABLED: 0
-        run: go build -trimpath -ldflags "-s -w" -o quaver-astra-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.ext }} .
-      - uses: actions/upload-artifact@v4
+          CGO_ENABLED: "0"
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          go build -trimpath -tags mygo_noinspector \
+            -ldflags "-s -w -X main.version=${VERSION}" \
+            -o "${{ matrix.binary }}" .
+          test -s "${{ matrix.binary }}"
+          file "${{ matrix.binary }}" | grep -Eiq "${{ matrix.machine }}"
+
+      - uses: actions/upload-artifact@v7
         with:
-          name: quaver-astra-${{ matrix.goos }}-${{ matrix.goarch }}
-          path: quaver-astra-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.ext }}
+          name: binary-${{ matrix.target }}
+          path: ${{ matrix.binary }}
+          if-no-files-found: error
+
+  package-linux:
+    name: Package AppImage (${{ matrix.target }})
+    needs: [version, build]
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { target: linux-amd64, appimage_arch: x86_64, binary: quaver-astra-linux-amd64 }
+          - { target: linux-arm64, appimage_arch: aarch64, binary: quaver-astra-linux-arm64 }
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/download-artifact@v7
+        with:
+          name: binary-${{ matrix.target }}
+          path: binary
+
+      - name: Stage bundled mpv
+        run: ./scripts/stage-mpv.sh "${{ matrix.target }}" stage
+
+      - name: Install appimagetool
+        run: |
+          ./scripts/install-appimagetool.sh "$RUNNER_TEMP/appimage-bin"
+          echo "$RUNNER_TEMP/appimage-bin" >> "$GITHUB_PATH"
+
+      - name: Build AppImage
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          mkdir -p out
+          ./scripts/package-appimage.sh \
+            "${{ matrix.appimage_arch }}" \
+            "binary/${{ matrix.binary }}" \
+            stage/mpv \
+            "$VERSION" \
+            "out/Quaver-Astra-$VERSION-${{ matrix.target }}.AppImage"
+          test -s out/*.AppImage
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: release-${{ matrix.target }}
+          path: out/*
+          if-no-files-found: error
+
+  package-loong64:
+    name: Package LoongArch tarball
+    needs: [version, build]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/download-artifact@v7
+        with:
+          name: binary-linux-loong64
+          path: binary
+
+      - name: Build binary tarball
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          mkdir -p out
+          ./scripts/package-tarball.sh \
+            binary/quaver-astra-linux-loong64 \
+            "$VERSION" \
+            "out/Quaver-Astra-$VERSION-linux-loong64.tar.gz"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: release-linux-loong64
+          path: out/*
+          if-no-files-found: error
+
+  package-windows:
+    name: Package Windows (${{ matrix.target }})
+    needs: [version, build]
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { target: windows-amd64, arch: amd64 }
+          - { target: windows-arm64, arch: arm64 }
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/download-artifact@v7
+        with:
+          name: binary-${{ matrix.target }}
+          path: binary
+
+      - name: Stage official mpv
+        run: ./scripts/stage-mpv.sh "${{ matrix.target }}" stage
+
+      - name: Build Windows archive
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          mkdir -p out
+          ./scripts/package-windows.sh \
+            "binary/quaver-astra-${{ matrix.target }}.exe" \
+            stage/mpv \
+            "$VERSION" \
+            "${{ matrix.arch }}" \
+            "out/Quaver-Astra-$VERSION-windows-${{ matrix.arch }}.zip"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: release-${{ matrix.target }}
+          path: out/*
+          if-no-files-found: error
+
+  package-macos:
+    name: Package macOS DMG (arm64)
+    needs: [version, build]
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/download-artifact@v7
+        with:
+          name: binary-macos-arm64
+          path: binary
+
+      - name: Stage official mpv
+        run: ./scripts/stage-mpv.sh macos-arm64 stage
+
+      - name: Build DMG
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          mkdir -p out
+          ./scripts/package-macos.sh \
+            binary/quaver-astra-macos-arm64 \
+            stage/mpv \
+            "$VERSION" \
+            "out/Quaver-Astra-$VERSION-macos-arm64.dmg"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: release-macos-arm64
+          path: out/*
+          if-no-files-found: error
+
+  release:
+    name: Publish release
+    if: github.event_name == 'push'
+    needs: [version, package-linux, package-loong64, package-windows, package-macos]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v7
+        with:
+          pattern: release-*
+          merge-multiple: true
+          path: out
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.version.outputs.version }}
+          RELEASE_TAG: ${{ needs.version.outputs.release_tag }}
+          IS_TAG_RELEASE: ${{ startsWith(github.ref, 'refs/tags/v') }}
+        run: |
+          set -euo pipefail
+          ls -lh out/
+
+          if [[ "$IS_TAG_RELEASE" == true ]]; then
+            if gh release view "$RELEASE_TAG" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+              gh release upload "$RELEASE_TAG" out/* -R "$GITHUB_REPOSITORY" --clobber
+            else
+              gh release create "$RELEASE_TAG" out/* \
+                -R "$GITHUB_REPOSITORY" \
+                --target "$GITHUB_SHA" \
+                --title "Quaver Astra $VERSION" \
+                --generate-notes
+            fi
+            exit 0
+          fi
+
+          notes=$(mktemp)
+          {
+            echo "Snapshot build for commit \`$GITHUB_SHA\`."
+            echo
+            echo "Linux: AppImage (AMD64/ARM64) and a LoongArch64 binary tarball."
+            echo "Windows: AMD64/ARM64 archives with official mpv releases."
+            echo "macOS: ARM64 DMG with the official mpv release."
+            echo
+            echo "**Snapshot build; not a stable release.**"
+          } > "$notes"
+
+          gh release delete "$RELEASE_TAG" -R "$GITHUB_REPOSITORY" --yes --cleanup-tag \
+            >/dev/null 2>&1 || true
+          gh release create "$RELEASE_TAG" out/* \
+            -R "$GITHUB_REPOSITORY" \
+            --prerelease \
+            --target "$GITHUB_SHA" \
+            --title "Snapshot $VERSION" \
+            --notes-file "$notes"

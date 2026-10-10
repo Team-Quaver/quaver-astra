@@ -105,6 +105,7 @@ func (a *App) loginBmp(st *loginState) *ui.Bitmap {
 // genQR 请求二维码并启动轮询。
 func (a *App) genQR(st *loginState) {
 	st.gen++
+	st.pollStop = false
 	gen := st.gen
 	ch := loginChannels[st.channel]
 	st.status = "正在获取二维码…"

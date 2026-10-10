@@ -24,11 +24,18 @@ const appIdentifier = "red.0w0.quaver-astra"
 //go:linkname mygoPackageIdentifier github.com/egoist/mygo.packageIdentifier
 var mygoPackageIdentifier string
 
+// version 由发布 CI 注入；本地 go build 保留 dev 标记。
+var version = "dev"
+
 func init() { mygoPackageIdentifier = appIdentifier }
 
 func main() {
+	// 必须早于 GTK/OpenGL 首次加载；见 gpu_linux.go。
+	configureGPUEnvironment()
+
 	// 桌面壳/二进制注册名统一为 Quaver Astra（应用菜单、托盘与系统注册表）。
 	mygo.App.SetName("Quaver Astra")
+	mygo.App.SetVersion(version)
 
 	cfgDir := configDir()
 	if err := os.MkdirAll(cfgDir, 0o700); err != nil {
