@@ -7,14 +7,15 @@
 现代、美观的跨平台第三方 Q 音客户端，现已轻装上阵
 
 <p align="center">
-  <img src="img/1-4.webp" width="480">
+  <img src="img/astra.png" width="480">
 </p>
 
 Quaver Music Astra，是一个基于 MyGO 的，以 Quaver Music 轻量化为目的的第三方 QQ 音乐客户端。以复用 Typhoeus Golang 后端，而非重复造轮子
 
+Astra 名字取自《绝区零》角色耀嘉音（Astra Yao），也可以是《无畏契约》角色星礈（Astra），由于想名部想了半天，这个名字容易冲突，且能代表星星闪耀，该名字并不会成为 Quaver Music 开发代号。
+
 - **UI**：[MyGo](https://github.com/egoist/mygo) 的原生 UI 工具包（`ui` 包）——视图是状态的函数，由 MyGo 在 GPU 上直接绘制（Linux 走 OpenGL），不开 WebKitGTK，窗口秒开、内存占用小。Linux GtkGLArea 渲染回调已固定在持有 GL context 的原生线程，避免 Go 调度迁移后 libepoxy 找不到当前 GLX/EGL context；检测到 NVIDIA 显卡时在加载 GL 前设置 `__GL_THREADED_OPTIMIZATIONS=0`。
 - **后端**：[Typhoeus-go](https://github.com/Team-Quaver/typhoeus-go)（子模块 `third_party/Typhoeus-go`）**进程内嵌**——不再是 sidecar 独立进程，`quaver-server` 的完整路由表直接挂在本进程 `127.0.0.1` 的随机端口上。
-- **音频**：[mpv](https://mpv.io/) 子进程经 JSON IPC（Unix socket / 命名管道）驱动。解码交给 mpv 内置的 FFmpeg，本项目不再自带任何解码器——**全档位可播**（含atmos / DTS / FLAC / AAC），seek 由 mpv 自己做 Range 与重试，播放位置直接取 mpv 的 `time-pos`（不走墙钟推算，零累积误差）。仍是无 cgo、单二进制，可交叉编译。mpv 的查找顺序与 Quaver Astra 本体一致：**显式路径 → 随包目录 → PATH**。
 
 > [!CAUTION]
 > 真爱音乐，尊重正版，音乐平台不易，该应用**不提供盗版 QQ 音乐曲目服务！**
@@ -75,7 +76,7 @@ mpv 定位优先级与 Quaver Music 本体（`ui/electron/audio/dist/bins.js`）
 - 设置页可分别选择界面字体与歌词字体：系统、衬线、非衬线、等宽或自定义 family list；歌词字体同时作用于行级歌词、翻译和逐字高亮
 - **动效**：对齐主项目（桌面版 Quaver）的动效语言——正在播放页上滑开合、路由页错峰入场（route-in）、侧栏宽度过渡 + 收起图标旋转、行/卡片底色过渡、进度条缓动、逐字歌词每帧推进
 - 侧栏可收起；收起态底部按钮纵向排列；侧栏几何有布局测试守护（图标列共线、行距均匀）；纯图标按钮均有 tooltip
-- 系统托盘：对齐 Quaver Astra 的曲目行、上一曲 / 播放暂停 / 下一曲、循环与随机、显示/隐藏、退出；单击/双击合并为一次显示/隐藏，右键弹出菜单；窗口关闭按钮可收进托盘
+- 系统托盘：对齐 Quaver Music 的曲目行、上一曲 / 播放暂停 / 下一曲、循环与随机、显示/隐藏、退出；单击/双击合并为一次显示/隐藏，右键弹出菜单；窗口关闭按钮可收进托盘
 - **系统媒体控制中心**：Linux 注册 MPRIS2（`org.mpris.MediaPlayer2.quaver-astra`，桌面键盘媒体键、播放状态/封面/进度/循环模式双向同步），Windows 接入 SMTC（系统媒体浮层、媒体键、封面缩略图与进度时间轴，支持系统侧循环/随机切换）；架构见 `internal/smedia/`
 - 播放音频时阻止系统睡眠（暂停/停止即恢复，不阻止熄屏）；正常退出、TERM/Ctrl+C 与 native SIGABRT 清理时都会终止 mpv；Linux 另设父进程死亡信号和进程组兜底，避免异常崩溃留下 mpv
 

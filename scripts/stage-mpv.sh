@@ -60,18 +60,29 @@ fi
 
 case "$target" in
   linux-*)
-    # 7z 能直接读取 AppImage 内嵌的 SquashFS，跨架构也能解包；只有在
-    # runner 没有 7z 时才退回 AppImage 自带的 --appimage-extract（后者要求
-    # 目标架构与 runner 一致）。
-    if command -v 7z >/dev/null 2>&1; then
-      mkdir -p "$work/extracted"
-      7z x -y -o"$work/extracted" "$asset" >/dev/null
-      src="$work/extracted"
-    else
+    # AppImage 自带的 --appimage-extract 最可靠，但要求 runner 与目标同架构。
+    # CI 因此在 x86_64 / ARM64 各自的 runner 上暂存。只有跨架构手动执行时才
+    # 尝试 7z 直读 SquashFS；不同 AppImage runtime/压缩布局下 7z 不保证支持。
+    case "$(uname -m)" in
+      x86_64|amd64) host_arch=x86_64 ;;
+      aarch64|arm64) host_arch=aarch64 ;;
+      *) host_arch="" ;;
+    esac
+    want_arch=x86_64
+    [ "$target" = linux-arm64 ] && want_arch=aarch64
+
+    if [ "$host_arch" = "$want_arch" ]; then
       chmod +x "$asset"
       (cd "$work" && "./${asset##*/}" --appimage-extract >/dev/null)
       src="$work/squashfs-root"
       [ -d "$src" ] || src="$work/AppDir"
+    elif command -v 7z >/dev/null 2>&1; then
+      mkdir -p "$work/extracted"
+      7z x -y -o"$work/extracted" "$asset" >/dev/null
+      src="$work/extracted"
+    else
+      echo "cannot extract $want_arch AppImage on $host_arch host: install 7z or run on a matching runner" >&2
+      exit 1
     fi
     [ -d "$src" ] || { echo "mpv AppImage extraction produced no AppDir" >&2; exit 1; }
     cp -aL "$src/." "$dest/"

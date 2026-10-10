@@ -177,6 +177,8 @@ jobs:
           path: runtime
 
       - name: Install appimagetool
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           ./scripts/install-appimagetool.sh "$RUNNER_TEMP/appimage-bin"
           echo "$RUNNER_TEMP/appimage-bin" >> "$GITHUB_PATH"
