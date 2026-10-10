@@ -60,10 +60,19 @@ fi
 
 case "$target" in
   linux-*)
-    chmod +x "$asset"
-    (cd "$work" && "./${asset##*/}" --appimage-extract >/dev/null)
-    src="$work/squashfs-root"
-    [ -d "$src" ] || src="$work/AppDir"
+    # 7z 能直接读取 AppImage 内嵌的 SquashFS，跨架构也能解包；只有在
+    # runner 没有 7z 时才退回 AppImage 自带的 --appimage-extract（后者要求
+    # 目标架构与 runner 一致）。
+    if command -v 7z >/dev/null 2>&1; then
+      mkdir -p "$work/extracted"
+      7z x -y -o"$work/extracted" "$asset" >/dev/null
+      src="$work/extracted"
+    else
+      chmod +x "$asset"
+      (cd "$work" && "./${asset##*/}" --appimage-extract >/dev/null)
+      src="$work/squashfs-root"
+      [ -d "$src" ] || src="$work/AppDir"
+    fi
     [ -d "$src" ] || { echo "mpv AppImage extraction produced no AppDir" >&2; exit 1; }
     cp -aL "$src/." "$dest/"
     [ -x "$dest/shared/bin/mpv" ] || { echo "missing $dest/shared/bin/mpv" >&2; exit 1; }

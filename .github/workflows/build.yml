@@ -128,9 +128,34 @@ jobs:
           path: ${{ matrix.binary }}
           if-no-files-found: error
 
+  # Linux mpv AppImage 是目标架构程序；解包必须在同架构 runner 上执行，
+  # 打包器则统一在 x86_64 runner 上运行，用 ARCH 指定目标 AppImage 架构。
+  stage-linux-mpv:
+    name: Stage bundled mpv (${{ matrix.target }})
+    needs: [version]
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { target: linux-amd64, runner: ubuntu-24.04 }
+          - { target: linux-arm64, runner: ubuntu-24.04-arm }
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Stage bundled mpv
+        run: ./scripts/stage-mpv.sh "${{ matrix.target }}" stage
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: runtime-${{ matrix.target }}
+          path: stage/mpv
+          include-hidden-files: true
+          if-no-files-found: error
+
   package-linux:
     name: Package AppImage (${{ matrix.target }})
-    needs: [version, build]
+    needs: [version, build, stage-linux-mpv]
     runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
@@ -146,8 +171,10 @@ jobs:
           name: binary-${{ matrix.target }}
           path: binary
 
-      - name: Stage bundled mpv
-        run: ./scripts/stage-mpv.sh "${{ matrix.target }}" stage
+      - uses: actions/download-artifact@v7
+        with:
+          name: runtime-${{ matrix.target }}
+          path: runtime
 
       - name: Install appimagetool
         run: |
@@ -162,7 +189,7 @@ jobs:
           ./scripts/package-appimage.sh \
             "${{ matrix.appimage_arch }}" \
             "binary/${{ matrix.binary }}" \
-            stage/mpv \
+            runtime \
             "$VERSION" \
             "out/Quaver-Astra-$VERSION-${{ matrix.target }}.AppImage"
           test -s out/*.AppImage

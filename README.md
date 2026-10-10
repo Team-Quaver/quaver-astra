@@ -1,12 +1,19 @@
-<p align="center"><strong>Quaver Astra · Native</strong></p>
+<p align="center">
+  <img src="img/quaver-astra.svg" width="96">
+</p>
 
-# Quaver Astra（Native 分支）
+# Quaver Music Astra
 
-Quaver Astra 的轻量化重写：**全 Go、原生 UI、无 WebView**。
+现代、美观的跨平台第三方 Q 音客户端，现已轻装上阵
+
+<p align="center">
+  <img src="img/1-4.webp" width="480">
+</p>
+
+Quaver Music Astra，是一个基于 MyGO 的，以 Quaver Music 轻量化为目的的第三方 QQ 音乐客户端。以复用 Typhoeus Golang 后端，而非重复造轮子
 
 - **UI**：[MyGo](https://github.com/egoist/mygo) 的原生 UI 工具包（`ui` 包）——视图是状态的函数，由 MyGo 在 GPU 上直接绘制（Linux 走 OpenGL），不开 WebKitGTK，窗口秒开、内存占用小。Linux GtkGLArea 渲染回调已固定在持有 GL context 的原生线程，避免 Go 调度迁移后 libepoxy 找不到当前 GLX/EGL context；检测到 NVIDIA 显卡时在加载 GL 前设置 `__GL_THREADED_OPTIMIZATIONS=0`。
 - **后端**：[Typhoeus-go](https://github.com/Team-Quaver/typhoeus-go)（子模块 `third_party/Typhoeus-go`）**进程内嵌**——不再是 sidecar 独立进程，`quaver-server` 的完整路由表直接挂在本进程 `127.0.0.1` 的随机端口上。
-- **凭证持久化**：复用后端 external 模式的 QCRED1 管道交接协议（登录/自动刷新/登出实时回写），凭证以 ChaCha20-Poly1305 加密落盘（`credential.enc` + 随机主密钥 `session.key`，0600），明文绝不落盘；登出或"清除已保存的凭证"即删。
 - **音频**：[mpv](https://mpv.io/) 子进程经 JSON IPC（Unix socket / 命名管道）驱动。解码交给 mpv 内置的 FFmpeg，本项目不再自带任何解码器——**全档位可播**（含atmos / DTS / FLAC / AAC），seek 由 mpv 自己做 Range 与重试，播放位置直接取 mpv 的 `time-pos`（不走墙钟推算，零累积误差）。仍是无 cgo、单二进制，可交叉编译。mpv 的查找顺序与 Quaver Astra 本体一致：**显式路径 → 随包目录 → PATH**。
 
 > [!CAUTION]
@@ -46,7 +53,7 @@ CI 发布：每次 push 都会构建并发布一个带短 commit id 的 snapshot
 | `QAA_TEST_MPV=1` | 开启真实 mpv 往返测试 |
 | `QAA_TEST_MPRIS=1` | 开启 MPRIS 往返测试（需会话 D-Bus + playerctl） |
 
-mpv 定位优先级与 Quaver Astra 本体（`ui/electron/audio/dist/bins.js`）一致：
+mpv 定位优先级与 Quaver Music 本体（`ui/electron/audio/dist/bins.js`）一致：
 显式路径 → 随包目录 → PATH。Linux 随包 mpv 是 AppImage 解包出的 quick-sharun
 目录时，由包内 loader 按 `lib/lib.path` 直启 `shared/bin/mpv`，不继承宿主
 `LD_LIBRARY_PATH`（避免包内 libc 与宿主 libc 混载）；Windows/macOS 直接启动
@@ -109,15 +116,13 @@ player.startCurrent
 - `QUAVER_PLAY_FIRST=1` 自动播一首新歌（验证播放链路）
 - `QUAVER_CONFIG_DIR=<dir>` 自定义配置目录
 
-## 与主项目（Quaver Astra）的差异
+## 与主项目（Quaver Music）的差异
 
-轻量版刻意裁剪的部分：无歌手/专辑页、无搜索联想、无歌单写侧（只读浏览与收藏）、无 MPRIS / 桌面快捷键。凭证保存为本机文件加密（密钥与密文同目录，防拷贝不防本机 root；后续可升级 OS 密钥环）。
+Astra 缺少以下内容：搜索联想、无歌单处理功能、无桌面快捷键。
 
 **逐字歌词**：请求歌词时带 `qrc=1`，上游把 QRC 明文塞在同一个 `lyric` 字段里（XML 信封形态，Typhoeus-go 在服务端解密）。解析在 `internal/player/qrc.go`；服务端万一解密失败、原样透传密文，再由 [jixunmoe-go/qrc](https://github.com/jixunmoe-go/qrc) 在本地兜底解一层。
 
-**明暗主题**：应用自己按 `Style.Theme` 定明暗，不依赖 MyGo 的 `Theme.IsDark()`——它的 Linux 后端 `SetSource("light")` 只清 GTK 的 prefer-dark 标志，紧接着 `IsDark()` 又去问 XDG portal 的 color-scheme，深色桌面上「强制浅色」会被 portal 覆盖，浅色模式因此完全无法生效。
-
-换用 mpv 之后，音质支持不再是短板：原先受自研解码器限制只能播 MP3 128/320、FLAC 与 Ogg，atmos/母带需嗅探降档；现在由 FFmpeg 全档位直解。
+**明暗主题**：应用自己按 `Style.Theme` 定明暗，不依赖 MyGo 的 `Theme.IsDark()`——它的 Linux 后端 `SetSource("light")` 只清 GTK 的
 
 ## 许可
 
