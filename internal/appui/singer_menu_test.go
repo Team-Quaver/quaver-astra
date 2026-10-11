@@ -104,14 +104,15 @@ func seedAlbum(app *App) {
 // ===== 右键菜单 =====
 
 // TestSongRowMenuStructure 钉住菜单结构：插队语义改为「下一首播放」后，
-// 顶层必须是 [下一首播放, 添加到队列, -, 收藏, -, 跳转至, 更多操作]——
+// 顶层必须是 [下一首播放, 添加到队列, -, 收藏, 添加到歌单, -, 跳转至, 更多操作]——
 // 旧菜单的「插队播放（立即切歌）」「加入队列（语义名不副实）」不得回来。
+// 「添加到歌单」子菜单列出用户自建歌单，无自建歌单时显示占位项。
 func TestSongRowMenuStructure(t *testing.T) {
 	_, _, tester := menuTestApp(t)
 	if err := tester.RightClick("稻香"); err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"下一首播放", "添加到队列", "-", "收藏", "-", "跳转至", "更多操作"}
+	want := []string{"下一首播放", "添加到队列", "-", "收藏", "添加到歌单", "-", "跳转至", "更多操作"}
 	if got := tester.Menu(); !slices.Equal(got, want) {
 		t.Fatalf("右键菜单 = %v，期望 %v", got, want)
 	}

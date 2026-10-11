@@ -17,10 +17,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"net"
+	"io"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -38,7 +37,7 @@ type Engine struct {
 	cmd      *exec.Cmd
 	done     chan struct{} // cmd.Wait 完成；Close 等它确认子进程已回收
 	doneOnce sync.Once
-	conn     net.Conn
+	conn     ipcConn
 	rd       *bufio.Reader
 	wr       *bufio.Writer
 	nextID   int64
@@ -59,6 +58,13 @@ type Engine struct {
 
 	obs   func()
 	obsCh chan struct{}
+}
+
+// ipcConn 是引擎与 mpv 子进程之间的双向通道。Unix/macOS 上是 AF_UNIX
+// socket，Windows 上是命名管道；不支持超时的实现把 SetReadDeadline 置空。
+type ipcConn interface {
+	io.ReadWriteCloser
+	SetReadDeadline(time.Time) error
 }
 
 // ipcResp 是 mpv IPC 的一条响应或事件。
@@ -144,31 +150,20 @@ func (e *Engine) spawn() error {
 	if err != nil {
 		return err
 	}
-	// socket 目录：优先用系统临时目录；某些环境（受限容器）下它不可用，
-	// 退回用户缓存目录。
-	dir, err := os.MkdirTemp("", "quaver-astra-mpv-")
+	// IPC 端点：Unix/macOS 是临时目录里的 AF_UNIX socket；Windows 是
+	// 命名管道（mpv 的 Windows IPC 只支持命名管道，见 ipc_windows.go）。
+	serverArg, dialIPC, cleanupIPC, err := ipcSetup()
 	if err != nil {
-		base, berr := os.UserCacheDir()
-		if berr != nil {
-			return err
-		}
-		if mkerr := os.MkdirAll(base, 0o700); mkerr != nil {
-			return err
-		}
-		dir, err = os.MkdirTemp(base, "quaver-astra-mpv-")
-		if err != nil {
-			return err
-		}
+		return err
 	}
-	sock := filepath.Join(dir, "ipc.sock")
 
-	cmd := exec.Command(bin.command[0], bin.args(mpvArgs(sock)...)...)
-	cmd.Stderr = os.Stderr
+	cmd := exec.Command(bin.command[0], bin.args(mpvArgs(serverArg)...)...)
+	cmd.Stderr = mpvStderr()
 	// quick-sharun 由包内 loader 隔离；旧式目录布局才追加 lib 路径。
 	cmd.Env = childEnv(bin)
 	configureMPVProcess(cmd)
 	if err := cmd.Start(); err != nil {
-		os.RemoveAll(dir)
+		cleanupIPC()
 		return err
 	}
 	e.cmd = cmd
@@ -180,14 +175,14 @@ func (e *Engine) spawn() error {
 	go func() {
 		_ = cmd.Wait()
 		exited.Store(true)
-		os.RemoveAll(dir)
+		cleanupIPC()
 		e.markDone()
 	}()
 
-	var conn net.Conn
+	var conn ipcConn
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
-		if c, derr := net.Dial("unix", sock); derr == nil {
+		if c, derr := dialIPC(); derr == nil {
 			conn = c
 			break
 		}
@@ -199,11 +194,8 @@ func (e *Engine) spawn() error {
 	}
 	if conn == nil {
 		_ = cmd.Process.Kill()
-		os.RemoveAll(dir)
-		if _, err := os.Stat(sock); err != nil {
-			return fmt.Errorf("mpv 未创建 IPC socket（进程可能已退出，检查 mpv 是否可正常启动）")
-		}
-		return errors.New("mpv IPC 未就绪")
+		cleanupIPC()
+		return errors.New("mpv IPC 未就绪（socket/命名管道未建立，进程可能已退出）")
 	}
 	e.conn = conn
 	e.rd = bufio.NewReaderSize(conn, 64<<10)

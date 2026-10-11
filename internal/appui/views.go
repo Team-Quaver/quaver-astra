@@ -191,10 +191,10 @@ func (a *App) openPlaylistAndPlay(id int64) {
 //
 // 卡片宽度统一由 playlistCardWidth 决定，末行数量不足时也不会被 flex 拉宽；
 // 标题区与元信息区固定高度，一/两行标题都不会把同排卡片的后续内容顶歪。
-func (a *App) playlistGrid(c *ui.Context, lists []backend.SonglistSummary) {
+func (a *App) playlistGrid(c *ui.Context, lists []backend.SonglistSummary, cardMenu ...func(m *ui.Menu, pl backend.SonglistSummary)) {
 	ui.Row(c).FillWidth().Wrap().GapX(18).GapY(24).AlignItems(ui.Start).Children(func() {
 		for i := range lists {
-			a.playlistCard(c, lists[i])
+			a.playlistCard(c, lists[i], cardMenu...)
 		}
 	})
 }
@@ -206,7 +206,8 @@ func (a *App) playlistGrid(c *ui.Context, lists []backend.SonglistSummary) {
 const playlistCardWidth = 172
 
 // playlistCard 歌单卡片：封面 1:1，文字区占高固定，所有行使用同一宽度。
-func (a *App) playlistCard(c *ui.Context, pl backend.SonglistSummary) {
+// cardMenu 让调用方给卡片追加右键菜单（如收藏页的「取消收藏」）。
+func (a *App) playlistCard(c *ui.Context, pl backend.SonglistSummary, cardMenu ...func(m *ui.Menu, pl backend.SonglistSummary)) {
 	t := c.Theme()
 	art := a.Covers.Get(pl.Picurl, a.invalidate)
 	card := ui.Column(c).Width(playlistCardWidth).Shrink(0).Gap(7).Label(pl.Title)
@@ -245,6 +246,11 @@ func (a *App) playlistCard(c *ui.Context, pl backend.SonglistSummary) {
 			ui.Text(c, sub).FontSize(fz(11)).TextColor(t.TextMuted).SingleLine().Ellipsis("…")
 		})
 	})
+	if len(cardMenu) > 0 && cardMenu[0] != nil {
+		card.ContextMenu(func(m *ui.Menu) {
+			cardMenu[0](m, pl)
+		})
+	}
 	if card.Clicked() {
 		a.Router.Push("/playlist/" + strconv.FormatInt(pl.ID, 10))
 	}
@@ -461,11 +467,14 @@ func (a *App) playlistView(c *ui.Context, id int64) {
 				}
 				ui.Row(c).Gap(8).Margin(4, 0, 0, 0).Children(func() {
 					primaryBtn(c, "播放全部", func() { a.playListNow(st.songs, 0) })
-					favLabel := "收藏歌单"
-					if st.faved {
-						favLabel = "已收藏"
+					// 自建歌单不显示收藏按钮：收藏是收藏别人的歌单。
+					if !a.isCreatedPlaylist(id) {
+						favLabel := "收藏歌单"
+						if st.faved {
+							favLabel = "已收藏"
+						}
+						plainBtn(c, favLabel, func() { a.togglePlaylistFav(st, id) })
 					}
-					plainBtn(c, favLabel, func() { a.togglePlaylistFav(st, id) })
 				})
 			})
 		})
@@ -473,7 +482,15 @@ func (a *App) playlistView(c *ui.Context, id int64) {
 		// 歌曲行：整页滚动（原版行为），触底翻页
 		ui.Column(c).FillWidth().Children(func() {
 			for i := range st.songs {
-				a.songRow(c, &st.list, i, func(i int) { a.playListNow(st.songs, i) })
+				idx := i
+				a.songRow(c, &st.list, i, func(i int) { a.playListNow(st.songs, i) }, func(m *ui.Menu, s player.Song, i int) {
+					// 自建歌单的歌曲可以删除。
+					if a.isCreatedPlaylist(id) {
+						if m.Item("从歌单删除").Chosen() {
+							a.deleteFromPlaylist(st, idx, s)
+						}
+					}
+				})
 			}
 			if st.loadingMore {
 				ui.Row(c).FillWidth().Center().Padding(14).Children(func() { ui.Spinner(c) })
@@ -499,19 +516,35 @@ func (a *App) ensurePlaylist(st *playlistState, id int64) {
 		var d backend.SonglistDetail
 		var err error
 		a.withAPILimit(func() { d, err = a.API.SonglistDetail(id, 1, 100) })
+		if err != nil {
+			a.update(func() {
+				st.loading = false
+				st.loaded = true
+				st.err = err.Error()
+			})
+			return
+		}
+		// 非自建歌单要查收藏态：调 /songlist/fav/check 拿已收藏 ID 集合。
+		var favIDs []int64
+		if !a.isCreatedPlaylist(id) {
+			a.withAPILimit(func() { favIDs, _ = a.API.SonglistFavCheck() })
+		}
 		a.update(func() {
 			st.loading = false
 			st.loaded = true
-			if err != nil {
-				st.err = err.Error()
-				return
-			}
 			st.info = d.Info
 			st.creator = d.Creator
 			st.songs = toPlayerSongs(d.Songs)
 			st.total = d.Total
 			st.hasMore = d.Hasmore != 0
 			st.list.songs = st.songs
+			st.favKnown = true
+			for _, fid := range favIDs {
+				if fid == id {
+					st.faved = true
+					break
+				}
+			}
 		})
 	}()
 }
@@ -539,9 +572,47 @@ func (a *App) togglePlaylistFav(st *playlistState, id int64) {
 	go func() {
 		var err error
 		a.withAPILimit(func() { err = a.API.SonglistFav(id, target) })
-		if err != nil {
-			a.update(func() { st.faved = !target })
-		}
+		a.update(func() {
+			if err != nil {
+				st.faved = !target
+			} else {
+				// 收藏态变化后作废「收藏的歌单」缓存
+				a.favLists.loaded = false
+			}
+		})
+	}()
+}
+
+// deleteFromPlaylist 乐观删除歌单内歌曲：先从本地切片移除，后端失败时整页重载。
+func (a *App) deleteFromPlaylist(st *playlistState, idx int, s player.Song) {
+	if idx < 0 || idx >= len(st.songs) {
+		return
+	}
+	// 乐观删除：立刻从 UI 移除
+	st.songs = append(st.songs[:idx], st.songs[idx+1:]...)
+	st.list.songs = st.songs
+	if st.total > 0 {
+		st.total--
+	}
+	if st.info.Songnum > 0 {
+		st.info.Songnum--
+	}
+	go func() {
+		var err error
+		a.withAPILimit(func() {
+			err = a.API.SonglistDelSong(st.info.DirID, st.info.ID, s.SongID, s.SongType-1)
+		})
+		a.update(func() {
+			if err != nil {
+				// 后端失败：标记重载，下次渲染时拉最新状态
+				st.loaded = false
+				st.songs = nil
+				st.list.songs = nil
+				a.pendingToast = "删除失败：" + err.Error()
+			} else {
+				a.pendingToast = "已从歌单删除"
+			}
+		})
 	}()
 }
 

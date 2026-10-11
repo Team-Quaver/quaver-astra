@@ -34,6 +34,12 @@ go build .
 ./quaver-astra
 ```
 
+Windows 的图标与版本信息资源在 CI 里由
+[go-winres](https://github.com/tc-hib/go-winres) 从 `winres/` 现场生成
+（macOS 的 icns 同样在打包脚本里从 `img/app-icon.png` 现场缩放生成）。
+本地构建 Windows 版想带图标时执行一次：
+`go install github.com/tc-hib/go-winres@v0.3.3 && go-winres make --in winres/winres.json --out rsrc --arch amd64,arm64`。
+
 测试：
 
 ```sh

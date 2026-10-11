@@ -38,9 +38,10 @@ type App struct {
 	npOpen      bool
 	queueOpen   bool
 	sbCollapsed bool
-	searchDraft string
-	volOpen     bool
-	qualityOpen bool
+	searchDraft  string
+	pendingToast string
+	volOpen      bool
+	qualityOpen  bool
 	// npMoreOpen / npQInfoOpen 是正在播放页「⋮ 菜单」与「音质胶囊浮窗」的开合。
 	// 与播放条的 qualityOpen 各管各的：音质胶囊在正在播放页只展示音频流参数
 	//（只读），切档仍只发生在播放条胶囊上，两个浮层互不联动。
@@ -231,6 +232,11 @@ func (a *App) View(c *ui.Context) {
 		})
 		a.playerBar(c, t)
 	})
+
+	if a.pendingToast != "" {
+		c.Toast(a.pendingToast)
+		a.pendingToast = ""
+	}
 }
 
 func (a *App) mainRow(c *ui.Context) {
@@ -629,6 +635,17 @@ func (a *App) invalidate() {
 	if a.Win != nil {
 		a.Win.Update(func() {})
 	}
+}
+
+// isCreatedPlaylist 报告 id 是否是当前登录用户自建的歌单。
+// 自建歌单在侧栏列表里（PL.Playlists），tid 即路由参数 id。
+func (a *App) isCreatedPlaylist(id int64) bool {
+	for _, pl := range a.PL.Playlists() {
+		if pl.ID == id {
+			return true
+		}
+	}
+	return false
 }
 
 // probeCover 封面可用后做取色（url 是封面地址）。

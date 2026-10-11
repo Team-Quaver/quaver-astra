@@ -3,6 +3,8 @@
 package audio
 
 import (
+	"io"
+	"os"
 	"os/exec"
 	"syscall"
 )
@@ -26,3 +28,6 @@ func terminateMPVProcess(cmd *exec.Cmd) {
 		_ = cmd.Process.Kill()
 	}
 }
+
+// mpvStderr 转发 mpv 的诊断输出，便于终端裸跑时排查启动问题。
+func mpvStderr() io.Writer { return os.Stderr }

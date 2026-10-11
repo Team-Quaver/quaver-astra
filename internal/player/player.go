@@ -118,6 +118,7 @@ type Backend interface {
 // PlaylistRef 侧栏歌单项。
 type PlaylistRef struct {
 	ID    int64
+	DirID int64
 	Title string
 }
 

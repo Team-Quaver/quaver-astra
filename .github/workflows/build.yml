@@ -116,6 +116,13 @@ jobs:
           go-version-file: go.mod
           cache-dependency-path: go.sum
 
+      - name: Generate Windows PE resources
+        if: matrix.goos == 'windows'
+        run: |
+          go install github.com/tc-hib/go-winres@v0.3.3
+          "$(go env GOPATH)/bin/go-winres" make \
+            --in winres/winres.json --out rsrc --arch amd64,arm64
+
       - name: Cross-compile
         env:
           GOOS: ${{ matrix.goos }}
@@ -123,8 +130,13 @@ jobs:
           CGO_ENABLED: "0"
           VERSION: ${{ needs.version.outputs.version }}
         run: |
+          ldflags="-s -w -X main.version=${VERSION}"
+          # windowsgui 子系统：GUI 程序双击启动时不再拖出一个 CMD 窗口。
+          if [ "${{ matrix.goos }}" = windows ]; then
+            ldflags="$ldflags -H=windowsgui"
+          fi
           go build -trimpath -tags mygo_noinspector \
-            -ldflags "-s -w -X main.version=${VERSION}" \
+            -ldflags "$ldflags" \
             -o "${{ matrix.binary }}" .
           test -s "${{ matrix.binary }}"
           file "${{ matrix.binary }}" | grep -Eiq "${{ matrix.machine }}"

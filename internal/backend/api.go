@@ -539,6 +539,32 @@ func (c *Client) SonglistFav(id int64, fav bool) error {
 	return err
 }
 
+// SonglistAddSong 加歌到自建歌单。songType 是写侧枚举（读侧 type - 1）。
+func (c *Client) SonglistAddSong(dirid, tid, songID, songType int64) error {
+	body := map[string]any{"song_id": songID, "song_type": songType, "tid": tid}
+	_, err := c.postJSON("/songlist/"+strconv.FormatInt(dirid, 10)+"/songs", body)
+	return err
+}
+
+// SonglistDelSong 从自建歌单移除歌曲。songType 是写侧枚举（读侧 type - 1）。
+func (c *Client) SonglistDelSong(dirid, tid, songID, songType int64) error {
+	b, err := json.Marshal(map[string]any{"song_id": songID, "song_type": songType, "tid": tid})
+	if err != nil {
+		return err
+	}
+	_, err = c.do(http.MethodDelete, "/songlist/"+strconv.FormatInt(dirid, 10)+"/songs", b)
+	return err
+}
+
+// SonglistFavCheck 返回已收藏歌单 ID 集合。
+func (c *Client) SonglistFavCheck() ([]int64, error) {
+	var out struct {
+		IDs []int64 `json:"ids"`
+	}
+	err := c.getJSON("/songlist/fav/check", nil, &out)
+	return out.IDs, err
+}
+
 // SongLike 收藏/取消收藏。songType 是读侧枚举，写侧要减一（这里由调用方换算）。
 func (c *Client) SongLike(songID int64, writeType int64, like bool) error {
 	body := map[string]any{"song_id": songID, "song_type": writeType}

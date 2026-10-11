@@ -97,7 +97,7 @@ func (a apiAdapter) Playlists() ([]player.PlaylistRef, error) {
 		if p.DirID == 201 { // “我喜欢”虚拟歌单
 			continue
 		}
-		out = append(out, player.PlaylistRef{ID: p.ID, Title: p.Title})
+		out = append(out, player.PlaylistRef{ID: p.ID, DirID: p.DirID, Title: p.Title})
 	}
 	return out, nil
 }

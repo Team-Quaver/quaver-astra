@@ -64,7 +64,11 @@ func (a *App) favListsView(c *ui.Context) {
 			return
 		}
 
-		a.playlistGrid(c, st.lists)
+		a.playlistGrid(c, st.lists, func(m *ui.Menu, pl backend.SonglistSummary) {
+			if m.Item("取消收藏").Chosen() {
+				a.unfavPlaylist(st, pl)
+			}
+		})
 
 		if st.loadingMore {
 			ui.Row(c).FillWidth().Center().Padding(14).Children(func() { ui.Spinner(c) })
@@ -123,6 +127,38 @@ func (a *App) loadMoreFavLists(st *favListsState) {
 				st.total = res.Total
 			}
 			st.hasMore = res.Hasmore
+		})
+	}()
+}
+
+// unfavPlaylist 取消收藏歌单：乐观移除，后端失败时回退。
+func (a *App) unfavPlaylist(st *favListsState, pl backend.SonglistSummary) {
+	// 乐观移除
+	for i, l := range st.lists {
+		if l.ID == pl.ID {
+			st.lists = append(st.lists[:i], st.lists[i+1:]...)
+			break
+		}
+	}
+	if st.total > 0 {
+		st.total--
+	}
+	go func() {
+		var err error
+		a.withAPILimit(func() { err = a.API.SonglistFav(pl.ID, false) })
+		a.update(func() {
+			if err != nil {
+				// 失败：整页重载拿回正确状态
+				st.loaded = false
+				st.lists = nil
+				a.pendingToast = "取消收藏失败：" + err.Error()
+			} else {
+				// 同步已缓存的歌单详情页收藏态
+				if ps, ok := a.playlist[pl.ID]; ok {
+					ps.faved = false
+				}
+				a.pendingToast = "已取消收藏"
+			}
 		})
 	}()
 }

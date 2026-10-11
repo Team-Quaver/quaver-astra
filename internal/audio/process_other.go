@@ -1,8 +1,12 @@
-//go:build !linux
+//go:build !linux && !windows
 
 package audio
 
-import "os/exec"
+import (
+	"io"
+	"os"
+	"os/exec"
+)
 
 // configureMPVProcess 在其他平台保留 exec.Cmd 默认进程模型。
 func configureMPVProcess(*exec.Cmd) {}
@@ -13,3 +17,6 @@ func terminateMPVProcess(cmd *exec.Cmd) {
 		_ = cmd.Process.Kill()
 	}
 }
+
+// mpvStderr 转发 mpv 的诊断输出，便于终端裸跑时排查启动问题。
+func mpvStderr() io.Writer { return os.Stderr }

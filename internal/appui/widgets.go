@@ -67,7 +67,8 @@ func (a *App) songList(c *ui.Context, st *songListState, loadMore func(page int)
 }
 
 // songRow 单行歌（54px）：序号/♪、封面、标题、歌手·专辑、红心、时长。
-func (a *App) songRow(c *ui.Context, st *songListState, i int, doubleClick func(i int)) {
+// extraMenu 让调用方追加菜单项（如歌单详情页的「从歌单删除」）。
+func (a *App) songRow(c *ui.Context, st *songListState, i int, doubleClick func(i int), extraMenu ...func(m *ui.Menu, s player.Song, i int)) {
 	t := c.Theme()
 	s := st.songs[i]
 	cur, _ := a.PL.Current()
@@ -165,6 +166,36 @@ func (a *App) songRow(c *ui.Context, st *songListState, i int, doubleClick func(
 		}
 		if m.Item(label).Chosen() {
 			a.PL.ToggleLove(s)
+		}
+		// 添加到歌单：列出用户自建歌单。
+		m.Submenu("添加到歌单", func(m *ui.Menu) {
+			pls := a.PL.Playlists()
+			if len(pls) == 0 {
+				m.Item("没有创建的歌单").Disabled(true)
+			}
+			for _, pl := range pls {
+				pl := pl
+				if m.Item(pl.Title).Chosen() {
+					go func() {
+						var err error
+						a.withAPILimit(func() {
+							err = a.API.SonglistAddSong(pl.DirID, pl.ID, s.SongID, s.SongType-1)
+						})
+						a.update(func() {
+							if err != nil {
+								a.pendingToast = "添加失败：" + err.Error()
+							} else {
+								a.pendingToast = "已添加到：" + pl.Title
+							}
+						})
+					}()
+				}
+			}
+		})
+		// 调用方追加的菜单项（歌单详情页的「从歌单删除」等）。
+		if len(extraMenu) > 0 && extraMenu[0] != nil {
+			m.Separator()
+			extraMenu[0](m, s, i)
 		}
 		m.Separator()
 		m.Submenu("跳转至", func(m *ui.Menu) {
