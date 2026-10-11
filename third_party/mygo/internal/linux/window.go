@@ -169,6 +169,9 @@ func (b *Backend) NewWindow(o *platform.WindowOptions, h platform.WindowHandler)
 	} else {
 		gtkBoxPackStart(w.box, w.contentWidget(), true, true, 0)
 	}
+	if w.surface != nil {
+		w.surface.areaPacked = w.controls == nil
+	}
 	w.accel = gtkAccelGroupNew()
 	gtkWindowAddAccelGroup(w.win, w.accel)
 	if b.appMenu != nil {
@@ -424,6 +427,10 @@ func (w *window) ShowInactive() {
 // GTK created it or where it was, and a reparenting window manager has its
 // frame where it created that.
 func (w *window) willShow() {
+	// Hide takes the GL content out of the tree; put it back with the window.
+	if w.surface != nil {
+		w.surface.startDrawing()
+	}
 	if gtkWidgetGetVisible(w.win) {
 		return
 	}
@@ -435,7 +442,35 @@ func (w *window) willShow() {
 	w.placing = w.b.windowManager(w.win)
 }
 
-func (w *window) Hide()           { gtkWidgetHide(w.win) }
+func (w *window) Hide() {
+	// A click on UI inside the page is handled while the frame that shows
+	// it is being drawn, inside the GtkGLArea's render signal. Hiding the
+	// window there withdraws the Wayland wl_surface under the paint in
+	// flight, and gdk_cairo_draw_from_gl then asks for the EGL surface of
+	// a window whose surface is gone — wl_proxy_get_version of nil, and a
+	// SIGSEGV (NVIDIA drivers hit it every time). Let the frame finish:
+	// the backend runs the hide as an idle, and the paints the clock still
+	// holds draw without the GL area (see surface.stopDrawing).
+	if w.surface != nil && w.surface.rendering {
+		theBackend.postIdle(func() {
+			if !w.closed {
+				w.hideNow()
+			}
+		})
+		return
+	}
+	w.hideNow()
+}
+
+// hideNow withdraws the window for good: no frame of its GL content is
+// being drawn.
+func (w *window) hideNow() {
+	if w.surface != nil {
+		w.surface.stopDrawing()
+	}
+	gtkWidgetHide(w.win)
+}
+
 func (w *window) IsVisible() bool { return gtkWidgetGetVisible(w.win) }
 
 func (w *window) Focus() {
@@ -677,7 +712,17 @@ func (w *window) TitleBarDoubleClicked() {
 }
 
 func (w *window) Close() {
+	// As Hide above: destroying the window mid-frame unrealizes the GL
+	// area while its render signal is still on the stack.
 	if !w.closed {
+		if w.surface != nil && w.surface.rendering {
+			theBackend.postIdle(func() {
+				if !w.closed {
+					gtkWidgetDestroy(w.win)
+				}
+			})
+			return
+		}
 		gtkWidgetDestroy(w.win)
 	}
 }

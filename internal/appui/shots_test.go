@@ -40,6 +40,11 @@ func TestUIShots(t *testing.T) {
 		}
 	}
 
+	// 设置 - 关于（产品图标在介绍文案左侧）
+	about, aboutTester := sideTestApp(t, false)
+	about.settings.tab = 2
+	shot(aboutTester, "settings-about.png")
+
 	// 正在播放页（歌词跟随态）
 	base, baseTester := npTestApp(t, color.RGBA{R: 96, G: 148, B: 210, A: 255})
 	base.PL.SeekTo(2.0 / 269)

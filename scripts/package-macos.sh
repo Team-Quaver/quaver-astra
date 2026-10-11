@@ -14,7 +14,7 @@ app="$root/Quaver Astra.app"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
 install -m 0755 "$binary" "$app/Contents/MacOS/quaver-astra"
 cp -a "$mpv_root" "$app/Contents/Resources/mpv"
-install -m 0644 internal/appui/assets/tray-icon-light-shell.png "$app/Contents/Resources/quaver-astra.png"
+install -m 0644 img/app-icon.icns "$app/Contents/Resources/quaver-astra.icns"
 cat > "$app/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -23,6 +23,7 @@ cat > "$app/Contents/Info.plist" <<PLIST
   <key>CFBundleExecutable</key><string>quaver-astra</string>
   <key>CFBundleIdentifier</key><string>red.0w0.quaver-astra</string>
   <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
+  <key>CFBundleIconFile</key><string>quaver-astra.icns</string>
   <key>CFBundleName</key><string>Quaver Astra</string>
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>CFBundleShortVersionString</key><string>${version}</string>

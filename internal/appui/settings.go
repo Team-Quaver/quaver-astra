@@ -236,8 +236,13 @@ func (a *App) settingsPlayback(c *ui.Context, t *ui.Theme) {
 
 func (a *App) settingsAbout(c *ui.Context, t *ui.Theme) {
 	ui.Column(c).FillWidth().Gap(10).MaxWidth(560).Children(func() {
-		ui.Text(c, "Quaver Astra").FontSize(fz(16)).FontWeight(800)
-		ui.Text(c, "现代，流畅的 Q 音第三方客户端，现已轻装上阵")
+		ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(14).Children(func() {
+			ui.Image(c, appIconSVG).Size(56, 56).Fit(ui.Contain)
+			ui.Column(c).Grow(1).Gap(3).Children(func() {
+				ui.Text(c, "Quaver Astra").FontSize(fz(16)).FontWeight(800)
+				ui.Text(c, "现代，流畅的 Q 音第三方客户端，现已轻装上阵")
+			})
+		})
 
 		ui.Divider(c)
 

@@ -57,6 +57,9 @@ func main() {
 	mygo.App.OnQuit(app.Close)
 
 	mygo.App.WhenReady(func() {
+		// 应用/窗口图标使用产品图标；托盘继续使用 tray.go 自己的模板，
+		// 两者职责不同，不能互相替换。
+		_ = mygo.App.Dock.SetIcon(appui.AppIconPNG())
 		win := mygo.NewWindow(mygo.WindowOptions{
 			Title:     "Quaver Astra",
 			Width:     1280,
@@ -67,6 +70,7 @@ func main() {
 			StateKey:  "main",
 			Content:   ui.View(app.View),
 		})
+		_ = win.SetIcon(appui.AppIconPNG())
 		app.ApplyThemeSource()
 		app.Attach(win)
 	})

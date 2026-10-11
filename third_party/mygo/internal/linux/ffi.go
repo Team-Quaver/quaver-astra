@@ -283,6 +283,7 @@ var (
 	gtkBoxPackStart                     func(box, child ptr, expand, fill bool, padding uint32)
 	gtkBoxReorderChild                  func(box, child ptr, pos int32)
 	gtkContainerAdd                     func(c, w ptr)
+	gtkWidgetGetParent                  func(w ptr) ptr
 	gtkContainerRemove                  func(c, w ptr)
 	gtkContainerCheckResize             func(c ptr)
 	gtkMenuBarNew                       func() ptr
@@ -683,6 +684,7 @@ func load() error {
 	mustBind(t, &gtkBoxPackStart, "gtk_box_pack_start")
 	mustBind(t, &gtkBoxReorderChild, "gtk_box_reorder_child")
 	mustBind(t, &gtkContainerAdd, "gtk_container_add")
+	mustBind(t, &gtkWidgetGetParent, "gtk_widget_get_parent")
 	mustBind(t, &gtkContainerRemove, "gtk_container_remove")
 	mustBind(t, &gtkContainerCheckResize, "gtk_container_check_resize")
 	mustBind(t, &gtkMenuBarNew, "gtk_menu_bar_new")

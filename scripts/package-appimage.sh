@@ -14,12 +14,12 @@ case "$arch" in x86_64|aarch64) ;; *) echo "unsupported AppImage arch: $arch" >&
 root=$(mktemp -d)
 trap 'rm -rf "$root"' EXIT
 appdir="$root/Quaver Astra.AppDir"
-mkdir -p "$appdir/usr/bin" "$appdir/usr/share/quaver-astra" "$appdir/usr/share/applications" "$appdir/usr/share/icons/hicolor/256x256/apps"
+mkdir -p "$appdir/usr/bin" "$appdir/usr/share/quaver-astra" "$appdir/usr/share/applications" "$appdir/usr/share/icons/hicolor/512x512/apps"
 
 install -m 0755 "$binary" "$appdir/usr/bin/quaver-astra"
 cp -a "$mpv_root" "$appdir/usr/share/quaver-astra/mpv"
-install -m 0644 internal/appui/assets/tray-icon-light-shell.png "$appdir/usr/share/icons/hicolor/256x256/apps/quaver-astra.png"
-install -m 0644 internal/appui/assets/tray-icon-light-shell.png "$appdir/quaver-astra.png"
+install -m 0644 img/app-icon.png "$appdir/usr/share/icons/hicolor/512x512/apps/quaver-astra.png"
+install -m 0644 img/app-icon.png "$appdir/quaver-astra.png"
 
 cat > "$appdir/quaver-astra.desktop" <<'DESKTOP'
 [Desktop Entry]

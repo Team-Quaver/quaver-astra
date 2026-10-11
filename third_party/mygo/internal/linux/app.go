@@ -48,6 +48,12 @@ type Backend struct {
 	// itself, so that it draws no title bar (gdk_wayland_window_announce_csd).
 	announceCSD func(window ptr)
 
+	// idles are functions the main loop runs as GDK idles, after the
+	// dispatch that posted them returns (postIdle).
+	idleMu sync.Mutex
+	idles  []func()
+	idleCB ptr
+
 	// What the launcher entry shows (Window.SetProgressBar, badges).
 	launcher struct {
 		badge    string
@@ -143,6 +149,30 @@ func (b *Backend) Quit() {
 	}
 }
 
+// postIdle runs fn on the main loop as a GDK idle, after the dispatch that
+// posts it returns. A frame being drawn, as a GtkGLArea's render signal,
+// must not see the window tree change under it (hide, destroy): the caller
+// posts instead.
+func (b *Backend) postIdle(fn func()) {
+	b.idleMu.Lock()
+	b.idles = append(b.idles, fn)
+	first := len(b.idles) == 1
+	b.idleMu.Unlock()
+	if first {
+		gIdleAddFull(0, b.idleCB, 0, 0)
+	}
+}
+
+func (b *Backend) runIdles() {
+	b.idleMu.Lock()
+	fns := b.idles
+	b.idles = nil
+	b.idleMu.Unlock()
+	for _, fn := range fns {
+		fn()
+	}
+}
+
 // modal is a dialog running its own main loop.
 type modal struct {
 	dialog ptr
@@ -196,6 +226,10 @@ func initCallbacks() {
 	callbacksOnce.Do(func() {
 		readyCallback = purego.NewCallback(func(data ptr) int32 {
 			theBackend.h.Ready()
+			return 0 // G_SOURCE_REMOVE
+		})
+		theBackend.idleCB = purego.NewCallback(func(data ptr) int32 {
+			theBackend.runIdles()
 			return 0 // G_SOURCE_REMOVE
 		})
 		dispatchCallback = purego.NewCallback(func(data ptr) int32 {

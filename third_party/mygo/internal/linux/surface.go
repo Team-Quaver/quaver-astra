@@ -160,6 +160,14 @@ type surface struct {
 		stride, width, height int
 	}
 
+	// areaParent holds the container the area came out of when the window
+	// stopped drawing it (stopDrawing), for willShow to put it back; set
+	// with the window, so no lock.
+	areaParent ptr
+	// areaPacked tells that the area went into a GtkBox (packed) rather
+	// than a GtkOverlay (added).
+	areaPacked bool
+
 	textInput bool
 	caret     platform.RectF
 	input     platform.TextInputState
@@ -245,6 +253,21 @@ func (w *window) contentWindow() ptr {
 	return gtkWidgetGetWindow(w.web)
 }
 
+// startDrawing puts the area back into the widget tree after stopDrawing.
+func (s *surface) startDrawing() {
+	if s.areaParent == 0 {
+		return
+	}
+	parent, packed := s.areaParent, s.areaPacked
+	s.areaParent = 0
+	if packed {
+		gtkBoxPackStart(parent, s.area, true, true, 0)
+	} else {
+		gtkContainerAdd(parent, s.area)
+	}
+	gObjectUnref(s.area)
+}
+
 func (s *surface) destroy() {
 	gtkIMContextSetClientWindow(s.im, 0)
 	gObjectUnref(s.im)
@@ -253,6 +276,29 @@ func (s *surface) destroy() {
 		gdkEventFree(s.lastKey)
 		s.lastKey = 0
 	}
+}
+
+// stopDrawing takes the area out of the widget tree so that the paints a
+// pending frame clock still holds when the window hides or goes draw
+// without it. With it, GtkGLArea would draw into the framebuffer and then
+// have gdk_cairo_draw_from_gl ask the window for its EGL surface: on
+// Wayland the hide or destroy of the window withdraws the wl_surface at
+// once, and gdk_wayland_window_get_egl_surface dereferences the gone
+// proxy (wl_proxy_get_version of nil) and dies.
+func (s *surface) stopDrawing() {
+	if !s.gl || s.areaParent != 0 || !gtkWidgetGetVisible(s.area) {
+		return
+	}
+	if s.areaParent = gtkWidgetGetParent(s.area); s.areaParent == 0 {
+		return
+	}
+	// GTK draws a widget that is in the tree even mapped-off once the
+	// paint holding it has begun, so hiding does not keep gtk_gl_area_draw
+	// from running. Out of the tree, the area is in no paint at all; the
+	// rest of the paint is cairo, which GDK skips for a window whose
+	// surface is gone.
+	gObjectRef(s.area)
+	gtkContainerRemove(s.areaParent, s.area)
 }
 
 // popupTrigger returns the last press of a button or, in a surface, of a

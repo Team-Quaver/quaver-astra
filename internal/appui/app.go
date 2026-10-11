@@ -68,8 +68,9 @@ type App struct {
 	npBlurKey string
 	npBlurAt  time.Time
 
-	npList    ui.ListState // 正在播放页歌词列表
-	queueList ui.ListState // 播放队列列表
+	npList       ui.ListState // 正在播放页歌词列表
+	queueList    ui.ListState // 播放队列列表
+	reproCloseAt time.Time
 
 	// media 是系统媒体控制中心会话（Linux MPRIS / Windows SMTC），
 	// 在 New 建立会话，Attach 时补窗口句柄，Close 时注销。
@@ -594,6 +595,10 @@ func (a *App) windowButtons(c *ui.Context) {
 	if a.Win == nil {
 		return
 	}
+	if !a.reproCloseAt.IsZero() && time.Now().After(a.reproCloseAt) {
+		a.reproCloseAt = time.Time{}
+		a.closeWindow()
+	}
 	t := c.Theme()
 	mk := func(icon, tip string, danger bool, fn func()) {
 		b := ui.ButtonBase(c).Size(24, 24).Radius(12).Center()
@@ -673,6 +678,15 @@ func (a *App) maybeSelfCheck() {
 					a.playListNow(songs, 0)
 					a.npOpen = true
 				}
+			})
+		}()
+	}
+	if os.Getenv("QUAVER_REPRO_CLOSE_WINDOW") == "1" {
+		go func() {
+			time.Sleep(4 * time.Second)
+			a.update(func() {
+				a.npOpen = false
+				a.reproCloseAt = time.Now().Add(100 * time.Millisecond)
 			})
 		}()
 	}

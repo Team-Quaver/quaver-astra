@@ -203,8 +203,17 @@ func (a *App) closeWindow() {
 		a.Win.Hide()
 		return
 	}
+	// 关闭按钮的回调正处在一帧 UI 的构建/事件处理中。直接 Close 会同步销毁
+	// GtkGLArea，随后这一帧仍在退场动效里绘制模糊底，OpenGL context 已经没了，
+	// libepoxy 会在 glFramebufferTexture2D 首次解析入口时断言崩溃。把销毁排到
+	// 当前帧之后，让正在播放页的退出动画先安全收尾。
 	a.quitStarted.Store(true)
-	a.Win.Close()
+	a.update(func() {
+		if a.Win == nil || a.Win.IsDestroyed() {
+			return
+		}
+		a.Win.Close()
+	})
 }
 
 // trayTitleLine 生成「歌名 - 歌手」；无曲目返回占位。这里沿用 songTitle：
