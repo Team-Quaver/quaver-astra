@@ -37,6 +37,11 @@ func main() {
 	mygo.App.SetName("Quaver Astra")
 	mygo.App.SetVersion(version)
 
+	// 单实例锁：第二实例把命令行转交给首实例后直接退出。
+	if !mygo.App.RequestSingleInstanceLock() {
+		return
+	}
+
 	cfgDir := configDir()
 	if err := os.MkdirAll(cfgDir, 0o700); err != nil {
 		fatal(err)
@@ -56,11 +61,21 @@ func main() {
 	defer app.Close()
 	mygo.App.OnQuit(app.Close)
 
+	var mainWin *mygo.Window
+
+	// 第二实例启动时把已有窗口拉回前台。
+	mygo.App.OnSecondInstance(func(args []string, workingDir string) {
+		if mainWin != nil {
+			mainWin.Show()
+			mainWin.Focus()
+		}
+	})
+
 	mygo.App.WhenReady(func() {
 		// 应用/窗口图标使用产品图标；托盘继续使用 tray.go 自己的模板，
 		// 两者职责不同，不能互相替换。
 		_ = mygo.App.Dock.SetIcon(appui.AppIconPNG())
-		win := mygo.NewWindow(mygo.WindowOptions{
+		mainWin = mygo.NewWindow(mygo.WindowOptions{
 			Title:     "Quaver Astra",
 			Width:     1280,
 			Height:    800,
@@ -70,9 +85,9 @@ func main() {
 			StateKey:  "main",
 			Content:   ui.View(app.View),
 		})
-		_ = win.SetIcon(appui.AppIconPNG())
+		_ = mainWin.SetIcon(appui.AppIconPNG())
 		app.ApplyThemeSource()
-		app.Attach(win)
+		app.Attach(mainWin)
 	})
 	if err := mygo.App.Run(); err != nil {
 		// fatal 会直接 os.Exit，普通 defer 不再有机会执行；先收掉 mpv。
