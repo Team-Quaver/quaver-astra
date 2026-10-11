@@ -15,8 +15,8 @@ mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
 install -m 0755 "$binary" "$app/Contents/MacOS/quaver-astra"
 cp -a "$mpv_root" "$app/Contents/Resources/mpv"
 install -m 0644 img/app-icon.icns "$app/Contents/Resources/quaver-astra.icns"
-install -Dm 0644 LICENSE "$app/Contents/Resources/LICENSE"
-install -Dm 0644 README.md "$app/Contents/Resources/README.md"
+install -m 0644 LICENSE "$app/Contents/Resources/LICENSE"
+install -m 0644 README.md "$app/Contents/Resources/README.md"
 cat > "$app/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
