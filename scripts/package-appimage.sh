@@ -39,6 +39,21 @@ cat > "$appdir/AppRun" <<'RUN'
 #!/bin/sh
 HERE="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 export QAA_MPV_DIR="$HERE/usr/share/quaver-astra/mpv"
+
+# NVIDIA's OpenGL driver reads this while libGL initializes. Set it in AppRun
+# before exec so the native C environment is ready before the Go runtime loads
+# GTK/OpenGL; os.Setenv inside the application is not sufficient for libGL.
+for vendor in /sys/bus/pci/devices/*/vendor; do
+	[ -r "$vendor" ] || continue
+	vendor_id=$(cat "$vendor")
+	case "$vendor_id" in
+		0x10de|0X10DE)
+			export __GL_THREADED_OPTIMIZATIONS=0
+			break
+			;;
+	esac
+done
+
 exec "$HERE/usr/bin/quaver-astra" "$@"
 RUN
 chmod +x "$appdir/AppRun"
