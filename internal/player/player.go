@@ -1059,12 +1059,16 @@ func (p *Player) failWithErr(seq uint64, err error) {
 		p.mu.Unlock()
 		return
 	}
-	p.loading = false
 	p.err = err.Error()
 	p.failStreak++
 	next := -1
 	if p.failStreak <= len(p.queue) && len(p.queue) > 1 {
 		next = p.nextIndexLocked(true)
+	}
+	// 即将重试时保持 loading=true：startCurrent 会同步重置它，
+	// 中间不留窗口给 tick 误触发又一次 Next(true)。
+	if next < 0 {
+		p.loading = false
 	}
 	p.mu.Unlock()
 	p.notifyChange()
@@ -1267,9 +1271,15 @@ func (p *Player) tick() {
 	}
 	ended := p.eng.Ended()
 	atEnd := p.dur > 0 && p.pos >= p.dur-0.05
+	loading := p.loading
 	p.mu.Unlock()
 
-	if ended || atEnd {
+	// 加载中不重复触发自动切歌：eof/atEnd 是上一首的残留状态——mpv 的
+	// end-file 已置 eof=true，但 startCurrent 的 goroutine 还在做 API
+	// 解析、尚未调 OpenURL 清除它。每 200ms 的 tick 会反复误判为播完，
+	// 导致连跳多首。loading 由 startCurrent 在同 goroutine 内同步置 true，
+	// 不存在与 tick 的竞态。
+	if (ended || atEnd) && !loading {
 		p.Next(true)
 		return
 	}
