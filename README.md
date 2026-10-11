@@ -77,7 +77,7 @@ mpv 定位优先级与 Quaver Music 本体（`ui/electron/audio/dist/bins.js`）
 - **动效**：对齐主项目（桌面版 Quaver）的动效语言——正在播放页上滑开合、路由页错峰入场（route-in）、侧栏宽度过渡 + 收起图标旋转、行/卡片底色过渡、进度条缓动、逐字歌词每帧推进
 - 侧栏可收起；收起态底部按钮纵向排列；侧栏几何有布局测试守护（图标列共线、行距均匀）；纯图标按钮均有 tooltip
 - 系统托盘：对齐 Quaver Music 的曲目行、上一曲 / 播放暂停 / 下一曲、循环与随机、显示/隐藏、退出；单击/双击合并为一次显示/隐藏，右键弹出菜单；窗口关闭按钮可收进托盘
-- **系统媒体控制中心**：Linux 注册 MPRIS2（`org.mpris.MediaPlayer2.quaver-astra`，桌面键盘媒体键、播放状态/封面/进度/循环模式双向同步），Windows 接入 SMTC（系统媒体浮层、媒体键、封面缩略图与进度时间轴，支持系统侧循环/随机切换）；架构见 `internal/smedia/`
+- **系统媒体控制中心**：Linux 注册 MPRIS2（`org.mpris.MediaPlayer2.quaver-astra`，桌面键盘媒体键、播放状态/封面/进度/循环模式双向同步），Windows 接入 SMTC（系统媒体浮层、媒体键、封面缩略图与进度时间轴，支持系统侧循环/随机切换），macOS 接入 Now Playing（`MPNowPlayingInfoCenter` + `MPRemoteCommandCenter`，控制中心/菜单栏正在播放卡片：标题/歌手/专辑/封面与进度，播放/暂停/上一首/下一首/拖动进度回传）。macOS 的系统投影只对带 `CFBundleIdentifier` 的应用生效，裸跑可能看不到，打包 `.app` 后正常；架构见 `internal/smedia/`
 - 播放音频时阻止系统睡眠（暂停/停止即恢复，不阻止熄屏）；正常退出、TERM/Ctrl+C 与 native SIGABRT 清理时都会终止 mpv；Linux 另设父进程死亡信号和进程组兜底，避免异常崩溃留下 mpv
 
 ## 架构
@@ -90,9 +90,11 @@ internal/player/        播放器状态机（队列/模式/随机/回退链/歌�
 internal/audio/         mpv 子进程 + JSON IPC 引擎
                         bins.go = 二进制定位（显式/随包/PATH）+ 子进程环境
                         mpv.go  = 引擎（命令下发 / 属性观察 / 事件处理）
-internal/smedia/        系统媒体控制中心投影（Linux MPRIS / Windows SMTC）
-                        mpris.go        = D-Bus MPRIS2 服务（状态 diff + PropertiesChanged/Seeked）
-                        smtc_windows.go = WinRT SMTC（裸 vtable 调用 + 纯 Go COM 事件对象，无 cgo）
+internal/smedia/        系统媒体控制中心投影（Linux MPRIS / Windows SMTC / macOS Now Playing）
+                        mpris.go            = D-Bus MPRIS2 服务（状态 diff + PropertiesChanged/Seeked）
+                        smtc_windows.go     = WinRT SMTC（裸 vtable 调用 + 纯 Go COM 事件对象，无 cgo）
+                        nowplaying_darwin.go = MediaPlayer.framework 的 MPNowPlayingInfoCenter/MPRemoteCommandCenter
+                        objc_darwin.go      = 无 cgo 的 Objective-C 桥（purego 动态发消息 + 主队列投递）
 internal/appui/         MyGo 原生 UI：外壳、侧栏、路由页、播放条、正在播放、队列
                         theme.go = 调色板与明暗判定；motion.go = 动效语言（缓动/错峰入场/逐字绘制）
 internal/colorprobe/    封面主色提取 + 模糊底图

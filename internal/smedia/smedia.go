@@ -3,6 +3,8 @@
 // 平台实现经构建标签拆分，其余平台退化为 no-op。
 package smedia
 
+import "strconv"
+
 // Snapshot 是播放器当前状态的一次投影，由宿主（appui）在状态变化时推送。
 type Snapshot struct {
 	HasTrack bool
@@ -59,3 +61,32 @@ type noop struct{}
 func (noop) AttachWindow(uintptr) {}
 func (noop) Update(Snapshot)      {}
 func (noop) Close()               {}
+
+// stateSignature 是投影去重用的状态指纹：进度按整秒量化，播放器每秒的
+// 位置推进最多触发一次回写，同时把系统推算的进度拉回真实值。
+func (s Snapshot) stateSignature() string {
+	sig := make([]byte, 0, 96)
+	appendField := func(v string) {
+		sig = append(sig, v...)
+		sig = append(sig, 0)
+	}
+	appendField(s.TrackID)
+	appendField(s.Title)
+	appendField(s.Artist)
+	appendField(s.Album)
+	appendField(s.ArtURL)
+	appendField(s.Loop)
+	if s.HasTrack {
+		sig = append(sig, 1)
+	} else {
+		sig = append(sig, 0)
+	}
+	if s.Playing {
+		sig = append(sig, 1)
+	} else {
+		sig = append(sig, 0)
+	}
+	appendField(strconv.FormatInt(int64(s.Position), 10))
+	appendField(strconv.FormatInt(int64(s.Duration*1000), 10))
+	return string(sig)
+}
