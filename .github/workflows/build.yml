@@ -32,7 +32,10 @@ jobs:
         run: |
           set -euo pipefail
           sha="${GITHUB_SHA:0:12}"
-          base="$(git describe --tags --abbrev=0 2>/dev/null | sed -E 's/^[vV]//' || true)"
+          # Snapshot releases create rolling snapshot-<sha> tags. Restrict the
+          # fallback to version tags so a previous snapshot is never used as the
+          # version base; Debian, RPM and Pacman versions must start with a digit.
+          base="$(git describe --tags --match 'v[0-9]*' --match 'V[0-9]*' --abbrev=0 2>/dev/null | sed -E 's/^[vV]//' || true)"
           if [[ -z "$base" ]]; then base=0.0.0; fi
 
           if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
@@ -51,6 +54,10 @@ jobs:
             version="${base}-${sha}-build"
             release_tag=""
             is_release=false
+          fi
+
+          if [[ ! "$version" =~ ^[0-9] ]]; then
+            version="0.0.0-${version}"
           fi
 
           {
