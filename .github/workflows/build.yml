@@ -230,6 +230,47 @@ jobs:
           path: out/*
           if-no-files-found: error
 
+  package-linux-system:
+    name: Package Deb/RPM/Pacman (${{ matrix.goarch }})
+    needs: [version, build]
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { target: linux-amd64, goarch: amd64 }
+          - { target: linux-arm64, goarch: arm64 }
+          - { target: linux-loong64, goarch: loong64 }
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/download-artifact@v7
+        with:
+          name: binary-${{ matrix.target }}
+          path: binary
+
+      - name: Install packaging tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y rpm zstd desktop-file-utils
+
+      - name: Build system packages
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          mkdir -p out
+          ./scripts/package-linux-system.sh \
+            "binary/quaver-astra-${{ matrix.target }}" \
+            "${{ matrix.goarch }}" \
+            "$VERSION" \
+            out
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: release-system-${{ matrix.target }}
+          path: out/*
+          if-no-files-found: error
+
   package-windows:
     name: Package Windows (${{ matrix.target }})
     needs: [version, build]
@@ -304,7 +345,7 @@ jobs:
   release:
     name: Publish release
     if: github.event_name == 'push'
-    needs: [version, package-linux, package-loong64, package-windows, package-macos]
+    needs: [version, package-linux, package-linux-system, package-loong64, package-windows, package-macos]
     runs-on: ubuntu-24.04
     permissions:
       contents: write
@@ -342,7 +383,7 @@ jobs:
           {
             echo "Snapshot build for commit \`$GITHUB_SHA\`."
             echo
-            echo "Linux: AppImage (AMD64/ARM64) and a LoongArch64 binary tarball."
+            echo "Linux: AppImage (AMD64/ARM64), DEB/RPM/Pacman (AMD64/ARM64/LoongArch64), and a LoongArch64 binary tarball."
             echo "Windows: AMD64/ARM64 archives with official mpv releases."
             echo "macOS: ARM64 DMG with the official mpv release."
             echo

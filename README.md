@@ -41,7 +41,7 @@ go test ./internal/...
 QAA_TEST_MPV=1 go test -run TestEngineRealMPV ./internal/audio/   # 需要装mpv
 ```
 
-CI 发布：每次 push 都会构建并发布一个带短 commit id 的 snapshot 预发布；`v*` tag 会发布对应版本。Linux AMD64/ARM64 为 AppImage（随包 Quaver Music 同款 mpv AppImage 运行时），LoongArch64 为二进制 tarball；Windows AMD64/ARM64 与 macOS ARM64 包含 mpv 官方 release 运行时。
+CI 发布：每次 push 都会构建并发布一个带短 commit id 的 snapshot 预发布；`v*` tag 会发布对应版本。Linux AMD64/ARM64 为 AppImage（随包 Quaver Music 同款 mpv AppImage 运行时），并提供 DEB/RPM/Pacman（AMD64/ARM64/LoongArch64，依赖声明仅 mpv）；LoongArch64 另有二进制 tarball；Windows AMD64/ARM64 与 macOS ARM64 包含 mpv 官方 release 运行时。所有发行包按 AGPL-3.0-only 标记并附带 LICENSE。
 
 环境变量（自检用）：
 

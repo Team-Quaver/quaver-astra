@@ -20,6 +20,8 @@ install -m 0755 "$binary" "$appdir/usr/bin/quaver-astra"
 cp -a "$mpv_root" "$appdir/usr/share/quaver-astra/mpv"
 install -m 0644 img/app-icon.png "$appdir/usr/share/icons/hicolor/512x512/apps/quaver-astra.png"
 install -m 0644 img/app-icon.png "$appdir/quaver-astra.png"
+install -Dm 0644 LICENSE "$appdir/usr/share/licenses/quaver-astra/LICENSE"
+install -Dm 0644 LICENSE "$appdir/usr/share/doc/quaver-astra/copyright"
 
 cat > "$appdir/quaver-astra.desktop" <<'DESKTOP'
 [Desktop Entry]
