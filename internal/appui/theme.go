@@ -1,6 +1,9 @@
 package appui
 
 import (
+	"fmt"
+	"math"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -11,10 +14,9 @@ import (
 
 // Quaver 调色板（对齐主项目 ui/src/style.css 的 CSS 变量）。
 type palette struct {
-	bg, card, side   ui.Color
-	ink, ink2        ui.Color
-	acc, hover, line ui.Color
-	heart            ui.Color
+	bg, card, side     ui.Color
+	ink, ink2          ui.Color
+	hover, line, heart ui.Color
 }
 
 var (
@@ -24,7 +26,6 @@ var (
 		side:  ui.Hex("#ececec"),
 		ink:   ui.Hex("#1f2329"),
 		ink2:  ui.Hex("#6b7280"),
-		acc:   ui.Hex("#2f7d5c"),
 		hover: ui.Hex("#e3e3e4"),
 		line:  ui.Hex("#d9d9db"),
 		heart: ui.Hex("#e8465a"),
@@ -35,12 +36,19 @@ var (
 		side:  ui.Hex("#1b1d21"),
 		ink:   ui.Hex("#e6e8ec"),
 		ink2:  ui.Hex("#a6adb8"),
-		acc:   ui.Hex("#6cc79c"),
 		hover: ui.Hex("#2e3138"),
 		line:  ui.Hex("#3a3d45"),
 		heart: ui.Hex("#e8465a"),
 	}
 )
+
+const (
+	accentModeKey   = "Style.AccentMode"
+	accentCustomKey = "Style.AccentCustom"
+)
+
+// defaultAccent 是不依赖封面、桌面主题或用户配置的 Quaver 默认青色。
+var defaultAccent = ui.Hex("#19c2d8")
 
 // npBase 是正在播放页的兜底底色，npScrim* 是它的压暗遮罩（上→下）。
 //
@@ -133,16 +141,106 @@ func fz(v float32) float32 { return v * fontScale }
 
 // styleAccent 把强调色派生成悬停/按下态：深色提亮、浅色压暗。
 func styleAccent(t *ui.Theme, accent ui.Color, dark bool) {
+	accent.A = 255
 	t.Accent = accent
 	t.Selection = accent.Alpha(0.25)
 	t.Focus = accent.Alpha(0.55)
-	if dark {
-		t.AccentHover = accent.Mix(ui.Hex("#ffffff"), 0.18)
-		t.AccentPressed = accent.Mix(ui.Hex("#ffffff"), 0.3)
+	// 自定义色和系统色可能很亮（例如黄色、青色），固定白字会失去可读性。
+	// 在黑白中选择 WCAG 对比度更高的一边。
+	black, white := ui.Hex("#18181b"), ui.Hex("#ffffff")
+	if colorLuminance(accent) > 0.179 { // 黑/白对比度相等的亮度分界
+		t.AccentText = black
 	} else {
-		t.AccentHover = accent.Mix(ui.Hex("#000000"), 0.12)
-		t.AccentPressed = accent.Mix(ui.Hex("#000000"), 0.22)
+		t.AccentText = white
 	}
+	if dark {
+		t.AccentHover = accent.Mix(white, 0.18)
+		t.AccentPressed = accent.Mix(white, 0.3)
+	} else {
+		t.AccentHover = accent.Mix(black, 0.12)
+		t.AccentPressed = accent.Mix(black, 0.22)
+	}
+}
+
+// colorLuminance 返回 WCAG 相对亮度。
+func colorLuminance(c ui.Color) float64 {
+	linear := func(v uint8) float64 {
+		s := float64(v) / 255
+		if s <= 0.04045 {
+			return s / 12.92
+		}
+		return math.Pow((s+0.055)/1.055, 2.4)
+	}
+	return 0.2126*linear(c.R) + 0.7152*linear(c.G) + 0.0722*linear(c.B)
+}
+
+// parseAccentColor 解析配置中的 #rgb/#rgba/#rrggbb/#rrggbbaa。强调色始终
+// 按不透明色使用；损坏或手工写错的配置不会让 ui.Hex panic。
+func parseAccentColor(s string) (ui.Color, bool) {
+	h := strings.TrimPrefix(strings.TrimSpace(s), "#")
+	switch len(h) {
+	case 3, 4:
+		var rgb [3]uint8
+		for i := range len(h) {
+			v, err := strconv.ParseUint(h[i:i+1], 16, 8)
+			if err != nil {
+				return ui.Color{}, false
+			}
+			if i < len(rgb) {
+				rgb[i] = uint8(v) * 17
+			}
+		}
+		return ui.RGB(rgb[0], rgb[1], rgb[2]), true
+	case 6, 8:
+		v, err := strconv.ParseUint(h, 16, 32)
+		if err != nil {
+			return ui.Color{}, false
+		}
+		if len(h) == 8 {
+			v >>= 8 // 配置可兼容 #rrggbbaa，但强调色固定不透明。
+		}
+		return ui.RGB(uint8(v>>16), uint8(v>>8), uint8(v)), true
+	default:
+		return ui.Color{}, false
+	}
+}
+
+func accentHex(c ui.Color) string {
+	return fmt.Sprintf("#%02x%02x%02x", c.R, c.G, c.B)
+}
+
+// accentMode 把未知配置收口到默认青色，便于旧版本和手工编辑配置升级。
+func (a *App) accentMode() string {
+	mode := a.Conf.String(accentModeKey, "default")
+	switch mode {
+	case "default", "cover", "system", "custom":
+		return mode
+	default:
+		return "default"
+	}
+}
+
+// configuredAccent 返回本帧的强调色和播放进度辅色。封面模式保留取色器
+// 调出的 glow；其余模式让进度条与控件使用同一个用户选择的颜色。
+func (a *App) configuredAccent(c *ui.Context) (accent, glow ui.Color) {
+	accent = defaultAccent
+	glow = defaultAccent
+	switch a.accentMode() {
+	case "cover":
+		if tinted, g, ok := a.tint.get(); ok {
+			return tinted, g
+		}
+	case "system":
+		if system := c.Preferences().Accent; system.A > 0 {
+			system.A = 255
+			return system, system
+		}
+	case "custom":
+		if custom, ok := parseAccentColor(a.Conf.String(accentCustomKey, "")); ok {
+			return custom, custom
+		}
+	}
+	return accent, glow
 }
 
 // heartStyle 返回红心按钮该用的图标名与颜色。
@@ -196,7 +294,7 @@ func (a *App) lyricFontFamily() string {
 	return a.configuredFont("Style.LyricFontMode", "Style.LyricFontCustom")
 }
 
-// buildTheme 组装 Quaver 风格主题（明暗按 Style.Theme + 系统字号 + 封面色）。
+// buildTheme 组装 Quaver 风格主题（明暗、系统字号和可选强调色）。
 func (a *App) buildTheme(c *ui.Context) *ui.Theme {
 	base := c.Theme()
 	dark := a.appearance(c)
@@ -213,16 +311,11 @@ func (a *App) buildTheme(c *ui.Context) *ui.Theme {
 	t.Border = p.line
 	t.Text = p.ink
 	t.TextMuted = p.ink2
-	t.AccentText = ui.Hex("#ffffff")
 	t.Danger = p.heart
 	t.Radius = 8
-	// 强调色（含悬停/按下/选择/焦点环）——封面色覆盖时同样重算，
-	// 否则按钮悬停会跳回 mygo 默认蓝。
-	accent := p.acc
-	glow := ui.Hex("#19c2d8")
-	if tinted, g, ok := a.tint.get(); ok {
-		accent, glow = tinted, g
-	}
+	// 强调色（含悬停/按下/选择/焦点环）统一从用户选择解析，避免某些
+	// 状态退回 MyGo 默认蓝。
+	accent, glow := a.configuredAccent(c)
 	styleAccent(&t, accent, dark)
 	a.glowNow = glow
 

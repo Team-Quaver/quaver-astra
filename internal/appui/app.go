@@ -16,6 +16,7 @@ import (
 	"github.com/Team-Quaver/quaver-astra/internal/conf"
 	"github.com/Team-Quaver/quaver-astra/internal/player"
 	"github.com/Team-Quaver/quaver-astra/internal/smedia"
+	"github.com/Team-Quaver/quaver-astra/internal/update"
 	"github.com/Team-Quaver/quaver-astra/internal/vault"
 
 	"github.com/egoist/mygo"
@@ -32,12 +33,18 @@ type App struct {
 	Router *ui.Router
 	Covers *CoverCache
 	tint   tintState
+
+	// Version 是当前构建版本（发布 CI 用 -X main.version 注入）；Upd 与 upd
+	// 共同驱动「设置 → 关于」里的自动更新。
+	Version string
+	Upd     *update.Client
+	upd     updateState
 	// glowNow 是本帧使用的辅色（进度条/氛围），由 buildTheme 刷新。
 	glowNow ui.Color
 
-	npOpen      bool
-	queueOpen   bool
-	sbCollapsed bool
+	npOpen       bool
+	queueOpen    bool
+	sbCollapsed  bool
 	searchDraft  string
 	pendingToast string
 	volOpen      bool
@@ -111,14 +118,16 @@ type App struct {
 	wasLoggedIn bool
 }
 
-// New 组装应用（后端已由 main 启动；v 为凭证加密存储，可 nil）。
-func New(base string, store *conf.Store, v *vault.Vault) *App {
+// New 组装应用（后端已由 main 启动；v 为凭证加密存储，可 nil；version 为
+// 当前构建版本，用于更新比较）。
+func New(base string, store *conf.Store, v *vault.Vault, version string) *App {
 	api := backend.NewClient(base)
 	eng := audio.New()
 	pl := player.New(newAPIAdapter(api), eng, store)
 	a := &App{
 		API:           api,
 		Conf:          store,
+		Version:       version,
 		PL:            pl,
 		sleep:         newSystemSleepBlocker(),
 		Router:        ui.NewRouter("/"),
@@ -129,6 +138,7 @@ func New(base string, store *conf.Store, v *vault.Vault) *App {
 		lastLyricLine: -2,
 	}
 	a.initMedia()
+	a.initUpdate()
 	mygo.App.OnBeforeQuit(func(*mygo.QuitEvent) { a.quitStarted.Store(true) })
 	pl.OnNotify(func() {
 		// 登录态变化时，收藏的歌单依赖登录态，缓存要作废重来。
@@ -202,6 +212,7 @@ func (a *App) Attach(win *mygo.Window) {
 		a.media.AttachWindow(win.NativeHandle())
 	}
 	a.maybeSelfCheck()
+	a.maybeAutoCheckUpdate()
 }
 
 // View 是窗口根视图。
@@ -537,20 +548,11 @@ func (a *App) sideNavItem(c *ui.Context, t *ui.Theme, it navItem, label bool) {
 func (a *App) styleSideBtn(btn *ui.Element, active bool, c *ui.Context) {
 	t := c.Theme()
 	if active {
-		accent, _, _ := a.tint.get()
-		if !tintReady(a) {
-			accent = t.Accent
-		}
-		btn.Background(accent.Alpha(0.13))
-		btn.TextColor(accent)
+		btn.Background(t.Accent.Alpha(0.13))
+		btn.TextColor(t.Accent)
 	} else if btn.Hovered() {
 		btn.Background(t.SurfaceHover)
 	}
-}
-
-func tintReady(a *App) bool {
-	_, _, ok := a.tint.get()
-	return ok
 }
 
 func (a *App) sideBg(t *ui.Theme) ui.Color {

@@ -356,6 +356,7 @@ var (
 	gtkWidgetGetPreferredHeight         func(w ptr, min, natural *int32)
 	gtkWidgetGetStyleContext            func(w ptr) ptr
 	gtkStyleContextAddClass             func(c ptr, name *byte)
+	gtkStyleContextLookupColor          func(c ptr, name *byte, color *gdkRGBA) bool
 	gtkStyleContextAddProviderForScreen func(screen, provider ptr, priority uint32)
 	gtkCssProviderNew                   func() ptr
 	gtkCssProviderLoadFromData          func(p ptr, data *byte, length int, err *ptr) bool
@@ -757,6 +758,7 @@ func load() error {
 	mustBind(t, &gtkWidgetGetPreferredHeight, "gtk_widget_get_preferred_height")
 	mustBind(t, &gtkWidgetGetStyleContext, "gtk_widget_get_style_context")
 	mustBind(t, &gtkStyleContextAddClass, "gtk_style_context_add_class")
+	mustBind(t, &gtkStyleContextLookupColor, "gtk_style_context_lookup_color")
 	mustBind(t, &gtkStyleContextAddProviderForScreen, "gtk_style_context_add_provider_for_screen")
 	mustBind(t, &gtkCssProviderNew, "gtk_css_provider_new")
 	mustBind(t, &gtkCssProviderLoadFromData, "gtk_css_provider_load_from_data")

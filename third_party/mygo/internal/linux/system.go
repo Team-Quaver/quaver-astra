@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"hash/fnv"
+	"math"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -52,7 +53,8 @@ func initSystemCallbacks() {
 
 	settings := gtkSettingsGetDefault()
 	connect(settings, "notify::gtk-theme-name", cbThemeChanged, 0)
-	connect(settings, "notify::gtk-font-name", cbThemeChanged, 0) // Theme.UIFont
+	connect(settings, "notify::gtk-color-scheme", cbThemeChanged, 0) // Theme.Preferences accent
+	connect(settings, "notify::gtk-font-name", cbThemeChanged, 0)    // Theme.UIFont
 	connect(settings, "notify::gtk-decoration-layout", cbDecorationLayout, 0)
 	connect(settings, "notify::gtk-application-prefer-dark-theme", cbThemeChanged, 0)
 	connect(settings, "notify::gtk-enable-animations", cbThemeChanged, 0) // Theme.Preferences
@@ -341,10 +343,65 @@ func portalColorScheme() (uint32, bool) {
 	return gVariantGetUint32(inner), true
 }
 
-// Preferences reads GTK's animations setting, and the accent, contrast
-// and text size the desktop portal gives, as GNOME's and KDE's do.
+// gtkAccentColor reads the symbolic color GTK uses for highlighted controls.
+// Prefer the GtkGLArea's style context for native UI windows so the color is
+// resolved by exactly the theme drawing around the app; a window context and
+// then a temporary GtkWindow are equivalent fallbacks.
+func gtkAccentColor() platform.Color {
+	if gtkWindowNew == nil || gtkWidgetGetStyleContext == nil || gtkStyleContextLookupColor == nil {
+		return platform.Color{} // GTK not loaded yet
+	}
+	var widget ptr
+	if theBackend != nil {
+		for _, w := range theBackend.windows {
+			if w == nil || w.closed {
+				continue
+			}
+			widget = w.win
+			if w.surface != nil && w.surface.area != 0 {
+				widget = w.surface.area
+			}
+			break
+		}
+	}
+	var temporary ptr
+	if widget == 0 {
+		temporary = gtkWindowNew(0)
+		widget = temporary
+	}
+	if temporary != 0 {
+		defer gtkWidgetDestroy(temporary)
+	}
+	if widget == 0 {
+		return platform.Color{}
+	}
+	context := gtkWidgetGetStyleContext(widget)
+	if context == 0 {
+		return platform.Color{}
+	}
+	// accent_bg_color is used by newer Adwaita-derived themes;
+	// theme_selected_bg_color is the GTK 3 convention supported broadly.
+	for _, name := range []string{"accent_bg_color", "theme_selected_bg_color"} {
+		var rgba gdkRGBA
+		if !gtkStyleContextLookupColor(context, cs(name), &rgba) || rgba.A <= 0 ||
+			!unitColor(rgba.R) || !unitColor(rgba.G) || !unitColor(rgba.B) || !unitColor(rgba.A) {
+			continue
+		}
+		toByte := func(v float64) uint8 { return uint8(v*255 + 0.5) }
+		return platform.Color{R: toByte(rgba.R), G: toByte(rgba.G), B: toByte(rgba.B), A: 255}
+	}
+	return platform.Color{}
+}
+
+func unitColor(v float64) bool {
+	return !math.IsNaN(v) && !math.IsInf(v, 0) && v >= 0 && v <= 1
+}
+
+// Preferences reads GTK's animations and highlighted-control color, and
+// uses the desktop portal as a fallback/source for accent, contrast and text
+// size settings exposed by GNOME and KDE.
 func (t theme) Preferences() platform.Preferences {
-	var p platform.Preferences
+	p := platform.Preferences{Accent: gtkAccentColor()}
 	settings := gtkSettingsGetDefault()
 	animations := int32(1)
 	gObjectGetPtr(settings, cs("gtk-enable-animations"), unsafe.Pointer(&animations), 0)
@@ -357,20 +414,23 @@ func (t theme) Preferences() platform.Preferences {
 		return p
 	}
 	defer gVariantUnref(all)
-	// The accent: red, green and blue between 0 and 1, others for none.
-	if v := portalSetting(all, appearanceSettings, "accent-color", "(ddd)"); v != 0 {
-		var rgb [3]float64
-		in := true
-		for i := range rgb {
-			c := gVariantGetChildValue(v, uintptr(i))
-			rgb[i] = gVariantGetDouble(c)
-			gVariantUnref(c)
-			in = in && rgb[i] >= 0 && rgb[i] <= 1
-		}
-		gVariantUnref(v)
-		if in {
-			b := func(f float64) uint8 { return uint8(f*255 + 0.5) }
-			p.Accent = platform.Color{R: b(rgb[0]), G: b(rgb[1]), B: b(rgb[2]), A: 255}
+	// If the GTK theme has no symbolic accent, use the portal's user choice:
+	// red, green and blue between 0 and 1, other values for none.
+	if p.Accent.A == 0 {
+		if v := portalSetting(all, appearanceSettings, "accent-color", "(ddd)"); v != 0 {
+			var rgb [3]float64
+			in := true
+			for i := range rgb {
+				c := gVariantGetChildValue(v, uintptr(i))
+				rgb[i] = gVariantGetDouble(c)
+				gVariantUnref(c)
+				in = in && rgb[i] >= 0 && rgb[i] <= 1
+			}
+			gVariantUnref(v)
+			if in {
+				b := func(f float64) uint8 { return uint8(f*255 + 0.5) }
+				p.Accent = platform.Color{R: b(rgb[0]), G: b(rgb[1]), B: b(rgb[2]), A: 255}
+			}
 		}
 	}
 	if v := portalSetting(all, appearanceSettings, "contrast", "u"); v != 0 {

@@ -256,11 +256,7 @@ func (a *App) songRow(c *ui.Context, st *songListState, i int, doubleClick func(
 
 // rowTint 当前播放行的底色。
 func (a *App) rowTint(t *ui.Theme) ui.Color {
-	accent, _, ok := a.tint.get()
-	if !ok {
-		accent = t.Accent
-	}
-	return accent.Alpha(0.1)
+	return t.Accent.Alpha(0.1)
 }
 
 // playListNow 用列表替换队列并播放第 i 首。

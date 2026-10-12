@@ -59,6 +59,7 @@ CI 发布：每次 push 都会构建并发布一个带短 commit id 的 snapshot
 | `QAA_MPV_DEVICE` | 强制音频输出设备 |
 | `QAA_TEST_MPV=1` | 开启真实 mpv 往返测试 |
 | `QAA_TEST_MPRIS=1` | 开启 MPRIS 往返测试（需会话 D-Bus + playerctl） |
+| `GITHUB_TOKEN` / `GH_TOKEN` | 可选的 GitHub token，仅用于更新检查，提升匿名 API 60 次/小时的限流 |
 
 mpv 定位优先级与 Quaver Music 本体（`ui/electron/audio/dist/bins.js`）一致：
 显式路径 → 随包目录 → PATH。Linux 随包 mpv 是 AppImage 解包出的 quick-sharun
@@ -85,6 +86,9 @@ mpv 定位优先级与 Quaver Music 本体（`ui/electron/audio/dist/bins.js`）
 - 系统托盘：对齐 Quaver Music 的曲目行、上一曲 / 播放暂停 / 下一曲、循环与随机、显示/隐藏、退出；单击/双击合并为一次显示/隐藏，右键弹出菜单；窗口关闭按钮可收进托盘
 - **系统媒体控制中心**：Linux 注册 MPRIS2（`org.mpris.MediaPlayer2.quaver-astra`，桌面键盘媒体键、播放状态/封面/进度/循环模式双向同步），Windows 接入 SMTC（系统媒体浮层、媒体键、封面缩略图与进度时间轴，支持系统侧循环/随机切换），macOS 接入 Now Playing（`MPNowPlayingInfoCenter` + `MPRemoteCommandCenter`，控制中心/菜单栏正在播放卡片：标题/歌手/专辑/封面与进度，播放/暂停/上一首/下一首/拖动进度回传）。macOS 的系统投影只对带 `CFBundleIdentifier` 的应用生效，裸跑可能看不到，打包 `.app` 后正常；架构见 `internal/smedia/`
 - 播放音频时阻止系统睡眠（暂停/停止即恢复，不阻止熄屏）；正常退出、TERM/Ctrl+C 与 native SIGABRT 清理时都会终止 mpv；Linux 另设父进程死亡信号和进程组兜底，避免异常崩溃留下 mpv
+- **版本号**：「设置 → 关于」标题旁显示当前版本（优先取构建注入值，本地 `go build` 时回落到工作区的 git tag）
+- **自动更新**：「设置 → 关于」可切换**稳定版**（GitHub latest API，最新正式 Release）与**快照版**（最近一次 push 的 `snapshot-*` 预发布）两个渠道，启动时自动检查（可关）。
+  AppImage / 单文件二进制 / Windows 便携目录支持原地热替换（下载边算 sha256 校验 GitHub `digest`，同目录原子改名覆盖），系统包（deb/rpm/pacman）与 macOS `.app` 回退到打开发行页；发现新版本时只提示一次，可在设置页手动检查与下载安装
 
 ## 架构
 
@@ -106,6 +110,7 @@ internal/appui/         MyGo 原生 UI：外壳、侧栏、路由页、播放条
 internal/colorprobe/    封面主色提取 + 模糊底图
 internal/vault/         登录凭证加密持久化（ChaCha20-Poly1305 + 随机主密钥）
 internal/conf/          JSON 配置（quaver-astra.json）
+internal/update/        自动更新：GitHub Releases 渠道/产物选择/下载校验/原地热替换
 ```
 
 播放链路：

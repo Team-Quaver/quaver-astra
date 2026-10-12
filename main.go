@@ -9,6 +9,7 @@ import (
 
 	"github.com/Team-Quaver/quaver-astra/internal/appui"
 	"github.com/Team-Quaver/quaver-astra/internal/backend"
+	"github.com/Team-Quaver/quaver-astra/internal/buildinfo"
 	"github.com/Team-Quaver/quaver-astra/internal/conf"
 	"github.com/Team-Quaver/quaver-astra/internal/vault"
 
@@ -24,7 +25,8 @@ const appIdentifier = "red.0w0.quaver-astra"
 //go:linkname mygoPackageIdentifier github.com/egoist/mygo.packageIdentifier
 var mygoPackageIdentifier string
 
-// version 由发布 CI 注入；本地 go build 保留 dev 标记。
+// version 由发布 CI 注入（取自 git tag）；本地 go build 保留 dev 标记，
+// 由 buildinfo.Resolve 回落到工作区里的 git tag。
 var version = "dev"
 
 func init() { mygoPackageIdentifier = appIdentifier }
@@ -55,7 +57,7 @@ func main() {
 	defer srv.Shutdown()
 
 	store := conf.Open(cfgDir)
-	app := appui.New(srv.BaseURL(), store, vault.Open(cfgDir))
+	app := appui.New(srv.BaseURL(), store, vault.Open(cfgDir), buildinfo.Resolve(version))
 	// 正常退出与异常返回两条路径都收口 mpv；OnQuit 在事件循环结束后执行，
 	// 不会被窗口关闭到托盘误触发。
 	defer app.Close()

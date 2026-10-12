@@ -13,6 +13,7 @@ type settingsState struct {
 	// 自定义字体输入框的草稿；TextInput 需要跨帧稳定地持有可编辑字符串。
 	fontDraft      string
 	lyricFontDraft string
+	accentDraft    ui.Color
 	draftsLoaded   bool
 }
 
@@ -21,12 +22,26 @@ var themeNames = []struct {
 	name string
 }{{"system", "跟随系统"}, {"light", "浅色"}, {"dark", "深色"}}
 
+var accentModeNames = []struct {
+	key  string
+	name string
+}{
+	{"default", "默认青色"},
+	{"cover", "封面颜色"},
+	{"system", "系统颜色"},
+	{"custom", "自定义"},
+}
+
 func (a *App) settingsView(c *ui.Context) {
 	st := &a.settings
 	t := c.Theme()
 	if !st.draftsLoaded {
 		st.fontDraft = a.Conf.String("Style.FontCustom", "")
 		st.lyricFontDraft = a.Conf.String("Style.LyricFontCustom", "")
+		st.accentDraft = defaultAccent
+		if custom, ok := parseAccentColor(a.Conf.String(accentCustomKey, "")); ok {
+			st.accentDraft = custom
+		}
 		st.draftsLoaded = true
 	}
 
@@ -63,6 +78,9 @@ func (a *App) settingsAppearance(c *ui.Context, t *ui.Theme) {
 				}
 			}
 		})
+
+		ui.Text(c, "高亮配色").FontSize(fz(14)).FontWeight(700)
+		a.accentSetting(c, t)
 
 		ui.Text(c, "字体").FontSize(fz(14)).FontWeight(700)
 
@@ -112,6 +130,51 @@ func (a *App) settingsAppearance(c *ui.Context, t *ui.Theme) {
 		ui.Text(c, "「关闭窗口」收进托盘，音乐继续播放；「退出应用」关闭窗口并退出 Quaver Astra。").
 			FontSize(fz(11.5)).TextColor(t.TextMuted).MaxLines(2)
 	})
+}
+
+// accentSetting 提供默认青色、封面取色、GTK/系统色与自定义色四种来源。
+func (a *App) accentSetting(c *ui.Context, t *ui.Theme) {
+	mode := a.accentMode()
+	ui.Row(c).Gap(8).Children(func() {
+		for _, option := range accentModeNames {
+			btn := ui.ButtonBase(c).Padding(8, 12).Radius(8).Border(1, t.Border).Transition(hoverFade)
+			btn.Children(func() { ui.Text(c, option.name).FontSize(fz(12.5)) })
+			if mode == option.key {
+				btn.Background(t.Accent.Alpha(0.14))
+				btn.TextColor(t.Accent)
+			} else if btn.Hovered() {
+				btn.Background(t.SurfaceHover)
+			}
+			if btn.Clicked() {
+				a.Conf.Set(accentModeKey, option.key)
+				a.invalidate()
+			}
+		}
+	})
+
+	switch mode {
+	case "system":
+		system := c.Preferences().Accent
+		if system.A == 0 {
+			ui.Text(c, "当前系统/GTK 主题未提供高亮色，已回退到默认青色。").
+				FontSize(fz(11.5)).TextColor(t.TextMuted)
+		} else {
+			system.A = 255
+			ui.Text(c, "已读取系统/GTK 高亮色 "+accentHex(system)).
+				FontSize(fz(11.5)).TextColor(t.TextMuted)
+		}
+	case "custom":
+		ui.Row(c).AlignItems(ui.Center).Gap(10).Children(func() {
+			ui.Text(c, "自定义颜色").FontSize(fz(12.5)).TextColor(t.TextMuted)
+			well := ui.ColorWell(c, &a.settings.accentDraft).Label("自定义高亮颜色")
+			if well.Changed() {
+				a.settings.accentDraft.A = 255
+				a.Conf.Set(accentCustomKey, accentHex(a.settings.accentDraft))
+				a.invalidate()
+			}
+			ui.Text(c, accentHex(a.settings.accentDraft)).FontSize(fz(11.5)).TextColor(t.TextMuted)
+		})
+	}
 }
 
 // fontSettingRow 是一组字体模式选择；custom 模式展开 family list 输入框。
@@ -239,7 +302,10 @@ func (a *App) settingsAbout(c *ui.Context, t *ui.Theme) {
 		ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(14).Children(func() {
 			ui.Image(c, appIconSVG).Size(56, 56).Fit(ui.Contain)
 			ui.Column(c).Grow(1).Gap(3).Children(func() {
-				ui.Text(c, "Quaver Astra").FontSize(fz(16)).FontWeight(800)
+				ui.Row(c).AlignItems(ui.Center).Gap(6).Children(func() {
+					ui.Text(c, "Quaver Astra").FontSize(fz(16)).FontWeight(800)
+					ui.Text(c, "（"+a.versionLabel()+"）").FontSize(fz(12.5)).TextColor(t.TextMuted)
+				})
 				ui.Text(c, "现代，流畅的 Q 音第三方客户端，现已轻装上阵")
 			})
 		})
@@ -266,6 +332,10 @@ func (a *App) settingsAbout(c *ui.Context, t *ui.Theme) {
 		}
 		ui.Text(c, "查找顺序：QAA_MPV 显式路径 → QAA_MPV_DIR 随包目录 → PATH。").
 			FontSize(fz(11.5)).TextColor(t.TextMuted).MaxLines(2)
+
+		ui.Divider(c)
+
+		a.settingsUpdate(c, t)
 
 		ui.Divider(c)
 
