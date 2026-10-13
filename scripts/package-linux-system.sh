@@ -62,7 +62,9 @@ install -m 0644 LICENSE "$payload/usr/share/licenses/$name/LICENSE"
 install -m 0644 LICENSE "$payload/usr/share/doc/$name/copyright"
 install -m 0644 README.md "$payload/usr/share/doc/$name/README.md"
 
-cat > "$payload/usr/share/applications/quaver-astra.desktop" <<'DESKTOP'
+# 桌面条目名即应用 ID（反向 DNS）：桌面按它把窗口归到本条目、XDG 门户也按
+# 它注册。必须与 internal/appid.Identifier 一致。
+cat > "$payload/usr/share/applications/red.0w0.quaver-astra.desktop" <<'DESKTOP'
 [Desktop Entry]
 Type=Application
 Name=Quaver Astra
@@ -72,11 +74,11 @@ Icon=quaver-astra
 Categories=AudioVideo;Audio;Player;
 Keywords=music;qq;player;
 Terminal=false
-StartupWMClass=quaver-astra
+StartupWMClass=red.0w0.quaver-astra
 DESKTOP
 
 if command -v desktop-file-validate >/dev/null 2>&1; then
-  desktop-file-validate "$payload/usr/share/applications/quaver-astra.desktop"
+  desktop-file-validate "$payload/usr/share/applications/red.0w0.quaver-astra.desktop"
 fi
 
 build_deb() {
@@ -113,7 +115,7 @@ build_rpm() {
   rm -rf "$tree"
   mkdir -p "$tree"/{BUILD,RPMS,SOURCES,SPECS,SRPMS} "$stage/rpm-tmp"
   cp "$binary" "$tree/SOURCES/quaver-astra"
-  cp "$payload/usr/share/applications/quaver-astra.desktop" "$tree/SOURCES/"
+  cp "$payload/usr/share/applications/red.0w0.quaver-astra.desktop" "$tree/SOURCES/"
   cp "$payload/usr/share/icons/hicolor/512x512/apps/quaver-astra.png" "$tree/SOURCES/"
   cp LICENSE "$tree/SOURCES/"
 
@@ -125,7 +127,7 @@ Summary: Native QQ Music client
 License: AGPL-3.0-only
 URL: $url
 Source0: quaver-astra
-Source1: quaver-astra.desktop
+Source1: red.0w0.quaver-astra.desktop
 Source2: quaver-astra.png
 Source3: LICENSE
 AutoReqProv: no
@@ -139,13 +141,13 @@ Native UI client for Quaver Astra. Playback uses the system mpv.
 
 %install
 install -Dm0755 "%{SOURCE0}" "%{buildroot}/usr/bin/quaver-astra"
-install -Dm0644 "%{SOURCE1}" "%{buildroot}/usr/share/applications/quaver-astra.desktop"
+install -Dm0644 "%{SOURCE1}" "%{buildroot}/usr/share/applications/red.0w0.quaver-astra.desktop"
 install -Dm0644 "%{SOURCE2}" "%{buildroot}/usr/share/icons/hicolor/512x512/apps/quaver-astra.png"
 install -Dm0644 "%{SOURCE3}" "%{buildroot}/usr/share/licenses/%{name}/LICENSE"
 
 %files
 /usr/bin/quaver-astra
-/usr/share/applications/quaver-astra.desktop
+/usr/share/applications/red.0w0.quaver-astra.desktop
 /usr/share/icons/hicolor/512x512/apps/quaver-astra.png
 %license /usr/share/licenses/%{name}/LICENSE
 SPEC

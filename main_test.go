@@ -1,12 +1,16 @@
 package main
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/Team-Quaver/quaver-astra/internal/appid"
+)
 
 func TestApplicationIdentifier(t *testing.T) {
-	if appIdentifier != "red.0w0.quaver-astra" {
-		t.Fatalf("appIdentifier = %q", appIdentifier)
+	if appid.Identifier != "red.0w0.quaver-astra" {
+		t.Fatalf("appid.Identifier = %q", appid.Identifier)
 	}
-	if mygoPackageIdentifier != appIdentifier {
-		t.Fatalf("MyGo package identifier = %q, want %q", mygoPackageIdentifier, appIdentifier)
+	if mygoPackageIdentifier != appid.Identifier {
+		t.Fatalf("MyGo package identifier = %q, want %q", mygoPackageIdentifier, appid.Identifier)
 	}
 }

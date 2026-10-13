@@ -18,9 +18,10 @@ import (
 // Backend is the Linux (GTK 3 + WebKitGTK) implementation of
 // platform.Backend.
 type Backend struct {
-	h       platform.AppHandler
-	name    string
-	running bool
+	h          platform.AppHandler
+	name       string
+	identifier string
+	running    bool
 
 	windows   map[int]*window
 	byWebView map[ptr]*window
@@ -93,6 +94,7 @@ func (b *Backend) IsMainThread() bool {
 func (b *Backend) Init(h platform.AppHandler, opts platform.AppOptions) error {
 	b.h = h
 	b.name = opts.Name
+	b.identifier = opts.Identifier
 	theBackend = b
 	if err := load(); err != nil {
 		return err
@@ -102,6 +104,10 @@ func (b *Backend) Init(h platform.AppHandler, opts platform.AppOptions) error {
 		// fails (NVIDIA, VMs, containers).
 		_ = os.Setenv("WEBKIT_DISABLE_DMABUF_RENDERER", "1")
 	}
+	// Before the display opens and again after, so whichever of GTK's
+	// program name or program class the compositor reads for the app id sees
+	// the identifier (see setProgramIdentity).
+	b.setProgramIdentity()
 	if !gtkInitCheck(0, 0) {
 		return errors.New("mygo: cannot open display (is DISPLAY or WAYLAND_DISPLAY set?)")
 	}
@@ -119,8 +125,22 @@ func (b *Backend) Init(h platform.AppHandler, opts platform.AppOptions) error {
 	if onWayland {
 		bind(libGDK, &b.announceCSD, "gdk_wayland_window_announce_csd")
 	}
+	b.setProgramIdentity()
 	initCallbacks()
 	return nil
+}
+
+// setProgramIdentity makes the app's Wayland app_id and X11 WM_CLASS the
+// app's identifier, the id of its desktop entry. Desktops match a window to
+// a .desktop by that id: the executables name (the default) would leave
+// windows unattached when the packaged entry is named after the identifier,
+// and the portals must register under the same id the entry carries.
+func (b *Backend) setProgramIdentity() {
+	if b.identifier == "" {
+		return
+	}
+	gSetPrgname(cs(b.identifier))
+	gdkSetProgramClass(cs(b.identifier))
 }
 
 func (b *Backend) Run() error {

@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	_ "unsafe"
 
+	"github.com/Team-Quaver/quaver-astra/internal/appid"
 	"github.com/Team-Quaver/quaver-astra/internal/appui"
 	"github.com/Team-Quaver/quaver-astra/internal/backend"
 	"github.com/Team-Quaver/quaver-astra/internal/buildinfo"
@@ -17,11 +18,10 @@ import (
 	"github.com/egoist/mygo/ui"
 )
 
-// appIdentifier 是系统侧应用 ID（Windows 资源、macOS bundle、Linux XDG
-// 注册共用）。MyGo 只从打包元数据/链接期变量读取它，裸 go build 也要保持
-// 稳定，因此这里在 init 前写入 MyGo 的包级元数据。
-const appIdentifier = "red.0w0.quaver-astra"
-
+// MyGo 只从打包元数据/链接期变量读取系统侧应用 ID（Windows 资源、macOS
+// bundle、Linux XDG / MPRIS 注册共用）；裸 go build 也要保持稳定，因此这里
+// 在 init 前把它写入 MyGo 的包级元数据。值见 internal/appid。
+//
 //go:linkname mygoPackageIdentifier github.com/egoist/mygo.packageIdentifier
 var mygoPackageIdentifier string
 
@@ -29,7 +29,7 @@ var mygoPackageIdentifier string
 // 由 buildinfo.Resolve 回落到工作区里的 git tag。
 var version = "dev"
 
-func init() { mygoPackageIdentifier = appIdentifier }
+func init() { mygoPackageIdentifier = appid.Identifier }
 
 func main() {
 	// 必须早于 GTK/OpenGL 首次加载；见 gpu_linux.go。

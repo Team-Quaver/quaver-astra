@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"sync"
 
+	"github.com/Team-Quaver/quaver-astra/internal/appid"
+
 	"github.com/godbus/dbus/v5"
 )
 
@@ -326,7 +328,7 @@ func (m *mpris) GetAll(iface string) (map[string]dbus.Variant, *dbus.Error) {
 			"CanRaise":            dbus.MakeVariant(true),
 			"HasTrackList":        dbus.MakeVariant(false),
 			"Identity":            dbus.MakeVariant(m.ident),
-			"DesktopEntry":        dbus.MakeVariant("quaver-astra"),
+			"DesktopEntry":        dbus.MakeVariant(appid.Identifier),
 			"SupportedUriSchemes": dbus.MakeVariant([]string{"http", "https"}),
 			"SupportedMimeTypes":  dbus.MakeVariant([]string{}),
 		}, nil

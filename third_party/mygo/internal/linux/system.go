@@ -540,13 +540,17 @@ func (b *Backend) updateLauncherEntry() {
 }
 
 // desktopEntryID is the file name of the app's desktop entry: the one it
-// was launched from, else the one `mygo build` writes, named after the
-// executable.
+// was launched from, else the one named after the app's identifier (the
+// reverse-DNS id the portals and launchers key apps by), else the one
+// named after the executable.
 func desktopEntryID() string {
 	for _, env := range []string{"GIO_LAUNCHED_DESKTOP_FILE", "BAMF_DESKTOP_FILE_HINT"} {
 		if p := os.Getenv(env); p != "" {
 			return filepath.Base(p)
 		}
+	}
+	if theBackend != nil && theBackend.identifier != "" {
+		return desktopName(theBackend.identifier) + ".desktop"
 	}
 	exe, _ := os.Executable()
 	return filepath.Base(exe) + ".desktop"

@@ -62,6 +62,16 @@ func appID() string {
 	return App.Name()
 }
 
+// identifier is the app's reverse-DNS id, empty when it has none. Linux
+// names the desktop entry after it so the portals, which key apps by the
+// desktop entry id, register the right one.
+func identifier() string {
+	if info, ok := packageInfo(); ok {
+		return info.Identifier
+	}
+	return ""
+}
+
 // devRelaunchCode is the exit code with which a development build asks
 // `mygo dev` to start it again (Relaunch).
 const devRelaunchCode = 75

@@ -102,6 +102,10 @@ type Backend interface {
 // AppOptions configures Backend.Init.
 type AppOptions struct {
 	Name string
+	// Identifier is the app's reverse-DNS id (packageIdentifier), empty
+	// when the app has none. Linux derives the desktop-entry id from it so
+	// the portals register the app under the right id.
+	Identifier string
 	// ActivationPolicy is "regular" (default), "accessory" or "prohibited".
 	// Only meaningful on macOS.
 	ActivationPolicy string

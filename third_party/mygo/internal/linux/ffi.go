@@ -116,6 +116,7 @@ var (
 	gFilenameFromURI               func(uri string, hostname, gerr ptr) ptr
 	gErrorNewLiteral               func(domain uint32, code int32, msg *byte) ptr
 	gQuarkFromString               func(s *byte) uint32
+	gSetPrgname                    func(name *byte)
 	gIdleAddFull                   func(priority int32, fn ptr, data ptr, notify ptr) uint32
 	gTimeoutAdd                    func(ms uint32, fn ptr, data ptr) uint32
 	gMainContextIteration          func(ctx ptr, mayBlock bool) bool
@@ -175,6 +176,7 @@ var (
 var (
 	gdkScreenGetRGBAVisual      func(screen ptr) ptr
 	gdkDisplayGetDefault        func() ptr
+	gdkSetProgramClass          func(class *byte)
 	gdkDisplayGetNMonitors      func(d ptr) int32
 	gdkDisplayGetMonitor        func(d ptr, i int32) ptr
 	gdkDisplayGetPrimaryMonitor func(d ptr) ptr
@@ -528,6 +530,7 @@ func load() error {
 	mustBind(g, &gFilenameFromURI, "g_filename_from_uri")
 	mustBind(g, &gErrorNewLiteral, "g_error_new_literal")
 	mustBind(g, &gQuarkFromString, "g_quark_from_string")
+	mustBind(g, &gSetPrgname, "g_set_prgname")
 	mustBind(g, &gIdleAddFull, "g_idle_add_full")
 	mustBind(g, &gTimeoutAdd, "g_timeout_add")
 	mustBind(g, &gMainContextIteration, "g_main_context_iteration")
@@ -589,6 +592,7 @@ func load() error {
 	d := libGDK
 	mustBind(d, &gdkScreenGetRGBAVisual, "gdk_screen_get_rgba_visual")
 	mustBind(d, &gdkDisplayGetDefault, "gdk_display_get_default")
+	mustBind(d, &gdkSetProgramClass, "gdk_set_program_class")
 	mustBind(d, &gdkDisplayGetNMonitors, "gdk_display_get_n_monitors")
 	mustBind(d, &gdkDisplayGetMonitor, "gdk_display_get_monitor")
 	mustBind(d, &gdkDisplayGetPrimaryMonitor, "gdk_display_get_primary_monitor")

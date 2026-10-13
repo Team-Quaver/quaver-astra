@@ -23,7 +23,9 @@ install -m 0644 img/app-icon.png "$appdir/quaver-astra.png"
 install -Dm 0644 LICENSE "$appdir/usr/share/licenses/quaver-astra/LICENSE"
 install -Dm 0644 LICENSE "$appdir/usr/share/doc/quaver-astra/copyright"
 
-cat > "$appdir/quaver-astra.desktop" <<'DESKTOP'
+# 桌面条目名即应用 ID（反向 DNS），桌面按它把窗口归到本条目、门户也按它
+# 注册；必须与 internal/appid.Identifier 一致。
+cat > "$appdir/red.0w0.quaver-astra.desktop" <<'DESKTOP'
 [Desktop Entry]
 Type=Application
 Name=Quaver Astra
@@ -32,7 +34,7 @@ Exec=quaver-astra
 Icon=quaver-astra
 Categories=AudioVideo;Audio;Player;
 Terminal=false
-StartupWMClass=quaver-astra
+StartupWMClass=red.0w0.quaver-astra
 DESKTOP
 
 # Keep the bundled quick-sharun mpv isolated from the host loader. The launcher
