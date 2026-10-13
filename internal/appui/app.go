@@ -481,7 +481,7 @@ func (a *App) sidebar(c *ui.Context) {
 				Transition(growFade)
 			active := a.Router.Path() == path
 			btn.Children(func() {
-				ui.Icon(c, Icons["note"]).FontSize(fz(16)).AlignSelf(ui.Center)
+				a.sidePlaylistArt(c, pl)
 				if label {
 					ui.Text(c, pl.Title).FontSize(fz(13)).SingleLine().Ellipsis("…").Grow(1)
 				}
@@ -499,6 +499,26 @@ func (a *App) sidebar(c *ui.Context) {
 
 		a.sideFooter(c, t, collapsed, w)
 	})
+}
+
+// sidePlaylistArt 是侧栏歌单行的行首图：歌单自己的封面，而不是通用♪。
+//
+// 边长取 sideIconSize（18）而不是更显眼的 22：侧栏的图标列是一条公共基准线
+// （导航项与用户头像都按它排，见上方常量注释），封面大一圈就把歌单标题推离
+// 导航项标题所在的文字列，同一组里「有封面」与「退回♪」的行也会彼此错开。
+// 圆角按边长比例取 4（songRow 的 44 封面是 6），小尺寸下比直角方块柔和些。
+//
+// 地址是后端给的 picurl，走 CoverCache 异步拉取：首帧返回 nil，先画♪占位，
+// 下载解码完成后 invalidate 触发重绘换成图。取不到（歌单没封面、图挂了）就
+// 一直是♪——空方块比♪更难看。Shrink(0) 是必须的：行里标题 Grow(1)，而元素
+// 默认 shrink=1，长标题（「屑作｜非独立发行」）会把封面压成非正方形的竖条。
+func (a *App) sidePlaylistArt(c *ui.Context, pl player.PlaylistRef) {
+	if art := a.Covers.Get(pl.Cover, a.invalidate); art != nil {
+		ui.Image(c, art).Size(sideIconSize, sideIconSize).Fit(ui.Cover).
+			Radius(4).Shrink(0).AlignSelf(ui.Center)
+		return
+	}
+	ui.Icon(c, Icons["note"]).FontSize(fz(sideIconSize)).AlignSelf(ui.Center)
 }
 
 // sideFooter 是侧栏底部：设置 + 收起/展开。

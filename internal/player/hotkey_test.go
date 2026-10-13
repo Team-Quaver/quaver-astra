@@ -12,6 +12,9 @@ func TestPlayAndPauseAreDirectional(t *testing.T) {
 	p.OnNotify(func() { notify++ })
 	p.queue = []Song{{Mid: "a"}}
 	p.index = 0
+	// stream 非空表示「引擎里装载着当前曲」——暂停态必须建立在已装载的
+	// 前提上，否则会落进「待命起播」分支（那是会话恢复的语义，见 session.go）。
+	p.stream = &StreamInfo{URL: "http://x/a"}
 
 	// 暂停态 → Play 续播，并通知一次。
 	p.playing, eng.paused = false, true
@@ -83,6 +86,7 @@ func TestPlayOrPauseStillToggles(t *testing.T) {
 	p := New(stubBackend{}, eng, fakePrefs{})
 	p.queue = []Song{{Mid: "a"}}
 	p.index = 0
+	p.stream = &StreamInfo{URL: "http://x/a"} // 暂停/恢复的前提是引擎已装载（同上）
 	p.playing, eng.paused = true, false
 
 	p.PlayOrPause()

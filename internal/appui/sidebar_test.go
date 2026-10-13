@@ -1,9 +1,12 @@
 package appui
 
 import (
+	"bytes"
 	"fmt"
 	"image"
 	"image/color"
+	"image/png"
+	"math"
 	"testing"
 	"time"
 
@@ -389,6 +392,203 @@ func TestSidebarCollapsedFooterIsVertical(t *testing.T) {
 	}
 	t.Logf("收起态底部图标：设置(%d,%d) 展开(%d,%d)",
 		first.midX, first.midY, second.midX, second.midY)
+}
+
+// ===== 歌单行首的封面 =====
+
+// coverBackend 在 loggedBackend 之上给歌单配上封面地址。
+//
+// 地址用 cover:// 这种不可能被真拉取的 scheme：命中 Covers.PutRaw 预置的
+// 位图时走缓存；没预置的那条（「私藏」）会立刻以「unsupported protocol
+// scheme」失败，测试因此既不触网，又能稳定复现「封面取不到」的形态。
+type coverBackend struct{ loggedBackend }
+
+func (coverBackend) Playlists() ([]player.PlaylistRef, error) {
+	return []player.PlaylistRef{
+		{ID: 1, Title: "博客", Cover: "cover://blog"},
+		{ID: 2, Title: "古典", Cover: "cover://classic"},
+		{ID: 3, Title: "私藏"}, // 没有封面：应退回♪
+	}, nil
+}
+
+// solidCoverPNG 造一张纯色封面（PNG 字节），供 Covers.PutRaw 预置。
+func solidCoverPNG(t *testing.T, col color.RGBA) []byte {
+	t.Helper()
+	const n = 64
+	img := image.NewRGBA(image.Rect(0, 0, n, n))
+	for y := 0; y < n; y++ {
+		for x := 0; x < n; x++ {
+			img.SetRGBA(x, y, col)
+		}
+	}
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, img); err != nil {
+		t.Fatalf("编码测试封面失败：%v", err)
+	}
+	return buf.Bytes()
+}
+
+var (
+	coverBlog    = color.RGBA{0xE8, 0x3A, 0x3A, 0xFF}
+	coverClassic = color.RGBA{0x2E, 0x6E, 0xFF, 0xFF}
+)
+
+// sideCoverApp 渲染「登录 + 三首歌单（两首有封面）」的 App。
+func sideCoverApp(t *testing.T, collapsed bool) *App {
+	t.Helper()
+	p := player.New(coverBackend{}, nilEngine{}, &nullPrefs{})
+	p.RefreshUser()
+	for i := 0; i < 200; i++ {
+		if len(p.Playlists()) > 0 {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if len(p.Playlists()) == 0 {
+		t.Fatal("假后端歌单未就绪")
+	}
+	covers := NewCoverCache()
+	covers.PutRaw("cover://blog", solidCoverPNG(t, coverBlog))
+	covers.PutRaw("cover://classic", solidCoverPNG(t, coverClassic))
+	return &App{
+		PL:            p,
+		Conf:          conf.Open(t.TempDir()),
+		Router:        ui.NewRouter("/settings"),
+		Covers:        covers,
+		sbCollapsed:   collapsed,
+		playlist:      map[int64]*playlistState{},
+		lastLyricLine: -2,
+	}
+}
+
+// colorBox 返回扫描区内与 col 足够接近的像素范围（含抗锯齿边缘）。
+func colorBox(img image.Image, x0, x1, y0, y1 int, col color.RGBA) (image.Rectangle, bool) {
+	const tol = 28
+	found := false
+	box := image.Rectangle{Min: image.Pt(1<<20, 1<<20), Max: image.Pt(-1<<20, -1<<20)}
+	for y := y0; y <= y1; y++ {
+		for x := x0; x <= x1; x++ {
+			if x < 0 || y < 0 || x >= img.Bounds().Dx() || y >= img.Bounds().Dy() {
+				continue
+			}
+			c := at(img, x, y)
+			if absDiff(int(c.R), int(col.R)) > tol ||
+				absDiff(int(c.G), int(col.G)) > tol ||
+				absDiff(int(c.B), int(col.B)) > tol {
+				continue
+			}
+			found = true
+			if x < box.Min.X {
+				box.Min.X = x
+			}
+			if y < box.Min.Y {
+				box.Min.Y = y
+			}
+			if x > box.Max.X {
+				box.Max.X = x
+			}
+			if y > box.Max.Y {
+				box.Max.Y = y
+			}
+		}
+	}
+	return box, found
+}
+
+// TestSidebarPlaylistCovers 展开态：歌单行首画歌单封面，而不是通用♪。
+//
+// 三条断言各自钉住一个容易回退的点：
+//   - 封面真的被画上（用户原话：「把歌单图标改成歌单封面」）；
+//   - 封面是正方形——行里标题 Grow(1)，元素默认 shrink=1，长标题会把
+//     封面压成竖扁的矩形，所以必须 Shrink(0)；
+//   - 封面左缘与导航图标同列：侧栏的图标列是头像/导航项/歌单共用的基准线，
+//     封面自己大一号就会把歌单标题推离导航项的标题列。
+//
+// 没封面的「私藏」仍画♪：空方块比♪更难看。
+func TestSidebarPlaylistCovers(t *testing.T) {
+	app := sideCoverApp(t, false)
+	tester := ui.NewTester(app.View, testWinW, testWinH)
+	tester.Frame()
+
+	blog := mustFind(t, tester, "博客")
+	classic := mustFind(t, tester, "古典")
+	plain := mustFind(t, tester, "私藏")
+	home := mustFind(t, tester, "首页")
+
+	// 只量行首图标列（x<44），免得把标题文字的墨迹算进来。
+	img := tester.Image()
+	box, ok := colorBox(img, 12, 44, int(blog.Y)-4, int(blog.Y+blog.H)+4, coverBlog)
+	if !ok {
+		t.Fatalf("「博客」行首没画出封面色 %v——侧栏仍在画♪？", coverBlog)
+	}
+	w, h := box.Dx()+1, box.Dy()+1
+	if d := w - h; d > 2 || d < -2 {
+		t.Errorf("封面被压成 %dx%d（应为正方形），行内 shrink 未关", w, h)
+	}
+	if w < int(sideIconSize)-4 || w > int(sideIconSize)+4 {
+		t.Errorf("封面宽 %d，偏离图标列基准 %v 太远", w, sideIconSize)
+	}
+	if math.Abs(float64(box.Min.Y+box.Max.Y)/2-float64(blog.Y+blog.H/2)) > 2 {
+		t.Errorf("封面垂直中心 %d 与标题中心 %.0f 不齐", (box.Min.Y+box.Max.Y)/2, blog.Y+blog.H/2)
+	}
+
+	// 与导航图标同列
+	ico, err := inkBounds(tester, 2, 45, int(home.Y)-6, int(home.Y+home.H)+6)
+	if err != nil {
+		t.Fatalf("扫不到首页图标：%v", err)
+	}
+	if d := box.Min.X - ico.minX; d < -3 || d > 3 {
+		t.Errorf("封面左缘 x=%d 与导航图标左缘 x=%d 相差 %dpx，未同列", box.Min.X, ico.minX, d)
+	}
+
+	// 第二首歌单画的是自己的封面，不是第一首的
+	box2, ok := colorBox(img, 12, 44, int(classic.Y)-4, int(classic.Y+classic.H)+4, coverClassic)
+	if !ok {
+		t.Fatal("「古典」行首没画出它自己的封面色")
+	}
+	if box2.Min.Y <= box.Min.Y {
+		t.Errorf("两行封面的 y 顺序反了：%+v vs %+v", box, box2)
+	}
+
+	// 无封面：行首有墨迹（♪），但不是任何一张封面的颜色
+	if b, ok := colorBox(img, 12, 44, int(plain.Y)-4, int(plain.Y+plain.H)+4, coverBlog); ok {
+		t.Errorf("「私藏」没封面却画出了博客的封面：%+v", b)
+	}
+	if b, ok := colorBox(img, 12, 44, int(plain.Y)-4, int(plain.Y+plain.H)+4, coverClassic); ok {
+		t.Errorf("「私藏」没封面却画出了古典的封面：%+v", b)
+	}
+	if _, err := inkBounds(tester, 12, 44, int(plain.Y)-2, int(plain.Y+plain.H)+2); err != nil {
+		t.Errorf("「私藏」行首连♪都没有：%v", err)
+	}
+}
+
+// TestSidebarPlaylistCoversCollapsedCentered 收起态：封面同样以侧栏中线居中。
+//
+// 收起态只剩行首图，封面若比♪宽，居中算错就会顶破 64 宽的内容区——
+// 这是历史上「图标全部靠右」的复发点。
+func TestSidebarPlaylistCoversCollapsedCentered(t *testing.T) {
+	app := sideCoverApp(t, true)
+	tester := ui.NewTester(app.View, testWinW, testWinH)
+	tester.Frame()
+
+	img := tester.Image()
+	// 收起态没有文字锚点可对 y，但封面颜色是每首歌单独一份，
+	// 于是整条侧栏扫一遍就能定位它那一行（行首图标列在 y≈256 之后）。
+	var prevY int = -1
+	for i, col := range []color.RGBA{coverBlog, coverClassic} {
+		box, ok := colorBox(img, 2, int(sideWidthSmall)-2, 10, 530, col)
+		if !ok {
+			t.Fatalf("收起态第 %d 行没画出封面 %v——侧栏仍在画♪？", i, col)
+		}
+		if d := (box.Min.X+box.Max.X)/2 - int(sideWidthSmall/2); d < -3 || d > 3 {
+			t.Errorf("收起态第 %d 行封面中心 x=%d（范围 %d..%d）偏离侧栏中线 %v 达 %dpx",
+				i, (box.Min.X+box.Max.X)/2, box.Min.X, box.Max.X, sideWidthSmall/2, d)
+		}
+		if box.Min.Y <= prevY {
+			t.Errorf("第 %d 行封面 y=%d 未排在上一行（y=%d）下方", i, box.Min.Y, prevY)
+		}
+		prevY = box.Max.Y
+	}
 }
 
 // iconCluster 是一簇图标像素。

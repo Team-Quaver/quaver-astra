@@ -77,6 +77,14 @@ func TestUIShots(t *testing.T) {
 	time.Sleep(250 * time.Millisecond)
 	shot(tester2, "np-qinfo.png")
 
+	// 侧栏「我创建的歌单」：行首画歌单封面（取不到封面的那首退回♪）
+	cov := sideCoverApp(t, false)
+	shot(ui.NewTester(cov.View, testWinW, testWinH), "sidebar-covers.png")
+
+	// 收起态：封面仍要以侧栏中线居中
+	covSmall := sideCoverApp(t, true)
+	shot(ui.NewTester(covSmall.View, testWinW, testWinH), "sidebar-covers-collapsed.png")
+
 	// 设置 - 快捷键：一格处于录制态，绑定态与录制态同框
 	hk, _, _ := hotkeyApp(t)
 	hk.settings.tab = hotkeysTab

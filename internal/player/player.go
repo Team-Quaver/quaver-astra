@@ -52,6 +52,15 @@ type Player struct {
 	failStreak int
 	vol        float64
 	muted      bool
+
+	// 会话持久化（session.go）：退出保留播放列表与当前进度，启动恢复。
+	// saveMu 护住防抖计时器、force 合并标记与「上次写盘」去重缓存；
+	// 锁序恒为 saveMu → p.mu，任何路径不得反向。
+	saveMu          sync.Mutex
+	saveTimer       *time.Timer
+	saveForce       bool
+	sessionWroteQ   string
+	sessionWrotePos sessionPos
 }
 
 // Song / StreamInfo / TierTable / UserInfo 是 player 与外界解耦的最小形状，
@@ -120,6 +129,9 @@ type PlaylistRef struct {
 	ID    int64
 	DirID int64
 	Title string
+	// Cover 是歌单封面地址（后端 picurl）。侧栏行首画它；为空或还没取到
+	// 时退回♪占位，所以调用方不能拿它判断「这个歌单有没有封面」。
+	Cover string
 }
 
 // Engine 是 player 需要的音频能力（由 *audio.Engine 基于 mpv 实现）。
@@ -354,6 +366,7 @@ func (p *Player) PlayList(songs []Song, i int) {
 	p.index = i
 	p.shufOrder = nil
 	p.mu.Unlock()
+	p.sessionSaveSoon(true)
 	p.notifyChange()
 	p.startCurrent(0, true, "")
 }
@@ -367,6 +380,7 @@ func (p *Player) Jump(i int) {
 	}
 	p.index = i
 	p.mu.Unlock()
+	p.sessionSaveSoon(true)
 	p.notifyChange()
 	p.startCurrent(0, true, "")
 }
@@ -387,6 +401,7 @@ func (p *Player) EnqueueNext(s Song) {
 	copy(p.queue[at+1:], p.queue[at:])
 	p.queue[at] = s
 	p.mu.Unlock()
+	p.sessionSaveSoon(false)
 	p.notifyChange()
 }
 
@@ -402,6 +417,7 @@ func (p *Player) PlayNextNow(s Song) {
 	p.queue[at] = s
 	p.index = at
 	p.mu.Unlock()
+	p.sessionSaveSoon(true)
 	p.notifyChange()
 	p.startCurrent(0, true, "")
 }
@@ -411,6 +427,7 @@ func (p *Player) EnqueueMany(songs []Song) {
 	p.mu.Lock()
 	p.queue = append(p.queue, songs...)
 	p.mu.Unlock()
+	p.sessionSaveSoon(false)
 	p.notifyChange()
 }
 
@@ -429,12 +446,14 @@ func (p *Player) RemoveAt(i int) {
 		}
 		if p.index >= 0 {
 			p.mu.Unlock()
+			p.sessionSaveSoon(true)
 			p.notifyChange()
 			p.startCurrent(0, false, "")
 			return
 		}
 		p.stopLocked()
 		p.mu.Unlock()
+		p.sessionSaveSoon(true)
 		p.notifyChange()
 		return
 	}
@@ -442,6 +461,7 @@ func (p *Player) RemoveAt(i int) {
 		p.index--
 	}
 	p.mu.Unlock()
+	p.sessionSaveSoon(false)
 	p.notifyChange()
 }
 
@@ -452,6 +472,7 @@ func (p *Player) ClearQueue() {
 	p.index = -1
 	p.stopLocked()
 	p.mu.Unlock()
+	p.sessionSaveSoon(true)
 	p.notifyChange()
 }
 
@@ -507,6 +528,7 @@ func (p *Player) MoveInQueue(rows []int, to int) {
 	}
 	p.shufOrder = nil
 	p.mu.Unlock()
+	p.sessionSaveSoon(false)
 	p.notifyChange()
 }
 
@@ -529,6 +551,7 @@ func (p *Player) CycleMode() {
 		p.mode = "off"
 	}
 	p.mu.Unlock()
+	p.sessionSaveSoon(false)
 	p.notifyChange()
 }
 
@@ -542,6 +565,7 @@ func (p *Player) SetMode(mode string) {
 	p.mode = mode
 	p.mu.Unlock()
 	if changed {
+		p.sessionSaveSoon(false)
 		p.notifyChange()
 	}
 }
@@ -557,6 +581,7 @@ func (p *Player) SetShuffle(on bool) {
 	p.shuf = on
 	p.shufOrder = nil
 	p.mu.Unlock()
+	p.sessionSaveSoon(false)
 	p.notifyChange()
 }
 
@@ -693,11 +718,13 @@ func (p *Player) Next(auto bool) {
 	if next < 0 {
 		p.stopLocked()
 		p.mu.Unlock()
+		p.sessionSaveSoon(true)
 		p.notifyChange()
 		return
 	}
 	p.index = next
 	p.mu.Unlock()
+	p.sessionSaveSoon(true)
 	p.notifyChange()
 	p.startCurrent(0, true, "")
 }
@@ -718,6 +745,7 @@ func (p *Player) Prev() {
 	}
 	p.index = prev
 	p.mu.Unlock()
+	p.sessionSaveSoon(true)
 	p.notifyChange()
 	p.startCurrent(0, true, "")
 }
@@ -729,6 +757,7 @@ func (p *Player) PlayOrPause() {
 		if len(p.queue) > 0 {
 			p.index = 0
 			p.mu.Unlock()
+			p.sessionSaveSoon(true)
 			p.notifyChange()
 			p.startCurrent(0, true, "")
 			return
@@ -737,6 +766,14 @@ func (p *Player) PlayOrPause() {
 		return
 	}
 	if p.eng.Paused() || !p.playing {
+		if p.stream == nil && !p.loading {
+			// 待命/停止态引擎里没有装载对象，eng.Play 会空转——走完整
+			// 起播链，从界面进度续播（会话恢复的上次位置，stop 后是 0）。
+			resume := p.pos
+			p.mu.Unlock()
+			p.startCurrent(resume, true, "")
+			return
+		}
 		p.eng.Play()
 		p.playing = true
 	} else {
@@ -744,6 +781,7 @@ func (p *Player) PlayOrPause() {
 		p.playing = false
 	}
 	p.mu.Unlock()
+	p.sessionSaveSoon(true)
 	p.notifyChange()
 }
 
@@ -756,6 +794,7 @@ func (p *Player) Play() {
 		if len(p.queue) > 0 {
 			p.index = 0
 			p.mu.Unlock()
+			p.sessionSaveSoon(true)
 			p.notifyChange()
 			p.startCurrent(0, true, "")
 			return
@@ -763,15 +802,23 @@ func (p *Player) Play() {
 		p.mu.Unlock()
 		return
 	}
-	started := p.eng.Paused() || !p.playing
-	if started {
+	if p.eng.Paused() || !p.playing {
+		if p.stream == nil && !p.loading {
+			// 同 PlayOrPause：待命态（会话恢复后）走完整起播链续播，
+			// 别让 eng.Play 在空引擎上空转。
+			resume := p.pos
+			p.mu.Unlock()
+			p.startCurrent(resume, true, "")
+			return
+		}
 		p.eng.Play()
 		p.playing = true
+		p.mu.Unlock()
+		p.sessionSaveSoon(true)
+		p.notifyChange()
+		return
 	}
 	p.mu.Unlock()
-	if started {
-		p.notifyChange()
-	}
 }
 
 // Pause 暂停：只有真在播（含载入中）才动手。已暂停或未播放时不通知，
@@ -785,6 +832,7 @@ func (p *Player) Pause() {
 	}
 	p.mu.Unlock()
 	if paused {
+		p.sessionSaveSoon(true)
 		p.notifyChange()
 	}
 }
@@ -833,12 +881,28 @@ func (p *Player) Stream() *StreamInfo {
 	return p.stream
 }
 
-// SeekTo 按 0..1 比例跳转。位置由引擎回报，这里不再自行重锚定。
+// SeekTo 按 0..1 比例跳转。引擎装载了当前曲时交给引擎（位置由引擎回报，
+// 这里不再自行重锚定）；待命态（会话刚恢复、停止/播完）引擎里没有媒体，
+// seek 只挪界面进度，用户按播放时以该位置续播。
 func (p *Player) SeekTo(frac float64) {
-	p.mu.RLock()
+	p.mu.Lock()
 	dur := p.dur
-	p.mu.RUnlock()
+	if p.stream == nil && !p.loading {
+		if frac < 0 {
+			frac = 0
+		}
+		if frac > 1 {
+			frac = 1
+		}
+		p.pos = frac * dur
+		p.mu.Unlock()
+		p.sessionSaveSoon(true)
+		p.notifyChange()
+		return
+	}
+	p.mu.Unlock()
 	p.eng.SeekTo(frac, dur)
+	p.sessionSaveSoon(true)
 	p.notifyChange()
 }
 
@@ -1316,6 +1380,9 @@ func (p *Player) tick() {
 	loading := p.loading
 	p.mu.Unlock()
 
+	// 进度节流落盘：切歌或跨 5 秒才真写，退出时另有 Close 兜底。
+	p.sessionTickSave()
+
 	// 加载中不重复触发自动切歌：eof/atEnd 是上一首的残留状态——mpv 的
 	// end-file 已置 eof=true，但 startCurrent 的 goroutine 还在做 API
 	// 解析、尚未调 OpenURL 清除它。每 200ms 的 tick 会反复误判为播完，
@@ -1373,7 +1440,19 @@ func (p *Player) Muted() bool {
 }
 
 // Close 终止播放引擎。应用退出时调用，确保 mpv 子进程不成为孤儿。
+//
+// 退出顺带把播放会话落盘：先停掉未到期的防抖计时器，再同步写一次——必须赶
+// 在 mpv 关闭之前 flush，实时进度要从还活着的引擎里取。
 func (p *Player) Close() {
+	p.saveMu.Lock()
+	if p.saveTimer != nil {
+		p.saveTimer.Stop()
+		p.saveTimer = nil
+	}
+	p.saveForce = false
+	p.saveMu.Unlock()
+	p.sessionSave(true)
+
 	p.mu.Lock()
 	p.playing = false
 	p.loading = false
@@ -1385,7 +1464,7 @@ func (p *Player) Close() {
 	p.notifyChange()
 }
 
-// Boot 载入持久化音量、挂上引擎观察回调并启动心跳。
+// Boot 载入持久化音量、恢复上次会话（队列与进度）、挂上引擎观察回调并启动心跳。
 func (p *Player) Boot() {
 	p.mu.Lock()
 	p.vol = p.conf.Float("Playing.Volume", 0.8)
@@ -1395,6 +1474,8 @@ func (p *Player) Boot() {
 		p.eng.SetVolume(p.vol)
 	}
 	p.mu.Unlock()
+	// 恢复退出前的播放列表与进度：只「就位」，不自动起播（见 session.go）。
+	p.restoreSession()
 	// mpv 属性变化即刻通知，让进度条/歌词不等到下一个心跳才动
 	p.eng.OnObserve(p.notifyChange)
 	p.StartTicker()
