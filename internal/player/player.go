@@ -747,6 +747,48 @@ func (p *Player) PlayOrPause() {
 	p.notifyChange()
 }
 
+// Play 播放：暂停中直接续播，没有当前曲（停止态/首次）则从队列第一首起播。
+// 与 PlayOrPause 的区别是它只朝「播」的方向走——已在播时什么都不做，
+// 不会被媒体键或「播放」快捷键误暂停。
+func (p *Player) Play() {
+	p.mu.Lock()
+	if p.index < 0 || p.index >= len(p.queue) {
+		if len(p.queue) > 0 {
+			p.index = 0
+			p.mu.Unlock()
+			p.notifyChange()
+			p.startCurrent(0, true, "")
+			return
+		}
+		p.mu.Unlock()
+		return
+	}
+	started := p.eng.Paused() || !p.playing
+	if started {
+		p.eng.Play()
+		p.playing = true
+	}
+	p.mu.Unlock()
+	if started {
+		p.notifyChange()
+	}
+}
+
+// Pause 暂停：只有真在播（含载入中）才动手。已暂停或未播放时不通知，
+// 免得「暂停」键按下去白白刷一次托盘/媒体中心。
+func (p *Player) Pause() {
+	p.mu.Lock()
+	paused := p.index >= 0 && p.index < len(p.queue) && p.playing && !p.eng.Paused()
+	if paused {
+		p.eng.Pause()
+		p.playing = false
+	}
+	p.mu.Unlock()
+	if paused {
+		p.notifyChange()
+	}
+}
+
 func (p *Player) Playing() bool {
 	p.mu.RLock()
 	defer p.mu.RUnlock()

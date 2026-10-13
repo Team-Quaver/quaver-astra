@@ -75,6 +75,7 @@ mpv 定位优先级与 Quaver Music 本体（`ui/electron/audio/dist/bins.js`）
 - 我喜欢 / 每日 30 首 / 猜你喜欢（换一批）
 - **收藏的歌单**：我收藏的他人歌单网格、悬停播放、加载更多（登录态变化时自动重取）
 - 登录：QQ / 微信 / 手机三通道扫码（自动生成 + 轮询），凭证加密保存、重启自动恢复
+- **个人中心**（点侧栏头像进入）：昵称、UID、当前档位，以及超级会员 / 豪华绿钻 / 绿钻**各自的到期时间**——三个档位是独立权益，到期日不同就不合并成一行；上游只给标志不给时间时如实写「未提供到期时间」。退出登录与「清除已保存的凭证」也收在这一页（原先埋在「设置 → 关于」最底下，点头像只会跳设置的人根本找不到）
 - 正在播放页：模糊封面底、**逐字（QRC）歌词**——逐字卡拉OK 高亮，无逐字时间轴时自动回退行级 + 翻译（点击跳转、跟随高亮）、音质胶囊
 - 播放条：整条拖拽 seek、音量弹层、循环模式、随机播放（每日一套确定性顺序）、音质菜单（会话级切换）、红心收藏、队列面板（可拖拽排序）
 - 播放队列：插队播放 / 加入队列 / 删除 / 清空；双击歌曲即播
@@ -85,6 +86,7 @@ mpv 定位优先级与 Quaver Music 本体（`ui/electron/audio/dist/bins.js`）
 - 侧栏可收起；收起态底部按钮纵向排列；侧栏几何有布局测试守护（图标列共线、行距均匀）；纯图标按钮均有 tooltip
 - 系统托盘：对齐 Quaver Music 的曲目行、上一曲 / 播放暂停 / 下一曲、循环与随机、显示/隐藏、退出；单击/双击合并为一次显示/隐藏，右键弹出菜单；窗口关闭按钮可收进托盘
 - **系统媒体控制中心**：Linux 注册 MPRIS2（`org.mpris.MediaPlayer2.quaver-astra`，桌面键盘媒体键、播放状态/封面/进度/循环模式双向同步），Windows 接入 SMTC（系统媒体浮层、媒体键、封面缩略图与进度时间轴，支持系统侧循环/随机切换），macOS 接入 Now Playing（`MPNowPlayingInfoCenter` + `MPRemoteCommandCenter`，控制中心/菜单栏正在播放卡片：标题/歌手/专辑/封面与进度，播放/暂停/上一首/下一首/拖动进度回传）。macOS 的系统投影只对带 `CFBundleIdentifier` 的应用生效，裸跑可能看不到，打包 `.app` 后正常；架构见 `internal/smedia/`
+- **快捷键**（设置 → 快捷键）：全局与窗口内两套绑定，动作是播放/暂停、播放、暂停、上一曲、下一曲。全局默认绑媒体键（Windows `RegisterHotKey`、macOS Carbon 热键、Linux X11 由 Astra 抓键、Wayland 经 XDG 桌面门户 `org.freedesktop.portal.GlobalShortcuts` 由桌面代持——门户要求按安装包运行，让桌面读到 Quaver Astra 的 desktop entry，且可能请你确认或改键）；窗口内默认 `Ctrl+Alt+P` / `Ctrl+Alt+,` / `Ctrl+Alt+.`，点绑定格再按下组合键即改，Esc 取消，小叉解绑。两个作用域同键时全局优先（按键被系统截走，窗口收不到），媒体键只能作全局绑定；注册失败或与别的绑定撞车都会在设置页标出来。
 - 播放音频时阻止系统睡眠（暂停/停止即恢复，不阻止熄屏）；正常退出、TERM/Ctrl+C 与 native SIGABRT 清理时都会终止 mpv；Linux 另设父进程死亡信号和进程组兜底，避免异常崩溃留下 mpv
 - **版本号**：「设置 → 关于」标题旁显示当前版本（优先取构建注入值，本地 `go build` 时回落到工作区的 git tag）
 - **自动更新**：「设置 → 关于」可切换**稳定版**（GitHub latest API，最新正式 Release）与**快照版**（最近一次 push 的 `snapshot-*` 预发布）两个渠道，启动时自动检查（可关）。
@@ -95,6 +97,7 @@ mpv 定位优先级与 Quaver Music 本体（`ui/electron/audio/dist/bins.js`）
 ```
 main.go                 启动：内嵌后端 → 配置 → MyGo 窗口
 internal/backend/       quaver-server 进程内嵌 + HTTP 客户端（信封 {code,msg,data}）
+                        vip.go = 会员权益契约：档位顺序 + 只认各档 *_end 的到期解析
 internal/player/        播放器状态机（队列/模式/随机/回退链/歌词/收藏），与 UI 解耦
                         lyric.go = 行级 LRC 解析；qrc.go = 逐字 QRC 解码与解析
 internal/audio/         mpv 子进程 + JSON IPC 引擎
@@ -105,7 +108,9 @@ internal/smedia/        系统媒体控制中心投影（Linux MPRIS / Windows S
                         smtc_windows.go     = WinRT SMTC（裸 vtable 调用 + 纯 Go COM 事件对象，无 cgo）
                         nowplaying_darwin.go = MediaPlayer.framework 的 MPNowPlayingInfoCenter/MPRemoteCommandCenter
                         objc_darwin.go      = 无 cgo 的 Objective-C 桥（purego 动态发消息 + 主队列投递）
-internal/appui/         MyGo 原生 UI：外壳、侧栏、路由页、播放条、正在播放、队列
+internal/appui/         MyGo 原生 UI：外壳、侧栏、路由页、播放条、正在播放、队列、个人中心、快捷键
+                        profile.go = 会员档位与各自到期时间的展示（时间口径见 backend/vip.go）
+                        hotkeys.go = 全局（mygo.GlobalShortcut）与窗口内（ui.Context.Shortcut）两套绑定
                         theme.go = 调色板与明暗判定；motion.go = 动效语言（缓动/错峰入场/逐字绘制）
 internal/colorprobe/    封面主色提取 + 模糊底图
 internal/vault/         登录凭证加密持久化（ChaCha20-Poly1305 + 随机主密钥）
@@ -132,7 +137,7 @@ player.startCurrent
 
 ## 与主项目（Quaver Music）的差异
 
-Astra 缺少以下内容：搜索联想、无歌单处理功能、无桌面快捷键。
+Astra 缺少以下内容：搜索联想、无歌单处理功能。桌面快捷键已实现：全局 + 窗口内两套绑定，见「设置 → 快捷键」。
 
 **逐字歌词**：请求歌词时带 `qrc=1`，上游把 QRC 明文塞在同一个 `lyric` 字段里（XML 信封形态，Typhoeus-go 在服务端解密）。解析在 `internal/player/qrc.go`；服务端万一解密失败、原样透传密文，再由 [jixunmoe-go/qrc](https://github.com/jixunmoe-go/qrc) 在本地兜底解一层。
 

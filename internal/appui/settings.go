@@ -32,6 +32,16 @@ var accentModeNames = []struct {
 	{"custom", "自定义"},
 }
 
+// 设置页四个 tab 的下标。测试与快捷键录制状态判定都按名字取，
+// 不要再散一遍魔法数字（多一个 tab 就把「关于」指错页）。
+const (
+	appearanceTab = iota
+	playbackTab
+	// hotkeysTab 是「设置 → 快捷键」，见 hotkeys_settings.go。
+	hotkeysTab
+	aboutTab
+)
+
 func (a *App) settingsView(c *ui.Context) {
 	st := &a.settings
 	t := c.Theme()
@@ -47,12 +57,14 @@ func (a *App) settingsView(c *ui.Context) {
 
 	a.pageEnter(c, ui.Column(c).Fill().Padding(20, 24, 24, 24).Gap(14)).Children(func() {
 		ui.Text(c, "设置").FontSize(fz(24)).FontWeight(800)
-		ui.Tabs(c, &st.tab, "外观", "播放", "关于")
+		ui.Tabs(c, &st.tab, "外观", "播放", "快捷键", "关于")
 		switch st.tab {
-		case 0:
+		case appearanceTab:
 			a.settingsAppearance(c, t)
-		case 1:
+		case playbackTab:
 			a.settingsPlayback(c, t)
+		case hotkeysTab:
+			a.hotkeysSettings(c, t)
 		default:
 			a.settingsAbout(c, t)
 		}
@@ -337,23 +349,8 @@ func (a *App) settingsAbout(c *ui.Context, t *ui.Theme) {
 
 		a.settingsUpdate(c, t)
 
-		ui.Divider(c)
-
-		ui.Row(c).Gap(8).Children(func() {
-			if a.PL.LoggedIn() {
-				if ui.Button(c, "退出登录").Clicked() {
-					go func() {
-						a.withAPILimit(func() { _ = a.API.Logout() })
-						a.update(func() { a.PL.RefreshUser() })
-					}()
-				}
-			}
-			if a.Vault != nil && a.Vault.HasSaved() {
-				if ui.Button(c, "清除已保存的凭证").Clicked() {
-					_ = a.Vault.Clear()
-				}
-			}
-		})
+		// 账号相关动作（退出登录、清除凭证）不在这里：它们属于「个人中心」，
+		// 从侧栏头像进去。关于页只讲这个应用本身与更新。
 	})
 }
 

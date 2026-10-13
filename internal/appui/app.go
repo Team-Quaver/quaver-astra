@@ -76,6 +76,11 @@ type App struct {
 	npBlurKey string
 	npBlurAt  time.Time
 
+	// splashAt/splashDone 是启动画面的时钟：Attach 时起算，淡出结束置
+	// Done，此后不再建层。splashAt 零值（测试直构 App）= 不播，见 splash.go。
+	splashAt   time.Time
+	splashDone bool
+
 	npList       ui.ListState // 正在播放页歌词列表
 	queueList    ui.ListState // 播放队列列表
 	reproCloseAt time.Time
@@ -83,6 +88,10 @@ type App struct {
 	// media 是系统媒体控制中心会话（Linux MPRIS / Windows SMTC），
 	// 在 New 建立会话，Attach 时补窗口句柄，Close 时注销。
 	media smedia.Controller
+	// hotkeys 是快捷键运行态：全局注册（mygo.GlobalShortcut）与窗口内
+	// 轮询（ui.Context.Shortcut）共用一套动作，见 hotkeys.go。
+	// 零值可用：测试直构 App 不碰注册面。
+	hotkeys hotkeyState
 	// 托盘与应用级资源。Close 幂等：OnQuit 与 main 的 defer 都会走一次。
 	tray        *mygo.Tray
 	trayItems   *trayMenu
@@ -103,6 +112,7 @@ type App struct {
 	playlistRec []int64
 	search      searchState
 	login       loginState
+	profile     profileState
 	settings    settingsState
 	singers     map[string]*singerState // 歌手页（按 mid 缓存）
 	singerRec   []string
@@ -141,11 +151,13 @@ func New(base string, store *conf.Store, v *vault.Vault, version string) *App {
 	a.initUpdate()
 	mygo.App.OnBeforeQuit(func(*mygo.QuitEvent) { a.quitStarted.Store(true) })
 	pl.OnNotify(func() {
-		// 登录态变化时，收藏的歌单依赖登录态，缓存要作废重来。
-		// （player 不知道 appui 的页面状态，所以在 App 层做。）
+		// 登录态变化时，收藏的歌单与个人中心都依赖登录态，缓存要作废重来。
+		// 尤其后者：换账号后若还挂着上一位账号的档位和到期时间，等于把别人的
+		// 会员信息展示在你面前。（player 不知道 appui 的页面状态，所以在 App 层做。）
 		if a.PL.LoggedIn() != a.wasLoggedIn {
 			a.wasLoggedIn = a.PL.LoggedIn()
 			a.favLists = favListsState{}
+			a.profile = profileState{}
 		}
 		a.syncSleep()
 		a.syncTray()
@@ -162,6 +174,7 @@ func (a *App) Close() {
 		if a.media != nil {
 			a.media.Close()
 		}
+		a.closeHotkeys()
 		a.sleep.close()
 		a.PL.Close()
 		if a.Covers != nil {
@@ -204,9 +217,14 @@ func (a *App) Attach(win *mygo.Window) {
 		e.PreventDefault()
 		a.closeWindow()
 	})
+	// 启动画面从窗口就绪起算（与帧时钟同为 wall clock，首帧即 0.00s）。
+	a.splashAt = time.Now()
 	a.PL.Boot()
 	a.PL.RefreshUser()
 	a.setupTray()
+	// 全局快捷键必须等应用就绪才能注册（MyGo 在 App.Run 之前会直接 panic），
+	// Attach 正好在 WhenReady 之后。
+	a.syncHotkeys()
 	// SMTC 需要窗口句柄；MPRIS 忽略此调用。
 	if a.media != nil {
 		a.media.AttachWindow(win.NativeHandle())
@@ -221,6 +239,14 @@ func (a *App) View(c *ui.Context) {
 	c.SetTheme(t)
 	// 每帧推进路由入场时钟（页面里没有入场区块时也要走，否则路径变化会被漏掉）。
 	a.routeEnter(c)
+
+	// 录制态要有尽头：离开「设置 → 快捷键」这一页、或者按下新键之前超时，
+	// 都要收回去——录制中会整段压住窗口内快捷键，放着不管等于把它们全关掉。
+	recording := a.expireRecording(c)
+	// 窗口内快捷键（全局那条由系统直接回调，不经过这里）。
+	if !recording {
+		a.localHotkeys(c)
+	}
 
 	if a.npOpen && c.Shortcut(0, ui.KeyEscape) {
 		a.npOpen = false
@@ -247,6 +273,14 @@ func (a *App) View(c *ui.Context) {
 	if a.pendingToast != "" {
 		c.Toast(a.pendingToast)
 		a.pendingToast = ""
+	}
+
+	// 启动画面盖在最上，播完自动撤层；Escape 跳过剩余动画（见 splash.go）。
+	if a.splashShow(c) {
+		if c.Shortcut(0, ui.KeyEscape) {
+			a.splashAt = c.Now().Add(-splashFadeDelay)
+		}
+		a.splash(c)
 	}
 }
 
@@ -303,6 +337,9 @@ func (a *App) routeArea(c *ui.Context) {
 		case r.Match("/settings"):
 			r.Title("设置")
 			a.settingsView(c)
+		case r.Match("/profile"):
+			r.Title("个人中心")
+			a.profileView(c)
 		default:
 			ui.Text(c, "页面不存在").TextColor(c.Theme().TextMuted).Padding(24)
 		}
@@ -406,8 +443,13 @@ func (a *App) sidebar(c *ui.Context) {
 					})
 				}
 			})
+			// 头像进「个人中心」：档位、各自到期时间、退出登录都在那一页。
+			// 设置仍由底部的齿轮进入——旧写法把两件事挤在一个入口，想退出
+			// 登录的人根本不知道按钮在「设置 → 关于」最底下。
+			userBtn.Tooltip("个人中心").Label("个人中心")
+			a.styleSideBtn(userBtn, a.Router.Path() == "/profile", c)
 			if userBtn.Clicked() {
-				a.Router.Push("/settings")
+				a.Router.Push("/profile")
 			}
 		} else {
 			userBtn.Children(func() {

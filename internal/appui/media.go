@@ -76,19 +76,13 @@ func (a *App) syncMedia() {
 func (a *App) mediaCommands() *smedia.Commands {
 	return &smedia.Commands{
 		PlayPause: a.PL.PlayOrPause,
-		Play: func() {
-			if !a.PL.Playing() {
-				a.PL.PlayOrPause()
-			}
-		},
-		Pause: func() {
-			if a.PL.Playing() {
-				a.PL.PlayOrPause()
-			}
-		},
-		Stop: a.PL.ClearQueue,
-		Next: func() { a.PL.Next(false) },
-		Prev: a.PL.Prev,
+		// Play/Pause 有独立入口后不必再拿 toggle 绕一圈：toggle 在
+		// 「停止但没有当前曲」时会起播，那是 PlayPause 的语义，不是 Pause 的。
+		Play:  a.PL.Play,
+		Pause: a.PL.Pause,
+		Stop:  a.PL.ClearQueue,
+		Next:  func() { a.PL.Next(false) },
+		Prev:  a.PL.Prev,
 		Seek: func(delta float64) {
 			dur := a.PL.Duration()
 			if dur <= 0 {

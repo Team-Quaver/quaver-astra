@@ -60,7 +60,7 @@ func TestUpdateStatusText(t *testing.T) {
 // 且当前无可用更新时不显示。
 func TestSettingsUpdateShowsInstall(t *testing.T) {
 	app, tester := sideTestApp(t, false)
-	app.settings.tab = 2
+	app.settings.tab = aboutTab
 	app.Version = "1.4.0"
 	app.Upd = update.NewClient()
 	app.upd = updateState{
@@ -85,7 +85,7 @@ func TestSettingsUpdateShowsInstall(t *testing.T) {
 // 「打开发行页」，不做原地替换。
 func TestSettingsUpdateSystemPackageOpensRelease(t *testing.T) {
 	app, tester := sideTestApp(t, false)
-	app.settings.tab = 2
+	app.settings.tab = aboutTab
 	app.Upd = update.NewClient()
 	app.upd = updateState{
 		form:     update.FormSystemPackage,
@@ -104,7 +104,7 @@ func TestSettingsUpdateSystemPackageOpensRelease(t *testing.T) {
 // TestSettingsAboutShowsVersion 断言「关于」页标题旁显示当前版本号。
 func TestSettingsAboutShowsVersion(t *testing.T) {
 	app, tester := sideTestApp(t, false)
-	app.settings.tab = 2
+	app.settings.tab = aboutTab
 	app.Version = "1.2.3"
 	tester.Frame()
 	if !tester.HasText("Quaver Astra（1.2.3）") && !tester.HasText("（1.2.3）") {

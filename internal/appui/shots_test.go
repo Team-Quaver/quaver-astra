@@ -1,6 +1,7 @@
 package appui
 
 import (
+	"errors"
 	"image/color"
 	"image/png"
 	"os"
@@ -42,8 +43,14 @@ func TestUIShots(t *testing.T) {
 
 	// 设置 - 关于（产品图标在介绍文案左侧）
 	about, aboutTester := sideTestApp(t, false)
-	about.settings.tab = 2
+	about.settings.tab = aboutTab
 	shot(aboutTester, "settings-about.png")
+
+	// 个人中心（侧栏头像的落点：档位、各自的到期时间、退出登录）
+	_, profTester, _ := profileApp(t, `{"svip":1,"svip_start":"2024-06-01","svip_end":"2027-01-01",`+
+		`"identity":{"vip":1,"vip_end":"2026-10-24","huge_vip":0,"level":12}}`)
+	waitText(t, profTester, "到期（还剩")
+	shot(profTester, "profile.png")
 
 	// 正在播放页（歌词跟随态）
 	base, baseTester := npTestApp(t, color.RGBA{R: 96, G: 148, B: 210, A: 255})
@@ -69,4 +76,26 @@ func TestUIShots(t *testing.T) {
 	}
 	time.Sleep(250 * time.Millisecond)
 	shot(tester2, "np-qinfo.png")
+
+	// 设置 - 快捷键：一格处于录制态，绑定态与录制态同框
+	hk, _, _ := hotkeyApp(t)
+	hk.settings.tab = hotkeysTab
+	hk.syncHotkeys()
+	hkTester := ui.NewTester(hk.View, 1280, 900)
+	hkTester.Frame()
+	time.Sleep(500 * time.Millisecond)
+	hk.hotkeys.record = &hotkeyTarget{scope: scopeLocal, action: hkNext}
+	shot(hkTester, "settings-hotkeys.png")
+
+	// 设置 - 快捷键（问题态）：同键冲突 + 注册被拒，看提示会不会把表格挤歪
+	hk2, reg2, _ := hotkeyApp(t)
+	hk2.settings.tab = hotkeysTab
+	hk2.Conf.Set(hotkeyConfKey(scopeGlobal, "PlayPause"), "Ctrl+Alt+P")
+	hk2.Conf.Set(hotkeyConfKey(scopeLocal, "PlayPause"), "Ctrl+Alt+P")
+	reg2.fail["Ctrl+Alt+P"] = errors.New("mygo: Ctrl+Alt+P is already a global shortcut of another app")
+	hk2.syncHotkeys()
+	hk2Tester := ui.NewTester(hk2.View, 1280, 900)
+	hk2Tester.Frame()
+	time.Sleep(500 * time.Millisecond)
+	shot(hk2Tester, "settings-hotkeys-notes.png")
 }

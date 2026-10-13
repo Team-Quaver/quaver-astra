@@ -27,7 +27,7 @@ func TestAppIconAssetsAreSquare(t *testing.T) {
 // 必须位于标题/简介的左侧，而不是只显示两行文字。
 func TestSettingsAboutShowsAppIconLeftOfCopy(t *testing.T) {
 	app, tester := sideTestApp(t, false)
-	app.settings.tab = 2
+	app.settings.tab = aboutTab
 	tester.Frame()
 
 	title := mustFind(t, tester, "Quaver Astra")

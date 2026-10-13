@@ -99,9 +99,9 @@ func (a *App) playerBar(c *ui.Context, t *ui.Theme) {
 
 		// 中：上一首 / 播放 / 下一首
 		ui.Spacer(c)
-		a.iconBtn(c, "prev", "上一首", 20, func() { a.PL.Prev() })
+		a.iconBtn(c, "prev", "上一首"+a.hotkeyTip(hkPrev), 20, func() { a.PL.Prev() })
 		a.playBtn(c, t)
-		a.iconBtn(c, "next", "下一首", 20, func() { a.PL.Next(false) })
+		a.iconBtn(c, "next", "下一首"+a.hotkeyTip(hkNext), 20, func() { a.PL.Next(false) })
 		ui.Spacer(c)
 
 		// 右：时间 / 音量 / 模式 / 随机 / 音质 / 红心 / 队列
@@ -151,6 +151,8 @@ func clampF32(v float32) float32 {
 
 func (a *App) playBtn(c *ui.Context, t *ui.Theme) {
 	btn := ui.ButtonBase(c).Size(40, 40).Radius(20).Center().Background(t.Text)
+	// tooltip 里带上快捷键：播放条是纯图标按钮，用户得知道能不能用键盘控制。
+	btn.Tooltip("播放/暂停" + a.hotkeyTip(hkPlayPause))
 	// 悬停压暗（主项目 .pb-play 是 transform: scale，MyGo 的元素没有缩放，
 	// 用透明度做同一件事），走 Animate 让它是缓动的而不是硬切。
 	o := float32(1)
