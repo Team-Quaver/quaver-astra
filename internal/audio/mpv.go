@@ -54,10 +54,42 @@ type Engine struct {
 	idle     bool // mpv 空闲（无播放）
 	obsPause bool
 	stalled  bool   // paused-for-cache：缓冲欠载，mpv 正在等待数据
-	loadErr  string // 最近一次载入失败的原因（空 = 正常）
+	loadErr  string // 本次载入失败的原因（空 = 正常）
+
+	// 载入代次：mpv 的 loadfile 是异步的，命令下发之后 start-file /
+	// file-loaded / end-file 与命令回包才陆续到达。玩家在等不到结果时会换档
+	// 重发 OpenURL，此时上一轮的尾巴可能后到——最坏的情况是「上一档的
+	// end-file(error)」被当成「这一档刚开始就失败」，好档就此被判成坏档，
+	// 整条回退链一起误判，最后自动跳到下一曲。所以每次 OpenURL 递增
+	// loadGen，事件与回包都盖上当时的代次，读取时只认当前代次。
+	loadGen      uint64 // 每次 OpenURL 递增
+	startGen     uint64 // 收到 start-file 的代次
+	loadedGen    uint64 // 收到 file-loaded 的代次
+	loadErrGen   uint64 // loadErr 归属的代次
+	loadErrFatal bool   // loadErr 与档位无关（命令被拒/引擎没了）
+	loadReq      int64  // 本次 loadfile 命令的 request_id
+	loadRetried  uint64 // 已换过参数布局重发的代次
+	lastLoad     loadCmd
+
+	// mpv 版本决定 loadfile 的参数布局（见 loadfileWantsIndex）
+	mpvVersion    string
+	loadfileIndex bool
+
+	// readTimeout 是 socket 单次读的兜底超时：默认 30s（兼作空闲连接的
+	// keepalive），握手期的探测收紧——mpv 在无声卡的环境里可能迟迟不回应，
+	// 不能让应用启动跟着一起卡住。
+	readTimeout time.Duration
 
 	obs   func()
 	obsCh chan struct{}
+}
+
+// loadCmd 是一次 loadfile 的参数快照。留底是为了在 mpv 拒绝当前的参数布局时
+// 原样换一种布局重发（自愈路径），不必再走一遍解析。
+type loadCmd struct {
+	url   string
+	flags string
+	opts  map[string]any
 }
 
 // ipcConn 是引擎与 mpv 子进程之间的双向通道。Unix/macOS 上是 AF_UNIX
@@ -82,12 +114,20 @@ type ipcResp struct {
 	// property-change 的 id 字段无用，占位保持字段顺序稳定
 	PropID    any   `json:"id"`
 	RequestID int64 `json:"request_id"`
+	// end-file(reason=error) 里的具体失败原因
+	FileError string `json:"file_error"`
 }
+
+// ipcReadTimeout 是 IPC socket 单次读的默认超时。
+const ipcReadTimeout = 30 * time.Second
 
 // New 启动 mpv 子进程并完成 IPC 握手。失败时返回哑引擎：所有操作退化为
 // 返回错误，调用方无需区分「无音频设备」与「无 mpv」。
 func New() *Engine {
-	e := &Engine{volume: 0.8, obsCh: make(chan struct{}, 1), done: make(chan struct{})}
+	e := &Engine{
+		volume: 0.8, obsCh: make(chan struct{}, 1), done: make(chan struct{}),
+		readTimeout: ipcReadTimeout,
+	}
 	if err := e.spawn(); err != nil {
 		e.closed = true
 		e.markDone()
@@ -232,9 +272,120 @@ func (e *Engine) spawn() error {
 		}
 	}
 
+	// 版本探测必须在观察协程起来之前做：那时 socket 上只有这一个读者。
+	// mpv ≥ 0.38 的 loadfile 多了一个插入 index 参数（见 loadfileWantsIndex），
+	// 布局猜错的代价是「带进度的起播永远失败」，所以这里认清楚再开录。
+	if ver, ok := e.getProperty("mpv-version"); ok {
+		e.mpvVersion = ver
+		e.loadfileIndex = loadfileWantsIndex(ver)
+	} else {
+		fmt.Fprintln(os.Stderr, "audio: 读不到 mpv-version，loadfile 参数布局按旧版试探（被拒时会自动改用新布局）")
+	}
+
 	// 握手完成，此刻才让观察协程接管 socket。
 	go e.observe()
 	return nil
+}
+
+// loadfileWantsIndex 判断这台 mpv 的 loadfile 是否需要「插入 index」占位参数。
+//
+// mpv 0.38.0 把手册里的签名从 loadfile <url> [<flags> [<options>]] 改成
+// loadfile <url> [<flags> [<index> [<options>]]]，并且明说这会打断所有把
+// options 放在第三位的旧调用：参数类型对不上时 mpv 直接回 invalid parameter，
+// 载入根本没有开始。本项目只有「带进度起播」（恢复上次会话的进度、播放中途
+// 换音质）会发 options，症状就是「打开后播放卡在加载，然后自己跳下一曲」。
+func loadfileWantsIndex(version string) bool {
+	major, minor, ok := parseMPVVersion(version)
+	if !ok {
+		// 认不出版本就按 0.38 之前的布局发；真被拒了 applyReply 会换布局重发。
+		return false
+	}
+	return major > 0 || minor >= 38
+}
+
+// parseMPVVersion 从 "mpv v0.41.0" / "mpv 0.38.0-27-gabcdef" 取主次版本。
+func parseMPVVersion(s string) (major, minor int, ok bool) {
+	nums := make([]int, 0, 2)
+	digits := ""
+	for _, r := range s {
+		if r >= '0' && r <= '9' {
+			digits += string(r)
+			continue
+		}
+		if digits != "" {
+			n, err := strconv.Atoi(digits)
+			if err != nil {
+				return 0, 0, false
+			}
+			nums = append(nums, n)
+			digits = ""
+			if len(nums) == 2 {
+				break
+			}
+		}
+	}
+	if digits != "" && len(nums) < 2 {
+		if n, err := strconv.Atoi(digits); err == nil {
+			nums = append(nums, n)
+		}
+	}
+	if len(nums) < 2 {
+		return 0, 0, false
+	}
+	return nums[0], nums[1], true
+}
+
+// sendLoadfile 按当前 mpv 的参数布局下发 loadfile，返回命令 id（0 = 没发出去）。
+func (e *Engine) sendLoadfile(c loadCmd) int64 {
+	return e.commandQuiet(loadfileArgs(c, e.loadfileIndex)...)
+}
+
+// loadfileArgs 拼 loadfile 的参数表。纯函数，参数布局由 wantIndex 决定
+// （见 loadfileWantsIndex），单测不需要真 mpv。
+func loadfileArgs(c loadCmd, wantIndex bool) []any {
+	switch {
+	case len(c.opts) == 0:
+		// 不需要 options 时干脆不发：少一个参数就少一种被拒的可能。
+		return []any{"loadfile", c.url, c.flags}
+	case wantIndex:
+		// index 位对 replace 没有意义，-1 是手册指定的占位。
+		return []any{"loadfile", c.url, c.flags, -1, c.opts}
+	default:
+		return []any{"loadfile", c.url, c.flags, c.opts}
+	}
+}
+
+// getProperty 同步读一个字符串属性。只在 spawn 握手阶段调用：那时观察协程
+// 还没接管 socket，读这一条不会和任何人抢字节。超时收紧到 2s——mpv 不回应
+// 时我们按「认不出版本」处理（loadfile 布局先发旧形态，被拒再自愈），
+// 而不是把启动卡在这儿。
+func (e *Engine) getProperty(name string) (string, bool) {
+	defer e.withReadTimeout(2 * time.Second)()
+	id, line, err := e.encodeCmd(nil, []any{"get_property", name})
+	if err != nil {
+		return "", false
+	}
+	if err := e.write(line); err != nil {
+		return "", false
+	}
+	for {
+		resp, err := e.readResp()
+		if err != nil {
+			return "", false
+		}
+		if resp.RequestID == id {
+			if resp.Error != "" && resp.Error != "success" {
+				return "", false
+			}
+			s, ok := resp.Data.(string)
+			return s, ok
+		}
+		if resp.Event != "" {
+			e.applyEvent(resp)
+		} else {
+			e.applyReply(resp)
+		}
+	}
 }
 
 // command 发一条 IPC 命令并等它的响应。
@@ -253,19 +404,24 @@ func (e *Engine) command(args ...any) error {
 //
 // 用于 seek / 音量这类高频命令——同步等响应会让每帧都阻塞在socket 上，
 // 而 mpv 的 seek 可能因网络缓冲耗时。async 让 mpv 在后台执行。
-func (e *Engine) commandQuiet(args ...any) {
-	_, line, err := e.encodeCmd(nil, args)
+func (e *Engine) commandQuiet(args ...any) int64 {
+	id, line, err := e.encodeCmd(nil, args)
 	if err != nil {
-		return
+		return 0
 	}
 	msg := map[string]any{}
 	if err := json.Unmarshal(line, &msg); err != nil {
-		return
+		return 0
 	}
 	msg["async"] = true
-	if b, err := json.Marshal(msg); err == nil {
-		_ = e.write(append(b, '\n'))
+	b, err := json.Marshal(msg)
+	if err != nil {
+		return 0
 	}
+	if err := e.write(append(b, '\n')); err != nil {
+		return 0
+	}
+	return id
 }
 
 // encodeCmd 把命令编码成一行 IPC JSON（顶层对象形式）。
@@ -322,6 +478,10 @@ func (e *Engine) waitReply(id int64) error {
 		}
 		if resp.Event != "" {
 			e.applyEvent(resp)
+		} else {
+			// 不是我们要的那条回包——但也可能是 loadfile 被拒的告警，
+			// 别让它从指缝里漏掉（载入命令被拒 = 播放永远不会开始）。
+			e.applyReply(resp)
 		}
 	}
 }
@@ -344,8 +504,8 @@ func (e *Engine) readResp() (*ipcResp, error) {
 	if conn == nil {
 		return nil, errors.New("mpv 未运行")
 	}
-	// 30s keepalive 既防死连接，也让这个超时可安全复用
-	_ = conn.SetReadDeadline(time.Now().Add(30 * time.Second))
+	// 默认 30s keepalive 既防死连接，也让这个超时可安全复用
+	_ = conn.SetReadDeadline(time.Now().Add(e.readTimeoutOrDefault()))
 	line, err := e.rd.ReadBytes('\n')
 	if err != nil {
 		return nil, err
@@ -368,6 +528,7 @@ func (e *Engine) observe() {
 			return
 		}
 		if resp.Event == "" {
+			e.applyReply(resp)
 			continue
 		}
 		e.applyEvent(resp)
@@ -408,24 +569,90 @@ func (e *Engine) applyEvent(resp *ipcResp) {
 				e.stalled, changed = b, true
 			}
 		}
+	case "start-file":
+		// mpv 开始打开这个文件（还保证不了成功）。给当前载入代次盖章：
+		// 之后的 file-loaded / end-file 才归属于本次载入。
+		e.startGen = e.loadGen
 	case "file-loaded":
-		e.eof, changed = false, true
-		e.loadErr = ""
-	case "end-file":
-		// mpv 在播放结束或载入失败时都推 end-file。带 error 原因的是载入
-		// 失败（网络 404、格式不支持等），要能让player 知道并降档重试。
-		if resp.Reason == "error" {
-			e.eof = true
-			e.loadErr = "mpv 载入失败"
-		} else {
-			e.eof, changed = true, true
+		// 载入成功的权威信号：demuxer 已经把文件打开并准备播了。
+		// 但必须先见到本次载入的 start-file——mpv 总是 start-file 在前、
+		// file-loaded 在后，所以「没盖章的这一条」只可能是上一档在我们
+		// 超时换档之后才迟到的成功，算到当前档头上就会张冠李戴（播的是
+		// 旧流的音频，界面却挂着新档的音质标签）。
+		if e.startGen != e.loadGen {
+			break
 		}
+		e.eof, e.loadErr, e.loadErrFatal = false, "", false
+		e.loadedGen = e.loadGen
+		changed = true
+	case "end-file":
+		// mpv 在播放结束或载入失败时都推 end-file。只认归属于本次载入的那
+		// 一条：换档时我们主动打断的上一档也会补一条（reason=stop/error），
+		// 把它算到刚下发的这一档头上，就会把好档判成坏档。
+		if e.startGen != e.loadGen {
+			break
+		}
+		e.eof = true
+		if resp.Reason == "error" {
+			// 带 error 原因的是载入失败（网络 404、格式不支持等），要能让
+			// player 知道并降档重试；file_error 里是具体原因，比笼统一句话有用。
+			msg := resp.FileError
+			if msg == "" {
+				msg = "mpv 载入失败"
+			}
+			e.loadErr, e.loadErrGen = msg, e.loadGen
+		}
+		changed = true
 	}
 	cb := e.obs
 	e.mu.Unlock()
 	if changed && cb != nil {
 		e.signal()
 	}
+}
+
+// applyReply 处理命令回包。异步命令没人等返回值，但「loadfile 被 mpv 拒了」
+// 必须接住：命令被拒意味着载入压根没开始，不接住就只能干等到超时，把整条
+// 降档链一路拖到超时，最后还表现为「自己跳下一曲」。
+func (e *Engine) applyReply(resp *ipcResp) {
+	e.mu.Lock()
+	if resp.RequestID == 0 || resp.RequestID != e.loadReq {
+		e.mu.Unlock()
+		return
+	}
+	if resp.Error == "" || resp.Error == "success" {
+		e.mu.Unlock()
+		return
+	}
+	if e.loadedGen == e.loadGen || e.loadErrGen == e.loadGen {
+		// 本次载入已经有下文了（成功或已报错），这条回包不再需要处理。
+		e.mu.Unlock()
+		return
+	}
+	if resp.Error == "invalid parameter" && e.loadRetried != e.loadGen {
+		// 十有八九是 loadfile 的参数布局不合这台 mpv 的口味（0.38 前后差一个
+		// index 占位）。换成另一种布局原样重发，并记住哪一种能用：版本探测
+		// 失配时这就是自愈路径，用户完全无感。
+		e.loadRetried = e.loadGen
+		e.loadfileIndex = !e.loadfileIndex
+		c := e.lastLoad
+		e.mu.Unlock()
+		if id := e.sendLoadfile(c); id != 0 {
+			e.mu.Lock()
+			if id > e.loadReq {
+				e.loadReq = id
+			}
+			e.mu.Unlock()
+		}
+		e.signal()
+		return
+	}
+	// 参数布局之外被拒（命令语法变了、mpv 已经不收命令了……）：与音质档位
+	// 无关，降档重试只是白白把整条队列跳完，报给玩家让人一眼看懂。
+	e.loadErr = "播放引擎拒绝了载入命令（" + resp.Error + "）"
+	e.loadErrGen, e.loadErrFatal = e.loadGen, true
+	e.mu.Unlock()
+	e.signal()
 }
 
 func (e *Engine) signal() {
@@ -436,6 +663,10 @@ func (e *Engine) signal() {
 }
 
 // OnObserve 注册状态变化回调（player 用它驱动 UI 刷新）。
+//
+// 目前只登记、不外发：mpv 的 time-pos 每十几毫秒就来一条，逐条回调等于
+// 逐条重绘。obsCh 是留给「合并后再回调」的口子，接上之前 UI 靠 player 的
+// 200ms 心跳刷新，进度与歌词最坏晚一个心跳，换来的是稳定的重绘开销。
 func (e *Engine) OnObserve(fn func()) {
 	e.mu.Lock()
 	e.obs = fn
@@ -460,6 +691,15 @@ func toFloat(v any) (float64, bool) {
 // OpenURL 让 mpv 播放 url，并从 startFrac（0..1）处开始。
 // url 通常是本地中继的音频流地址，mpv 自行发起 HTTP Range 与重试。
 func (e *Engine) OpenURL(url string, startFrac, dur float64, autoplay bool) error {
+	cmd := loadCmd{url: url, flags: "replace"}
+	if startFrac > 0 {
+		// 起点必须走 loadfile 的 options.start，不能载入后再 seek：mpv 会
+		// 忽略文件就绪前的 seek，而那还得在带缓冲的网络流上多打一次 Range。
+		if at := startFrac * dur; at > 0.5 {
+			cmd.opts = map[string]any{"start": strconv.FormatFloat(at, 'f', 3, 64)}
+		}
+	}
+
 	e.mu.Lock()
 	if e.closed || e.conn == nil {
 		e.mu.Unlock()
@@ -467,30 +707,24 @@ func (e *Engine) OpenURL(url string, startFrac, dur float64, autoplay bool) erro
 	}
 	e.wantPaused = !autoplay
 	e.eof, e.pos, e.dur = false, 0, 0
-	e.loadErr = ""
+	// 开新的一代：上一首的 start-file/file-loaded/end-file 与回包从此不作数。
+	e.loadGen++
+	e.startGen, e.loadedGen = 0, 0
+	e.loadErr, e.loadErrGen, e.loadErrFatal = "", 0, false
+	e.lastLoad = cmd
 	e.mu.Unlock()
 
-	// loadfile 异步下发（async:true）。
-	//
-	// 两个理由：
+	// loadfile 异步下发（async:true）。异步有两个理由：
 	//  1. mpv 的命令同步执行期间不服务 socket，loadfile 要等文件打开、
 	//     元数据读完才返回——网络流这一等可能好几秒，同步等必然顶到读超时。
-	//     异步后命令立刻返回，加载结果由事件告知。
-	//  2. 起点必须走 loadfile 的 options.start，不能载入后再 seek：mpv 会
-	//     忽略文件就绪前的 seek，而那还得在带缓冲的网络流上多打一次 Range。
-	opts := map[string]any{}
-	if startFrac > 0 {
-		if at := startFrac * dur; at > 0.5 {
-			opts["start"] = strconv.FormatFloat(at, 'f', 3, 64)
-		}
+	//     异步后命令立刻返回，加载结果由事件（file-loaded/end-file）告知。
+	//  2. 参数布局随 mpv 版本变（见 loadfileWantsIndex），所以发完还得盯着
+	//     回包：被拒时 applyReply 会换一种布局重发，而不是干等到超时。
+	if id := e.sendLoadfile(cmd); id != 0 {
+		e.mu.Lock()
+		e.loadReq = id
+		e.mu.Unlock()
 	}
-	var args []any
-	if len(opts) > 0 {
-		args = []any{"loadfile", url, "replace", opts}
-	} else {
-		args = []any{"loadfile", url, "replace"}
-	}
-	e.commandQuiet(args...)
 
 	if autoplay {
 		e.commandQuiet("set_property", "pause", false)
@@ -530,14 +764,37 @@ func (e *Engine) IsPlaying() bool {
 	return !e.wantPaused && !e.obsPause && !e.idle && !e.eof
 }
 
-// LoadError 返回最近一次载入失败的原因；空串表示当前无失败。
+// LoadError 返回本次载入失败的原因；空串表示当前无失败。
 //
 // player 的降档链靠它判断「这一档位 mpv 打不开」——异步载入拿不到同步
-// 错误返回，只能由 end-file(error) 事件回填。
+// 错误返回，只能由 end-file(error) 事件与命令回包回填。只认盖着当前
+// 代次的那一条，上一首失败留下的错误不会污染本次判断。
 func (e *Engine) LoadError() string {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	if e.loadErrGen != e.loadGen {
+		return ""
+	}
 	return e.loadErr
+}
+
+// LoadErrorFatal 报告 LoadError 是否与音质档位无关（命令被 mpv 拒了、进程
+// 已经没了）。这类错误换档重试只会把整条队列白白跳完，player 据此直接收手。
+func (e *Engine) LoadErrorFatal() bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.loadErrFatal && e.loadErrGen == e.loadGen
+}
+
+// Loaded 报告本次载入是否已经到达成形（mpv 的 file-loaded）。
+//
+// 这是「这一档到底能不能播」的权威信号。旧实现拿 duration>0 当成功，但时长
+// 要等 demuxer 读出元数据才有，而且有些不报时长的流永远拿不到——能播的流就
+// 这样被当成坏档，降档、超时、最后自动跳下一曲。
+func (e *Engine) Loaded() bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.loadGen != 0 && e.loadedGen == e.loadGen
 }
 
 // Ended 报告当前曲目是否自然播完。
@@ -592,6 +849,10 @@ func (e *Engine) SetVolume(v float64) {
 func (e *Engine) Stop() {
 	e.mu.Lock()
 	e.wantPaused, e.eof, e.pos, e.dur = false, false, 0, 0
+	// 停止同样翻页：之前那次载入的 Loaded/LoadError 不再代表现在。
+	e.loadGen++
+	e.startGen, e.loadedGen = 0, 0
+	e.loadErr, e.loadErrGen, e.loadErrFatal = "", 0, false
 	e.mu.Unlock()
 	e.commandQuiet("stop")
 }
@@ -631,6 +892,28 @@ func (e *Engine) Close() {
 		case <-time.After(2 * time.Second):
 			fmt.Fprintln(os.Stderr, "audio: 等待 mpv 退出超时")
 		}
+	}
+}
+
+func (e *Engine) readTimeoutOrDefault() time.Duration {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.readTimeout > 0 {
+		return e.readTimeout
+	}
+	return ipcReadTimeout
+}
+
+// withReadTimeout 临时改单次读超时（握手探测用），返回还原函数。
+func (e *Engine) withReadTimeout(d time.Duration) func() {
+	e.mu.Lock()
+	prev := e.readTimeout
+	e.readTimeout = d
+	e.mu.Unlock()
+	return func() {
+		e.mu.Lock()
+		e.readTimeout = prev
+		e.mu.Unlock()
 	}
 }
 

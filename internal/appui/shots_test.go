@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Team-Quaver/quaver-astra/internal/player"
 	"github.com/Team-Quaver/quaver-astra/internal/streaminfo"
 
 	"github.com/egoist/mygo/ui"
@@ -76,6 +77,18 @@ func TestUIShots(t *testing.T) {
 	}
 	time.Sleep(250 * time.Millisecond)
 	shot(tester2, "np-qinfo.png")
+
+	// 正在播放页上的播放队列浮窗（右侧悬着、盖在整页之上）
+	qapp, qtester := npTestApp(t, color.RGBA{R: 96, G: 148, B: 210, A: 255})
+	qapp.PL.EnqueueMany([]player.Song{
+		{Mid: "m2", Title: "七里香", Artists: "周杰伦", AlbumPmid: "001Qu4I30VtaFH", Interval: 299},
+		{Mid: "m3", Title: "夜曲", Artists: "周杰伦", AlbumPmid: "001Qu4I30VtaFH", Interval: 227},
+		{Mid: "m4", Title: "搁浅", Artists: "周杰伦", AlbumPmid: "001Qu4I30VtaFH", Interval: 261},
+		{Mid: "m5", Title: "以父之名", Artists: "周杰伦", AlbumPmid: "001Qu4I30VtaFH", Interval: 342},
+	})
+	qapp.queueOpen = true
+	time.Sleep(450 * time.Millisecond)
+	shot(qtester, "np-queue.png")
 
 	// 侧栏「我创建的歌单」：行首画歌单封面（取不到封面的那首退回♪）
 	cov := sideCoverApp(t, false)

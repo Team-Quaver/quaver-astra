@@ -105,24 +105,27 @@ func (a *App) songRow(c *ui.Context, st *songListState, i int, doubleClick func(
 			}
 			ui.Text(c, sub).FontSize(fz(12)).TextColor(t.TextMuted).SingleLine().Ellipsis("…")
 		})
-		// 红心
-		if loved || row.Hovered() {
-			hb := ui.ButtonBase(c).Size(28, 28).Radius(14).Center().Transition(hoverFade)
-			hb.Children(func() {
-				// 配色统一走 heartStyle：未收藏用正文色（原来写死 palLight.heart
-				// —— 浅色主题的硬编码红，深色底上对比度不够，也没区分已收藏/
-				// 未收藏），已收藏是实心红心。
-				name, col := heartStyle(loved, false, t)
-				ui.Icon(c, Icons[name]).FontSize(fz(16)).TextColor(col).AlignSelf(ui.Center)
-			})
-			if hb.Hovered() {
-				hb.Background(t.SurfaceHover)
-			}
-			if hb.Clicked() {
-				a.PL.ToggleLove(s)
-			}
-		} else {
-			ui.Box(c).Width(28)
+		// 红心：每行常驻。未收藏是空心（正文色），已收藏是实心红。
+		//
+		// 以前只在 loved||hover 时才画，另外两种状态整行看不见红心：一旦
+		// 「我喜欢」没同步上来（冷启动网络抖动、分页半途失败），收藏过的歌
+		// 也一起变成空白，看上去就是「红心渲染不出来」。空心常驻后一眼可辨，
+		// 也不用拿鼠标去把图标「擦」出来。
+		//
+		// 配色统一走 heartStyle（未收藏用正文色，不用 TextMuted：线框图标在
+		// 深色底上再降一档亮度就没可读性了；已收藏是实心红）。
+		hb := ui.ButtonBase(c).Size(28, 28).Radius(14).Center().Transition(hoverFade)
+		loveHover := hb.Hovered()
+		hb.Children(func() {
+			name, col := heartStyle(loved, loveHover, t)
+			ui.Icon(c, Icons[name]).FontSize(fz(16)).TextColor(col).AlignSelf(ui.Center).
+				Label(loveLabel(loved))
+		})
+		if loveHover {
+			hb.Background(t.SurfaceHover)
+		}
+		if hb.Clicked() {
+			a.PL.ToggleLove(s)
 		}
 		// 时长
 		ui.Text(c, fmtTime(s.Interval)).FontSize(fz(12)).TextColor(t.TextMuted).Width(44).TextAlign(ui.End)
@@ -252,6 +255,14 @@ func (a *App) songRow(c *ui.Context, st *songListState, i int, doubleClick func(
 			}
 		})
 	})
+}
+
+// loveLabel 是红心的无障碍名（也供 UI 测试定位）：图标本身对读屏是隐形的。
+func loveLabel(loved bool) string {
+	if loved {
+		return "取消收藏"
+	}
+	return "收藏"
 }
 
 // rowTint 当前播放行的底色。

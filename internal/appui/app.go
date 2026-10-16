@@ -249,7 +249,13 @@ func (a *App) View(c *ui.Context) {
 	}
 
 	if a.npOpen && c.Shortcut(0, ui.KeyEscape) {
-		a.npOpen = false
+		// 浮层从后往前收：队列浮窗是后开的，先收它，再按一次才关整页。
+		if a.queueOpen {
+			a.queueOpen = false
+			a.Conf.Set("Window.QueueOpen", false)
+		} else {
+			a.npOpen = false
+		}
 	}
 
 	// 当前歌变化时重取色
@@ -265,6 +271,11 @@ func (a *App) View(c *ui.Context) {
 			a.mainRow(c)
 			if a.npOpen {
 				a.nowPlaying(c, t)
+				// 队列浮窗建在正在播放页之后：绝对子元素按建树顺序绘制、
+				// 也按同一顺序命中，晚建的才盖得住整页、也才收得到点击。
+				if a.queueOpen {
+					a.queueFloat(c, t)
+				}
 			}
 		})
 		a.playerBar(c, t)
@@ -291,7 +302,9 @@ func (a *App) mainRow(c *ui.Context) {
 			a.topBar(c)
 			ui.Row(c).Grow(1).FillWidth().AlignItems(ui.Stretch).Children(func() {
 				a.routeArea(c)
-				if a.queueOpen {
+				// 正在播放页会把内容区整页盖住，队列这时改走浮窗
+				//（queueFloat）：停靠栏建了也看不见，只会白占一次列表状态。
+				if a.queueOpen && !a.npOpen {
 					a.queuePanel(c)
 				}
 			})

@@ -61,6 +61,8 @@ func (nilEngine) Duration(fallback float64) float64            { return fallback
 func (nilEngine) SeekTo(float64, float64)                      {}
 func (nilEngine) SetVolume(float64)                            {}
 func (nilEngine) LoadError() string                            { return "" }
+func (nilEngine) Loaded() bool                                 { return true }
+func (nilEngine) LoadErrorFatal() bool                         { return false }
 func (nilEngine) OnObserve(func())                             {}
 
 type nullPrefs struct{}

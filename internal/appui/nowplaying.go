@@ -305,86 +305,185 @@ func (a *App) qualityPillNP(c *ui.Context) {
 
 // ===== 播放队列面板 =====
 
+// queuePalette 是队列面板的配色。
+//
+// 面板有两个落点：内容区右侧的停靠栏（正在播放页没开）和正在播放页上的浮窗。
+// 列表本体、拖拽换序、当前行高亮、悬停删除在两处必须一模一样，不然两边迟早
+// 长出不一样的队列；能变的只有颜色与容器装饰，所以把颜色单独抽出来。
+type queuePalette struct {
+	title, sub, hover, bg, border, tint, accent, icon ui.Color
+	// line/divider 只在浮窗上用：停靠栏本来就贴着内容区边界，头行下再加一条
+	// 横线显脏；浮窗悬在模糊封面上，需要一条线把头行和列表分开。
+	line    ui.Color
+	divider bool
+}
+
+// queuePalette 取本帧的队列配色。glass 为真时用正在播放页的深玻璃口径——
+// 那一页恒为深底（见 npBase），跟随明暗主题的字色会在玻璃上糊掉。
+func (a *App) queuePalette(t *ui.Theme, glass bool) queuePalette {
+	if glass {
+		return queuePalette{
+			title: npPopText, sub: npPopText2, hover: npPopHover,
+			bg: npPopBg, border: npPopBorder, tint: t.Accent.Alpha(0.16),
+			accent: t.Accent, icon: npPopDim,
+			line: npPopLine, divider: true,
+		}
+	}
+	return queuePalette{
+		title: t.Text, sub: t.TextMuted, hover: t.SurfaceHover,
+		bg: a.sideBg(t), border: t.Border, tint: a.rowTint(t),
+		accent: t.Accent, icon: t.Text,
+	}
+}
+
+// queueHeadH/queueRowH 是面板的固定行高：头行与单首歌的行。浮窗要按内容算高，
+// 这两处必须和 queueHead/queueRow 里写的高度是同一个数。
+const (
+	queueHeadH = 44.0
+	queueRowH  = 46.0
+)
+
+// queueFloatH 是浮窗的内容高度：头行 + 各行 + 底边 8px 收口，装不下时封顶到
+// 内容区（窗口高 − 播放条）减去上下 16px 的留白，列表自己滚动。
+//
+// 队列短的时候让面板跟着内容走，不拉着一条几百像素的空玻璃挂到播放条上。
+func queueFloatH(c *ui.Context, n int) float32 {
+	_, wh := c.Size()
+	maxH := wh - barH - 32
+	h := queueHeadH + float32(n)*queueRowH + 8
+	if h > maxH {
+		h = maxH
+	}
+	if minH := float32(queueHeadH + queueRowH + 8); h < minH {
+		h = minH
+	}
+	return h
+}
+
+// queuePanel 是内容区右侧的停靠队列栏（正在播放页未打开时的形态）。
 func (a *App) queuePanel(c *ui.Context) {
-	t := c.Theme()
-	queueLen := a.PL.QueueLen()
+	s := a.queuePalette(c.Theme(), false)
+	panel := ui.Column(c).Width(300).Background(s.bg).
+		BorderWidth(1, 0, 0, 1).BorderColor(s.border)
+	panel.Children(func() {
+		a.queueHead(c, s)
+		a.queueBody(c, s)
+	})
+}
+
+// queueFloat 是正在播放页上的队列浮窗：右侧留 16px，悬在整页之上。
+//
+// 它必须建在 nowPlaying 之后：MyGo 里绝对子元素按建树顺序绘制，命中链也按同一
+// 顺序取最上面的一个，晚建的才盖得住整页、也才收得到点击——不然点队列里的行，
+// 命中的是底下的封面/歌词层，看着就是「按了没反应」。
+func (a *App) queueFloat(c *ui.Context, t *ui.Theme) {
+	s := a.queuePalette(t, true)
+	panel := ui.Column(c).Key("queue-float").Absolute().
+		Top(16).Right(16).Width(320).Height(queueFloatH(c, a.PL.QueueLen())).
+		Background(s.bg).Radius(16).Border(1, s.border).
+		Shadow(0, 18, 48, 0, ui.RGBA(0, 0, 0, 0.45)).Clip().
+		Transition(ui.ElementTransition{
+			Duration: 220 * time.Millisecond,
+			Ease:     easePanel,
+			Enter:    &ui.Motion{X: 24, Opacity: 0},
+		})
+	panel.Children(func() {
+		a.queueHead(c, s)
+		a.queueBody(c, s)
+	})
+}
+
+// queueHead 是面板头行：标题 + 清空 + 收起。两个落点共用。
+func (a *App) queueHead(c *ui.Context, s queuePalette) {
+	ui.Row(c).FillWidth().Height(queueHeadH).PaddingX(12).AlignItems(ui.Center).Gap(8).Children(func() {
+		ui.Textf(c, "播放列表 · %d 首", a.PL.QueueLen()).FontSize(fz(13)).FontWeight(700).
+			TextColor(s.title).SingleLine().Grow(1)
+		a.queueIconBtn(c, s, "trash", "清空播放列表", func() { a.PL.ClearQueue() })
+		a.queueIconBtn(c, s, "clear", "收起播放列表", func() {
+			a.queueOpen = false
+			a.Conf.Set("Window.QueueOpen", false)
+		})
+	})
+	if s.divider {
+		ui.Box(c).FillWidth().Height(1).Background(s.line)
+	}
+}
+
+// queueIconBtn 是头行上的小图标按钮。纯图标要有 Label：读屏与测试都得知道
+// 这个按钮干什么。
+func (a *App) queueIconBtn(c *ui.Context, s queuePalette, icon, label string, run func()) {
+	b := ui.ButtonBase(c).Size(26, 26).Radius(13).Center().Transition(hoverFade)
+	b.Children(func() {
+		ui.Icon(c, Icons[icon]).FontSize(fz(14)).TextColor(s.icon).AlignSelf(ui.Center)
+	})
+	if b.Hovered() {
+		b.Background(s.hover)
+	}
+	b.Tooltip(label)
+	b.Label(label)
+	if b.Clicked() {
+		run()
+	}
+}
+
+// queueBody 是队列列表本体：两个落点共用（拖拽换序、当前行高亮、悬停删除）。
+func (a *App) queueBody(c *ui.Context, s queuePalette) {
+	n := a.PL.QueueLen()
 	a.queueList.Key = nil
 	a.queueList.Reorder = func(rows []int, to int) {
 		a.PL.MoveInQueue(rows, to)
 	}
-
-	panel := ui.Column(c).Width(300).Background(a.sideBg(t)).BorderWidth(1, 0, 0, 1).BorderColor(t.Border)
-	panel.Children(func() {
-		ui.Row(c).FillWidth().Height(44).PaddingX(12).AlignItems(ui.Center).Gap(8).Children(func() {
-			ui.Textf(c, "播放列表 · %d 首", queueLen).FontSize(fz(13)).FontWeight(700).Grow(1)
-			clearBtn := ui.ButtonBase(c).Size(26, 26).Radius(13).Center().Transition(hoverFade)
-			clearBtn.Children(func() { ui.Icon(c, Icons["trash"]).FontSize(fz(14)).AlignSelf(ui.Center) })
-			if clearBtn.Hovered() {
-				clearBtn.Background(t.SurfaceHover)
-			}
-			if clearBtn.Clicked() {
-				a.PL.ClearQueue()
-			}
-			colBtn := ui.ButtonBase(c).Size(26, 26).Radius(13).Center().Transition(hoverFade)
-			colBtn.Children(func() { ui.Icon(c, Icons["clear"]).FontSize(fz(14)).AlignSelf(ui.Center) })
-			if colBtn.Hovered() {
-				colBtn.Background(t.SurfaceHover)
-			}
-			if colBtn.Clicked() {
-				a.queueOpen = false
-				a.Conf.Set("Window.QueueOpen", false)
-			}
-		})
-		cur, _ := a.PL.Current()
-		a.queueList.Label = func(i int) string {
-			row, ok := a.PL.QueueRow(i)
-			if !ok {
-				return ""
-			}
-			return row.DisplayName()
+	cur, _ := a.PL.Current()
+	a.queueList.Label = func(i int) string {
+		row, ok := a.PL.QueueRow(i)
+		if !ok {
+			return ""
 		}
-		ui.List(c, &a.queueList, queueLen, func(i int) {
-			if row, ok := a.PL.QueueRow(i); ok {
-				a.queueRow(c, row, i, cur.Mid)
-			}
-		}).Grow(1)
-	})
+		return row.DisplayName()
+	}
+	ui.List(c, &a.queueList, n, func(i int) {
+		if row, ok := a.PL.QueueRow(i); ok {
+			a.queueRow(c, s, row, i, cur.Mid)
+		}
+	}).Grow(1)
 }
 
-func (a *App) queueRow(c *ui.Context, s player.QueueRowView, i int, curMid string) {
-	t := c.Theme()
-	isCur := s.Mid == curMid
-	row := ui.Row(c).FillWidth().Height(46).PaddingX(10).Gap(10).AlignItems(ui.Center).Radius(8).
+func (a *App) queueRow(c *ui.Context, s queuePalette, r player.QueueRowView, i int, curMid string) {
+	isCur := r.Mid == curMid
+	row := ui.Row(c).FillWidth().Height(queueRowH).PaddingX(10).Gap(10).AlignItems(ui.Center).Radius(8).
 		Transition(hoverFade)
 	row.Children(func() {
 		ui.Box(c).Width(22).Center().Children(func() {
 			if isCur && a.PL.Playing() {
-				ui.Icon(c, Icons["note"]).FontSize(fz(13)).TextColor(t.Accent).AlignSelf(ui.Center)
+				ui.Icon(c, Icons["note"]).FontSize(fz(13)).TextColor(s.accent).AlignSelf(ui.Center)
 			} else {
-				ui.Textf(c, "%d", i+1).FontSize(fz(11)).TextColor(t.TextMuted).AlignSelf(ui.Center)
+				ui.Textf(c, "%d", i+1).FontSize(fz(11)).TextColor(s.sub).AlignSelf(ui.Center)
 			}
 		})
-		if art := a.Covers.Get(coverURL(s.AlbumPmid, s.AlbumMid, 300), a.invalidate); art != nil {
+		if art := a.Covers.Get(coverURL(r.AlbumPmid, r.AlbumMid, 300), a.invalidate); art != nil {
 			ui.Image(c, art).Size(34, 34).Fit(ui.Cover).Radius(5)
 		} else {
-			ui.Box(c).Size(34, 34).Radius(5).Background(t.SurfaceHover)
+			ui.Box(c).Size(34, 34).Radius(5).Background(s.hover)
 		}
 		ui.Column(c).Grow(1).Gap(0).Children(func() {
-			ui.Text(c, s.DisplayName()).FontSize(fz(12.5)).SingleLine().Ellipsis("…")
-			ui.Text(c, s.Artists).FontSize(fz(11)).TextColor(t.TextMuted).SingleLine().Ellipsis("…")
+			ui.Text(c, r.DisplayName()).FontSize(fz(12.5)).TextColor(s.title).SingleLine().Ellipsis("…")
+			ui.Text(c, r.Artists).FontSize(fz(11)).TextColor(s.sub).SingleLine().Ellipsis("…")
 		})
 		if row.Hovered() {
 			del := ui.ButtonBase(c).Size(24, 24).Radius(12).Center().Transition(hoverFade)
-			del.Children(func() { ui.Icon(c, Icons["clear"]).FontSize(fz(12)).AlignSelf(ui.Center) })
+			del.Children(func() {
+				ui.Icon(c, Icons["clear"]).FontSize(fz(12)).TextColor(s.icon).AlignSelf(ui.Center)
+			})
+			del.Tooltip("从播放列表移除")
 			if del.Clicked() {
 				a.PL.RemoveAt(i)
 			}
 		}
 	})
 	if isCur {
-		row.Background(a.rowTint(t))
+		row.Background(s.tint)
 	} else if row.Hovered() {
-		row.Background(t.SurfaceHover)
+		row.Background(s.hover)
 	}
 	if row.Clicked() {
 		a.PL.Jump(i)

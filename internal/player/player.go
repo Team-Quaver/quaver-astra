@@ -2,6 +2,7 @@ package player
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"time"
@@ -137,7 +138,7 @@ type PlaylistRef struct {
 // Engine 是 player 需要的音频能力（由 *audio.Engine 基于 mpv 实现）。
 // 位置/时长由引擎直接从 mpv 取，player 不再自己推算。
 type Engine interface {
-	// OpenURL 异步载入并起播；载入结果由 LoadError 回报。
+	// OpenURL 异步载入并起播；载入结果由 Loaded / LoadError 回报。
 	OpenURL(url string, startFrac, dur float64, autoplay bool) error
 	Play()
 	Pause()
@@ -150,7 +151,13 @@ type Engine interface {
 	Duration(fallback float64) float64
 	SeekTo(frac, dur float64)
 	SetVolume(v float64)
+	// Loaded 报告本次载入是否成形（引擎收到 file-loaded）。这是「这一档能不能
+	// 播」的权威信号，比「等它报出时长」可靠：不报时长的流照样能播。
+	Loaded() bool
 	LoadError() string
+	// LoadErrorFatal 报告 LoadError 是否与音质档位无关（引擎拒绝命令、进程没了）。
+	// 这类错误换档/跳歌都救不回来，player 据此直接收手。
+	LoadErrorFatal() bool
 	OnObserve(fn func())
 }
 
@@ -236,20 +243,42 @@ func (p *Player) Playlists() []PlaylistRef {
 	return p.playlists
 }
 
+// likedRetryDelay 是「我喜欢」第 1 页失败后的重试间隔：只为跨过冷启动时后端
+// 未就绪、网络抖一下这一小段，不做无限重试。（var 而非 const：测试要压缩等待。）
+var likedRetryDelay = 2 * time.Second
+
 // LoadLoved 分页拉取我喜欢（最多 2 页 × 500）。
+//
+// 这份集合决定每一行画空心还是实心红心，所以原则是「拿到多少落多少、落不下
+// 就什么都不动」：
+//   - 第 1 页失败：隔 likedRetryDelay 重试一次（冷启动时后端可能还没就绪、
+//     网络抖一下），仍失败就整份保留上一次的结果。拿空集去覆盖，满屏红心会
+//     一起消失，看起来就像「收藏渲染不出来」。
+//   - 第 2 页失败：把手里的第 1 页照样落地。少几首红心远好于所有红心都不显示。
 func (p *Player) LoadLoved() {
 	p.mu.Lock()
 	p.likedSeq++
 	seq := p.likedSeq
 	p.mu.Unlock()
+
 	go func() {
 		all := map[string]struct{}{}
 		var first []Song
 		total := int64(0)
 		for page := 1; page <= 2; page++ {
 			songs, tot, hasmore, err := p.api.LikedPage(page, 500)
+			if err != nil && page == 1 && p.likedFresh(seq) {
+				time.Sleep(likedRetryDelay)
+				songs, tot, hasmore, err = p.api.LikedPage(1, 500)
+			}
 			if err != nil {
-				return
+				if page == 1 {
+					return // 一首都没拿到：什么都不改
+				}
+				break // 第 2 页没拿到：已有的部分照样落地
+			}
+			if !p.likedFresh(seq) {
+				return // 已经有更新的一轮在跑，这轮的结论作废
 			}
 			total = tot
 			if page == 1 {
@@ -273,6 +302,13 @@ func (p *Player) LoadLoved() {
 		p.mu.Unlock()
 		p.notifyChange()
 	}()
+}
+
+// likedFresh 报告这一轮喜欢刷新还是最新的那一轮（没被后发起的一轮取代）。
+func (p *Player) likedFresh(seq uint64) bool {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return seq == p.likedSeq
 }
 
 func (p *Player) LoggedIn() bool {
@@ -368,7 +404,7 @@ func (p *Player) PlayList(songs []Song, i int) {
 	p.mu.Unlock()
 	p.sessionSaveSoon(true)
 	p.notifyChange()
-	p.startCurrent(0, true, "")
+	p.playFrom(0, true, "")
 }
 
 // Jump 跳到队列第 i 首。
@@ -382,7 +418,7 @@ func (p *Player) Jump(i int) {
 	p.mu.Unlock()
 	p.sessionSaveSoon(true)
 	p.notifyChange()
-	p.startCurrent(0, true, "")
+	p.playFrom(0, true, "")
 }
 
 // EnqueueNext 「下一首播放」：排到当前曲之后等着播，不切歌、不打断当前曲。
@@ -419,7 +455,7 @@ func (p *Player) PlayNextNow(s Song) {
 	p.mu.Unlock()
 	p.sessionSaveSoon(true)
 	p.notifyChange()
-	p.startCurrent(0, true, "")
+	p.playFrom(0, true, "")
 }
 
 // EnqueueMany 追加到队列尾部。
@@ -448,7 +484,7 @@ func (p *Player) RemoveAt(i int) {
 			p.mu.Unlock()
 			p.sessionSaveSoon(true)
 			p.notifyChange()
-			p.startCurrent(0, false, "")
+			p.playFrom(0, false, "")
 			return
 		}
 		p.stopLocked()
@@ -726,7 +762,7 @@ func (p *Player) Next(auto bool) {
 	p.mu.Unlock()
 	p.sessionSaveSoon(true)
 	p.notifyChange()
-	p.startCurrent(0, true, "")
+	p.playFrom(0, true, "")
 }
 
 func (p *Player) Prev() {
@@ -747,7 +783,7 @@ func (p *Player) Prev() {
 	p.mu.Unlock()
 	p.sessionSaveSoon(true)
 	p.notifyChange()
-	p.startCurrent(0, true, "")
+	p.playFrom(0, true, "")
 }
 
 // PlayOrPause 播放/暂停切换；没有当前曲则播第一首。
@@ -759,7 +795,7 @@ func (p *Player) PlayOrPause() {
 			p.mu.Unlock()
 			p.sessionSaveSoon(true)
 			p.notifyChange()
-			p.startCurrent(0, true, "")
+			p.playFrom(0, true, "")
 			return
 		}
 		p.mu.Unlock()
@@ -771,7 +807,7 @@ func (p *Player) PlayOrPause() {
 			// 起播链，从界面进度续播（会话恢复的上次位置，stop 后是 0）。
 			resume := p.pos
 			p.mu.Unlock()
-			p.startCurrent(resume, true, "")
+			p.playFrom(resume, true, "")
 			return
 		}
 		p.eng.Play()
@@ -796,7 +832,7 @@ func (p *Player) Play() {
 			p.mu.Unlock()
 			p.sessionSaveSoon(true)
 			p.notifyChange()
-			p.startCurrent(0, true, "")
+			p.playFrom(0, true, "")
 			return
 		}
 		p.mu.Unlock()
@@ -808,7 +844,7 @@ func (p *Player) Play() {
 			// 别让 eng.Play 在空引擎上空转。
 			resume := p.pos
 			p.mu.Unlock()
-			p.startCurrent(resume, true, "")
+			p.playFrom(resume, true, "")
 			return
 		}
 		p.eng.Play()
@@ -931,7 +967,7 @@ func (p *Player) RestartAtPosition() {
 	p.mu.RLock()
 	pos := p.pos
 	p.mu.RUnlock()
-	p.startCurrent(pos, true, "")
+	p.playFrom(pos, true, "")
 }
 
 func (p *Player) TierTable() *TierTable {
@@ -988,6 +1024,15 @@ func (p *Player) stopLocked() {
 	p.pos, p.dur = 0, 0
 }
 
+// playFrom 用户/媒体键发起的起播：先清掉连跳计数再走完整起播链——
+// 上一次故障留下的余数不该把这次新的意图直接判成「已经连跳好几首」。
+func (p *Player) playFrom(resumeTo float64, autoplay bool, overrideTier string) {
+	p.mu.Lock()
+	p.failStreak = 0
+	p.mu.Unlock()
+	p.startCurrent(resumeTo, autoplay, overrideTier)
+}
+
 // startCurrent 解析并载入当前曲。调用方不得持有 p.mu。
 func (p *Player) startCurrent(resumeTo float64, autoplay bool, overrideTier string) {
 	p.mu.Lock()
@@ -1030,6 +1075,8 @@ func (p *Player) startCurrent(resumeTo float64, autoplay bool, overrideTier stri
 		// 解析 → 交给 mpv 载入 → 等载入结果。任何一环失败（档位不被支持、
 		// 网络错误）都继续走回退链换下一档。
 		var info *StreamInfo
+		resume := resumeTo     // 起播进度；带进度失败时下面退回从 0 再试
+		resumeRetried := false // 「从 0 再试一次」只有一次机会
 		for {
 			i, tier, err := p.resolveWithFallback(song, want, dep, seq, fallback)
 			if err != nil {
@@ -1038,23 +1085,41 @@ func (p *Player) startCurrent(resumeTo float64, autoplay bool, overrideTier stri
 			}
 			p.mu.Lock()
 			stale := seq != p.playSeq
-			dur, resume := p.dur, resumeTo
+			dur := p.dur
 			p.mu.Unlock()
 			if stale {
 				return
 			}
 			if lerr := p.eng.OpenURL(i.URL, resume/dur, dur, autoplay); lerr != nil {
-				continue // 引擎拒绝（mpv 未运行等），下一轮换档
+				// 引擎压根没收下这次载入（mpv 未运行等）：与档位无关，
+				// 换档只是把整条队列白白跳完。
+				p.failWithErr(seq, fmt.Errorf("%w：%w", errEngineFatal, lerr))
+				return
 			}
 			// mpv 载入是异步的：网络流可能慢，要等它给出结果才能判断这档
 			// 能不能播。等不到（超时）或报错都视为该档失败，继续降档。
-			if lerr := p.awaitLoaded(seq); lerr != nil {
-				_ = lerr
-				continue
+			lerr := p.awaitLoaded(seq)
+			if lerr == nil {
+				info = i
+				_ = tier
+				break
 			}
-			info = i
-			_ = tier
-			break
+			if errors.Is(lerr, errStale) {
+				return // 用户已经换歌/换档到别处，这轮的结论不必再报给任何人
+			}
+			if errors.Is(lerr, errEngineFatal) {
+				p.failWithErr(seq, lerr)
+				return
+			}
+			if resume > 0 && !resumeRetried {
+				// 带进度起播失败：同一档位先退回从 0 再试一次。上次会话的进度、
+				// 这一档不支持 Range、起点落在坏点，都只该让「续播」这一下失败，
+				// 而从 0 播是用户完全能接受的兜底——比换档、比跳下一首都好。
+				resumeRetried = true
+				resume = 0
+				delete(fallback, tier) // 这一档还没被判死，值得不带进度再试
+			}
+			continue
 		}
 		p.mu.Lock()
 		if seq != p.playSeq {
@@ -1079,9 +1144,13 @@ func (p *Player) startCurrent(resumeTo float64, autoplay bool, overrideTier stri
 
 // awaitLoaded 等 mpv 报出本次载入的结果。
 //
-// mpv 的 loadfile 是异步的：命令立刻返回，真正的结果（打开成功/失败、
-// 时长就位）随后以属性事件的形式到来。这里轮询到「拿到时长」或「报错」
-// 为止；超时就按失败处理，让调用方降档——总比卡住整条起播链好。
+// mpv 的 loadfile 是异步的：命令立刻返回，真正的结果（打开成功/失败）随后
+// 以事件的形式到来。这里轮询到「file-loaded 成形」或「报错」为止；超时就按
+// 失败处理，让调用方降档——总比卡住整条起播链好。
+//
+// 成功信号用 file-loaded 而不是「时长就位」：时长要等 demuxer 读出元数据，
+// 有些不报时长的流永远读不出来，拿时长当成功就会把能播的流误判成坏档，
+// 一路降档到超时，最后表现成「卡在加载然后自己跳下一曲」。
 func (p *Player) awaitLoaded(seq uint64) error {
 	deadline := time.Now().Add(loadWaitTimeout)
 	for time.Now().Before(deadline) {
@@ -1092,10 +1161,12 @@ func (p *Player) awaitLoaded(seq uint64) error {
 			return errStale
 		}
 		if e := p.eng.LoadError(); e != "" {
+			if p.eng.LoadErrorFatal() {
+				return fmt.Errorf("%w：%s", errEngineFatal, e)
+			}
 			return errors.New(e)
 		}
-		// 时长就位即视为打开成功（>0 且不是我们塞进去的兜底值）
-		if p.eng.Duration(0) > 0 {
+		if p.eng.Loaded() {
 			return nil
 		}
 		time.Sleep(40 * time.Millisecond)
@@ -1159,22 +1230,48 @@ func fallbackChain(want string) []string {
 
 var errStale = errors.New("已切换歌曲")
 
+// errEngineFatal 标记「与音质档位无关」的引擎故障（mpv 拒绝了载入命令、进程
+// 已经没了）。继续降档、继续跳歌只会把整条队列白白吃光，player 据此收手报错。
+var errEngineFatal = errors.New("播放引擎故障")
+
+// maxAutoSkips 是失败后最多自动跳几首。
+//
+// 灰曲、下架、只有会员能听这类「这一首就是播不了」确实该自动往后走；但网络
+// 抖动、后端还没就绪时不加限制，用户看到的就是「卡在加载，然后一首接一首
+// 自己跳」。设上限停在当前曲，把原因显示出来，交给用户重试。
+const maxAutoSkips = 3
+
 func (p *Player) failWithErr(seq uint64, err error) {
+	msg := err.Error()
+	fatal := errors.Is(err, errEngineFatal)
+
 	p.mu.Lock()
 	if seq != p.playSeq {
 		p.mu.Unlock()
 		return
 	}
-	p.err = err.Error()
+	p.err = msg
 	p.failStreak++
 	next := -1
-	if p.failStreak <= len(p.queue) && len(p.queue) > 1 {
+	if !fatal && p.failStreak <= maxAutoSkips && len(p.queue) > 1 {
 		next = p.nextIndexLocked(true)
 	}
 	// 即将重试时保持 loading=true：startCurrent 会同步重置它，
 	// 中间不留窗口给 tick 误触发又一次 Next(true)。
 	if next < 0 {
 		p.loading = false
+		// 收手：引擎归零、stream 清空。上一首可能还在出声，界面与实际出声
+		// 不能各说各话；stream=nil 也让「按播放重试」走完整起播链，而不是
+		// 在空引擎上假装有在播。位置留着，界面还能看出卡在哪。
+		p.playing = false
+		p.stream = nil
+		p.eng.Stop()
+	}
+	switch {
+	case fatal:
+		p.err = msg + "（与音质档位无关，已停止自动切歌；可按播放重试）"
+	case p.failStreak > maxAutoSkips && len(p.queue) > 1:
+		p.err = msg + fmt.Sprintf("（已连续 %d 首播不了，停止自动切歌；可按播放重试）", p.failStreak)
 	}
 	p.mu.Unlock()
 	p.notifyChange()
@@ -1182,6 +1279,8 @@ func (p *Player) failWithErr(seq uint64, err error) {
 		p.mu.Lock()
 		p.index = next
 		p.mu.Unlock()
+		// 注意：这里不能用 playFrom——连跳计数是这条链自己的刹车，
+		// 每次自动重试都清零的话，上限就永远不会生效了。
 		p.startCurrent(0, true, "")
 	}
 }
@@ -1476,7 +1575,8 @@ func (p *Player) Boot() {
 	p.mu.Unlock()
 	// 恢复退出前的播放列表与进度：只「就位」，不自动起播（见 session.go）。
 	p.restoreSession()
-	// mpv 属性变化即刻通知，让进度条/歌词不等到下一个心跳才动
+	// 引擎的状态变化回调（audio 侧目前只做登记，见 Engine.OnObserve）：
+	// 引擎一旦接上合并通知，进度条与歌词就能不等心跳立即跟上。
 	p.eng.OnObserve(p.notifyChange)
 	p.StartTicker()
 }

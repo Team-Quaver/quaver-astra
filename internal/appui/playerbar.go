@@ -26,6 +26,10 @@ func qualityLabel(tier string, degraded bool) string {
 	return s
 }
 
+// barH 是底部播放条的高度。正在播放页上的队列浮窗要用它算可用高度
+// （浮窗与播放条不重叠）。
+const barH = 64.0
+
 // playerBar 底部 64px 播放条：进度填充铺底 + 拖拽 seek + 控制区。
 func (a *App) playerBar(c *ui.Context, t *ui.Theme) {
 	cur, hasCur := a.PL.Current()
@@ -41,7 +45,7 @@ func (a *App) playerBar(c *ui.Context, t *ui.Theme) {
 
 	// 播放条贴满窗口底部：左右顶到窗口边缘，上边紧接内容区/菜单栏。
 	// 默认 Stretch 会把容器宽度完整交给条子，不额外留浮动卡片式外边距。
-	bar := ui.Row(c).Height(64).PaddingX(16).Gap(12).
+	bar := ui.Row(c).Height(barH).PaddingX(16).Gap(12).
 		AlignItems(ui.Center).Background(a.barBg(t)).Margin(0).Radius(0)
 	// 进度填充要缓动：位置采样只有 5Hz（player tick 200ms），直接用采样值画
 	// 会一格一格跳。拖拽时不做缓动，要跟手。
@@ -111,10 +115,7 @@ func (a *App) playerBar(c *ui.Context, t *ui.Theme) {
 		a.modeBtn(c, t)
 		a.qualityPill(c, t)
 		a.loveBtn(c, cur, hasCur, t)
-		a.iconBtn(c, "queue", "播放队列", 18, func() {
-			a.queueOpen = !a.queueOpen
-			a.Conf.Set("Window.QueueOpen", a.queueOpen)
-		})
+		a.queueBtn(c, t)
 	})
 }
 
@@ -193,6 +194,35 @@ func (a *App) iconBtn(c *ui.Context, icon, label string, size float32, fn func()
 	}
 	if b.Clicked() {
 		fn()
+	}
+}
+
+// queueBtn 是播放条上的队列开关。面板开着时高亮：队列浮窗盖在正在播放页的
+// 右侧，图标不带状态的话，「开着队列」这件事在整页浮层上就没有任何痕迹。
+func (a *App) queueBtn(c *ui.Context, t *ui.Theme) {
+	b := ui.ButtonBase(c).Size(32, 32).Radius(16).Center().Transition(hoverFade)
+	b.Children(func() {
+		ic := ui.Icon(c, Icons["queue"]).FontSize(fz(18)).AlignSelf(ui.Center)
+		if a.queueOpen {
+			ic.TextColor(t.Accent)
+		}
+	})
+	switch {
+	case a.queueOpen:
+		b.Background(t.Accent.Alpha(0.13))
+	case b.Hovered():
+		b.Background(t.SurfaceHover)
+	}
+	b.Tooltip("播放队列")
+	if b.Clicked() {
+		a.queueOpen = !a.queueOpen
+		a.Conf.Set("Window.QueueOpen", a.queueOpen)
+		if a.queueOpen {
+			// 正在播放页的 ⋮ 菜单/音质浮窗和队列浮窗抢同一块右上角：
+			// 开队列时先收掉，不然它们会被压在队列底下点不到。
+			a.npMoreOpen = false
+			a.npQInfoOpen = false
+		}
 	}
 }
 
@@ -340,16 +370,13 @@ func (a *App) loveBtn(c *ui.Context, s player.Song, hasCur bool, t *ui.Theme) {
 	hover := b.Hovered()
 	b.Children(func() {
 		name, col := heartStyle(loved, hover, t)
-		ui.Icon(c, Icons[name]).FontSize(fz(17)).TextColor(col).AlignSelf(ui.Center)
+		ui.Icon(c, Icons[name]).FontSize(fz(17)).TextColor(col).AlignSelf(ui.Center).
+			Label(loveLabel(loved))
 	})
 	if !loved && hover {
 		b.Background(t.SurfaceHover)
 	}
-	if loved {
-		b.Tooltip("取消收藏")
-	} else {
-		b.Tooltip("收藏")
-	}
+	b.Tooltip(loveLabel(loved))
 	if b.Clicked() {
 		a.PL.ToggleLove(s)
 	}

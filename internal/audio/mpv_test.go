@@ -329,3 +329,123 @@ func containsEnv(env []string, key string) bool {
 	}
 	return false
 }
+
+// TestLoadfileArgs 钉住 loadfile 的参数布局。mpv 0.38 起第三个参数变成插入
+// index、options 挪到第四位（手册明确警告这会打断把 options 放在第三位的旧
+// 调用）：布局猜错时 mpv 直接回 invalid parameter，载入根本没开始，而表现是
+// 「带进度起播卡在加载，然后自己跳下一曲」。
+func TestLoadfileArgs(t *testing.T) {
+	opts := map[string]any{"start": "12.000"}
+	c := loadCmd{url: "http://127.0.0.1:1234/s.flac", flags: "replace", opts: opts}
+
+	old := loadfileArgs(c, false)
+	if len(old) != 4 || old[0] != "loadfile" || old[1] != c.url || old[2] != "replace" {
+		t.Fatalf("旧布局参数表不对：%v", old)
+	}
+	if got, ok := old[3].(map[string]any); !ok || got["start"] != "12.000" {
+		t.Errorf("旧布局应把 options 放在第三位：%v", old[3])
+	}
+
+	nw := loadfileArgs(c, true)
+	if len(nw) != 5 || nw[3] != -1 {
+		t.Fatalf("新布局应在第三位补 -1 占位：%v", nw)
+	}
+	if got, ok := nw[4].(map[string]any); !ok || got["start"] != "12.000" {
+		t.Errorf("新布局应把 options 放在第四位：%v", nw[4])
+	}
+
+	// 不带 options 时不多发参数——少一位就少一种被拒的可能
+	bare := loadfileArgs(loadCmd{url: "u", flags: "replace"}, true)
+	if len(bare) != 3 {
+		t.Errorf("无 options 时应只发 3 个参数：%v", bare)
+	}
+}
+
+// TestParseMPVVersion / TestLoadfileWantsIndex：版本探测决定默认布局。
+// 认不出版本时按旧布局试探，被拒了由 applyReply 换布局重发（自愈）。
+func TestParseMPVVersion(t *testing.T) {
+	cases := []struct {
+		in        string
+		major     int
+		minor     int
+		ok        bool
+		wantIndex bool
+	}{{"mpv v0.41.0", 0, 41, true, true},
+		{"mpv 0.38.0", 0, 38, true, true},
+		{"mpv 0.37.0-27-gabcdef", 0, 37, true, false},
+		{"mpv v0.33.1", 0, 33, true, false},
+		{"mpv 2.0", 2, 0, true, true},
+		{"mpv", 0, 0, false, false},
+		{"", 0, 0, false, false},
+	}
+	for _, c := range cases {
+		major, minor, ok := parseMPVVersion(c.in)
+		if ok != c.ok || (ok && (major != c.major || minor != c.minor)) {
+			t.Errorf("parseMPVVersion(%q) = %d,%d,%v，期望 %d,%d,%v", c.in, major, minor, ok, c.major, c.minor, c.ok)
+		}
+		if got := loadfileWantsIndex(c.in); got != c.wantIndex {
+			t.Errorf("loadfileWantsIndex(%q) = %v，期望 %v", c.in, got, c.wantIndex)
+		}
+	}
+}
+
+// TestEngineRealMPVResumeLoad 真实 mpv 上走一遍「带进度起播」——恢复上次会话
+// 的进度、播放中换音质都是这条路。它同时验证两件事：
+//
+//  1. loadfile 的参数布局对这台 mpv 成立（不对时命令被拒、载入永不开始）；
+//  2. 布局探测失配时能自愈：这里故意把布局设成反面，等它自己换回来。
+//
+// 用 QAA_TEST_MPV=1 开启；无声卡时改用 null AO。
+func TestEngineRealMPVResumeLoad(t *testing.T) {
+	if os.Getenv("QAA_TEST_MPV") != "1" {
+		t.Skip("设 QAA_TEST_MPV=1 开启真实 mpv 测试")
+	}
+	if _, err := mpvPath(); err != nil {
+		t.Skip("本机无 mpv")
+	}
+	// null AO：协议层与时间轴在无音频设备的环境里同样能完整验证。
+	t.Setenv("QAA_MPV_AO", "null")
+
+	wav := filepath.Join(t.TempDir(), "long-tone.wav")
+	if err := writeTestWAV(wav, 8); err != nil {
+		t.Fatal(err)
+	}
+	e := New()
+	t.Cleanup(e.Close)
+	if !e.Available() {
+		t.Fatal("mpv 不可用")
+	}
+	// 故意发反的布局：正的反面在这台 mpv 上必然 invalid parameter，
+	// 载入应当靠回包自愈，而不是让上层等到超时。
+	e.loadfileIndex = !e.loadfileIndex
+
+	// 从 4s 起播（8s 的曲子里取中点），startFrac=0.5
+	if err := e.OpenURL("file://"+wav, 0.5, 8, true); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) && !e.Loaded() {
+		if msg := e.LoadError(); msg != "" {
+			t.Fatalf("带进度载入失败：%s（fatal=%v）", msg, e.LoadErrorFatal())
+		}
+		time.Sleep(30 * time.Millisecond)
+	}
+	if !e.Loaded() {
+		t.Fatalf("没等到 file-loaded（loadError=%q）", e.LoadError())
+	}
+	if e.loadfileIndex == !loadfileWantsIndex(e.mpvVersion) {
+		t.Errorf("参数布局没自愈回正确的一种：mpv=%q index=%v", e.mpvVersion, e.loadfileIndex)
+	}
+	// 起点应落在 4s 附近，而不是从头播：刚 file-loaded 时的位置就该已经跳过
+	// 了前半首（从 0 起播的话这里只有零点几秒），再等一下还得继续往前走。
+	first := e.Position()
+	time.Sleep(300 * time.Millisecond)
+	pos := e.Position()
+	t.Logf("file-loaded 时 pos=%.3f，300ms 后 pos=%.3f（起点设在 4.0s）", first, pos)
+	if first < 3.5 {
+		t.Fatalf("带进度起播没落到起点：file-loaded 时 pos=%v", first)
+	}
+	if pos < first || pos > 5.5 {
+		t.Fatalf("位置没在起点之后正常推进：first=%v pos=%v", first, pos)
+	}
+}

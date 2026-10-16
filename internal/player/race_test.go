@@ -20,7 +20,15 @@ type fakeEngine struct {
 	seekTo    int
 	vol       float64
 	loadErr   string
-	failURL   map[string]string // url → 载入错误（模拟 mpv 打不开）
+	loadOK    bool
+	loadFatal bool
+	failURL   map[string]string // url → 载入错误（模拟 mpv 打不开该档）
+	fatalURL  map[string]string // url → 引擎级错误（模拟 mpv 拒绝命令）
+	hang      bool              // 载入永不成形（模拟卡到超时）
+	starts    []float64         // 依次记录每次 OpenURL 的 startFrac
+	// openErr 按 (url, startFrac) 决定这次载入的结果，模拟「只有带进度起播
+	// 才失败」这类档位之外的失败。返回空串表示载入成功。
+	openErr   func(url string, startFrac float64) (msg string, fatal bool)
 	onLoadOK  func()
 	onObserve func()
 }
@@ -30,7 +38,21 @@ func (e *fakeEngine) OpenURL(url string, startFrac, dur float64, autoplay bool) 
 	e.loaded++
 	e.playing, e.paused, e.eof, e.pos = autoplay, !autoplay, false, startFrac*dur
 	e.dur = dur
-	e.loadErr = e.failURL[url]
+	e.starts = append(e.starts, startFrac)
+	e.loadErr, e.loadOK, e.loadFatal = "", true, false
+	if e.openErr != nil {
+		if msg, fatal := e.openErr(url, startFrac); msg != "" {
+			e.loadErr, e.loadOK, e.loadFatal = msg, false, fatal
+		}
+	} else if msg, bad := e.failURL[url]; bad {
+		e.loadErr, e.loadOK = msg, false
+	} else if msg, bad := e.fatalURL[url]; bad {
+		// 引擎级故障：与档位无关，player 该收手而不是把降档链走完
+		e.loadErr, e.loadOK, e.loadFatal = msg, false, true
+	}
+	if e.hang {
+		e.loadErr, e.loadOK, e.loadFatal = "", false, false
+	}
 	e.mu.Unlock()
 	if e.onLoadOK != nil {
 		e.onLoadOK()
@@ -83,6 +105,20 @@ func (e *fakeEngine) OnObserve(fn func()) {
 	e.mu.Lock()
 	e.onObserve = fn
 	e.mu.Unlock()
+}
+
+// Loaded 模拟 mpv 的 file-loaded：只有真载入成功才算成形的（不靠时长凑数）。
+func (e *fakeEngine) Loaded() bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.loadOK
+}
+
+// LoadErrorFatal 模拟引擎级错误标记。
+func (e *fakeEngine) LoadErrorFatal() bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.loadFatal
 }
 
 // LoadError 模拟 mpv 的异步载入失败上报。

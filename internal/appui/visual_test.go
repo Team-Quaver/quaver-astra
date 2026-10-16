@@ -218,9 +218,9 @@ type npBackend struct {
 	trans string
 }
 
-// loadEngine 是「载入立刻成功」的假引擎：awaitLoaded 靠 Duration>0 判定
-// 打开成功，所以这里必须给出正的时长——否则起播协程会一直降档重试，
-// 歌词那一步（fetchLyric 在载入成功之后）永远走不到。
+// loadEngine 是「载入立刻成功」的假引擎：awaitLoaded 认 Loaded()（对齐 mpv 的
+// file-loaded），nilEngine 直接给 true；Duration 也要给正的时长，否则界面进度
+// 与时长一直是 0，歌词那一步之后的时间轴也无从对齐。
 type loadEngine struct{ nilEngine }
 
 func (loadEngine) Duration(float64) float64 { return 269 }
