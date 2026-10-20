@@ -18,5 +18,8 @@ func newGPURenderer(n platform.SurfaceNative) (gpuRenderer, error) {
 	if err != nil {
 		return nil, err
 	}
+	// GTK keeps what the area's framebuffer holds from render to render,
+	// but as it allocates the area (SurfaceResize, see invalidator).
+	r.Partial = true
 	return r, nil
 }

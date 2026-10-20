@@ -1,5 +1,7 @@
 # Find bar
 
+<!-- preview find-bar 200 -->
+
 `ui.FindBar` creates a bar for finding text while a `*bool` is true, as
 Safari's and Xcode's: a field of the query, which takes the focus as the
 bar opens with the last query selected, how many matches there are,
@@ -30,4 +32,6 @@ While closed, it returns an element that shows nothing.
 ## Accessibility
 
 Assistive technology sees a toolbar named "Find", holding a search field,
-and hears the count of matches as it changes.
+and hears the count of matches as it changes. Its names, its count ("3 of
+12", "No matches") and Done are in the window's language
+([MyGo's own strings](../i18n.md#mygos-own-strings)).

@@ -16,9 +16,9 @@ type repaintTester struct {
 	builds int
 }
 
-func newRepaintTester(view func(c *Context)) *repaintTester {
+func newRepaintTester(view func(c *context)) *repaintTester {
 	rt := &repaintTester{clock: time.Unix(1000, 0)}
-	rt.Tester = NewTester(func(c *Context) {
+	rt.Tester = coreNewTester(func(c *context) {
 		rt.builds++
 		view(c)
 	}, 200, 100)
@@ -41,8 +41,8 @@ func TestRepaintFrames(t *testing.T) {
 	blue := RGB(0, 0, 255)
 	draws := 0
 	var drawn time.Time
-	tt := newRepaintTester(func(c *Context) {
-		Box(c).Size(100, 20).Draw(func(p *Painter, r Rect) {
+	tt := newRepaintTester(func(c *context) {
+		coreBox(c).Size(100, 20).Draw(func(p *Painter, r Rect) {
 			// A bar moving a DIP a millisecond.
 			draws++
 			drawn = p.Now()
@@ -88,10 +88,10 @@ func TestRepaintFrames(t *testing.T) {
 
 func TestRepaintOnlyInView(t *testing.T) {
 	draws := 0
-	tt := newRepaintTester(func(c *Context) {
-		Scroll(c).Height(100).Children(func() {
-			Box(c).Height(300).Shrink(0)
-			Box(c).Size(100, 20).Shrink(0).Draw(func(p *Painter, r Rect) {
+	tt := newRepaintTester(func(c *context) {
+		coreScroll(c).Height(100).Children(func() {
+			coreBox(c).Height(300).Shrink(0)
+			coreBox(c).Size(100, 20).Shrink(0).Draw(func(p *Painter, r Rect) {
 				draws++
 				p.AnimationFrame()
 			})
@@ -104,8 +104,8 @@ func TestRepaintOnlyInView(t *testing.T) {
 
 func TestPainterAfter(t *testing.T) {
 	draws := 0
-	tt := newRepaintTester(func(c *Context) {
-		Box(c).Size(100, 20).Draw(func(p *Painter, r Rect) {
+	tt := newRepaintTester(func(c *context) {
+		coreBox(c).Size(100, 20).Draw(func(p *Painter, r Rect) {
 			draws++
 			p.After(30 * time.Millisecond)
 		})
@@ -130,21 +130,43 @@ func TestPainterAfter(t *testing.T) {
 		t.Errorf("the frame: built %v, asked for another now %v, painted %d times, next due in %v", built, more, draws-n, tt.rt.repaintDue.Sub(tt.clock))
 	}
 	// A frame built since replaces the one due.
+	due = tt.rt.repaintDue
 	tt.rt.changed()
-	tt.clock = tt.rt.repaintDue
+	tt.clock = due
 	tt.h.requested.Store(false)
 	tt.rt.repaintNow()
 	if tt.h.requested.Load() {
 		t.Error("a frame asked for though one building the view comes")
 	}
+	if built, _ := tt.frame(time.Millisecond); !built {
+		t.Fatal("the frame asked for did not build the view")
+	}
+	// An event that asks for no frame, as the pointer moving over an
+	// element that does not look at it, leaves the frame due: it comes,
+	// and builds the view anew (issue 149).
+	due = tt.rt.repaintDue
+	tt.h.requested.Store(false)
+	tt.rt.event(platform.SurfaceEvent{Kind: platform.PointerMove, X: 50, Y: 10})
+	if tt.h.requested.Load() {
+		t.Fatal("the pointer moving asked for a frame")
+	}
+	tt.clock = due
+	tt.rt.repaintNow()
+	if !tt.h.requested.Load() {
+		t.Fatal("no frame asked for once due, after the pointer moved")
+	}
+	n = draws
+	if built, _ := tt.frame(time.Millisecond); !built || draws != n+1 || !tt.rt.repaintDue.Equal(tt.clock.Add(30*time.Millisecond)) {
+		t.Errorf("the frame after the pointer moved: built %v, painted %d times, next due in %v", built, draws-n, tt.rt.repaintDue.Sub(tt.clock))
+	}
 }
 
 func TestIndicatorsRepaint(t *testing.T) {
 	var value float64
-	tt := newRepaintTester(func(c *Context) {
-		Column(c).Gap(10).Padding(10).Children(func() {
-			Spinner(c)
-			Progress(c, value).Width(100)
+	tt := newRepaintTester(func(c *context) {
+		coreColumn(c).Gap(10).Padding(10).Children(func() {
+			coreSpinner(c)
+			coreProgress(c, value).Width(100)
 		})
 	})
 	// The spinner is painted again for its next spoke, the progress bar of
@@ -164,15 +186,16 @@ func TestIndicatorsRepaint(t *testing.T) {
 }
 
 // TestHeldWhileOccluded checks that what moves draws no frames while
-// nothing of the window shows, and goes on once some of it shows again,
-// while changes of the state still build frames.
+// nothing of the window shows, nor do changes of the state, and that both
+// go on once some of it shows again: as browsers draw nothing for windows
+// out of sight, and as Apple asks of Mac apps.
 func TestHeldWhileOccluded(t *testing.T) {
 	count := 0
-	tt := newRepaintTester(func(c *Context) {
-		Textf(c, "%d", count)
-		Progress(c, -1).Width(100)
-		Box(c).Size(10, 10).Draw(func(p *Painter, r Rect) { p.After(50 * time.Millisecond) })
-		spin := Box(c).Size(10, 10)
+	tt := newRepaintTester(func(c *context) {
+		coreTextf(c, "%d", count)
+		coreProgress(c, -1).Width(100)
+		coreBox(c).Size(10, 10).Draw(func(p *Painter, r Rect) { p.After(50 * time.Millisecond) })
+		spin := coreBox(c).Size(10, 10)
 		spin.Rotate(spin.Loop("spin", time.Second, Linear) * 360)
 	})
 	// The frame the view animating asked for comes, and asks for no more.
@@ -180,25 +203,79 @@ func TestHeldWhileOccluded(t *testing.T) {
 	if _, more := tt.frame(8 * time.Millisecond); more || !tt.rt.held || !tt.rt.repaintDue.IsZero() {
 		t.Fatalf("out of sight: asked for another %v, held %v, repaint due %v", more, tt.rt.held, tt.rt.repaintDue)
 	}
-	// The app's state changes: the frame builds it, and asks for no more.
+	// The app's state changes: the frame waits for the window to show,
+	// and asks for no more.
 	count++
 	tt.rt.changed()
-	if built, more := tt.frame(8 * time.Millisecond); !built || more || !tt.HasText("1") {
-		t.Fatalf("a change out of sight: built %v, asked for another %v, shows %q", built, more, tt.Texts())
+	if built, more := tt.frame(8 * time.Millisecond); built || more || !tt.rt.held {
+		t.Fatalf("a change out of sight: built %v, asked for another %v, held %v", built, more, tt.rt.held)
 	}
-	// Some of the window shows again: what moves goes on.
+	// Some of the window shows again: the frame builds what changed, and
+	// what moves goes on.
 	tt.h.hidden = false
 	tt.rt.event(platform.SurfaceEvent{Kind: platform.SurfaceShown})
 	if tt.rt.held || !tt.h.requested.Load() {
 		t.Fatalf("shown again: held %v, asked for a frame %v", tt.rt.held, tt.h.requested.Load())
 	}
-	if built, more := tt.frame(8 * time.Millisecond); !built || !more {
-		t.Errorf("the frame after showing: built %v, asked for another %v", built, more)
+	if built, more := tt.frame(8 * time.Millisecond); !built || !more || !tt.HasText("1") {
+		t.Errorf("the frame after showing: built %v, asked for another %v, shows %q", built, more, tt.Texts())
 	}
 	// Shown while nothing waited, it asks for nothing.
 	tt.h.requested.Store(false)
 	tt.rt.event(platform.SurfaceEvent{Kind: platform.SurfaceShown})
 	if tt.h.requested.Load() {
 		t.Error("shown again while nothing waited, it asked for a frame")
+	}
+}
+
+// TestFocusChangeFrames checks that the window gaining or losing the
+// keyboard focus draws a frame only when the last frame read it, as a
+// focused text input does for its caret.
+func TestFocusChangeFrames(t *testing.T) {
+	text, input := "", false
+	tt := newRepaintTester(func(c *context) {
+		coreText(c, "Hello")
+		if input {
+			coreTextInputBase(c, &text).Width(100).Label("name").AutoFocus()
+		}
+	})
+	for _, focused := range []bool{false, true} {
+		tt.h.requested.Store(false)
+		tt.rt.event(platform.SurfaceEvent{Kind: map[bool]platform.SurfaceEventKind{false: platform.SurfaceBlur, true: platform.SurfaceFocus}[focused]})
+		if tt.h.requested.Load() {
+			t.Errorf("focused %v, nothing reading it: asked for a frame", focused)
+		}
+	}
+	input = true
+	tt.rt.changed()
+	tt.frame(time.Millisecond)
+	tt.frame(time.Millisecond)
+	for _, focused := range []bool{false, true} {
+		tt.h.requested.Store(false)
+		tt.rt.event(platform.SurfaceEvent{Kind: map[bool]platform.SurfaceEventKind{false: platform.SurfaceBlur, true: platform.SurfaceFocus}[focused]})
+		if !tt.h.requested.Load() {
+			t.Errorf("focused %v, with a focused text input: asked for no frame", focused)
+		}
+		tt.frame(time.Millisecond)
+	}
+}
+
+// TestOccludedFramesAfterInput checks that a window out of sight draws the
+// frame after input, as keys typed into a key window another app's
+// covers, and holds the next one again.
+func TestOccludedFramesAfterInput(t *testing.T) {
+	count := 0
+	rt := newRepaintTester(func(c *context) { coreTextf(c, "%d", count) })
+	rt.h.hidden = true
+	count = 1
+	rt.rt.event(platform.SurfaceEvent{Kind: platform.KeyPressed, Key: platform.Key(KeyA)})
+	if built, _ := rt.frame(8 * time.Millisecond); !built || !rt.HasText("1") {
+		t.Errorf("a key out of sight: built %v, shows %q", built, rt.Texts())
+	}
+	// The input was the last frame's: a change since waits.
+	count = 2
+	rt.rt.changed()
+	if built, _ := rt.frame(8 * time.Millisecond); built || !rt.rt.held {
+		t.Errorf("a change out of sight, after the input's frame: built %v, held %v", built, rt.rt.held)
 	}
 }

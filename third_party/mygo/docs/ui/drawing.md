@@ -33,9 +33,109 @@ ui.Box(c).Size(200, 40).Draw(func(p *ui.Painter, r ui.Rect) {
 ```
 
 Draw functions only paint: MyGo may call them more than once a frame.
-`Painter.Icon` and `Painter.Image` draw SVGs and bitmaps, and
+`Painter.Icon` and `Painter.Image` draw SVGs and bitmaps,
+`Painter.ImageRegion` parts of bitmaps (see [Parts of
+bitmaps](#parts-of-bitmaps)), and
 `Painter.FocusRing` the ring of the keyboard focus, for widgets that draw
 their own.
+
+`Path.Trim(from, to)` keeps the part of a path's length from `from` to
+`to`, as fractions of it, which draws a path in as `to` animates from 0 to
+1, as SwiftUI's `trim` and Motion's `pathLength`:
+
+```go
+drawn := float32(0)
+if app.done {
+	drawn = 1
+}
+drawn = box.AnimateTo("check", drawn, ui.Smooth)
+box.Draw(func(p *ui.Painter, r ui.Rect) {
+	check := (&ui.Path{}).MoveTo(r.X+4, r.Y+12).LineTo(r.X+10, r.Y+18).LineTo(r.X+20, r.Y+6)
+	p.StrokePath(check.Trim(0, drawn), 2, c.Theme().Accent)
+})
+```
+
+## Parts of bitmaps
+
+A bitmap can hold many pictures: the icons of a sheet, the frames of an
+animation, the cells of a contact sheet. `Painter.ImageRegion` draws one
+part of it, `src` in the bitmap's pixels, into a rectangle; nothing of the
+bitmap around the part shows, smooth or pixelated. Its `ImageOptions`
+mirror the part (`FlipX`, `FlipY`) and tint it (`Tint` multiplies its
+colors and alpha):
+
+```go
+icons, _ := ui.DecodeBitmap(iconsPNG) // 16×16 icons in a row
+icon := func(i int) ui.Rect { return ui.Rect{X: float32(i * 16), W: 16, H: 16} }
+
+box.Draw(func(p *ui.Painter, r ui.Rect) {
+	p.ImageRegion(icons, icon(3), ui.Rect{X: r.X, Y: r.Y, W: 24, H: 24},
+		ui.ImageOptions{Tint: c.Theme().TextMuted})
+})
+```
+
+A part outside what the painter shows draws nothing, so a view of many
+can draw them all without culling them itself, as games draw their
+sprites and tiles.
+
+## Canvases
+
+A `ui.Canvas` is a bitmap a painter draws, on the GPU where the window
+draws there: render to texture, as Skia's `SkSurface` and LÖVE's
+`Canvas`. `Draw` draws it anew during a frame, with a painter in its
+pixels, and it keeps what it holds, showing anywhere a bitmap does through
+`Bitmap`:
+
+```go
+grid := ui.NewCanvas(800, 400)
+drawn := false
+
+box.Draw(func(p *ui.Painter, r ui.Rect) {
+	if !drawn { // once, then every frame for the price of an image
+		drawn = true
+		grid.Draw(p, func(cp *ui.Painter) { drawGrid(cp, 800, 400) })
+	}
+	p.Image(grid.Bitmap(), r, ui.FillBox)
+	drawSeries(p, r)
+})
+```
+
+A canvas drawn with a tint or an opacity fades or colors a whole layer at
+once. Canvases show other canvases, and text. A canvas's pixels are its
+units: draw it at the window's scale (`Painter.Scale`) for one as sharp as
+the window, or smaller and make its bitmap `Pixelated` to scale pixel art
+up crisp (the [game plugin](../plugins/game.md#pixel-perfect-scaling)
+shows one at whole multiples). A [shader](shaders.md) reads canvases as
+images, and draws into them.
+
+## Transforms
+
+`Painter.Transform(t, ox, oy, fn)` transforms what `fn` draws by `t`, a
+`ui.Transform` such as `Translation`, `Scaling` or `Rotation`, around the
+point `(ox, oy)`, which stays where it is. Transforms nest, after the
+painter's own, so a view that pans and zooms, as a map or a diagram,
+draws its content through one, and turns a part of it inside:
+
+```go
+ui.Box(c).Fill().Draw(func(p *ui.Painter, r ui.Rect) {
+	view := ui.Translation(-doc.panX, -doc.panY).Then(ui.Scaling(doc.zoom, doc.zoom))
+	p.Transform(view, r.X, r.Y, func() {
+		for _, n := range doc.nodes {
+			p.Fill(n.box, n.color, 6) // culled where the view does not look
+		}
+		cx, cy := doc.dial.X, doc.dial.Y
+		p.Transform(ui.Rotation(doc.dial.angle), cx, cy, func() {
+			p.Line(cx, cy, cx, cy-40, 2, c.Theme().Accent)
+		})
+	})
+})
+```
+
+Clips made inside turn with what they clip. Input is not transformed: the
+pointer comes in the element's coordinates, which the app maps to its
+content with the inverse of its view. Under a transform, images and their
+parts are placed where they are rather than on whole pixels, so that one
+moving through a zoomed view glides.
 
 ## Shaping text
 
@@ -48,7 +148,9 @@ runes each comes from. Move their `X` and draw them with `Painter.Glyphs`;
 display's pixels. `Shape` caches nothing, unlike the text of elements: keep
 the glyphs of text drawn in many frames. `Font.Features` turns OpenType
 features on and off, and `Font.Thicken` draws text with a thicker stroke on
-macOS, as Ghostty's `font-thicken`.
+macOS, as Ghostty's `font-thicken`, and `Font.Antialiased` a thinner one,
+without font smoothing, as browsers draw text styled
+`-webkit-font-smoothing: antialiased`.
 
 ```go
 font := ui.Font{Family: "monospace", Size: 13}
@@ -76,8 +178,9 @@ panel.Width(panel.Animate("width", width, 200*time.Millisecond))
 ```
 
 `AnimateWith` takes the easing: `ui.Linear`, `ui.EaseIn`, `ui.EaseOut` (as
-`Animate`), `ui.EaseInOut`, any `func(t float32) float32`, or
-`ui.Bounce(e)`, which goes along `e` and comes back. `Loop` returns the
+`Animate`), `ui.EaseInOut`, `ui.CubicBezier(x1, y1, x2, y2)`, any
+`func(t float32) float32`, or `ui.Bounce(e)`, which goes along `e` and
+comes back. `AnimateTo` takes springs as well (see [Motion](motion.md)). `Loop` returns the
 progress of an animation that starts over every period, for spinners and
 pulses; `Rotate` turns an element, as an icon:
 
@@ -99,8 +202,10 @@ and call `p.AnimationFrame()` while it moves, or `p.After(d)` when it
 changes in steps. Unless something else changed, those frames paint the
 elements of the last frame again without running the view, so they cost
 only the painting; and an element out of view is not painted, so it asks
-for none. While other windows cover the window, nothing that moves draws
-frames, from `Draw` or the view, until it shows again:
+for none. While the window is out of sight (hidden, minimized, or covered
+by other windows), MyGo draws no frames at all, from `Draw` or the view,
+until some of it shows again: compute what moves from the time, as here,
+and it shows where the time puts it (see [Motion](motion.md#out-of-sight)):
 
 ```go
 ui.Box(c).Height(4).Draw(func(p *ui.Painter, r ui.Rect) {
@@ -117,3 +222,7 @@ When the desktop asks for less motion (`c.Preferences().ReduceMotion`),
 `Animate` and `AnimateWith` go to their target at once. `Loop` goes on, as
 the system's spinners do: it shows that something is going on. Motion you
 compute yourself should read the preference too.
+
+[Motion](motion.md) has springs that keep their velocity, delays, values
+following the pointer, keyframes, and how to tell when an animation is
+done; [Transforms](transforms.md) move, scale and rotate any element.

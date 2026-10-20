@@ -1,5 +1,7 @@
 # Outline
 
+<!-- preview outline 320 -->
+
 `ui.Outline` shows a tree of items, as AppKit's outline view and Finder's
 list view: items at the top, and below each item open its children,
 indented, with an arrow that opens and closes it. The app gives the items at
@@ -32,7 +34,9 @@ Its state, an `OutlineState`, holds the rows' `ListState`, which chooses
 rows as a list's does (`Selected`, `Selection`), and the items `Open`, a
 `Selection` of the items showing their children. The rows' keys are the
 items, so their choice and state follow them as items open and close above
-them. `Rows`, `Item` and `Depth` read the rows shown.
+them. `Rows`, `Item` and `Depth` read the rows shown. `Indent` is the width
+each level adds before a row's arrow, the theme's `Space(4)` when zero; it
+must not be negative.
 
 ## Opening and closing
 

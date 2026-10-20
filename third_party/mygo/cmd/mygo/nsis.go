@@ -1,14 +1,11 @@
 package main
 
 import (
-	"archive/zip"
-	"crypto/sha256"
-	"encoding/hex"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
-	"io/fs"
 	"net/http"
 	"os"
 	"os/exec"
@@ -16,6 +13,9 @@ import (
 	"runtime"
 	"strings"
 	"time"
+
+	fetch "github.com/egoist/mygo/internal/download"
+	"github.com/egoist/mygo/internal/nsis"
 )
 
 // The Windows installer is built with NSIS: a per-user install in
@@ -24,25 +24,6 @@ import (
 // uninstaller that Settings > Apps lists. Windows rarely has NSIS
 // installed, so there mygo build downloads it when it needs it, as Tauri
 // and electron-builder do; elsewhere makensis must be installed.
-
-// nsisRelease is the NSIS that mygo build downloads: the official zip,
-// checked against its SHA-256 and unpacked into the user's cache
-// directory, where makensis runs as it does from an installation. The
-// urls are copies of that zip, tried in order: the asset of the
-// nsis-<version> release of MyGo's repository first, since SourceForge,
-// where NSIS publishes it, has been down for hours at a time, its mirrors
-// redirecting to it.
-var nsisRelease = struct {
-	version, sha256 string
-	urls            []string
-}{
-	version: "3.13",
-	sha256:  "ba63dffc4410ee89193e1cb5a41989991bd77c61068da17e3156d136b7b0b3d8",
-	urls: []string{
-		"https://github.com/egoist/mygo/releases/download/nsis-3.13/nsis-3.13.zip",
-		"https://downloads.sourceforge.net/project/nsis/NSIS%203/3.13/nsis-3.13.zip",
-	},
-}
 
 // makensis finds the NSIS compiler: an installed one or, on Windows, the
 // one an earlier build downloaded.
@@ -56,8 +37,8 @@ func makensis() string {
 				return p
 			}
 		}
-		if dir := nsisDir(); dir != "" {
-			return nsisExecutable(dir)
+		if dir := nsis.Dir(); dir != "" {
+			return nsis.Executable(dir)
 		}
 	}
 	return ""
@@ -69,207 +50,70 @@ func nsisCompiler() (string, error) {
 	if p := makensis(); p != "" || runtime.GOOS != "windows" {
 		return p, nil
 	}
-	dir := nsisDir()
+	dir := nsis.Dir()
 	if dir == "" {
 		return "", errors.New("no cache directory to download NSIS into: install NSIS (makensis)")
 	}
 	return downloadNSIS(dir)
 }
 
-// nsisDir is where mygo build keeps the NSIS it downloads.
-func nsisDir() string {
-	cache, err := os.UserCacheDir()
-	if err != nil {
-		return ""
-	}
-	return filepath.Join(cache, "mygo", "nsis-"+nsisRelease.version)
-}
-
-// nsisExecutable returns makensis in the NSIS directory dir, or "".
-func nsisExecutable(dir string) string {
-	for _, p := range []string{filepath.Join(dir, "Bin", "makensis.exe"), filepath.Join(dir, "makensis.exe")} {
-		if fileExists(p) {
-			return p
-		}
-	}
-	return ""
-}
-
-// downloadNSIS downloads nsisRelease into dir, unless it is there already,
-// and returns its makensis. The archive is unpacked next to dir and renamed
-// into place, so dir is complete whenever it exists.
+// downloadNSIS downloads nsis.Release into dir, unless it is there
+// already, and returns its makensis.
 func downloadNSIS(dir string) (string, error) {
-	if p := nsisExecutable(dir); p != "" {
+	if p := nsis.Executable(dir); p != "" {
 		return p, nil
 	}
-	parent := filepath.Dir(dir)
-	if err := os.MkdirAll(parent, 0o755); err != nil {
-		return "", err
+	v := nsis.Release.Version
+	t := con.start("Downloading NSIS " + v + " for the Windows installer")
+	p, err := nsis.Download(context.Background(), dir, func(url string) fetch.File { return downloadFile(t, url, "") })
+	if t.end(err, "Downloaded NSIS "+v) != nil {
+		return "", fmt.Errorf("downloading NSIS %s (or install it: https://nsis.sourceforge.io):\n%w", v, err)
 	}
-	work, err := os.MkdirTemp(parent, ".nsis-")
-	if err != nil {
-		return "", err
-	}
-	defer os.RemoveAll(work)
-	logf("downloading NSIS %s for the Windows installer", nsisRelease.version)
-	archive := filepath.Join(work, "nsis.zip")
-	if err := downloadAny(nsisRelease.urls, nsisRelease.sha256, archive); err != nil {
-		return "", fmt.Errorf("downloading NSIS %s (or install it: https://nsis.sourceforge.io):\n%w", nsisRelease.version, err)
-	}
-	unpacked := filepath.Join(work, "nsis")
-	if err := unzipTop(archive, unpacked); err != nil {
-		return "", fmt.Errorf("unpacking NSIS: %w", err)
-	}
-	if nsisExecutable(unpacked) == "" {
-		return "", errors.New("unpacking NSIS: the archive holds no makensis.exe")
-	}
-	if err := os.Rename(unpacked, dir); err != nil {
-		// Another build may have downloaded it meanwhile; anything else
-		// there is broken.
-		if p := nsisExecutable(dir); p != "" {
-			return p, nil
-		}
-		if err := os.RemoveAll(dir); err != nil {
-			return "", err
-		}
-		if err := os.Rename(unpacked, dir); err != nil {
-			return "", err
-		}
-	}
-	return nsisExecutable(dir), nil
+	return p, nil
 }
 
-// downloadAny fetches the first of urls, copies of one file, that answers
-// with a file whose SHA-256 is sum into the file path.
-func downloadAny(urls []string, sum, path string) error {
-	var errs []error
-	for _, url := range urls {
-		err := download(url, sum, path)
-		if err == nil {
-			return nil
-		}
-		errs = append(errs, err)
-	}
-	return errors.Join(errs...)
-}
-
-// downloadHeaderTimeout is how long download waits for a host to answer,
-// so that one that takes connections and never answers gives way to the
-// next copy.
+// downloadHeaderTimeout is how long the CLI's downloads wait for a host to
+// answer, so that one that takes connections and never answers gives way
+// to the next copy.
 var downloadHeaderTimeout = 30 * time.Second
 
-// download fetches url into the file path and checks that its SHA-256 is
-// sum.
-func download(url, sum, path string) error {
-	req, err := http.NewRequest(http.MethodGet, url, nil)
-	if err != nil {
-		return err
-	}
-	req.Header.Set("User-Agent", "mygo/"+version)
+// downloadFile is a download by the CLI of url, whose SHA-256 is sum: its
+// progress shows on t, and a host that does not answer within
+// downloadHeaderTimeout fails it.
+func downloadFile(t *task, url, sum string) fetch.File {
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	transport.ResponseHeaderTimeout = downloadHeaderTimeout
-	defer transport.CloseIdleConnections()
-	resp, err := (&http.Client{Transport: transport, Timeout: 10 * time.Minute}).Do(req)
-	if err != nil {
-		return err
+	return fetch.File{
+		URL:    url,
+		SHA256: sum,
+		Client: &http.Client{Transport: transport, Timeout: 10 * time.Minute},
+		Header: http.Header{"User-Agent": {"mygo/" + version}},
+		Progress: func(total int64) io.Writer {
+			return &downloadProgress{t: t, total: total}
+		},
 	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("GET %s: %s", url, resp.Status)
-	}
-	f, err := os.Create(path)
-	if err != nil {
-		return err
-	}
-	h := sha256.New()
-	_, err = io.Copy(io.MultiWriter(f, h), io.LimitReader(resp.Body, 64<<20))
-	if cerr := f.Close(); err == nil {
-		err = cerr
-	}
-	if err != nil {
-		return err
-	}
-	if got := hex.EncodeToString(h.Sum(nil)); got != sum {
-		return fmt.Errorf("%s has the SHA-256 %s, not %s", url, got, sum)
-	}
-	return nil
 }
 
-// unzipTop unpacks the zip archive at path, whose entries are all in one
-// top directory, into dir without that directory.
-func unzipTop(path, dir string) error {
-	r, err := zip.OpenReader(path)
-	if err != nil {
-		return err
-	}
-	defer r.Close()
-	top := ""
-	for _, f := range r.File {
-		first, rest, ok := strings.Cut(f.Name, "/")
-		if top == "" {
-			top = first
-		}
-		if !ok || first != top {
-			return fmt.Errorf("%q is not in the top directory %q", f.Name, top)
-		}
-		if rest == "" {
-			continue // the top directory
-		}
-		name := strings.TrimSuffix(rest, "/")
-		if !fs.ValidPath(name) || !filepath.IsLocal(filepath.FromSlash(name)) || strings.Contains(name, `\`) {
-			return fmt.Errorf("invalid path %q", f.Name)
-		}
-		target := filepath.Join(dir, filepath.FromSlash(name))
-		switch mode := f.Mode(); {
-		case mode.IsDir():
-			if err := os.MkdirAll(target, 0o755); err != nil {
-				return err
-			}
-		case mode.IsRegular():
-			if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
-				return err
-			}
-			if err := unzipFile(f, target); err != nil {
-				return err
-			}
-		default:
-			return fmt.Errorf("%q is neither a file nor a directory", f.Name)
-		}
-	}
-	return nil
+// installerFileName is "<Name> Setup <version> <arch>.exe", as "My App
+// Setup 1.2.0 amd64.exe": each architecture's installer is named apart, so
+// that the builds of two, uploaded to one release or bucket, keep both.
+func installerFileName(c *Config, goarch string) string {
+	return fsName(c.Name) + " Setup " + fsName(c.Version) + " " + goarch + ".exe"
 }
 
-func unzipFile(f *zip.File, target string) error {
-	src, err := f.Open()
-	if err != nil {
-		return err
-	}
-	defer src.Close()
-	dst, err := os.Create(target)
-	if err != nil {
-		return err
-	}
-	// The zip reader checks the CRC-32 of the file once it is read.
-	_, err = io.Copy(dst, src)
-	if cerr := dst.Close(); err == nil {
-		err = cerr
-	}
-	return err
-}
-
-// writeInstaller builds "<Name> Setup <version>.exe" in stage from the app
-// files installed, the executable exe among them, and returns its path, or
-// "" without NSIS.
-func writeInstaller(c *Config, stage, work, exe string, installed []string) (string, error) {
+// writeInstaller builds installerFileName in stage from the app files
+// installed, built for goarch, the executable exe among them, and returns
+// its path, or "" without NSIS.
+func writeInstaller(c *Config, stage, work, exe, goarch string, installed []string) (string, error) {
 	tool, err := nsisCompiler()
 	if err != nil {
 		return "", err
 	}
 	if tool == "" {
-		logf("skipping the Windows installer: install NSIS (makensis)")
+		warnf("Skipping the Windows installer: install NSIS (makensis)")
 		return "", nil
 	}
-	out := filepath.Join(stage, fsName(c.Name)+" Setup "+fsName(c.Version)+".exe")
+	out := filepath.Join(stage, installerFileName(c, goarch))
 	var files strings.Builder
 	for _, name := range installed {
 		p := filepath.Join(stage, name)
@@ -302,6 +146,14 @@ func writeInstaller(c *Config, stage, work, exe string, installed []string) (str
 	uninstallKey := `Software\Microsoft\Windows\CurrentVersion\Uninstall\` + c.Identifier
 	shortcut := nsisEscape(fsName(c.Name)) + ".lnk"
 	register, unregister := nsisAssociations(c, exe)
+	langs, err := c.languages()
+	if err != nil {
+		return "", err
+	}
+	languages, err := nsisLanguageMacros(langs)
+	if err != nil {
+		return "", err
+	}
 	script := `Unicode true
 ManifestDPIAware true
 SetCompressor /SOLID lzma
@@ -320,8 +172,7 @@ BrandingText " "
 !insertmacro MUI_PAGE_FINISH
 !insertmacro MUI_UNPAGE_CONFIRM
 !insertmacro MUI_UNPAGE_INSTFILES
-!insertmacro MUI_LANGUAGE "English"
-
+` + languages + `
 Section
   SetOutPath "$INSTDIR"
 ` + files.String() + `  WriteUninstaller "$INSTDIR\Uninstall.exe"
@@ -378,15 +229,17 @@ SectionEnd
 	if err := os.WriteFile(nsi, []byte(script), 0o644); err != nil {
 		return "", err
 	}
-	logf("creating %s", filepath.Base(out))
+	t := con.start("Creating " + filepath.Base(out))
 	if signing != "" {
-		logf("signing Uninstall.exe")
+		t.set("signing Uninstall.exe")
 	}
 	cmd := exec.Command(tool, "-V2", nsi)
 	cmd.Env = append(os.Environ(), env...)
 	if out, err := cmd.CombinedOutput(); err != nil {
+		t.fail()
 		return "", fmt.Errorf("makensis: %v\n%s", err, out)
 	}
+	t.done("Created " + filepath.Base(out))
 	return out, nil
 }
 
@@ -402,7 +255,7 @@ func uninstallerSigning(c *Config, tool string) (script string, env []string, er
 		return "", nil, nil
 	}
 	if major, minor := nsisVersion(tool); major < 3 || major == 3 && minor < 8 {
-		logf("not signing Uninstall.exe: that needs NSIS 3.08 or later, not %s", tool)
+		warnf("Not signing Uninstall.exe: that needs NSIS 3.08 or later, not %s", tool)
 		return "", nil, nil
 	}
 	self, err := os.Executable()
@@ -480,3 +333,20 @@ func nsisEscape(s string) string {
 }
 
 func nsisString(s string) string { return `"` + nsisEscape(s) + `"` }
+
+// downloadProgress shows how much of a download arrived on t.
+type downloadProgress struct {
+	t     *task
+	n     int64
+	total int64 // or -1
+}
+
+func (p *downloadProgress) Write(b []byte) (int, error) {
+	p.n += int64(len(b))
+	if p.total > 0 {
+		p.t.set(fmt.Sprintf("%s of %s", formatSize(p.n), formatSize(p.total)))
+	} else {
+		p.t.set(formatSize(p.n))
+	}
+	return len(b), nil
+}

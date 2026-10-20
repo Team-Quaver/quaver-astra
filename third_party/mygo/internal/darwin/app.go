@@ -38,8 +38,9 @@ type Backend struct {
 	notifyDelegate id
 	// notifyAnswered records that the user has answered whether the app
 	// may show notifications; notifyWaiting holds those shown meanwhile.
-	notifyAnswered bool
-	notifyWaiting  []waitingNotification
+	notifyAnswered  bool
+	notifyWaiting   []waitingNotification
+	notifyPreparing map[string]func()
 
 	stepping       int
 	quitAfterModal bool
@@ -127,6 +128,15 @@ func (b *Backend) Init(h platform.AppHandler, opts platform.AppOptions) error {
 		uintptr(nsString("NSSystemColorsDidChangeNotification")), 0)
 	send(send(workspace(), "notificationCenter"), "addObserver:selector:name:object:", uintptr(b.delegate), uintptr(sel("preferencesChanged:")),
 		uintptr(nsString("NSWorkspaceAccessibilityDisplayOptionsDidChangeNotification")), 0)
+	// The languages and regional formats of the user: Foundation tells of
+	// a new current locale, and System Settings of new languages, a new
+	// time and date format, which the current locale may not change.
+	send(center, "addObserver:selector:name:object:", uintptr(b.delegate), uintptr(sel("localeChanged:")),
+		uintptr(nsString("NSCurrentLocaleDidChangeNotification")), 0)
+	distributed := send(class("NSDistributedNotificationCenter"), "defaultCenter")
+	for _, name := range []string{"AppleLanguagePreferencesChangedNotification", "AppleTimePreferencesChangedNotification", "AppleDatePreferencesChangedNotification"} {
+		send(distributed, "addObserver:selector:name:object:", uintptr(b.delegate), uintptr(sel("localeChanged:")), uintptr(nsString(name)), 0)
+	}
 	return nil
 }
 
@@ -208,6 +218,7 @@ func (b *Backend) Shell() platform.Shell         { return shell{} }
 func (b *Backend) Screen() platform.Screen       { return screen{} }
 func (b *Backend) Theme() platform.Theme         { return theme{b} }
 func (b *Backend) Power() platform.Power         { return power{b} }
+func (b *Backend) Secrets() platform.Secrets     { return secrets{} }
 
 var classesOnce bool
 
@@ -219,6 +230,7 @@ func registerClasses() {
 	registerAppDelegate()
 	registerWindowClasses()
 	registerSurfaceClass()
+	registerClipboardClass()
 	registerAccessClass()
 	registerMenuTarget()
 	registerSchemeHandler()
@@ -331,8 +343,6 @@ func registerAppDelegate() {
 		method("applicationShouldTerminateAfterLastWindowClosed:", func(self id, _ objc.SEL, app id) bool { return false }),
 		method("observeValueForKeyPath:ofObject:change:context:", func(self id, _ objc.SEL, keyPath, object, change id, ctx uintptr) {
 			if goString(keyPath) == "effectiveAppearance" {
-				// AppKit lays the title bars out again after telling us.
-				theBackend.post(theBackend.layoutTrafficLights)
 				theBackend.h.ThemeChanged()
 			}
 		}),
@@ -341,6 +351,9 @@ func registerAppDelegate() {
 		}),
 		method("preferencesChanged:", func(self id, _ objc.SEL, n id) {
 			theBackend.h.ThemeChanged()
+		}),
+		method("localeChanged:", func(self id, _ objc.SEL, n id) {
+			theBackend.h.LocaleChanged()
 		}),
 	})
 }
@@ -354,10 +367,11 @@ func (a appController) SetActivationPolicy(p string) {
 	}
 }
 
-func (a appController) Activate()      { send(a.b.app, "activateIgnoringOtherApps:", 1) }
-func (a appController) Hide()          { send(a.b.app, "hide:", 0) }
-func (a appController) Unhide()        { send(a.b.app, "unhide:", 0) }
-func (a appController) IsHidden() bool { return sendBool(a.b.app, "isHidden") }
+func (a appController) Activate()        { send(a.b.app, "activateIgnoringOtherApps:", 1) }
+func (a appController) AllowForeground() {}
+func (a appController) Hide()            { send(a.b.app, "hide:", 0) }
+func (a appController) Unhide()          { send(a.b.app, "unhide:", 0) }
+func (a appController) IsHidden() bool   { return sendBool(a.b.app, "isHidden") }
 
 func (a appController) SetBadge(label string) {
 	tile := send(a.b.app, "dockTile")
@@ -431,14 +445,6 @@ func (a appController) ShowAboutPanel(o platform.AboutPanelOptions) {
 	send(a.b.app, "orderFrontStandardAboutPanelWithOptions:", uintptr(dict))
 }
 
-func (a appController) Locale() string {
-	langs := arrayItems(send(class("NSLocale"), "preferredLanguages"))
-	if len(langs) == 0 {
-		return "en-US"
-	}
-	return goString(langs[0])
-}
-
 func (a appController) Package() (platform.PackageInfo, bool) {
 	var info platform.PackageInfo
 	ok := false
@@ -471,3 +477,26 @@ func (a appController) ClearBrowsingData(done func(error)) {
 		blk.Release()
 	})
 }
+
+// AddRecentDocument and ClearRecentDocuments use the shared document
+// controller, as Electron does: AppKit lists its recent documents in the
+// Dock menu, and in an Open Recent menu.
+func (a appController) AddRecentDocument(path string) error {
+	withPool(func() {
+		send(send(class("NSDocumentController"), "sharedDocumentController"), "noteNewRecentDocumentURL:", uintptr(fileURL(path)))
+	})
+	return nil
+}
+
+func (a appController) ClearRecentDocuments() error {
+	withPool(func() {
+		send(send(class("NSDocumentController"), "sharedDocumentController"), "clearRecentDocuments:", 0)
+	})
+	return nil
+}
+
+func (appController) SetJumpList(platform.JumpList) error { return nil }
+
+// WebViewAvailable reports whether a window showing a web page can have
+// one. WKWebView is part of macOS, so this holds wherever the app runs.
+func (b *Backend) WebViewAvailable() bool { return hasClass("WKWebView") }

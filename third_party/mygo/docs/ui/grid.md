@@ -1,5 +1,7 @@
 # Grid
 
+<!-- preview grid 260 -->
+
 `ui.Grid` lays its children out in columns and rows, as CSS grid does: they
 fill its cells row by row, and it adds rows as they need them. `Columns(3)`
 makes three columns of equal width; `ColumnTracks` sets them one by one, as
@@ -33,7 +35,9 @@ and row, counting from 1. `RowTracks` and `Rows` set the first rows, which
 
 Children stretch to fill their cells unless `JustifyItems` (horizontally)
 and `AlignItems` (vertically) say otherwise, or `JustifySelf` and
-`AlignSelf` for one; automatic margins center them. Tracks that fit their
+`AlignSelf` for one; automatic margins center them. `AlignItems(ui.Baseline)`
+lines up the first lines of text of the items of each row, as in a
+[row](layout.md#alignment). Tracks that fit their
 content share the room left over unless `Justify` or `AlignContent` place
 them instead.
 

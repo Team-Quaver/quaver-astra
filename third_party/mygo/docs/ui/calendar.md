@@ -1,5 +1,7 @@
 # Calendar
 
+<!-- preview calendar 340 -->
+
 `ui.Calendar` creates a month's calendar choosing the day of a
 `*time.Time`, as SwiftUI's graphical date picker: a click chooses a day, as
 the arrows do while the calendar has the keyboard focus; Page Up and Page
@@ -11,8 +13,13 @@ time of day and the location of the value.
 ui.Calendar(c, &app.day).Label("Due date")
 ```
 
-It shows six weeks from Monday, the days of the months around in gray, and
-marks today.
+It shows six weeks from the first day of the week of the user's regional
+formats (`Context.Region`: Sunday in the United States, Monday in most of
+Europe), the days of the months around in gray, and marks today. Its title
+("January 2026", "2026年1月"), the names of the weekdays and the days' names
+for assistive technology are CLDR's in the window's language, its days in
+the language's digits; the buttons' names are
+[MyGo's own strings](../i18n.md#mygos-own-strings).
 
 For a date in a compact field, use a [date input](date-input.md), which
 opens this calendar below it.

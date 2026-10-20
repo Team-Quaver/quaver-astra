@@ -63,3 +63,53 @@ func TestHotkeyParse(t *testing.T) {
 		t.Errorf("hotkey: %v", hot)
 	}
 }
+
+func TestLyricRequestsTranslationRomanizationAndQRC(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/song/m1/lyric" {
+			t.Errorf("path = %q", r.URL.Path)
+		}
+		q := r.URL.Query()
+		if q.Get("trans") != "1" || q.Get("roma") != "1" || q.Get("qrc") != "1" {
+			t.Errorf("歌词参数 = %v，期望 trans/roma/qrc 全为 1", q)
+		}
+		_, _ = w.Write([]byte(`{"code":0,"msg":"ok","data":{"lyric":"[0,1000]君(0,1000)","trans":"[0,1000]你","roma":"[0,1000]kimi"}}`))
+	}))
+	defer srv.Close()
+	l, err := NewClient(srv.URL).Lyric("m1", true, true, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if l.Trans != "[0,1000]你" || l.Roma != "[0,1000]kimi" {
+		t.Fatalf("双辅助行解析错误：%+v", l)
+	}
+}
+
+func TestDiscoveryHomeResponses(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/recommend/ai-songlist":
+			_, _ = w.Write([]byte(`{"code":0,"msg":"ok","data":{"songlists":[{"id":1,"title":"AI"}],"total":9,"hasmore":true}}`))
+		case "/top/category":
+			_, _ = w.Write([]byte(`{"code":0,"msg":"ok","data":{"groups":[{"id":1,"name":"精选","toplists":[{"id":4,"title":"热歌榜","update_tips":"每日更新"}]}]}}`))
+		case "/top/4/detail":
+			_, _ = w.Write([]byte(`{"code":0,"msg":"ok","data":{"info":{"id":4,"title":"热歌榜","songnum":1},"songs":[{"mid":"m1","name":"歌"}],"total":1,"hasmore":false}}`))
+		default:
+			t.Errorf("unexpected path %s", r.URL.Path)
+		}
+	}))
+	defer srv.Close()
+	c := NewClient(srv.URL)
+	ai, err := c.RecommendAISonglists(1, 8)
+	if err != nil || len(ai.Songlists) != 1 || !ai.HasMore {
+		t.Fatalf("AI 歌单响应错误：%+v %v", ai, err)
+	}
+	top, err := c.ToplistCategories()
+	if err != nil || len(top.Groups) != 1 || top.Groups[0].Toplists[0].ID != 4 {
+		t.Fatalf("榜单分类响应错误：%+v %v", top, err)
+	}
+	d, err := c.ToplistDetail(4, 1, 100)
+	if err != nil || len(d.Songs) != 1 || d.Info.Title != "热歌榜" {
+		t.Fatalf("榜单详情响应错误：%+v %v", d, err)
+	}
+}

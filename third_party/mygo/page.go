@@ -19,8 +19,13 @@ func (w *Window) Page() *Page {
 	return w.pg
 }
 
-// Window returns the window that shows the page.
-func (p *Page) Window() *Window { return p.w }
+// Window returns the window that shows the page: for the page of a web
+// view, the window the web view is in.
+func (p *Page) Window() *Window { return p.w.top() }
+
+// WebView returns the web view whose page this is, nil for the page of a
+// window.
+func (p *Page) WebView() *WebView { return p.w.webView }
 
 // PageOptions configure the web page of a window.
 type PageOptions struct {
@@ -40,4 +45,18 @@ type PageOptions struct {
 	ZoomFactor float64
 	// UserAgent overrides the user agent string.
 	UserAgent string
+	// SafariTabFocus leaves Tab to text fields and elements with a
+	// tabindex, as Safari does while the system's keyboard navigation
+	// (System Settings › Keyboard › Keyboard navigation) is off (macOS).
+	// By default Tab reaches links, buttons, checkboxes and selects too,
+	// as it does in Chrome, Electron and WebView2.
+	SafariTabFocus bool
+	// UserAgentSuffix appends to the page's user agent instead of
+	// replacing it, as UserAgent does: the app's name and version, such as
+	// "MyApp/1.2", for the sites that read them. It appends to UserAgent
+	// too, which SetUserAgent keeps as well; leading and trailing spaces
+	// are trimmed. Some sites serve a bare web view, whose user agent
+	// names no browser, older pages: "Version/17.0 Safari/605.1.15" makes the
+	// page look like Safari.
+	UserAgentSuffix string
 }

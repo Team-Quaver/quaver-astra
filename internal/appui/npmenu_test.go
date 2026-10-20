@@ -78,7 +78,7 @@ func npMenuApp(t *testing.T, qrc string) (*App, *player.Player, *ui.Tester) {
 	}
 	tester := ui.NewTester(app.View, testWinW, testWinH)
 	// 开门动画（上滑 + 淡入）落定再交互，否则按钮还在移动中，点不准。
-	time.Sleep(450 * time.Millisecond)
+	tester.Advance(450 * time.Millisecond)
 	tester.Frame()
 	return app, p, tester
 }
@@ -88,7 +88,7 @@ func reopenNP(t *testing.T, app *App, tester *ui.Tester) {
 	t.Helper()
 	app.npOpen = true
 	tester.Frame()
-	time.Sleep(450 * time.Millisecond)
+	tester.Advance(450 * time.Millisecond)
 	tester.Frame()
 }
 
@@ -196,7 +196,7 @@ func TestNowPlayingMoreMenuJumps(t *testing.T) {
 	}
 }
 
-// TestNowPlayingMoreMenuTranslation 翻译行整行可点，点一次翻一次。
+// TestNowPlayingMoreMenuTranslation 辅助行三档互斥：翻译、音译、关闭。
 func TestNowPlayingMoreMenuTranslation(t *testing.T) {
 	_, p, tester := npMenuApp(t, testQRCXML)
 
@@ -205,18 +205,25 @@ func TestNowPlayingMoreMenuTranslation(t *testing.T) {
 	}
 	tester.Frame()
 	if err := tester.Click("翻译"); err != nil {
-		t.Fatalf("点不到翻译行：%v", err)
+		t.Fatalf("点不到翻译按钮：%v", err)
 	}
 	tester.Frame()
-	if !p.ShowTranslation() {
-		t.Error("点翻译行后应开启翻译")
+	if got := p.LyricAuxMode(); got != "translation" {
+		t.Errorf("点翻译后 mode=%q，期望 translation", got)
 	}
-	if err := tester.Click("翻译"); err != nil {
-		t.Fatalf("点不到翻译行：%v", err)
+	if err := tester.Click("音译"); err != nil {
+		t.Fatalf("点不到音译按钮：%v", err)
 	}
 	tester.Frame()
-	if p.ShowTranslation() {
-		t.Error("再点翻译行应关闭翻译")
+	if got := p.LyricAuxMode(); got != "romanization" {
+		t.Errorf("点音译后 mode=%q，期望 romanization", got)
+	}
+	if err := tester.Click("关闭"); err != nil {
+		t.Fatalf("点不到关闭按钮：%v", err)
+	}
+	tester.Frame()
+	if got := p.LyricAuxMode(); got != "off" {
+		t.Errorf("点关闭后 mode=%q，期望 off", got)
 	}
 }
 
@@ -390,7 +397,7 @@ func TestNowPlayingQualityPillIndependentFromPlayerBar(t *testing.T) {
 	app.npOpen = false
 	app.npQInfoOpen = false
 	tester.Frame()
-	time.Sleep(450 * time.Millisecond) // 等退场动画把浮层摘掉
+	tester.Advance(450 * time.Millisecond) // 等退场动画把浮层摘掉
 	tester.Frame()
 	if err := tester.Click("FLAC"); err != nil {
 		t.Fatalf("点不到播放条的音质胶囊：%v", err)

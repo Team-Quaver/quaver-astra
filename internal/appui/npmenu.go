@@ -25,13 +25,13 @@ import (
 // 底片走 npPop* 的深玻璃口径。
 
 // npPopPanel 给浮层内容列套上深玻璃外观（主项目 .np-menu / .np-qinfo 共用）。
-func npPopPanel(col *ui.Element) *ui.Element {
+func npPopPanel(col ui.Element) ui.Element {
 	return col.Padding(6).Gap(2).Radius(12).Background(npPopBg).Border(1, npPopBorder).
 		Shadow(0, 10, 32, 0, ui.RGBA(0, 0, 0, 0.35))
 }
 
 // npAttachAbove 把浮层面板改锚到按钮上方、右缘对齐（PopoverBase 默认在下方左对齐）。
-func npAttachAbove(panel, anchor *ui.Element) {
+func npAttachAbove(panel, anchor ui.Element) {
 	panel.AttachTo(anchor, ui.AnchorTopRight, ui.AnchorBottomRight).Margin(0, 0, 8, 0)
 }
 
@@ -48,8 +48,8 @@ func (a *App) npJump(target string) {
 
 // npMoreMenu 是 ⋮ 按钮的菜单。扁平列表（对齐主项目 openMoreMenu）：
 // 无在播曲时只留「未在播放」空态，翻译与歌词大小照旧在。
-func (a *App) npMoreMenu(c *ui.Context, anchor *ui.Element) {
-	ui.PopoverBase(c, anchor, &a.npMoreOpen, func(panel *ui.Element) {
+func (a *App) npMoreMenu(c *ui.Context, anchor ui.Element) {
+	ui.PopoverBase(c, anchor, &a.npMoreOpen, func(panel ui.Element) {
 		npAttachAbove(panel, anchor)
 		npPopPanel(ui.Column(c).MinWidth(208)).Children(func() {
 			cur, hasCur := a.PL.Current()
@@ -58,7 +58,7 @@ func (a *App) npMoreMenu(c *ui.Context, anchor *ui.Element) {
 			} else {
 				a.npMenuJumps(c, cur)
 			}
-			a.npMenuTransRow(c)
+			a.npMenuAuxRow(c)
 			a.npMenuSizeRow(c)
 		})
 	})
@@ -109,27 +109,37 @@ func (a *App) npMenuJumps(c *ui.Context, cur player.Song) {
 	})
 }
 
-// npMenuTransRow 是翻译开关行：整行可点（点击目标是行内文字时也算），
-// 右侧 Switch 是同一件事的无障碍入口（读屏、空格键）。
-func (a *App) npMenuTransRow(c *ui.Context) {
-	v := a.PL.ShowTranslation()
-	row := ui.Row(c).FillWidth().Padding(7, 10).Radius(8).AlignItems(ui.Center).Gap(10).Transition(hoverFade)
-	var sw *ui.Element
+// npMenuAuxRow 是歌词辅助行三档选择：关闭 / 翻译 / 音译。两路共用
+// 歌词下方同一行，所以这里做互斥单选，不做两个独立开关。
+func (a *App) npMenuAuxRow(c *ui.Context) {
+	cur := a.PL.LyricAuxMode()
+	row := ui.Column(c).FillWidth().Padding(7, 10).Radius(8).Gap(7)
 	row.Children(func() {
-		ui.Text(c, "翻译").FontSize(fz(13)).TextColor(npPopDim).Grow(1)
-		sw = ui.Switch(c, &v)
+		ui.Text(c, "歌词辅助行").FontSize(fz(13)).TextColor(npPopDim)
+		ui.Row(c).FillWidth().Gap(5).Children(func() {
+			options := []struct{ id, label string }{
+				{"off", "关闭"},
+				{"translation", "翻译"},
+				{"romanization", "音译"},
+			}
+			for _, opt := range options {
+				opt := opt
+				b := ui.ButtonBase(c).Grow(1).Height(28).Radius(7).Center().
+					Border(1, npPopBorder).Transition(hoverFade)
+				b.Children(func() {
+					ui.Text(c, opt.label).FontSize(fz(11.5)).TextColor(npPopDim)
+				})
+				if cur == opt.id {
+					b.Background(npPopHover).Border(1, npPopText.Alpha(0.35))
+				} else if b.Hovered() {
+					b.Background(npPopHover)
+				}
+				if b.Clicked() {
+					a.PL.SetLyricAuxMode(opt.id)
+				}
+			}
+		})
 	})
-	if row.Hovered() {
-		row.Background(npPopHover)
-	}
-	// 行点击与 Switch 各自只触发一条路径（点开关时命中的是开关，不是行）。
-	if sw.Changed() {
-		a.PL.SetShowTranslation(v)
-	}
-	if row.Clicked() {
-		v = !v
-		a.PL.SetShowTranslation(v)
-	}
 }
 
 // npMenuSizeRow 是歌词大小步进行（写 Style.LyricScale，百分数存储）。
@@ -165,7 +175,7 @@ func npMenuItem(c *ui.Context, label string, disabled bool, run func()) {
 	item := ui.ButtonBase(c).FillWidth().Padding(7, 10).Radius(8).Transition(hoverFade)
 	// 文字必须包进 item.Children：MyGo 的元素挂给当前构建栈的父节点，
 	// 不包就是按钮的兄弟，点文字命不中按钮。
-	var txt *ui.Element
+	var txt ui.Element
 	item.Children(func() {
 		// Grow(1) 把文字撑满行宽：ButtonBase 自带 .Center()，不撑的话
 		// 标签会在行里居中，跟主项目 .np-menu-item 的左对齐不符。
@@ -193,8 +203,8 @@ func npMenuEmpty(c *ui.Context, text string) {
 // ===== 音质胶囊：只读音频流信息浮窗 =====
 
 // npQualityInfo 是音质胶囊的浮窗：展示当前播放流的参数，不改任何设置。
-func (a *App) npQualityInfo(c *ui.Context, anchor *ui.Element) {
-	ui.PopoverBase(c, anchor, &a.npQInfoOpen, func(panel *ui.Element) {
+func (a *App) npQualityInfo(c *ui.Context, anchor ui.Element) {
+	ui.PopoverBase(c, anchor, &a.npQInfoOpen, func(panel ui.Element) {
 		npAttachAbove(panel, anchor)
 		npPopPanel(ui.Column(c).MinWidth(228).Padding(10, 12)).Children(func() {
 			a.npQInfoBody(c)

@@ -4,8 +4,8 @@ package linux
 
 import (
 	"errors"
+	"fmt"
 	"os"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -23,21 +23,35 @@ type Backend struct {
 	identifier string
 	running    bool
 
-	windows   map[int]*window
+	windows map[int]*window
+	// flyouts are the flyouts that show on Wayland, in the order they
+	// showed: each popup's parent is the one before or a toplevel.
+	flyouts   []*window
 	byWebView map[ptr]*window
-	nextID    int
+	// webViews are the web views under surfaces (webview.go), by id.
+	webViews map[int]*window
+	nextID   int
+	// frames are the window manager's frames seen last around a decorated
+	// window in its normal state that the user cannot resize and one they
+	// can, which windows that have not shown yet expect (see
+	// window.frameExtents).
+	frames [2]extents
 
-	appMenu    *platform.Menu
-	schemes    map[string]bool
-	signaled   atomic.Bool
-	quitLoops  []ptr
-	popups     []ptr // context menus being shown
-	modals     []modal
-	trays      map[int]*tray
-	nextTray   int
-	grabs      map[int]grab    // global shortcuts on X11
-	portal     portalShortcuts // global shortcuts elsewhere
-	themeHooks bool
+	appMenu *platform.Menu
+	// languages are those SetLanguages told, which the web context
+	// takes as the first web view is made (webLanguages).
+	languages    []string
+	webLanguages bool
+	schemes      map[string]bool
+	signaled     atomic.Bool
+	quitLoops    []ptr
+	popups       []ptr // context menus being shown
+	modals       []modal
+	trays        map[int]*tray
+	nextTray     int
+	grabs        map[int]grab    // global shortcuts on X11
+	portal       portalShortcuts // global shortcuts elsewhere
+	themeHooks   bool
 	// onX11 reports an X11 display, where windows have positions, and
 	// wmName names its window manager.
 	onX11  bool
@@ -71,6 +85,7 @@ func New() *Backend {
 	return &Backend{
 		windows:   map[int]*window{},
 		byWebView: map[ptr]*window{},
+		webViews:  map[int]*window{},
 		schemes:   map[string]bool{},
 		trays:     map[int]*tray{},
 	}
@@ -230,10 +245,11 @@ func (b *Backend) Dialogs() platform.Dialogs   { return dialogs{b} }
 func (b *Backend) Clipboard() platform.Clipboard {
 	return clipboard{}
 }
-func (b *Backend) Shell() platform.Shell   { return shell{} }
-func (b *Backend) Screen() platform.Screen { return screen{} }
-func (b *Backend) Theme() platform.Theme   { return theme{b} }
-func (b *Backend) Power() platform.Power   { return power{b} }
+func (b *Backend) Shell() platform.Shell     { return shell{} }
+func (b *Backend) Screen() platform.Screen   { return screen{} }
+func (b *Backend) Theme() platform.Theme     { return theme{b} }
+func (b *Backend) Power() platform.Power     { return power{b} }
+func (b *Backend) Secrets() platform.Secrets { return secrets{} }
 
 // Callbacks are created once; purego callbacks are never freed.
 var (
@@ -258,16 +274,20 @@ func initCallbacks() {
 			return 0
 		})
 		initWindowCallbacks()
+		initFlyoutCallbacks()
 		initSurfaceCallbacks()
 		initDownloadCallbacks()
 		initMenuCallbacks()
 		initSystemCallbacks()
+		initClipboardCallbacks()
 	})
 }
 
 type appController struct{ b *Backend }
 
 func (a appController) SetActivationPolicy(string) {}
+
+func (a appController) AllowForeground() {}
 
 func (a appController) Activate() {
 	for _, w := range a.b.windows {
@@ -338,16 +358,6 @@ func (a appController) ShowAboutPanel(o platform.AboutPanelOptions) {
 	gtkWidgetDestroy(d)
 }
 
-func (a appController) Locale() string {
-	for _, env := range []string{"LC_ALL", "LC_MESSAGES", "LANG"} {
-		if v := os.Getenv(env); v != "" && v != "C" && v != "POSIX" {
-			v, _, _ = strings.Cut(v, ".")
-			return strings.ReplaceAll(v, "_", "-")
-		}
-	}
-	return "en-US"
-}
-
 func (a appController) Package() (platform.PackageInfo, bool) { return platform.PackageInfo{}, false }
 
 func (a appController) ClearBrowsingData(done func(error)) {
@@ -366,3 +376,43 @@ func (a appController) ClearBrowsingData(done func(error)) {
 	})
 	webkitWebsiteDataManagerClear(manager, all, 0, 0, cbAsyncReady, id)
 }
+
+func (a appController) AddRecentDocument(path string) error {
+	uri := fileURI(path)
+	if uri == "" {
+		return fmt.Errorf("mygo: cannot record %q as a recent document", path)
+	}
+	// GTK records the item asynchronously, under the application name, so
+	// a failure to write the list is not reported here.
+	if !gtkRecentManagerAddItem(gtkRecentManagerGetDefault(), cs(uri)) {
+		return fmt.Errorf("mygo: the recent files list refused %q", path)
+	}
+	return nil
+}
+
+// ClearRecentDocuments removes the items of the shared list that this
+// application registered, including those of earlier runs, and leaves the
+// other applications' items alone.
+func (a appController) ClearRecentDocuments() error {
+	m := gtkRecentManagerGetDefault()
+	name := gGetApplicationName()
+	if name == 0 {
+		return nil
+	}
+	var uris []string
+	list := gtkRecentManagerGetItems(m)
+	for node := list; node != 0; node = field[ptr](node, 8) {
+		info := field[ptr](node, 0)
+		if gtkRecentInfoHasApplication(info, name) {
+			uris = append(uris, goStr(gtkRecentInfoGetURI(info)))
+		}
+		gtkRecentInfoUnref(info)
+	}
+	gListFree(list)
+	for _, uri := range uris {
+		gtkRecentManagerRemoveItem(m, cs(uri), 0)
+	}
+	return nil
+}
+
+func (appController) SetJumpList(platform.JumpList) error { return nil }

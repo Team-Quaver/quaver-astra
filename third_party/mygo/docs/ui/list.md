@@ -1,5 +1,7 @@
 # List
 
+<!-- preview list 290 -->
+
 `ui.List` shows rows of a collection of any length: it builds only the rows
 in view, and a few beyond, so a list of millions of rows is as fast as one
 of ten. Rows take the height of their content, which may differ from row to
@@ -32,6 +34,21 @@ ui.List(c, nil, len(results), func(i int) {
 })
 ```
 
+## Rows wider than the list
+
+`RowWidth(w)` makes the rows at least `w` DIPs wide, as the columns of a
+table ask: where they are wider than the list, it scrolls sideways too, and
+where they are not, they grow to its width. A header above the rows goes
+with them through `ScrollWith`; clip it, so that what scrolls out of it
+does not show. `ui.Table` does this for its columns.
+
+```go
+head := ui.Row(c).Clip().Children(app.titles)
+list := ui.List(c, &app.files, len(app.files)).Grow(1).RowWidth(app.columnsWidth())
+list.Rows(app.row)
+head.ScrollWith(list)
+```
+
 ## List state
 
 A list keeps its place by a row rather than by an offset, so the rows in
@@ -44,9 +61,16 @@ behaves and to move it:
   state of a row (focus, text being edited, …) follows its item, and the
   list keeps its place, and its choice, when rows are added or removed
   above them, as when older messages load.
+- `KeepOffset` keeps a list with a `Key` at its offset as its rows move,
+  rather than with the item at its top, for rows sorted again as they
+  change, as a process monitor's: the rows' state and the choice still
+  follow their items.
 - `FollowEnd` starts the list at its end, and keeps the end in view as rows
   come or grow, until the user scrolls away from it, as a chat or a log
-  does; scrolling back to the end follows it again.
+  does; scrolling back to the end follows it again. `FollowAnimation`
+  makes it glide there, as a spring (`&ui.Smooth`) or a curve, rather
+  than show the end at once: what is added comes up from below, as the
+  chat apps scroll, and the user scrolling stops it.
 - `Header` names the rows heading sections: the header of the section at
   the top stays pinned there while its rows scroll under it, until the next
   header pushes it away. Give headers a background.
@@ -101,6 +125,54 @@ The keys of items gone from the list stay in the selection until you take
 them out. `Element.ClickModifiers` gives the modifier keys of any click, for
 widgets of your own that do the same.
 
+In a list with `Selection`, a right-click on a row outside the choice
+chooses it before its context menu opens, as Finder and Qt do, so the menu
+acts on the row it was opened on; on a chosen row it leaves the choice as it
+is. `MenuKeepsSelection` turns this off: the menu opens on the row clicked,
+whose builder knows its row, and the choice stays. A list with `Selected`
+alone never chooses on a right-click.
+
+```go
+app.files.Selection = &app.chosen
+app.files.MenuKeepsSelection = true // the menu acts on the row clicked alone
+```
+
+`DragSelect`, with `Selection`, chooses rows as the pointer drags over them
+from the row it pressed, as a Shift-click on the row under the pointer
+would (with Cmd, or Ctrl on Linux and Windows, held as the press began,
+besides the rows chosen), scrolling the list as the pointer nears or passes
+its top or bottom. A press on a row not chosen chooses it as the pointer goes
+down, as a spreadsheet does, rather than at the release; a press on a row
+chosen waits for the release, so a drag of the choice keeps it.
+`DragSelecting` reports a drag choosing rows while the pointer holds it, for
+work that follows the choice, as a sum of the rows chosen, to wait until it
+ends. A list cannot both `DragSelect` and `Reorder`.
+
+`ExtendTo(row)` chooses the rows from the one Shift extends from to `row`,
+as a Shift-click on it does, for keys of your own, as one that extends the
+choice to the last row:
+
+```go
+if app.extendToEnd {
+	app.list.ExtendTo(len(app.files) - 1) // after the list is built
+}
+```
+
+What a row holds can tell which part of it a double click landed on without
+taking the click from the row, which goes on choosing: `RowDoubleClicked`
+reports a double click on the row with the pointer over the element.
+`DoubleClicked` on the element would take the click, and the row would not
+choose.
+
+```go
+ui.List(c, &app.list, len(app.files), func(i int) {
+	name := ui.Text(c, app.files[i].Name).Padding(6, 12)
+	if name.RowDoubleClicked() {
+		app.rename(i)
+	}
+})
+```
+
 ## Scrolling
 
 `ScrollTo(row, align)` shows a row at the `ui.Start`, `ui.Center` or
@@ -115,6 +187,7 @@ A chat:
 ```go
 app.chat.Key = func(i int) any { return app.messages[i].ID }
 app.chat.FollowEnd = true
+app.chat.FollowAnimation = &ui.Smooth
 if first, _ := app.chat.Visible(); first < 5 && app.more {
 	app.loadOlder() // above the messages in view, which stay put
 }
@@ -140,13 +213,46 @@ app.list.Reorder = func(rows []int, to int) {
 }
 ```
 
+Rows that are buttons, which open what they show as they are clicked,
+reorder too: a press on a row's button drags the row once the pointer
+moves, and clicks the button if it does not.
+
 See [drag and drop](drag-and-drop.md).
 
 ## The focus
 
-The row holding the keyboard focus stays built when it scrolls out of view,
-so that what is being edited in it stays, and Tab moves the focus from row
-to row, scrolling them into view.
+A list keeps its control identity in `ListState.Handle`. Focus queries work
+before or after constructing the list, and a focus request waits while the
+list is hidden:
+
+```go
+app.list.Handle.OnShortcut(c, ui.Cmd, ui.KeyK, app.openCurrentFile)
+ui.List(c.Key("files"), &app.list, len(app.files)).Grow(1).
+    Rows(func(row ui.ListRow) {
+        text := ui.Text(row.Context, app.files[row.Index].Name).Padding(6, 12)
+        if row.Selected() && row.ListFocused() {
+            text.TextColor(c.Theme().Accent)
+        }
+    })
+```
+
+Call `app.list.Handle.Focus()` on the UI thread to request focus, or
+`Focus(c)` to select a window explicitly. `Focused(c)` reports focus on the
+list and `FocusWithin(c)` includes its descendants. A handle's shortcut
+action runs after construction only if its enabled control is present.
+
+`ListRow` supplies the current Context, row index, selection and list focus.
+`ListState.Selected` or `Selection` enables selection. `ItemKey` gives each
+item a stable key. Configure them before calling Rows.
+
+For custom row builders using `List(c, state, n, func(i int))`, the
+ListState polling helpers resolve this pass's list after construction or
+inside its row callback. Persistent focus and command handling use Handle.
+A Table shares this identity through its ListState, and an Outline through
+its `List` state.
+
+The row holding keyboard focus stays built when it scrolls out of view,
+so editing continues and Tab can scroll the next focused row into view.
 
 ## Accessibility
 

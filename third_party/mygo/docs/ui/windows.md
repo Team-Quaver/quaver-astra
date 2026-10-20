@@ -35,19 +35,56 @@ ui.Row(c).Height(max(bar.Height, 32)).Padding(0, bar.Right+12, 0, bar.Left+12).D
 In a `Frameless` window, `DragWindow` makes an element move the window, and
 a double click on it maximizes the window.
 
+To draw the window controls too, where the view wants them, add
+`HideWindowButtons: true` to the hidden title bar: the system's controls go,
+`c.TitleBar()` is zero, and the window keeps its title bar's edges, which
+resize it, the top one included. The view's buttons call `Minimize`,
+`Maximize`, `Unmaximize` and `Close`.
+
 ## Vibrancy
 
-On macOS, a window's `Vibrancy` shows wherever its native UI draws no
-background. The root draws the theme's by default: make it transparent and
-give backgrounds to the parts that need one, as a sidebar beside opaque
-content does:
+A window's `Vibrancy` shows wherever its native UI draws no background, on
+macOS and, in a window created with one, on Windows 11 22H2 and later.
+`c.Vibrancy()` tells whether it shows: elsewhere, what the view leaves
+transparent shows no material, so draw a background there instead. The
+root draws the theme's by default: make it transparent and give
+backgrounds to the parts that need one, as a sidebar beside opaque content
+does:
 
 ```go
-c.Root().Background(ui.Transparent)
+if c.Vibrancy() {
+	c.Root().Background(ui.Transparent)
+}
 ui.Row(c).Fill().AlignItems(ui.Stretch).Children(func() {
-	app.sidebar(c) // over the material
+	sidebar := ui.Column(c).Width(240)
+	if !c.Vibrancy() {
+		sidebar.Background(c.Theme().Surface)
+	}
+	sidebar.Children(func() { app.sidebar(c) }) // over the material
 	ui.Column(c).Grow(1).Background(c.Theme().Background).Children(func() { app.content(c) })
 })
+```
+
+Text over an opaque background keeps the system's subpixel antialiasing
+(ClearType) under a transparent root; over the material, it is
+antialiased in grayscale. `examples/vibrancy` picks the window's material
+in such a sidebar.
+
+## Closing
+
+A view can close its own window, from a button's click or its callback.
+The window goes at once, by `Destroy` or by a `Close` no `OnClose`
+listener prevents, and the rest of the view builds as it would, with a
+`Context` that still has the theme and the window's size. The frame ends
+there: nothing more is laid out or painted, and no other callback runs.
+Open the window that takes over first, since an app [quits](../app.md)
+when its last window closes:
+
+```go
+if ui.Button(c, "Done").Clicked() {
+	app.showMain()
+	win.Close()
+}
 ```
 
 ## No webview

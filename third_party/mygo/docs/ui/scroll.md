@@ -1,11 +1,15 @@
 # Scroll view
 
+<!-- preview scroll 280 -->
+
 `ui.Scroll` and `ui.ScrollHorizontal` scroll their children with the wheel,
 the touchpad, their scroll bar and the keyboard: the arrow keys, Page Up and
 Page Down, Space, Home and End scroll the container around the focus, or
 under the pointer, unless the focused element takes those keys, as a text
 input does. `ui.ScrollBoth` scrolls both ways, as a canvas or a wide table
-does.
+does. A notch of a mouse wheel glides over a short ease out, as browsers
+scroll it, and notches in a row add up; a touchpad follows the fingers,
+and while the desktop asks for less motion, a notch scrolls at once.
 
 ```go
 ui.Scroll(c).Grow(1).Padding(16).Gap(12).Children(func() {
@@ -17,6 +21,11 @@ ui.Scroll(c).Grow(1).Padding(16).Gap(12).Children(func() {
 
 Give them a size, or grow them in their parent. For the rows of a
 collection, use a [list](list.md), which builds only those in view.
+
+Laid out [right to left](right-to-left.md), a container scrolling sideways
+shows the start of its content, at the right, first, and `ScrollState.X`
+counts from there: 0 is the start and `MaxX` the end, as Flutter's offsets
+are.
 
 ## Keeping the offset
 
@@ -34,6 +43,17 @@ if app.log.Y >= app.log.MaxY {
 	app.log.Y = math.MaxFloat32
 }
 ui.Scroll(c).TrackScroll(&app.log).Grow(1).Children(app.lines)
+```
+
+`ScrollTo(x, y, animation)` scrolls there smoothly, as a spring or a curve
+(see [Motion](motion.md)), turning toward a new place if called again on
+the way; the user scrolling stops it, and `Scrolling()` reports whether it
+is on its way. Where the desktop asks for less motion, it scrolls at once:
+
+```go
+if ui.Button(c, "Back to top").Clicked() {
+	app.feed.ScrollTo(0, 0, ui.Smooth)
+}
 ```
 
 ## Scrolling into view
@@ -56,7 +76,7 @@ The keyboard focus scrolls into view as it moves.
 
 A scroll container whose content overflows it shows the thumbs of its
 scroll bars over its content while the pointer is over it, which the user
-drags; they take no room. The theme's `ScrollbarWidth` sets their width and
+drags; they take no room. Right to left, the vertical bar is on the left. The theme's `ScrollbarWidth` sets their width and
 its `Scrollbar` their color.
 
 `ScrollbarInsets` moves the bars in from the container's edges, CSS style

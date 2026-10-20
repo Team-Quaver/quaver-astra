@@ -29,11 +29,46 @@ import (
 // 例：[1790,2062]那(1790,375)一(2165,309)年 (2474,315)
 // 行从 1790ms 起、持续 2062ms；「那」1790→2165，「一」2165→2474。
 
+// RubySpan 是振假名注音的一小片：词上方显示的小字与自己的时间轴。
+type RubySpan struct {
+	Time float64 // 秒，绝对
+	Dur  float64 // 秒
+	Text string
+}
+
+// RubyFill 返回一片注音在 t 时刻的已唱比例（0..1）。
+func (r RubySpan) Fill(t float64) float32 {
+	switch {
+	case r.Dur <= 0:
+		if t >= r.Time {
+			return 1
+		}
+		return 0
+	case t >= r.Time+r.Dur:
+		return 1
+	case t > r.Time:
+		return float32((t - r.Time) / r.Dur)
+	default:
+		return 0
+	}
+}
+
 // QrcWord 是逐字时间轴上的一个词（QRC 里通常是一个字）。
 type QrcWord struct {
 	Time float64 // 秒，绝对
 	Dur  float64 // 秒
 	Text string
+	Ruby []RubySpan // 词上方振假名；来自 QRC 的 [kana:...] 标签
+}
+
+// HasRuby 报告一行是否带词级振假名。
+func (l QrcLine) HasRuby() bool {
+	for _, w := range l.Words {
+		if len(w.Ruby) > 0 {
+			return true
+		}
+	}
+	return false
 }
 
 // QrcLine 是一行逐字歌词。Words 为空时该行只有行级时间轴。
@@ -42,6 +77,7 @@ type QrcLine struct {
 	Dur   float64 // 秒
 	Text  string
 	Trans string
+	Roma  string
 	Words []QrcWord
 }
 
@@ -113,7 +149,11 @@ func ParseQRC(src string) []QrcLine {
 			body = extractQRCContent(out)
 		}
 	}
-	return parseQRCBody(body)
+	kana := extractKanaTag(body)
+	body = stripKanaTag(body)
+	lines := parseQRCBody(body)
+	applyKanaToLines(lines, kana)
+	return lines
 }
 
 // HasWordTiming 判断这份逐字歌词是否真带词级时间轴。有些来源返回的
@@ -311,28 +351,21 @@ func qrcWords(content string, lineStartMS float64) []QrcWord {
 func qrcToLines(ql []QrcLine) []LyricLine {
 	out := make([]LyricLine, 0, len(ql))
 	for _, l := range ql {
-		out = append(out, LyricLine{Time: l.Time, Text: l.Text, Trans: l.Trans})
+		out = append(out, LyricLine{Time: l.Time, Text: l.Text, Trans: l.Trans, Roma: l.Roma})
 	}
 	return out
 }
 
-// alignQrcTrans 把翻译行按时间就近（<1.5s）对齐进逐字歌词行，
-// 口径与 LRC 的 alignTrans 一致。
-func alignQrcTrans(lines []QrcLine, trans []LyricLine) {
-	used := make([]bool, len(trans))
+// alignQrcAux 把翻译 / 音译两路辅助行分别按时间就近（<1.5s）对齐进逐字
+// 歌词行，口径与 LRC 的 attachAux 一致。
+func alignQrcAux(lines []QrcLine, trans, roma string) {
+	base := make([]LyricLine, len(lines))
 	for i := range lines {
-		best, bestD := -1, 1.5
-		for j := range trans {
-			if used[j] {
-				continue
-			}
-			if d := abs(lines[i].Time - trans[j].Time); d < bestD {
-				bestD, best = d, j
-			}
-		}
-		if best >= 0 {
-			used[best] = true
-			lines[i].Trans = trans[best].Text
-		}
+		base[i].Time = lines[i].Time
+	}
+	AttachLrcAux(base, trans, roma)
+	for i := range lines {
+		lines[i].Trans = base[i].Trans
+		lines[i].Roma = base[i].Roma
 	}
 }

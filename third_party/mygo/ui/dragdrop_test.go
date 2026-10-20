@@ -22,20 +22,20 @@ func TestDragAndDrop(t *testing.T) {
 	var dropped []string
 	var over bool
 	clicks, numbers := 0, 0
-	tt := NewTester(func(c *Context) {
-		Column(c).Gap(20).Padding(20).Children(func() {
-			src := Box(c).Size(100, 40).Label("Source").Drag("hello")
+	tt := coreNewTester(func(c *context) {
+		coreColumn(c).Gap(20).Padding(20).Children(func() {
+			src := coreBox(c).Size(100, 40).Label("Source").Drag("hello")
 			if src.Clicked() {
 				clicks++
 			}
-			target := Box(c).Size(200, 100).Label("Target")
-			if v, ok := Drop[string](target); ok {
+			target := coreBox(c).Size(200, 100).Label("Target")
+			if v, ok := coreDrop[string](target); ok {
 				dropped = append(dropped, v)
 			}
-			_, over = DragOver[string](target)
+			_, over = coreDragOver[string](target)
 			// Inside the target, an element taking numbers, not text.
-			inner := Box(c).Size(50, 30).Label("Numbers")
-			if _, ok := Drop[int](inner); ok {
+			inner := coreBox(c).Size(50, 30).Label("Numbers")
+			if _, ok := coreDrop[int](inner); ok {
 				numbers++
 			}
 		})
@@ -106,9 +106,9 @@ func TestListReorder(t *testing.T) {
 			items = slices.Insert(rest, at, moved...)
 		},
 	}
-	tt := NewTester(func(c *Context) {
-		List(c, &s, len(items), func(i int) {
-			Text(c, items[i]).Padding(8)
+	tt := coreNewTester(func(c *context) {
+		coreList(c, &s, len(items), func(i int) {
+			coreText(c, items[i]).Padding(8)
 		}).Grow(1)
 	}, 300, 400)
 	b, _ := tt.Find("b")
@@ -148,15 +148,75 @@ func TestListReorder(t *testing.T) {
 	}
 }
 
+// A press on a control taking clicks alone, inside an element that drags
+// a value, drags that element once it moves, and is no click; a press that
+// does not move clicks the control. Controls taking the pointer's moves,
+// as a text input, keep them.
+func TestDragAroundControls(t *testing.T) {
+	items := []string{"a", "b", "c", "d"}
+	var moves [][]int
+	clicked := ""
+	s := ListState{Reorder: func(rows []int, to int) {
+		moves = append(moves, append(slices.Clone(rows), to))
+	}}
+	var dropped []string
+	text := ""
+	tt := coreNewTester(func(c *context) {
+		coreColumn(c).Fill().Children(func() {
+			coreList(c, &s, len(items), func(i int) {
+				b := coreButtonBase(c).Padding(8).Children(func() { coreText(c, items[i]) })
+				if b.Clicked() {
+					clicked += items[i]
+				}
+			}).Height(200)
+			coreRow(c).Gap(8).Padding(8).Drag("card").Children(func() {
+				coreButton(c, "Open")
+				coreTextInput(c, &text).Label("Note").Width(120)
+			})
+			target := coreBox(c).Size(200, 60).Label("Target")
+			if v, ok := coreDrop[string](target); ok {
+				dropped = append(dropped, v)
+			}
+		})
+	}, 300, 400)
+	b, _ := tt.Find("b")
+	d, _ := tt.Find("d")
+	// b's button, below d's middle: before the end.
+	drag(tt, b.X, b.Y+b.H/2, d.X, d.Y+d.H)
+	if len(moves) != 1 || !slices.Equal(moves[0], []int{1, 4}) || clicked != "" {
+		t.Fatalf("moves %v, clicked %q", moves, clicked)
+	}
+	// A press that does not move clicks the button.
+	if err := tt.Click("a"); err != nil {
+		t.Fatal(err)
+	}
+	if clicked != "a" || len(moves) != 1 {
+		t.Errorf("clicked %q, moves %v", clicked, moves)
+	}
+	// A button in an element with Drag drags it.
+	open, _ := tt.Find("Open")
+	target, _ := tt.Find("Target")
+	drag(tt, open.X+4, open.Y+4, target.X+20, target.Y+20)
+	if !slices.Equal(dropped, []string{"card"}) {
+		t.Errorf("dropped %q", dropped)
+	}
+	// A text input keeps the pointer's moves, to choose text.
+	note, _ := tt.Find("Note")
+	drag(tt, note.X+4, note.Y+4, target.X+20, target.Y+20)
+	if len(dropped) != 1 {
+		t.Errorf("a text input dragged its row: %q", dropped)
+	}
+}
+
 func TestGridReorder(t *testing.T) {
 	var moves [][]int
 	sel := -1
 	s := GridState{Selected: &sel, Reorder: func(items []int, to int) {
 		moves = append(moves, append(slices.Clone(items), to))
 	}}
-	tt := NewTester(func(c *Context) {
-		GridView(c, &s, 12, 100, 60, func(i int) {
-			Textf(c, "Item %d", i)
+	tt := coreNewTester(func(c *context) {
+		coreGridView(c, &s, 12, 100, 60, func(i int) {
+			coreTextf(c, "Item %d", i)
 		}).Grow(1)
 	}, 448, 400)
 	from, _ := tt.Find("Item 0")

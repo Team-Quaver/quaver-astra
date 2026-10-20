@@ -128,15 +128,24 @@ func (a apiAdapter) Resolve(mid, mediaMid string, songType int64, tier string, d
 	}, nil
 }
 
-func (a apiAdapter) FetchLyric(mid string, trans bool) (string, string, error) {
+func (a apiAdapter) FetchLyric(mid string, trans, roma bool) (string, string, string, error) {
 	// qrc=true：上游把逐字歌词塞在同一个 Lyric 字段里（XML 信封），
 	// 没有逐字时间轴时自动回落普通 LRC。player 侧先按 QRC 解析、
-	// 解析不出逐字再按行级解析（见 player.ParseQRC）。
-	l, err := a.c.Lyric(mid, trans, true)
+	// 解析不出逐字再按行级解析（见 player.ParseQRC）。trans/roma 同时取，
+	// 切辅助行档位时就不用再走网络。
+	l, err := a.c.Lyric(mid, trans, roma, true)
 	if err != nil {
-		return "", "", err
+		return "", "", "", err
 	}
-	return l.Lyric, l.Trans, nil
+	return l.Lyric, l.Trans, l.Roma, nil
+}
+
+func (a apiAdapter) GuessSongs(rounds int) ([]player.Song, error) {
+	res, err := a.c.RecommendGuess(rounds)
+	if err != nil {
+		return nil, err
+	}
+	return toPlayerSongs(res.Songs), nil
 }
 
 func (a apiAdapter) LikeSong(songID, writeType int64, like bool) error {

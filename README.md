@@ -14,7 +14,7 @@ Quaver Music Astra，是一个基于 MyGO 的，以 Quaver Music 轻量化为目
 
 Astra 名字取自《绝区零》角色耀嘉音（Astra Yao），也可以是《无畏契约》角色星礈（Astra），由于想名部想了半天，这个名字容易冲突，且能代表星星闪耀，该名字并不会成为 Quaver Music 开发代号。
 
-- **UI**：[MyGo](https://github.com/egoist/mygo) 的原生 UI 工具包（`ui` 包）——视图是状态的函数，由 MyGo 在 GPU 上直接绘制（Linux 走 OpenGL），不开 WebKitGTK，窗口秒开、内存占用小。Linux GtkGLArea 渲染回调已固定在持有 GL context 的原生线程，避免 Go 调度迁移后 libepoxy 找不到当前 GLX/EGL context；检测到 NVIDIA 显卡时在加载 GL 前设置 `__GL_THREADED_OPTIMIZATIONS=0`。
+- **UI**：[MyGo](https://github.com/egoist/mygo) 的原生 UI 工具包（`ui` 包）——视图是状态的函数，由 MyGo 在 GPU 上直接绘制（Linux 走 OpenGL），不开 WebKitGTK，窗口秒开、内存占用小。已合并 MyGo 主线（增量绘制、文本测量缓存、局部布局重算、滚动惯性）；Linux GtkGLArea 渲染回调固定在持有 GL context 的原生线程，避免 Go 调度迁移后 libepoxy 找不到当前 GLX/EGL context；检测到 NVIDIA 显卡时在加载 GL 前设置 `__GL_THREADED_OPTIMIZATIONS=0`。
 - **后端**：[Typhoeus-go](https://github.com/Team-Quaver/typhoeus-go)（子模块 `third_party/Typhoeus-go`）**进程内嵌**——不再是 sidecar 独立进程，`quaver-server` 的完整路由表直接挂在本进程 `127.0.0.1` 的随机端口上。
 
 > [!CAUTION]
@@ -69,15 +69,16 @@ mpv 定位优先级与 Quaver Music 本体（`ui/electron/audio/dist/bins.js`）
 
 ## 功能（轻量版范围）
 
-- 首页：今日精选 hero、新歌速递、推荐歌单网格
+- 首页：无限电台快速开始、新歌速递、推荐歌单、AI 歌单、排行榜分组
+- 歌单页：我创建的歌单与收藏的歌单集中展示；侧栏不再重复铺歌单，导航组在头像与底栏之间垂直居中
 - 歌单详情：头部 + 歌曲列表，触底翻页、收藏歌单
 - 搜索：歌曲 / 歌单两个 tab，热搜词、翻页
-- 我喜欢 / 每日 30 首 / 猜你喜欢（换一批）
-- **收藏的歌单**：我收藏的他人歌单网格、悬停播放、加载更多（登录态变化时自动重取）
+- 我喜欢 / 每日 30 首
+- **猜你喜欢 · 无限电台**：首轮 5 首，轮末自动续歌并裁掉历史；只向前播放，禁用上一首、插队、循环与随机，离开页面不打断
 - 登录：QQ / 微信 / 手机三通道扫码（自动生成 + 轮询），凭证加密保存、重启自动恢复
 - **个人中心**（点侧栏头像进入）：昵称、UID、当前档位，以及超级会员 / 豪华绿钻 / 绿钻**各自的到期时间**——三个档位是独立权益，到期日不同就不合并成一行；上游只给标志不给时间时如实写「未提供到期时间」。退出登录与「清除已保存的凭证」也收在这一页（原先埋在「设置 → 关于」最底下，点头像只会跳设置的人根本找不到）
-- 正在播放页：模糊封面底、**逐字（QRC）歌词**——逐字卡拉OK 高亮，无逐字时间轴时自动回退行级 + 翻译（点击跳转、跟随高亮）、音质胶囊
-- 播放条：整条拖拽 seek、音量弹层、循环模式、随机播放（每日一套确定性顺序）、音质菜单（会话级切换）、红心收藏、队列面板（可拖拽排序）
+- 正在播放页：模糊封面底、**逐字（QRC）歌词与振假名注音**——`[kana:]` Ruby 画在词上方，逐字卡拉OK 高亮；无逐字时间轴时自动回退行级。辅助行支持**关闭 / 翻译优先 / 音译优先**三档，缺首选那一路时自动回落另一路（点击跳转、跟随高亮）、音质胶囊
+- 播放条：整条拖拽 seek、音量弹层、循环模式、随机播放（每日一套确定性顺序）、音质菜单（会话级切换）、红心收藏、队列面板（可拖拽排序）；「回退到全景声」同时降权 7.1 与 5.1
 - 播放队列：插队播放 / 加入队列 / 删除 / 清空；双击歌曲即播
 - **会话记忆**：退出时保留播放列表、当前曲目、循环模式与随机开关，以及正在播放的进度（播放中每跨 5 秒节流落盘，切歌/暂停/seek/退出即时；崩溃最多丢 5 秒进度）。下次启动原地恢复但只「就位」——不自动连网、不自动起播，按播放键（含媒体键/托盘）从退出位置续播。落盘在 `quaver-astra.json` 的 `Session.Queue` / `Session.Pos` 两个键，队列快照与进度按当前曲 mid 对齐，进度跟错歌时作废、队列照恢复
 - 封面动态取色：主题强调色随当前封面变化（含深浅色两套映射）
@@ -140,7 +141,7 @@ player.startCurrent
 
 Astra 缺少以下内容：搜索联想、无歌单处理功能。桌面快捷键已实现：全局 + 窗口内两套绑定，见「设置 → 快捷键」。
 
-**逐字歌词**：请求歌词时带 `qrc=1`，上游把 QRC 明文塞在同一个 `lyric` 字段里（XML 信封形态，Typhoeus-go 在服务端解密）。解析在 `internal/player/qrc.go`；服务端万一解密失败、原样透传密文，再由 [jixunmoe-go/qrc](https://github.com/jixunmoe-go/qrc) 在本地兜底解一层。
+**逐字歌词**：请求歌词时带 `qrc=1&trans=1&roma=1`，上游把 QRC 明文塞在同一个 `lyric` 字段里（XML 信封形态，Typhoeus-go 在服务端解密）。解析在 `internal/player/qrc.go`；服务端万一解密失败、原样透传密文，再由 [jixunmoe-go/qrc](https://github.com/jixunmoe-go/qrc) 在本地兜底解一层。`[kana:]` 振假名在 `internal/player/qrc_kana.go` 按全曲可注音字符流对齐；翻译与音译分别挂行，由 `player.AuxText` 按档位取一路。
 
 **明暗主题**：应用自己按 `Style.Theme` 定明暗，不依赖 MyGo 的 `Theme.IsDark()`——它的 Linux 后端 `SetSource("light")` 只清 GTK 的
 

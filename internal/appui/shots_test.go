@@ -9,6 +9,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Team-Quaver/quaver-astra/internal/backend"
+	"github.com/Team-Quaver/quaver-astra/internal/conf"
 	"github.com/Team-Quaver/quaver-astra/internal/player"
 	"github.com/Team-Quaver/quaver-astra/internal/streaminfo"
 
@@ -22,6 +24,16 @@ import (
 //	QUAVER_SHOTS_DIR=.workbuddy/shots go test ./internal/appui/ -run TestUIShots
 //
 // 未设环境变量时跳过，不拖慢常规测试。
+type shotRadioBackend struct{ loggedBackend }
+
+func (shotRadioBackend) GuessSongs(int) ([]player.Song, error) {
+	return []player.Song{
+		{Mid: "r1", Title: "夜に駆ける", Artists: "YOASOBI", Album: "THE BOOK"},
+		{Mid: "r2", Title: "群青", Artists: "YOASOBI", Album: "THE BOOK"},
+		{Mid: "r3", Title: "花に亡霊", Artists: "ヨルシカ", Album: "盗作"},
+	}, nil
+}
+
 func TestUIShots(t *testing.T) {
 	dir := os.Getenv("QUAVER_SHOTS_DIR")
 	if dir == "" {
@@ -59,6 +71,13 @@ func TestUIShots(t *testing.T) {
 	time.Sleep(450 * time.Millisecond)
 	shot(baseTester, "np-lyrics.png")
 
+	// 振假名 + 翻译辅助行。
+	kanaQRC := "[0,1800]君(0,900)の(900,900)名(1800,1200)は(3000,700)\n[kana:1きみ1な1な]"
+	kanaApp, kanaTester := npTestAppLyrics(t, color.RGBA{R: 96, G: 148, B: 210, A: 255}, kanaQRC, "[00:00.00]你的名字")
+	kanaApp.PL.SetShowTranslation(true)
+	kanaTester.Advance(450 * time.Millisecond)
+	shot(kanaTester, "np-kana.png")
+
 	// ⋮ 菜单
 	_, _, tester := npMenuApp(t, testQRCXML)
 	if err := tester.Click("更多操作"); err != nil {
@@ -90,13 +109,61 @@ func TestUIShots(t *testing.T) {
 	time.Sleep(450 * time.Millisecond)
 	shot(qtester, "np-queue.png")
 
-	// 侧栏「我创建的歌单」：行首画歌单封面（取不到封面的那首退回♪）
-	cov := sideCoverApp(t, false)
-	shot(ui.NewTester(cov.View, testWinW, testWinH), "sidebar-covers.png")
+	// 首页：无限电台 + 新歌 + 推荐 + AI 歌单 + 排行榜。
+	homeApp := sideLoggedApp(t, false)
+	homeApp.Router = ui.NewRouter("/")
+	homeApp.home = homeState{
+		loaded: true,
+		recs: []backend.SonglistSummary{
+			{ID: 1, Title: "今日循环", Picurl: "", Listennum: 328000},
+			{ID: 2, Title: "深夜通勤", Picurl: "", Listennum: 182000},
+			{ID: 3, Title: "华语新声", Picurl: "", Listennum: 92000},
+			{ID: 4, Title: "独立摇滚", Picurl: "", Listennum: 76000},
+		},
+		newsong: []player.Song{
+			{Mid: "n1", Title: "自由的你", Artists: "G.E.M.邓紫棋"},
+			{Mid: "n2", Title: "以我之见", Artists: "谭维维"},
+			{Mid: "n3", Title: "醒时歌", Artists: "周传雄/希林娜依高"},
+		},
+		ai:       []backend.SonglistSummary{{ID: 11, Title: "AI · 雨夜 Synthwave"}, {ID: 12, Title: "AI · 清晨 Neo Soul"}},
+		aiLoaded: true,
+		topGroups: []backend.ToplistGroup{{
+			Name: "精选",
+			Toplists: []backend.ToplistSummary{
+				{ID: 4, Title: "热歌榜", UpdateTips: "每日更新"},
+				{ID: 26, Title: "新歌榜", UpdateTips: "每日更新"},
+			},
+		}},
+		topLoaded: true,
+	}
+	shot(ui.NewTester(homeApp.View, 1280, 1400), "home.png")
 
-	// 收起态：封面仍要以侧栏中线居中
-	covSmall := sideCoverApp(t, true)
-	shot(ui.NewTester(covSmall.View, testWinW, testWinH), "sidebar-covers-collapsed.png")
+	// 猜你喜欢：无限电台主舞台。
+	radioBackend := shotRadioBackend{}
+	radioPlayer := player.New(radioBackend, nilEngine{}, &nullPrefs{})
+	radioPlayer.StartRadio(false)
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if radioPlayer.RadioActive() && radioPlayer.QueueLen() > 0 {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	radioApp := &App{
+		PL:            radioPlayer,
+		Conf:          conf.Open(t.TempDir()),
+		Router:        ui.NewRouter("/guess"),
+		Covers:        NewCoverCache(),
+		playlist:      map[int64]*playlistState{},
+		lastLyricLine: -2,
+	}
+	shot(ui.NewTester(radioApp.View, testWinW, testWinH), "guess-radio.png")
+
+	// 歌单页：我创建的歌单 + 我收藏的歌单。
+	cov := sideCoverApp(t, false)
+	cov.Router = ui.NewRouter("/playlists")
+	cov.favLists = favListsState{loaded: true}
+	shot(ui.NewTester(cov.View, testWinW, testWinH), "playlists.png")
 
 	// 设置 - 快捷键：一格处于录制态，绑定态与录制态同框
 	hk, _, _ := hotkeyApp(t)

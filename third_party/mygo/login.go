@@ -2,8 +2,6 @@ package mygo
 
 import (
 	"os"
-	"os/exec"
-	"runtime"
 	"slices"
 )
 
@@ -87,28 +85,15 @@ var startDir, _ = os.Getwd()
 func (a *Application) Relaunch() {
 	postMain(func() {
 		a.relaunch = true
+		// On Windows the app gives up the foreground as its windows close,
+		// and the app it starts after could not take it: its windows would
+		// open behind the one in front. It passes the right on while it
+		// still has it.
+		backend().App().AllowForeground()
 		if a.prepareQuit() {
 			backend().Quit()
 		} else {
 			a.relaunch = false
 		}
 	})
-}
-
-// relaunchNow starts the app again; it runs after the quit sequence.
-func relaunchNow() {
-	if launchedByDev() {
-		os.Exit(devRelaunchCode)
-	}
-	// The executable the app started from, which an update may have
-	// replaced.
-	cmd := exec.Command(startExe, os.Args[1:]...)
-	cmd.Dir = startDir
-	if runtime.GOOS != "windows" {
-		// GUI executables on Windows have no standard streams to pass on.
-		cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
-	}
-	if cmd.Start() == nil {
-		_ = cmd.Process.Release()
-	}
 }

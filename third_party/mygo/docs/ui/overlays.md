@@ -63,8 +63,9 @@ menus, are built from what those are made of:
   that one is: its point `self` on the point `at` of the target, as
   `AttachTo(button, ui.AnchorBottomLeft, ui.AnchorTopLeft)` below a button.
   Where it would leave the window, it goes to the other side, or the other
-  way along the target, then moves into the window. Its margins keep it
-  apart from the target. It is the target's popover: its elements follow
+  way along the target, then moves into the window; one that scrolls
+  vertically is no taller than the room on the target's larger side, and
+  scrolls. Its margins keep it apart from the target. It is the target's popover: its elements follow
   the target as Tab moves.
 - `PressedOutside` reports a press outside an element, its target and the
   popovers of what is inside it, as a popover closes for.

@@ -81,12 +81,15 @@ func (b profileBackend) LikedPage(int, int) ([]player.Song, int64, bool, error) 
 	return nil, 0, false, nil
 }
 func (b profileBackend) Playlists() ([]player.PlaylistRef, error) { return nil, nil }
+func (b profileBackend) GuessSongs(int) ([]player.Song, error)    { return nil, nil }
 func (b profileBackend) Tiers() (*player.TierTable, error)        { return nil, nil }
 func (b profileBackend) Resolve(string, string, int64, string, []string) (*player.StreamInfo, error) {
 	return nil, nil
 }
-func (b profileBackend) FetchLyric(string, bool) (string, string, error) { return "", "", nil }
-func (b profileBackend) LikeSong(int64, int64, bool) error               { return nil }
+func (b profileBackend) FetchLyric(string, bool, bool) (string, string, string, error) {
+	return "", "", "", nil
+}
+func (b profileBackend) LikeSong(int64, int64, bool) error { return nil }
 
 // profileApp 造一个停在 /profile、已登录的 App。
 func profileApp(t *testing.T, vipData string) (*App, *ui.Tester, *profileStub) {

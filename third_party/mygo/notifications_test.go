@@ -1,3 +1,5 @@
+//go:build !js
+
 package mygo
 
 import (
@@ -112,6 +114,31 @@ func TestNotificationOptionsReachTheBackend(t *testing.T) {
 	}
 	if got.Group != "chat:ada" {
 		t.Errorf("Group = %q, want chat:ada", got.Group)
+	}
+}
+
+func TestNotificationSenderSnapshot(t *testing.T) {
+	sender := &NotificationSender{ID: "ada@example.com", Name: "Ada", Avatar: []byte{1, 2, 3}}
+	n := NewNotification(NotificationOptions{ID: "mail:7", Group: "thread:3", Title: "Ada", Body: "Hello", Sender: sender})
+	t.Cleanup(n.Close)
+	// An app may reuse its sender and image buffer after construction.
+	sender.Name, sender.Avatar[0] = "Changed", 9
+	if err := n.Show(); err != nil {
+		t.Fatal(err)
+	}
+	got := fb.Notification("mail:7")
+	if got == nil || got.Sender == nil || got.Sender.ID != "ada@example.com" || got.Sender.Name != "Ada" || !slices.Equal(got.Sender.Avatar, []byte{1, 2, 3}) {
+		t.Fatalf("sender snapshot: %+v", got)
+	}
+	clicks := 0
+	n.OnClick(func() { clicks++; n.Close() })
+	clickNotification(t, n)
+	if clicks != 1 || fb.Notification("mail:7") != nil {
+		t.Fatal("sender notification did not use the normal click/close lifecycle")
+	}
+	fallback := showNotification(t, NotificationOptions{Title: "Ada", Sender: &NotificationSender{ID: "ada"}})
+	if got := fb.Notification(fallback.ID()); got.Sender.Name != "Ada" {
+		t.Fatal("an unnamed sender did not use the notification title")
 	}
 }
 

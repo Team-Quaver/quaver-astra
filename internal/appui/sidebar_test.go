@@ -98,12 +98,15 @@ func (loggedBackend) LikedPage(int, int) ([]player.Song, int64, bool, error) {
 func (loggedBackend) Playlists() ([]player.PlaylistRef, error) {
 	return []player.PlaylistRef{{ID: 1, Title: "博客"}, {ID: 2, Title: "古典"}}, nil
 }
-func (loggedBackend) Tiers() (*player.TierTable, error) { return nil, nil }
+func (loggedBackend) GuessSongs(int) ([]player.Song, error) { return nil, nil }
+func (loggedBackend) Tiers() (*player.TierTable, error)     { return nil, nil }
 func (loggedBackend) Resolve(string, string, int64, string, []string) (*player.StreamInfo, error) {
 	return nil, nil
 }
-func (loggedBackend) FetchLyric(string, bool) (string, string, error) { return "", "", nil }
-func (loggedBackend) LikeSong(int64, int64, bool) error               { return nil }
+func (loggedBackend) FetchLyric(string, bool, bool) (string, string, string, error) {
+	return "", "", "", nil
+}
+func (loggedBackend) LikeSong(int64, int64, bool) error { return nil }
 
 // sideLoggedApp 渲染已登录形态的 App，等异步用户信息就绪后返回。
 // 路由停在 /settings：导航区没有激活项，像素扫描不会被激活底色污染。
@@ -298,7 +301,7 @@ func TestSidebarCollapsedIconsCentered(t *testing.T) {
 // 历史根因：新歌速递列写死 Width(430)，hero Grow(1) 无最小宽——1000 宽
 // 下 hero 只剩 290，扣掉 160 头图、内边距与间距后文字列仅 ~76px，
 // 「PLAYLIST · 今日精选」折成两行，标题断得不成样子。
-func TestHomeHeroNotCrushed(t *testing.T) {
+func TestHomeQuickStartNotCrushed(t *testing.T) {
 	app := sideLoggedApp(t, false)
 	app.Router = ui.NewRouter("/")
 	app.home = homeState{
@@ -320,13 +323,16 @@ func TestHomeHeroNotCrushed(t *testing.T) {
 	}
 	tester := ui.NewTester(app.View, testWinW, testWinH)
 
-	label := mustFind(t, tester, "PLAYLIST · 今日精选")
-	if label.H > 22 {
-		t.Errorf("精选标签高度 %.0f，折行了（单行约 17）——hero 文字列仍被挤压", label.H)
+	radio := mustFind(t, tester, "无限电台")
+	if radio.W < 40 || radio.H > 24 {
+		t.Errorf("无限电台标签被压成 %.0fx%.0f，应保持单行可读", radio.W, radio.H)
 	}
 	news := mustFind(t, tester, "新歌速递")
-	if news.Y < label.Y+60 {
-		t.Errorf("新歌速递（y=%.0f）仍与 hero（y=%.0f）同行，折行未生效", news.Y, label.Y)
+	if news.W < 60 || news.H > 24 {
+		t.Errorf("新歌速递标题被压成 %.0fx%.0f", news.W, news.H)
+	}
+	if first := mustFind(t, tester, "自由的你"); first.W < 80 {
+		t.Errorf("新歌行标题宽度只有 %.0f，速递列仍被挤压", first.W)
 	}
 }
 
@@ -337,7 +343,7 @@ func TestHomeHeroNotCrushed(t *testing.T) {
 func TestSidebarNavRowsEvenlySpaced(t *testing.T) {
 	_, tester := sideTestApp(t, false)
 
-	labels := []string{"首页", "猜你喜欢", "每日 30 首", "我喜欢", "收藏的歌单"}
+	labels := []string{"首页", "猜你喜欢", "每日 30 首", "我喜欢", "歌单"}
 	boxes := make([]ui.Rect, 0, len(labels))
 	for _, l := range labels {
 		boxes = append(boxes, mustFind(t, tester, l))
@@ -370,7 +376,7 @@ func TestSidebarCollapsedFooterIsVertical(t *testing.T) {
 	// 侧栏水平中心：收起态按钮以侧栏宽度居中
 	const x0 = sideWidthSmall / 2
 
-	// 只看侧栏底部：歌单区的音符图标也在 x0 这一列上，扫描起点必须
+	// 只看侧栏底部：中间导航图标也在 x0 这一列上，扫描起点必须
 	// 落在它们下方，否则会一起被聚类进来。底部按钮紧贴侧栏下缘。
 	clusters := iconClusters(t, tester, x0, 520, testWinH)
 	if len(clusters) < 2 {
@@ -396,7 +402,7 @@ func TestSidebarCollapsedFooterIsVertical(t *testing.T) {
 		first.midX, first.midY, second.midX, second.midY)
 }
 
-// ===== 歌单行首的封面 =====
+// ===== 歌单页夹具 =====
 
 // coverBackend 在 loggedBackend 之上给歌单配上封面地址。
 //
@@ -497,99 +503,48 @@ func colorBox(img image.Image, x0, x1, y0, y1 int, col color.RGBA) (image.Rectan
 	return box, found
 }
 
-// TestSidebarPlaylistCovers 展开态：歌单行首画歌单封面，而不是通用♪。
-//
-// 三条断言各自钉住一个容易回退的点：
-//   - 封面真的被画上（用户原话：「把歌单图标改成歌单封面」）；
-//   - 封面是正方形——行里标题 Grow(1)，元素默认 shrink=1，长标题会把
-//     封面压成竖扁的矩形，所以必须 Shrink(0)；
-//   - 封面左缘与导航图标同列：侧栏的图标列是头像/导航项/歌单共用的基准线，
-//     封面自己大一号就会把歌单标题推离导航项的标题列。
-//
-// 没封面的「私藏」仍画♪：空方块比♪更难看。
-func TestSidebarPlaylistCovers(t *testing.T) {
+// TestSidebarHasNoPlaylistRows 歌单已全部收进歌单页，侧栏不再重复列歌单。
+func TestSidebarHasNoPlaylistRows(t *testing.T) {
 	app := sideCoverApp(t, false)
 	tester := ui.NewTester(app.View, testWinW, testWinH)
 	tester.Frame()
-
-	blog := mustFind(t, tester, "博客")
-	classic := mustFind(t, tester, "古典")
-	plain := mustFind(t, tester, "私藏")
-	home := mustFind(t, tester, "首页")
-
-	// 只量行首图标列（x<44），免得把标题文字的墨迹算进来。
-	img := tester.Image()
-	box, ok := colorBox(img, 12, 44, int(blog.Y)-4, int(blog.Y+blog.H)+4, coverBlog)
-	if !ok {
-		t.Fatalf("「博客」行首没画出封面色 %v——侧栏仍在画♪？", coverBlog)
+	for _, title := range []string{"博客", "古典", "私藏"} {
+		if tester.HasText(title) {
+			t.Errorf("侧栏仍列出了歌单 %q；应移入 /playlists", title)
+		}
 	}
-	w, h := box.Dx()+1, box.Dy()+1
-	if d := w - h; d > 2 || d < -2 {
-		t.Errorf("封面被压成 %dx%d（应为正方形），行内 shrink 未关", w, h)
-	}
-	if w < int(sideIconSize)-4 || w > int(sideIconSize)+4 {
-		t.Errorf("封面宽 %d，偏离图标列基准 %v 太远", w, sideIconSize)
-	}
-	if math.Abs(float64(box.Min.Y+box.Max.Y)/2-float64(blog.Y+blog.H/2)) > 2 {
-		t.Errorf("封面垂直中心 %d 与标题中心 %.0f 不齐", (box.Min.Y+box.Max.Y)/2, blog.Y+blog.H/2)
-	}
-
-	// 与导航图标同列
-	ico, err := inkBounds(tester, 2, 45, int(home.Y)-6, int(home.Y+home.H)+6)
-	if err != nil {
-		t.Fatalf("扫不到首页图标：%v", err)
-	}
-	if d := box.Min.X - ico.minX; d < -3 || d > 3 {
-		t.Errorf("封面左缘 x=%d 与导航图标左缘 x=%d 相差 %dpx，未同列", box.Min.X, ico.minX, d)
-	}
-
-	// 第二首歌单画的是自己的封面，不是第一首的
-	box2, ok := colorBox(img, 12, 44, int(classic.Y)-4, int(classic.Y+classic.H)+4, coverClassic)
-	if !ok {
-		t.Fatal("「古典」行首没画出它自己的封面色")
-	}
-	if box2.Min.Y <= box.Min.Y {
-		t.Errorf("两行封面的 y 顺序反了：%+v vs %+v", box, box2)
-	}
-
-	// 无封面：行首有墨迹（♪），但不是任何一张封面的颜色
-	if b, ok := colorBox(img, 12, 44, int(plain.Y)-4, int(plain.Y+plain.H)+4, coverBlog); ok {
-		t.Errorf("「私藏」没封面却画出了博客的封面：%+v", b)
-	}
-	if b, ok := colorBox(img, 12, 44, int(plain.Y)-4, int(plain.Y+plain.H)+4, coverClassic); ok {
-		t.Errorf("「私藏」没封面却画出了古典的封面：%+v", b)
-	}
-	if _, err := inkBounds(tester, 12, 44, int(plain.Y)-2, int(plain.Y+plain.H)+2); err != nil {
-		t.Errorf("「私藏」行首连♪都没有：%v", err)
+	if !tester.HasText("歌单") {
+		t.Error("侧栏应有歌单页入口")
 	}
 }
 
-// TestSidebarPlaylistCoversCollapsedCentered 收起态：封面同样以侧栏中线居中。
-//
-// 收起态只剩行首图，封面若比♪宽，居中算错就会顶破 64 宽的内容区——
-// 这是历史上「图标全部靠右」的复发点。
-func TestSidebarPlaylistCoversCollapsedCentered(t *testing.T) {
-	app := sideCoverApp(t, true)
+// TestPlaylistsPageListsAll 歌单页同时承载我创建的歌单与我收藏的歌单。
+func TestPlaylistsPageListsAll(t *testing.T) {
+	app := sideCoverApp(t, false)
+	app.favLists = favListsState{loaded: true}
+	tester := ui.NewTester(app.playlistsView, testWinW, testWinH)
+	tester.Frame()
+	for _, s := range []string{"我创建的歌单", "博客", "古典", "私藏", "我收藏的歌单"} {
+		if !tester.HasText(s) {
+			t.Errorf("歌单页缺少 %q；当前文本：%v", s, tester.Texts())
+		}
+	}
+}
+
+// TestSidebarNavVerticallyCentered 头像固定顶部、底栏固定底部，导航组在
+// 两者之间垂直居中。
+func TestSidebarNavVerticallyCentered(t *testing.T) {
+	app := sideLoggedApp(t, false)
 	tester := ui.NewTester(app.View, testWinW, testWinH)
 	tester.Frame()
-
-	img := tester.Image()
-	// 收起态没有文字锚点可对 y，但封面颜色是每首歌单独一份，
-	// 于是整条侧栏扫一遍就能定位它那一行（行首图标列在 y≈256 之后）。
-	var prevY int = -1
-	for i, col := range []color.RGBA{coverBlog, coverClassic} {
-		box, ok := colorBox(img, 2, int(sideWidthSmall)-2, 10, 530, col)
-		if !ok {
-			t.Fatalf("收起态第 %d 行没画出封面 %v——侧栏仍在画♪？", i, col)
-		}
-		if d := (box.Min.X+box.Max.X)/2 - int(sideWidthSmall/2); d < -3 || d > 3 {
-			t.Errorf("收起态第 %d 行封面中心 x=%d（范围 %d..%d）偏离侧栏中线 %v 达 %dpx",
-				i, (box.Min.X+box.Max.X)/2, box.Min.X, box.Max.X, sideWidthSmall/2, d)
-		}
-		if box.Min.Y <= prevY {
-			t.Errorf("第 %d 行封面 y=%d 未排在上一行（y=%d）下方", i, box.Min.Y, prevY)
-		}
-		prevY = box.Max.Y
+	user := mustFind(t, tester, "个人中心")
+	first := mustFind(t, tester, "首页")
+	last := mustFind(t, tester, "歌单")
+	footer := mustFind(t, tester, "收起侧栏")
+	navMid := (first.Y + last.Y + last.H) / 2
+	freeMid := ((user.Y + user.H) + footer.Y) / 2
+	if math.Abs(float64(navMid-freeMid)) > 3 {
+		t.Errorf("导航组中心 y=%.1f，与头像/底栏之间的中心 %.1f 偏差过大", navMid, freeMid)
 	}
 }
 

@@ -1,11 +1,23 @@
 # Views
 
 The view is a function from your app's state to its interface. MyGo calls
-it on the main thread to build every frame: after input, after you change
-the state (see [below](#change-the-state-from-other-goroutines)), and while
-something animates. Elements live for one frame: the state that lasts is
-yours, in your own types, plus what MyGo keeps for each element from frame
-to frame (focus, hover, scrolling, the text being edited, animations).
+it on the main thread to build frames after input, model changes and while
+something animates. A frame can contain several build passes, so it can
+show the outcome of an action before it is painted.
+
+The window has one stable `*ui.Context`. Child builders share it and
+switch its current parent for the duration of the callback. Pass it to
+helpers that build part of the view.
+
+Each `ui.Element` value belongs to one build pass. Its owner, slot and
+generation are checked before accessing the control. Use `Valid` for an
+optional element and `ui.Element{}` for absence. Stale use is diagnosed in
+development and `Tester`; production methods return empty results or
+ignore the operation.
+
+Keep build values out of app state and background work. Store `ui.Handle`
+for persistent control identity and `ui.Services` for callbacks between
+builds. Model data and widget state such as `ListState` belong in your app.
 
 ```go
 // todoList is the app's state, which lasts.
@@ -45,47 +57,51 @@ method such as `app.save()` is one you declare on that type. Values that
 last, such as a [router](navigation.md), are fields made with the rest of
 the state, never in the view, which runs for every frame.
 
-## Events are questions
+## Events and actions
 
-Events are questions you ask while building: `Clicked` reports whether the
-element was clicked since the last frame, so the code that handles a click
-sits where the button is built:
+`Clicked` reports a click since the last frame and keeps ordinary control
+flow beside the control:
 
 ```go
 if ui.Button(c, "Save").Clicked() {
-	app.save()
+    app.save()
 }
 ```
 
-When a handler changes the state while the view builds, MyGo builds the
-frame again, so it always shows the outcome.
+A control takes the user's input as its constructor returns, so an inline
+save sees the latest edits of the controls built before it.
 
-The rest of the frame builds first, though, after the handler: a change
-to what the view is building pulls it from under the code building it,
-as deleting an item from the slice a loop builds rows from, from a button
-in one of the rows. The loop goes on over the items as they were, and
-reads past the end of the slice. Note the item instead, and change the
-slice once the loop is done:
+`OnClick` schedules the action after the view finishes building and bound
+input has been applied:
 
 ```go
-deleted := -1
-for i := range app.items {
-	item := app.items[i]
-	ui.Row(c).Key(item.ID).Children(func() {
-		ui.Text(c, item.Title).Grow(1)
-		if ui.Button(c, "Delete").Clicked() {
-			deleted = i
-		}
-	})
-}
-if deleted >= 0 {
-	app.items = slices.Delete(app.items, deleted, deleted+1)
+ui.Button(c, "Save").Disabled(app.saving).OnClick(app.save)
+```
+
+Use polling when inline `return`, `break` or `continue` is useful. Use
+callbacks for actions that modify the collection being built, so the loop
+finishes before its model changes:
+
+```go
+for _, item := range app.items {
+    ui.Row(c.Key(item.ID)).Children(func() {
+        ui.Text(c, item.Title).Grow(1)
+        ui.Button(c, "Delete").OnClick(func() {
+            app.removeItem(item.ID)
+        })
+    })
 }
 ```
 
+Handled input is consumed before rebuilding, so an action runs once for
+that input. MyGo rebuilds changed state before painting the frame.
+
 Widgets that change a value take a pointer to it, so they need no handler:
-`ui.Checkbox(c, &app.settings.Sync, "Sync")` changes the field the moment
-the user clicks. `Changed` reports that they did, for work that follows:
+`ui.Checkbox(c, &app.settings.Sync, "Sync")` binds the field to the control.
+As in Dear ImGui and egui, the control writes the user's edit through the
+pointer before its constructor returns, so the next statement reads the new
+value. `Changed` reports that it changed in this build pass, and `Submitted`
+that Enter was pressed in a single-line text input.
 
 ```go
 if ui.TextInput(c, &app.query).Placeholder("Search").Changed() {
@@ -93,24 +109,61 @@ if ui.TextInput(c, &app.query).Placeholder("Search").Changed() {
 }
 ```
 
-## Keys
-
-MyGo tells elements apart by their position among their siblings. When the
-siblings before an element can change, as in a list whose items you
-insert, delete or reorder, give each item a `Key` so its state follows it:
+Local copies work too, including values read from a map, compared with the
+value they came from or through `Changed`:
 
 ```go
-for i := range app.todos {
-	todo := &app.todos[i]
-	ui.Row(c).Key(todo.ID).Children(func() {
-		ui.Checkbox(c, &todo.Done, todo.Title)
-	})
+viewed := app.viewed[file.ID]
+if ui.Checkbox(c, &viewed, "Viewed").Changed() {
+    app.viewed[file.ID] = viewed
+}
+
+chosen := app.language
+ui.RadioGroup(c, func() {
+    for _, tag := range app.languages {
+        ui.Radio(c, &chosen, tag, i18n.Autonym(tag))
+    }
+})
+if chosen != app.language {
+    app.setLanguage(chosen)
 }
 ```
 
-Widgets that handle their input as they are created, such as `Checkbox`
-here, take the key from an element around them: `Key` panics on them, as
-their state would be lost.
+A container takes its input with its children, as the call that built it
+returns: a radio group's arrow keys move among all of its radios. Input
+follows the options of the frame the user acted on: an input shown
+read-only takes no typing, and `Disabled`, `ReadOnly` or `Step` set in
+this build govern the input of the frames after it, as they show.
+
+`OnChange` and `OnSubmit` run after construction and bound input, before the
+rebuild. Use callbacks when an action should wait until the view has finished
+building, such as modifying the collection being rendered. They can also
+commit local copies:
+
+```go
+viewed := app.viewed[file.ID]
+ui.Checkbox(c, &viewed, "Viewed").OnChange(func() {
+    app.viewed[file.ID] = viewed
+})
+```
+
+## Keys
+
+Give a control its key before construction, so its state follows the item
+when the surrounding collection changes:
+
+```go
+ui.Checkbox(c.Key(todo.ID), &todo.Done, todo.Title)
+ui.TextInput(c.Key("search"), &app.query)
+```
+
+Keys are unique among siblings, and compare as Go compares a map's keys: a
+pointer keys the object it points to, whatever the object holds, so an
+item's pointer serves as its key as well as an ID does. A key Go cannot
+compare, as a slice, or not equal to itself, as a NaN, compares by its
+value printed. `Element.Key` can
+key a container before its children or local state are built. Use
+`Context.Key` for stateful controls and custom base widgets.
 
 ## Change the state from other goroutines
 
@@ -134,3 +187,10 @@ one after a delay, such as a clock's next second.
 
 An element keeps state of its own from frame to frame with `ui.Local`, for
 widgets you build yourself; see [custom widgets](custom-widgets.md).
+
+## Check build lifetimes
+
+Run `mygo vet` from your app directory to find build values stored in
+structs, package variables or goroutines. See [Migration](migration.md)
+for the source migration command and [Performance](performance.md) for
+measured frame costs.

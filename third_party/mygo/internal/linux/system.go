@@ -11,11 +11,13 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 	"unsafe"
 
 	"github.com/ebitengine/purego"
 
 	"github.com/egoist/mygo/internal/platform"
+	"github.com/egoist/mygo/transfer"
 )
 
 var (
@@ -23,6 +25,7 @@ var (
 	cbMonitorsChanged ptr
 	cbNotification    ptr
 	cbPowerSignal     ptr
+	cbNetworkChanged  ptr
 )
 
 func initSystemCallbacks() {
@@ -49,6 +52,10 @@ func initSystemCallbacks() {
 		if id, ok := notifications[dbusID]; ok {
 			theBackend.h.NotificationClicked(id)
 		}
+	})
+	// The network-changed signal of GNetworkMonitor (network.go).
+	cbNetworkChanged = purego.NewCallback(func(monitor, available, data ptr) {
+		theBackend.h.NetworkChanged(theBackend.Network().Status())
 	})
 
 	settings := gtkSettingsGetDefault()
@@ -103,10 +110,17 @@ func pngFromPixbuf(pix ptr) []byte {
 
 type clipboard struct{}
 
-func clip() ptr { return gtkClipboardGet(gdkAtomIntern(cs("CLIPBOARD"), false)) }
+func clip() ptr {
+	cb := gtkClipboardGet(gdkAtomIntern(cs("CLIPBOARD"), false))
+	if !clipboardConnected {
+		connect(cb, "owner-change", cbClipboardOwner, 0)
+		clipboardConnected = true
+	}
+	return cb
+}
 
-func (clipboard) ReadText() string      { return takeStr(gtkClipboardWaitForText(clip())) }
-func (clipboard) WriteText(text string) { gtkClipboardSetText(clip(), cs(text), -1) }
+func (clipboard) ReadText() string        { return takeStr(gtkClipboardWaitForText(clip())) }
+func (c clipboard) WriteText(text string) { _ = c.WriteData(transfer.TextData(text), nil) }
 
 func (clipboard) ReadHTML() string {
 	sd := gtkClipboardWaitForContents(clip(), gdkAtomIntern(cs("text/html"), false))
@@ -122,9 +136,9 @@ func (clipboard) ReadHTML() string {
 	return string(unsafe.Slice(*(**byte)(unsafe.Pointer(&data)), n))
 }
 
-// WriteHTML stores the markup as text: GTK 3 only offers rich targets
-// through ownership callbacks.
-func (c clipboard) WriteHTML(markup string) { c.WriteText(markup) }
+func (c clipboard) WriteHTML(markup string) {
+	_ = c.WriteData(transfer.New(transfer.NewItem(transfer.Bytes(transfer.HTML, []byte(markup)), transfer.Bytes(transfer.Text, []byte(markup)))), nil)
+}
 
 func (clipboard) ReadImage() []byte {
 	pix := gtkClipboardWaitForImage(clip())
@@ -135,14 +149,13 @@ func (clipboard) ReadImage() []byte {
 	return pngFromPixbuf(pix)
 }
 
-func (clipboard) WriteImage(png []byte) error {
+func (c clipboard) WriteImage(png []byte) error {
 	pix, err := pixbufFromPNG(png)
 	if err != nil {
 		return err
 	}
 	defer gObjectUnref(pix)
-	gtkClipboardSetImage(clip(), pix)
-	return nil
+	return c.WriteData(transfer.New(transfer.NewItem(transfer.Bytes(transfer.PNG, png))), nil)
 }
 
 func (clipboard) Clear() { gtkClipboardClear(clip()) }
@@ -298,25 +311,47 @@ func (theme) FontRendering() platform.FontRendering {
 // settings daemon or settings.ini gives; fontconfig knows only a default
 // sans-serif.
 func (theme) UIFont() string {
+	family, _ := gtkFont()
+	return family
+}
+
+// gtkFont reads gtk-font-name, the font GTK apps show their interface in,
+// and returns its family and size in points, 0 without a size.
+func gtkFont() (family string, pt float64) {
+	settings := gtkSettingsGetDefault()
+	if settings == 0 {
+		return "", 0
+	}
 	var name ptr
-	gObjectGetPtr(gtkSettingsGetDefault(), cs("gtk-font-name"), unsafe.Pointer(&name), 0)
+	gObjectGetPtr(settings, cs("gtk-font-name"), unsafe.Pointer(&name), 0)
 	spec := takeStr(name)
 	if spec == "" {
-		return ""
+		return "", 0
 	}
 	var (
 		fromString func(s *byte) ptr
 		getFamily  func(d ptr) ptr
+		getSize    func(d ptr) int32
+		isAbsolute func(d ptr) int32
 		free       func(d ptr)
 	)
 	pango, err := open("libpango-1.0.so.0")
 	if err != nil || !bind(pango, &fromString, "pango_font_description_from_string") ||
-		!bind(pango, &getFamily, "pango_font_description_get_family") || !bind(pango, &free, "pango_font_description_free") {
-		return ""
+		!bind(pango, &getFamily, "pango_font_description_get_family") ||
+		!bind(pango, &getSize, "pango_font_description_get_size") ||
+		!bind(pango, &isAbsolute, "pango_font_description_get_size_is_absolute") ||
+		!bind(pango, &free, "pango_font_description_free") {
+		return "", 0
 	}
 	desc := fromString(cs(spec))
 	defer free(desc)
-	return goStr(getFamily(desc))
+	if n := getSize(desc); n > 0 {
+		pt = float64(n) / 1024
+		if isAbsolute(desc) != 0 {
+			pt = pt * 72 / 96
+		}
+	}
+	return goStr(getFamily(desc)), pt
 }
 
 // portalColorScheme reads the desktop wide preference (1 = dark, 2 =
@@ -343,13 +378,23 @@ func portalColorScheme() (uint32, bool) {
 	return gVariantGetUint32(inner), true
 }
 
+// doubleClick reads the double click as GTK's settings have it from the
+// desktop.
+func doubleClick() platform.DoubleClick {
+	ms, distance := int32(400), int32(5) // GTK's defaults
+	if settings := gtkSettingsGetDefault(); settings != 0 {
+		gObjectGetPtr(settings, cs("gtk-double-click-time"), unsafe.Pointer(&ms), 0)
+		gObjectGetPtr(settings, cs("gtk-double-click-distance"), unsafe.Pointer(&distance), 0)
+	}
+	return platform.DoubleClick{Time: time.Duration(ms) * time.Millisecond, DX: float64(distance), DY: float64(distance)}
+}
+
 // gtkAccentColor reads the symbolic color GTK uses for highlighted controls.
-// Prefer the GtkGLArea's style context for native UI windows so the color is
-// resolved by exactly the theme drawing around the app; a window context and
-// then a temporary GtkWindow are equivalent fallbacks.
+// Prefer a native UI surface's style context, then a window, then a temporary
+// window; this resolves the theme around the app rather than a generic one.
 func gtkAccentColor() platform.Color {
 	if gtkWindowNew == nil || gtkWidgetGetStyleContext == nil || gtkStyleContextLookupColor == nil {
-		return platform.Color{} // GTK not loaded yet
+		return platform.Color{}
 	}
 	var widget ptr
 	if theBackend != nil {
@@ -379,8 +424,6 @@ func gtkAccentColor() platform.Color {
 	if context == 0 {
 		return platform.Color{}
 	}
-	// accent_bg_color is used by newer Adwaita-derived themes;
-	// theme_selected_bg_color is the GTK 3 convention supported broadly.
 	for _, name := range []string{"accent_bg_color", "theme_selected_bg_color"} {
 		var rgba gdkRGBA
 		if !gtkStyleContextLookupColor(context, cs(name), &rgba) || rgba.A <= 0 ||
@@ -409,6 +452,11 @@ func (t theme) Preferences() platform.Preferences {
 	var name ptr
 	gObjectGetPtr(settings, cs("gtk-theme-name"), unsafe.Pointer(&name), 0)
 	p.HighContrast = strings.Contains(strings.ToLower(takeStr(name)), "highcontrast")
+	// gtk-font-name carries the desktop's interface font size in points,
+	// which the settings portal does not expose.
+	if _, pt := gtkFont(); pt > 0 {
+		p.UIFontSize = pt
+	}
 	all, ok := portalSettings(appearanceSettings, gnomeInterfaceSettings)
 	if !ok {
 		return p
@@ -568,6 +616,13 @@ func (b *Backend) NotificationsSupported() bool {
 	_, err := bus()
 	return err == nil
 }
+
+// WebViewAvailable reports whether a window showing a web page can have
+// one: WebKitGTK, JavaScriptCore and libsoup, which it needs. Windows
+// showing native UI need GTK alone, so an app whose windows all do runs
+// without them. Loading the libraries is as much as can be known before a
+// page loads.
+func (b *Backend) WebViewAvailable() bool { return webKit() == nil }
 
 func (b *Backend) ShowNotification(n *platform.Notification, done func(error)) {
 	done(b.showNotification(n))

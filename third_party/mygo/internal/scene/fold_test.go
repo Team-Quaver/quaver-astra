@@ -1,0 +1,50 @@
+package scene
+
+import "testing"
+
+func TestFoldTranslations(t *testing.T) {
+	m, between := Translation(10, 20), Translation(0.5, 1)
+	s := &Scene{Width: 100, Height: 100, Glyphs: []Glyph{{X: 3.4, Y: 5.6}, {X: 1, Y: 1}}, Ops: []Op{
+		{Kind: OpFill, Rect: Rect{X: 1, Y: 2, W: 3, H: 4}, Paint: PaintLinear, Gradient: [4]float32{0, 0, 3, 4}, Transform: m},
+		{Kind: OpFill, Rect: Rect{W: 3, H: 4}, Paint: PaintStripes, Gradient: [4]float32{1, 0, 2, 4}, Transform: between},
+		{Kind: OpShadow, Rect: Rect{W: 5, H: 5}, Cast: Rect{X: 1, W: 4, H: 4}, Transform: m},
+		{Kind: OpGlyphs, Start: 0, End: 1, Paint: PaintConic, Gradient: [4]float32{1, 1, 2, 0}, Transform: m},
+		{Kind: OpGlyphs, Start: 1, End: 2, Transform: between},
+		{Kind: OpImage, Rect: Rect{W: 2, H: 2}, Transform: m},
+		{Kind: OpImage, Rect: Rect{W: 2, H: 2}, Transform: between},
+		{Kind: OpPushClip, Rect: Rect{W: 50, H: 50}, Transform: m},
+		{Kind: OpFill, Rect: Rect{W: 3, H: 4}, Transform: m.Mul(Rotation(10))},
+		{Kind: OpPopClip},
+	}}
+	var f TranslationFolder
+	if f.Fold(s) != s {
+		t.Fatal("folded before FoldTranslations")
+	}
+	FoldTranslations()
+	got := f.Fold(s)
+	want := []Op{
+		{Kind: OpFill, Rect: Rect{X: 11, Y: 22, W: 3, H: 4}, Paint: PaintLinear, Gradient: [4]float32{10, 20, 13, 24}},
+		{Kind: OpFill, Rect: Rect{X: 0.5, Y: 1, W: 3, H: 4}, Paint: PaintStripes, Gradient: [4]float32{1, 0, 2, 4}},
+		{Kind: OpShadow, Rect: Rect{X: 10, Y: 20, W: 5, H: 5}, Cast: Rect{X: 11, Y: 20, W: 4, H: 4}},
+		{Kind: OpGlyphs, Rect: Rect{X: 10, Y: 20}, Start: 0, End: 1, Paint: PaintConic, Gradient: [4]float32{11, 21, 2, 0}},
+		s.Ops[4], // glyphs between pixels
+		{Kind: OpImage, Rect: Rect{X: 10, Y: 20, W: 2, H: 2}},
+		s.Ops[6], // an image between pixels
+		s.Ops[7], s.Ops[8], s.Ops[9],
+	}
+	for i := range want {
+		if got.Ops[i] != want[i] {
+			t.Errorf("op %d: %+v, want %+v", i, got.Ops[i], want[i])
+		}
+	}
+	if g := got.Glyphs; g[0].X != 13 || g[0].Y != 26 || g[1] != s.Glyphs[1] {
+		t.Errorf("glyphs %+v", g)
+	}
+	if s.Ops[0].Transform != m || s.Glyphs[0].X != 3.4 {
+		t.Error("folding changed the scene")
+	}
+	plain := &Scene{Ops: []Op{s.Ops[7], s.Ops[8]}}
+	if f.Fold(plain) != plain {
+		t.Error("a scene without translations was copied")
+	}
+}

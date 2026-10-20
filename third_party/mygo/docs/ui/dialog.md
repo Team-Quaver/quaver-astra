@@ -1,5 +1,7 @@
 # Dialog
 
+<!-- preview dialog 260 -->
+
 `ui.Modal` shows a dialog its function builds over the dimmed window while
 a `*bool` is true; clicking outside it or pressing Escape sets it to false.
 
@@ -33,6 +35,18 @@ what is behind it is inert. As it closes, it gives the focus back to the
 element that had it, the button that opened it say. See
 [overlays](overlays.md).
 
+## Keeping it open
+
+`Dismissed` reports the frame Escape or a click outside closed the dialog;
+one that must stay open, with changes to save say, sets the `*bool` back to
+true then:
+
+```go
+if ui.Modal(c, &app.editing, app.editor).Dismissed() && app.unsaved {
+	app.editing = true
+}
+```
+
 To ask about something important, with buttons and no closing by a click
 outside, use an [alert dialog](alert-dialog.md).
 
@@ -43,7 +57,7 @@ backdrop covering the window, which centers the panel, and the panel, and
 builds the panel's content:
 
 ```go
-ui.DialogBase(c, &app.open, func(backdrop, panel *ui.Element) {
+ui.DialogBase(c, &app.open, func(backdrop, panel ui.Element) {
 	backdrop.Background(ui.RGBA(0, 0, 0, 0.5))
 	panel.Width(360).Padding(24).Radius(16).Background(t.Background)
 	ui.Text(c, "Welcome").FontSize(20).Bold()

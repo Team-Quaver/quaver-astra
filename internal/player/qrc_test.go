@@ -140,7 +140,7 @@ func TestAlignQrcTrans(t *testing.T) {
 	if len(ql) != 2 {
 		t.Fatalf("前置解析失败：%+v", ql)
 	}
-	alignQrcTrans(ql, []LyricLine{{Time: 0.1, Text: "one"}, {Time: 5.2, Text: "two"}})
+	alignQrcAux(ql, "[00:00.10]one\n[00:05.20]two", "")
 	if ql[0].Trans != "one" || ql[1].Trans != "two" {
 		t.Errorf("翻译对齐异常：%q / %q", ql[0].Trans, ql[1].Trans)
 	}

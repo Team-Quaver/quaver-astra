@@ -10,6 +10,10 @@ JavaScript package whose functions call them. The app uses the Go half with
   with no CORS, any header, streamed bodies and cancellation.
 - [WebSocket](plugins/websocket.md): a `WebSocket` whose connections Go
   makes, with headers on the handshake.
+- [SQLite](plugins/sqlite.md): local databases, parameterized queries and
+  atomic transactions, using SQLite's C engine compiled with Zig, without cgo.
+- [Watch](plugins/watch.md): changes to files, in the directories the app
+  lets pages watch.
 - [Updater](plugins/updater.md): an update window in the manner of
   Sparkle, which checks for updates and offers to install them. It is all
   Go, and its window is a web page or, for apps of native UI, native UI.
@@ -19,6 +23,11 @@ JavaScript package whose functions call them. The app uses the Go half with
 - [Glass](plugins/glass.md): Liquid Glass for native UI, as macOS draws
   it, on every platform, with macOS's scroll edges and backdrop blurs. It
   is all Go, with shaders of its own.
+- [Game](plugins/game.md): what games need beyond what apps do, opt-in:
+  a game loop in fixed steps with its input, a camera, and gamepads in
+  one standard layout. It is all Go.
+- [Loading](plugins/loading.md): loading.dev's 29 loading indicators for
+  native UI, as they look and move in browsers. It is all Go.
 
 ## Using plugins
 

@@ -231,12 +231,15 @@ func (npBackend) LikedPage(int, int) ([]player.Song, int64, bool, error) {
 	return nil, 0, false, nil
 }
 func (npBackend) Playlists() ([]player.PlaylistRef, error) { return nil, nil }
+func (npBackend) GuessSongs(int) ([]player.Song, error)    { return nil, nil }
 func (npBackend) Tiers() (*player.TierTable, error)        { return nil, nil }
 func (npBackend) Resolve(string, string, int64, string, []string) (*player.StreamInfo, error) {
 	return &player.StreamInfo{URL: "test://stream", Tier: "flac", TierLabel: "FLAC"}, nil
 }
-func (b npBackend) FetchLyric(string, bool) (string, string, error) { return b.qrc, b.trans, nil }
-func (npBackend) LikeSong(int64, int64, bool) error                 { return nil }
+func (b npBackend) FetchLyric(string, bool, bool) (string, string, string, error) {
+	return b.qrc, b.trans, "", nil
+}
+func (npBackend) LikeSong(int64, int64, bool) error { return nil }
 
 // npTestApp 渲染一张正在播放页，封面是一整块纯色，便于按像素断言。
 func npTestApp(t *testing.T, cover color.RGBA) (*App, *ui.Tester) {
@@ -315,7 +318,7 @@ func TestNowPlayingCoverIsNotVeiled(t *testing.T) {
 	_, tester := npTestApp(t, red)
 
 	// 开门动画（上滑 + 淡入）还在跑时整页都是半透明的，等它落定再做像素断言。
-	time.Sleep(450 * time.Millisecond)
+	tester.Advance(450 * time.Millisecond)
 	tester.Frame()
 
 	img := tester.Image()
@@ -351,7 +354,7 @@ func TestNowPlayingCoverIsNotVeiled(t *testing.T) {
 // 内容层顶边；同时整行给出 pointer，告诉用户点行可以跳转。
 func TestNowPlayingLyricsHaveBreathingRoom(t *testing.T) {
 	_, tester := npTestApp(t, color.RGBA{R: 96, G: 148, B: 210, A: 255})
-	time.Sleep(450 * time.Millisecond)
+	tester.Advance(450 * time.Millisecond)
 	tester.Frame()
 
 	r, ok := tester.Find("那一年")
@@ -389,7 +392,7 @@ func TestNowPlayingTranslationWraps(t *testing.T) {
 		}
 		time.Sleep(2 * time.Millisecond)
 	}
-	time.Sleep(450 * time.Millisecond)
+	tester.Advance(450 * time.Millisecond)
 	tester.Frame()
 
 	r, ok := tester.Find(body)
@@ -415,5 +418,21 @@ func TestNowPlayingUsesWordLevelLyrics(t *testing.T) {
 	}
 	if !tester.HasText("第二年") {
 		t.Errorf("第二行逐字歌词缺失；当前帧文本：%v", tester.Texts())
+	}
+}
+
+// TestNowPlayingRendersQRCKanaRuby 振假名来自 QRC 的 [kana:] 标签，显示在
+// 对应词上方，且不占用翻译/音译辅助行的位置。
+func TestNowPlayingRendersQRCKanaRuby(t *testing.T) {
+	qrc := "[0,2000]君(0,1000)の(1000,1000)\n[kana:1きみ]"
+	app, tester := npTestAppLyrics(t, color.RGBA{R: 96, G: 148, B: 210, A: 255}, qrc, "[00:00.00]你的名字")
+	app.PL.SetShowTranslation(true)
+	tester.Advance(450 * time.Millisecond)
+	tester.Frame()
+	if !tester.HasText("きみ") {
+		t.Fatalf("歌词里没有渲染出振假名「きみ」；当前文本：%v", tester.Texts())
+	}
+	if !tester.HasText("你的名字") {
+		t.Errorf("翻译辅助行不应被振假名取代；当前文本：%v", tester.Texts())
 	}
 }

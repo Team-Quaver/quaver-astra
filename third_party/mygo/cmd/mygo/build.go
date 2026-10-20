@@ -1,12 +1,15 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
 	"slices"
 	"strings"
+	"time"
+	"unicode/utf8"
 )
 
 type buildOptions struct {
@@ -23,8 +26,9 @@ func runBuild(args []string) error {
 	flags := newFlags("build", "[flags] [dir]", `Builds a production app for each platform. It runs buildCommand from
 mygo.json, then compiles the app with the frontendDist files embedded, served
 at mygo://localhost/. macOS gets a signed .app bundle and a
-"<name> <version>.dmg" disk image whose window invites dragging the app to
-Applications; other platforms get an executable. Linux also gets a Debian
+"<name> <version> <arch>.dmg" disk image, without the arch for
+darwin/universal, whose window invites dragging the app to Applications;
+other platforms get an executable. Linux also gets a Debian
 package, and the app as <name>-<version>-linux-<arch>.tar.gz with
 install.sh, which installs it for the user in ~/.local, where it can update
 itself. The contents of the
@@ -35,8 +39,8 @@ platform, such as resources/darwin or resources/linux-amd64, only ship with
 that platform's apps; darwin/universal combines darwin-arm64 and
 darwin-amd64. MyGo needs no cgo, so any platform can be compiled from any
 machine; signing and disk images need macOS. Windows also gets
-"<name> Setup <version>.exe", made with NSIS, which mygo build downloads
-on Windows when it is not installed.
+"<name> Setup <version> <arch>.exe", made with NSIS, which mygo build
+downloads on Windows when it is not installed.
 
 Set macos.signingIdentity in mygo.json (or -sign) to a Developer ID to ship
 outside the Mac App Store, and macos.notarize to notarize the disk image.
@@ -44,8 +48,12 @@ outside the Mac App Store, and macos.notarize to notarize the disk image.
 With updates in mygo.json and the key of mygo keygen in
 MYGO_UPDATER_PRIVATE_KEY, each platform also gets a signed update archive,
 delta updates from the last versions published (updates.deltas), and
-update-<platform>.json: publish them where updates point to.`)
-	platforms := flags.String("platform", runtime.GOOS+"/"+runtime.GOARCH, "comma separated GOOS/GOARCH targets, e.g. darwin/universal,linux/amd64,windows/amd64")
+update-<platform>.json: publish them where updates point to.
+
+The platform web (or js/wasm) builds an app of native UI for browsers into
+<out>/web: index.html, which loads the app, Go's wasm_exec.js and the app's
+WebAssembly, named by its content: a static site, to serve from anywhere.`)
+	platforms := flags.String("platform", runtime.GOOS+"/"+runtime.GOARCH, "comma separated GOOS/GOARCH targets, e.g. darwin/universal,linux/amd64,windows/amd64, or web for browsers")
 	debug := flags.Bool("debug", false, "keep development features such as the web inspector")
 	skipBuildCommand := flags.Bool("skip-build-command", false, "do not run buildCommand")
 	skipDMG := flags.Bool("skip-dmg", false, "do not create a disk image for macOS")
@@ -63,6 +71,10 @@ update-<platform>.json: publish them where updates point to.`)
 	if *out != "" {
 		c.Out = *out
 	}
+	// The catalogs name the languages the packages declare.
+	if _, err := c.languages(); err != nil {
+		return err
+	}
 	if *upload {
 		if err := checkUpload(c); err != nil {
 			return err
@@ -75,14 +87,30 @@ update-<platform>.json: publish them where updates point to.`)
 	if c.MacOS.Notarize != nil && !opts.skipNotarize && opts.sign == "-" {
 		return fmt.Errorf("notarization needs a Developer ID signing identity: set macos.signingIdentity or pass -sign")
 	}
+	if c.MacOS.ProvisioningProfile != "" && opts.sign == "-" && slices.ContainsFunc(splitList(*platforms), func(p string) bool { return strings.HasPrefix(p, "darwin/") }) {
+		// Before building anything, as codesign would.
+		return errProfileAdHoc
+	}
 
-	// The TypeScript client comes first: the frontend build type-checks and
-	// bundles it.
-	if err := writeClient(c); err != nil {
+	con.startBanner("build")
+	started := time.Now()
+	// The accessors of the catalogs come first, which the app calls, then
+	// the TypeScript client: the frontend build type-checks and bundles
+	// them.
+	if err := generateI18n(c); err != nil {
+		return err
+	}
+	if c.I18n != nil {
+		if dirs := compiledDirs(c); dirs != nil {
+			checkCatalogImported(c, dirs)
+		}
+	}
+	if err := writeClient(context.Background(), c, false); err != nil {
 		return err
 	}
 	if c.BuildCommand != "" && !*skipBuildCommand {
-		if err := run(c.root, c.BuildCommand); err != nil {
+		t := con.start("Building the frontend")
+		if err := t.end(run(t, "web", c.root, c.BuildCommand), "Built the frontend"); err != nil {
 			return err
 		}
 	}
@@ -107,6 +135,14 @@ update-<platform>.json: publish them where updates point to.`)
 
 	var built []string
 	for _, p := range splitList(*platforms) {
+		if isWebPlatform(p) {
+			paths, err := buildWeb(c, opts)
+			built = append(built, paths...)
+			if err != nil {
+				return err
+			}
+			continue
+		}
 		goos, goarch, ok := strings.Cut(p, "/")
 		if !ok {
 			return fmt.Errorf("invalid platform %q, want GOOS/GOARCH", p)
@@ -116,15 +152,32 @@ update-<platform>.json: publish them where updates point to.`)
 		if err != nil {
 			return err
 		}
-		for _, path := range paths {
-			rel, _ := filepath.Rel(c.root, path)
-			logf("built %s (%s)", rel, sizeOf(path))
-		}
 	}
+	con.println(buildSummary(c, built, time.Since(started)))
 	if *upload {
 		return publish(c, built)
 	}
 	return nil
+}
+
+// buildSummary lists what a build made, by directory, with sizes.
+func buildSummary(c *Config, artifacts []string, took time.Duration) string {
+	var b strings.Builder
+	b.WriteString("\n  " + green(con.sym.ok) + " " + bold("Built "+c.Name+" "+c.Version) + dim(" in "+formatDuration(took)) + "\n")
+	width := 0
+	for _, a := range artifacts {
+		width = max(width, utf8.RuneCountInString(filepath.Base(a)))
+	}
+	dir := ""
+	for _, a := range artifacts {
+		if d := relPathTo(c.root, filepath.Dir(a)) + "/"; d != dir {
+			dir = d
+			b.WriteString("\n    " + dim(dir) + "\n")
+		}
+		name := filepath.Base(a)
+		b.WriteString("      " + cyan(name) + strings.Repeat(" ", width-utf8.RuneCountInString(name)) + "  " + dim(fmt.Sprintf("%9s", sizeOf(a))) + "\n")
+	}
+	return b.String()
 }
 
 // buildPlatform builds and packages the app for one platform into
@@ -149,12 +202,12 @@ func buildPlatform(c *Config, goos, goarch string, opts buildOptions) ([]string,
 		return nil, err
 	}
 	if other := c.otherArch(goos, goarch); other != "" {
-		logf("no %s for %s/%s, though there is %s", filepath.Join(resourcesDir, goos+"-"+goarch), goos, goarch, filepath.Join(resourcesDir, other))
+		warnf("No %s for %s/%s, though there is %s", filepath.Join(resourcesDir, goos+"-"+goarch), goos, goarch, filepath.Join(resourcesDir, other))
 	}
 
 	target := goos + "-" + goarch
 	if !opts.debug && keepInspector() {
-		logf("keeping the inspector of native UI (MYGO_INSPECTOR=1)")
+		logf("Keeping the inspector of native UI (MYGO_INSPECTOR=1)")
 	}
 	ldflags := "-s -w" + packageFlags(c) + updateFlags(c, target)
 	if !opts.debug {
@@ -165,24 +218,27 @@ func buildPlatform(c *Config, goos, goarch string, opts buildOptions) ([]string,
 		ldflags += " -H=windowsgui"
 	}
 	compile := func(arch, out string) error {
-		logf("building %s/%s", goos, arch)
-		if goos == "windows" {
-			cleanup, err := windowsResources(c, opts.pkg, arch)
+		t := con.start("Compiling " + goos + "/" + arch)
+		err := func() error {
+			if goos == "windows" {
+				cleanup, err := windowsResources(c, opts.pkg, arch)
+				if err != nil {
+					return err
+				}
+				defer cleanup()
+			}
+			overlay, err := writeOverlay(filepath.Join(opts.work, "overlay.json"), opts.overlay)
 			if err != nil {
 				return err
 			}
-			defer cleanup()
-		}
-		overlay, err := writeOverlay(filepath.Join(opts.work, "overlay.json"), opts.overlay)
-		if err != nil {
-			return err
-		}
-		flags := []string{"-trimpath", "-ldflags", ldflags}
-		flags = append(flags, productionTags(opts.debug)...)
-		if overlay != "" {
-			flags = append(flags, "-overlay", overlay)
-		}
-		return buildBinary(c, out, []string{"GOOS=" + goos, "GOARCH=" + arch}, flags...)
+			flags := []string{"-trimpath", "-ldflags", ldflags}
+			flags = append(flags, productionTags(opts.debug)...)
+			if overlay != "" {
+				flags = append(flags, "-overlay", overlay)
+			}
+			return goBuild(context.Background(), c, t, out, []string{"GOOS=" + goos, "GOARCH=" + arch}, flags...)
+		}()
+		return t.end(err, "Compiled "+goos+"/"+arch)
 	}
 
 	name := c.executableName()
@@ -206,11 +262,17 @@ func buildPlatform(c *Config, goos, goarch string, opts buildOptions) ([]string,
 		} else if err := compile(goarch, bin); err != nil {
 			return nil, err
 		}
-		icns, err := appIcon(c)
+		car, err := appCatalog(c)
 		if err != nil {
 			return nil, err
 		}
-		app, err := writeBundle(c, stage, bin, icns, res)
+		var icns []byte
+		if car != nil && car.icns != nil {
+			icns = car.icns // the .icon's own rendering for older macOS
+		} else if icns, err = appIcon(c); err != nil {
+			return nil, err
+		}
+		app, err := writeBundle(c, stage, bin, icns, car, res)
 		if err != nil {
 			return nil, err
 		}
@@ -218,18 +280,22 @@ func buildPlatform(c *Config, goos, goarch string, opts buildOptions) ([]string,
 			return r.lipo != "" && strings.HasPrefix(r.src, c.path(resourcesDir)+string(filepath.Separator))
 		}
 		if slices.ContainsFunc(res, inProject) {
-			logf("made universal binaries of the code in %s and %s", filepath.Join(resourcesDir, "darwin-arm64"), filepath.Join(resourcesDir, "darwin-amd64"))
+			logf("Made universal binaries of the code in %s and %s", filepath.Join(resourcesDir, "darwin-arm64"), filepath.Join(resourcesDir, "darwin-amd64"))
 		}
-		if err := codesign(c, app, opts.sign, true); err != nil {
+		var t *task
+		if runtime.GOOS == "darwin" {
+			t = con.start("Signing " + filepath.Base(app))
+		}
+		if err := t.end(codesign(c, app, opts.sign, true), "Signed "+filepath.Base(app)); err != nil {
 			return nil, err
 		}
 		artifacts = append(artifacts, app)
 		switch {
 		case opts.skipDMG:
 		case runtime.GOOS != "darwin":
-			logf("skipping the disk image: it needs macOS")
+			warnf("Skipping the disk image: it needs macOS")
 		default:
-			dmg, err := buildDMG(c, app, stage, opts)
+			dmg, err := buildDMG(c, app, stage, goarch, opts)
 			if err != nil {
 				return nil, err
 			}
@@ -282,7 +348,7 @@ func buildPlatform(c *Config, goos, goarch string, opts buildOptions) ([]string,
 		}
 	}
 	if goos == "windows" {
-		setup, err := writeInstaller(c, stage, opts.work, name+".exe", installed)
+		setup, err := writeInstaller(c, stage, opts.work, name+".exe", goarch, installed)
 		if err != nil {
 			return nil, err
 		}
@@ -330,7 +396,7 @@ func buildPlatform(c *Config, goos, goarch string, opts buildOptions) ([]string,
 			}
 		}
 		if top > 0 {
-			logf("copied %d resources next to the executable", top)
+			logf("Copied %d resources next to the executable", top)
 		}
 	}
 	return artifacts, nil
@@ -412,7 +478,7 @@ func windowsResources(c *Config, pkg, arch string) (cleanup func(), err error) {
 	cleanup = func() {}
 	for _, p := range sysoFiles(pkg) {
 		if !mygoSyso(filepath.Base(p)) {
-			logf("using the .syso resources of the app")
+			logf("Using the .syso resources of the app")
 			return cleanup, nil
 		}
 	}
@@ -491,17 +557,35 @@ func writeLinuxDesktop(c *Config, dir, name string) ([]string, error) {
 }
 
 // linuxDesktopEntry renders the desktop entry of the app, which runs exec
-// and shows icon.
+// and shows icon, with its name and comment in the languages its catalogs
+// have them in (mygo.appName, mygo.appDescription), which launchers show
+// for the system's locale.
 func linuxDesktopEntry(c *Config, exec, icon string) string {
 	categories := c.Linux.Categories
 	if len(categories) == 0 {
 		categories = []string{"Utility"}
 	}
+	langs, _ := c.languages()
+	// localized writes the key of each language whose value is its own,
+	// once a locale.
+	localized := func(b *strings.Builder, key, value string, of func(l appLanguage) string) {
+		seen := map[string]bool{}
+		for _, l := range langs {
+			v, locale := of(l), desktopTag(l.Tag)
+			if v == "" || v == value || seen[locale] {
+				continue
+			}
+			seen[locale] = true
+			b.WriteString(key + "[" + locale + "]=" + v + "\n")
+		}
+	}
 	var b strings.Builder
 	b.WriteString("[Desktop Entry]\nType=Application\nName=" + c.Name + "\n")
+	localized(&b, "Name", c.Name, func(l appLanguage) string { return l.Name })
 	if c.Linux.Comment != "" {
 		b.WriteString("Comment=" + c.Linux.Comment + "\n")
 	}
+	localized(&b, "Comment", c.Linux.Comment, func(l appLanguage) string { return l.Description })
 	var mime []string
 	for _, fa := range c.FileAssociations {
 		t, _ := c.mimeType(fa)

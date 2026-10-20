@@ -1,5 +1,7 @@
 # Color picker
 
+<!-- preview color-picker 430 -->
+
 `ui.ColorWell` creates a swatch of a `*ui.Color` that opens a color picker
 below it, as AppKit's color well: a click, Enter or Space opens it, and
 Escape or a click outside closes it. `Changed` reports a new color.
@@ -27,4 +29,5 @@ Assistive technology sees a color well whose value is the color in hex,
 named by its `Label` or its [field](form.md). In the picker, it sees a
 slider of the saturation and brightness, sliders of the hue and the
 opacity, a text field named "Hex", and buttons named by the swatches'
-colors.
+colors, in the window's language
+([MyGo's own strings](../i18n.md#mygos-own-strings)).

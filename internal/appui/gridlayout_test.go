@@ -73,9 +73,8 @@ func TestPlaylistGridCardsShareOneRowGeometry(t *testing.T) {
 	}
 }
 
-// TestHomePlaylistGridSkipsHeroAndAligns 首页 hero 已经展示首条推荐，
-// 下方歌单网格不能再重复它；余下卡片沿用同一套对齐几何。
-func TestHomePlaylistGridSkipsHeroAndAligns(t *testing.T) {
+// TestHomePlaylistGridAligns 首页推荐网格沿用统一卡片几何。
+func TestHomePlaylistGridAligns(t *testing.T) {
 	app := sideLoggedApp(t, false)
 	app.Router = ui.NewRouter("/")
 	app.home = homeState{
@@ -104,15 +103,6 @@ func TestHomePlaylistGridSkipsHeroAndAligns(t *testing.T) {
 	}
 	assertGridRowAligned(t, "首页推荐歌单", gridFindRects(t, tester, titles))
 
-	heroCount := 0
-	for _, text := range tester.Texts() {
-		if text == "今日精选 Hero" {
-			heroCount++
-		}
-	}
-	if heroCount != 1 {
-		t.Errorf("今日精选 Hero 应只出现一次，实测 %d 次", heroCount)
-	}
 }
 
 // TestPlaylistGridIncompleteRowKeepsCardWidth 末行卡片不能因为数量少而被拉宽。
@@ -136,6 +126,32 @@ func TestPlaylistGridIncompleteRowKeepsCardWidth(t *testing.T) {
 		got := mustFind(t, tester, title)
 		if math.Abs(float64(got.W-first.W)) > 0.5 {
 			t.Errorf("%s 宽度 %.1f，与首张 %.1f 不一致：末行卡片被拉宽了", title, got.W, first.W)
+		}
+	}
+}
+
+func TestHomeExtendedSections(t *testing.T) {
+	app := sideLoggedApp(t, false)
+	app.Router = ui.NewRouter("/")
+	app.home = homeState{
+		loaded: true,
+		ai: []backend.SonglistSummary{
+			{ID: 11, Title: "AI 测试歌单", Listennum: 12000},
+		},
+		aiLoaded: true,
+		topGroups: []backend.ToplistGroup{{
+			Name: "精选",
+			Toplists: []backend.ToplistSummary{
+				{ID: 4, Title: "热歌榜", UpdateTips: "每日更新", Listennum: 90000},
+			},
+		}},
+		topLoaded: true,
+	}
+	tester := ui.NewTester(app.View, 1280, 1200)
+	tester.Frame()
+	for _, s := range []string{"AI 歌单", "AI 测试歌单", "排行榜", "精选", "热歌榜", "每日更新"} {
+		if !tester.HasText(s) {
+			t.Errorf("首页扩展区缺少 %q；当前文本：%v", s, tester.Texts())
 		}
 	}
 }

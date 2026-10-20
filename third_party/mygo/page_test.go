@@ -1,3 +1,5 @@
+//go:build !js
+
 package mygo
 
 import (
@@ -10,7 +12,7 @@ import (
 
 func TestPage(t *testing.T) {
 	w := NewWindow(WindowOptions{Hidden: true, URL: "https://example.com/a", Page: PageOptions{
-		PreloadScript: "window.preloaded = true", UserAgent: "agent", ZoomFactor: 1.5, DevTools: DevToolsEnabled,
+		PreloadScript: "window.preloaded = true", UserAgent: "agent", UserAgentSuffix: " MyApp/1.2 ", ZoomFactor: 1.5, DevTools: DevToolsEnabled,
 	}})
 	t.Cleanup(w.Destroy)
 	fw := fb.Windows()[len(fb.Windows())-1]
@@ -20,8 +22,8 @@ func TestPage(t *testing.T) {
 	}
 	o := fw.Opts
 	preloaded := slices.ContainsFunc(o.UserScripts, func(s platform.UserScript) bool { return s.Source == "window.preloaded = true" })
-	if o.UserAgent != "agent" || o.Zoom != 1.5 || !o.DevTools || !preloaded {
-		t.Errorf("page options: user agent %q, zoom %v, devtools %v, preloaded %v", o.UserAgent, o.Zoom, o.DevTools, preloaded)
+	if o.UserAgent != "agent" || o.UserAgentSuffix != "MyApp/1.2" || o.Zoom != 1.5 || !o.DevTools || !preloaded {
+		t.Errorf("page options: user agent %q, suffix %q, zoom %v, devtools %v, preloaded %v", o.UserAgent, o.UserAgentSuffix, o.Zoom, o.DevTools, preloaded)
 	}
 	if got := p.URL(); got != "https://example.com/a" {
 		t.Errorf("URL %q", got)

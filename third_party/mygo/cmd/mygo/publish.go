@@ -12,14 +12,23 @@ import (
 )
 
 // checkUpload checks, before a build, that -upload has somewhere to upload
-// to.
+// to and the key that signs the updates: without it the build writes no
+// manifests, and installed apps could not update to the release.
 func checkUpload(c *Config) error {
 	switch u := c.Updates; {
 	case u != nil && u.S3 != nil:
-		_, err := newS3Client(u.S3)
-		return err
+		if _, err := newS3Client(u.S3); err != nil {
+			return err
+		}
 	case u == nil || u.GitHub == "":
 		return fmt.Errorf("-upload needs updates.github or updates.s3 in %s", c.configName())
+	}
+	key, err := c.signingKey()
+	if err != nil {
+		return fmt.Errorf("updates: %w", err)
+	}
+	if key == nil {
+		return errors.New("-upload needs the update signing key, or installed apps could not update to this release: set MYGO_UPDATER_PRIVATE_KEY or updates.privateKey")
 	}
 	return nil
 }
@@ -86,28 +95,30 @@ func publishGitHub(c *Config, artifacts []string) error {
 	}
 	if exec.Command(gh, "release", "view", tag, "--repo", repo).Run() != nil {
 		notes, _ := c.releaseNotes()
-		logf("creating the draft release %s of %s", tag, repo)
+		t := con.start("Creating the draft release " + tag + " of " + repo)
 		args := []string{"release", "create", tag, "--repo", repo, "--draft", "--title", tag, "--notes", notes}
 		if latest != "" {
 			args = append(args, "--latest=false")
 		}
 		if out, err := exec.Command(gh, args...).CombinedOutput(); err != nil {
+			t.fail()
 			return fmt.Errorf("gh release create: %v\n%s", err, out)
 		}
+		t.done("Created the draft release " + tag + " of " + repo)
 	}
 	for _, batch := range [][]string{files, manifests} {
 		if len(batch) == 0 {
 			continue
 		}
-		for _, f := range batch {
-			logf("uploading %s", filepath.Base(f))
-		}
+		t := con.start("Uploading " + uploadNames(batch))
 		args := append([]string{"release", "upload", tag, "--repo", repo, "--clobber"}, batch...)
 		if out, err := exec.Command(gh, args...).CombinedOutput(); err != nil {
+			t.fail()
 			return fmt.Errorf("gh release upload: %v\n%s", err, out)
 		}
+		t.done("Uploaded " + uploadNames(batch))
 	}
-	logf("uploaded to the release %s of %s; publish it when every platform is there:\n  gh release edit %s --repo %s --draft=false%s", tag, repo, tag, repo, latest)
+	logf("Uploaded to the release %s of %s; publish it when every platform is there:\n  gh release edit %s --repo %s --draft=false%s", tag, repo, tag, repo, latest)
 	return nil
 }
 
@@ -125,12 +136,13 @@ func publishS3(c *Config, artifacts []string) error {
 	}
 	for _, f := range slices.Concat(files, manifests) {
 		name := filepath.Base(f)
-		logf("uploading %s", name)
-		if err := bucket.put(bucket.key(name), f, uploadHeader(name)); err != nil {
+		t := con.start("Uploading " + name)
+		t.set(sizeOf(f))
+		if err := t.end(bucket.put(bucket.key(name), f, uploadHeader(name)), "Uploaded "+name); err != nil {
 			return err
 		}
 	}
-	logf("uploaded to s3://%s/%s, which %s serves", bucket.bucket, bucket.prefix, c.Updates.URL)
+	logf("Uploaded to s3://%s/%s, which %s serves", bucket.bucket, bucket.prefix, c.Updates.URL)
 	return nil
 }
 
@@ -156,4 +168,12 @@ var contentTypes = map[string]string{
 	".gz":   "application/gzip",
 	".json": "application/json",
 	".sh":   "text/plain; charset=utf-8", // readable in a browser before piping it to sh
+}
+
+// uploadNames names the files of an upload.
+func uploadNames(files []string) string {
+	if len(files) == 1 {
+		return filepath.Base(files[0])
+	}
+	return fmt.Sprintf("%d files", len(files))
 }

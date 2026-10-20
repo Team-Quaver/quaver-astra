@@ -27,6 +27,12 @@ const resourcesDir = "resources"
 // bundleIcon is the file name of the icon in Contents/Resources.
 const bundleIcon = "AppIcon.icns"
 
+// bundleIconName is the name of the app icon in the asset catalog.
+const bundleIconName = "AppIcon"
+
+// bundleCatalog is the file name of the asset catalog in Contents/Resources.
+const bundleCatalog = "Assets.car"
+
 // Platform directories are named after a system MyGo builds apps for,
 // alone or with an architecture: darwin, linux-arm64, windows-amd64.
 var (
@@ -129,10 +135,17 @@ func (c *Config) resourcesWith(goos, goarch string, natives []source, reserved .
 	}
 	var top []source
 	platforms := map[string]bool{}
+	devIcon := ""
+	if icon := c.devIcon(); icon != "" {
+		devIcon = filepath.Clean(c.path(icon))
+	}
 	for _, e := range entries {
 		name, path := e.Name(), filepath.Join(dir, e.Name())
 		if hiddenName(name) {
 			continue
+		}
+		if filepath.Clean(path) == devIcon {
+			continue // the development app's icon, which no app reads
 		}
 		if _, _, ok := platformDir(name); ok {
 			if !isDir(path) {
@@ -524,6 +537,9 @@ func sameContents(a, b string) (bool, error) {
 func reservedNames(c *Config, goos string) []string {
 	switch goos {
 	case "darwin":
+		if c.MacOS.Icon != "" {
+			return []string{bundleIcon, bundleCatalog}
+		}
 		return []string{bundleIcon}
 	case "windows":
 		return []string{c.executableName() + ".exe"}

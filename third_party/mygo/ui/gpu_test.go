@@ -2,14 +2,14 @@ package ui
 
 import (
 	"errors"
-	"image"
-	"sync"
+	"slices"
 	"testing"
 	"time"
 
 	"github.com/egoist/mygo/internal/platform"
 	"github.com/egoist/mygo/internal/scene"
 	"github.com/egoist/mygo/internal/surface"
+	"github.com/egoist/mygo/transfer"
 )
 
 // testSurface is a surface that counts the frames drawn in memory.
@@ -23,6 +23,15 @@ func (s *testSurface) PresentPixels([]byte, int, int, int)      { s.pixels++ }
 func (s *testSurface) SetCursor(platform.Cursor)                {}
 func (s *testSurface) SetTextInput(platform.TextInputState)     {}
 func (s *testSurface) UpdateAccessibility(*platform.AccessTree) {}
+func (s *testSurface) StartDataDrag(r platform.DragRequest) {
+	r.Done(transfer.Result{Err: platform.ErrUnsupported})
+}
+func (s *testSurface) CancelDataDrag()                  {}
+func (s *testSurface) SetDropFormats([]transfer.Format) {}
+func (s *testSurface) NewWebView(*platform.WindowOptions, platform.WindowHandler) (platform.WebView, error) {
+	return nil, platform.ErrUnsupported
+}
+func (s *testSurface) PlaceWebViews([]platform.WebViewPlacement) {}
 
 // testGPU is a GPU renderer whose device goes away when fail is set.
 type testGPU struct {
@@ -48,7 +57,7 @@ func gpuHost(t *testing.T, make func() (gpuRenderer, error)) (*windowHost, *test
 	t.Cleanup(func() { newGPU = newGPURenderer })
 	s := &testSurface{}
 	h := &windowHost{conn: &surface.Conn{Surface: s}}
-	h.rt = newRuntime(func(c *Context) { Text(c, "Hello") }, h)
+	h.rt = newRuntime(func(c *context) { coreText(c, "Hello") }, h)
 	return h, s, func() { h.event(platform.SurfaceEvent{Kind: platform.SurfaceFrame}) }
 }
 
@@ -166,404 +175,231 @@ func TestNoGPUFromTheStart(t *testing.T) {
 	}
 }
 
-// pixelGPU is a GPU renderer that also presents frames drawn in memory, as
-// Metal's does.
-type pixelGPU struct {
-	testGPU
-	pixels int
-	damage []image.Rectangle
-}
-
-func (g *pixelGPU) PresentPixels(pix []byte, stride, width, height int, scale float64, damage []image.Rectangle) error {
-	g.pixels++
-	g.damage = append(g.damage[:0], damage...)
-	return nil
-}
-
-// TestSmallChangesDrawOnCPU checks which frames the CPU draws and which
-// the GPU does.
-func TestSmallChangesDrawOnCPU(t *testing.T) {
-	g := &pixelGPU{}
+// TestEveryFrameOnTheGPU checks that with a GPU, every frame draws on it:
+// the first, one changing little after a pause, and one changing little
+// while frames follow each other.
+func TestEveryFrameOnTheGPU(t *testing.T) {
+	g := &testGPU{}
 	h, s, frame := gpuHost(t, func() (gpuRenderer, error) { return g, nil })
-	x, back := float32(10), RGB(200, 200, 200)
-	h.rt = newRuntime(func(c *Context) {
-		Box(c).Fill().Background(back).Children(func() {
-			Box(c).Size(10, 10).Background(RGB(0, 0, 255)).Absolute().Left(x).Top(10)
-		})
-	}, h)
-	pause := func() { h.lastFrame = time.Now().Add(-time.Second) }
-	check := func(what string, pixels, frames int) {
-		t.Helper()
-		if g.pixels != pixels || g.frames != frames || s.pixels != 0 {
-			t.Fatalf("%s: %d frames drawn on the CPU, %d on the GPU, %d in memory without the GPU", what, g.pixels, g.frames, s.pixels)
-		}
-	}
-	frame()
-	check("the first frame", 1, 0)
-	if len(g.damage) != 1 || g.damage[0] != image.Rect(0, 0, 200, 100) {
-		t.Errorf("the first frame changed %v", g.damage)
-	}
-	// A small change after a pause, and in a burst.
-	pause()
-	x = 30
-	frame()
-	check("a small change after a pause", 2, 0)
-	if len(g.damage) == 0 || g.damage[0].Dx() > 40 || g.damage[0].Dy() > 20 {
-		t.Errorf("moving the square changed %v", g.damage)
-	}
-	x = 40
-	frame()
-	check("a small change in a burst", 3, 0)
-	// Much of the window in a burst goes to the GPU, and back to the CPU
-	// after a pause.
-	back = RGB(100, 100, 100)
-	frame()
-	check("a large change in a burst", 3, 1)
-	pause()
-	x = 50
-	frame()
-	check("a small change after a pause, the CPU's frame being old", 4, 1)
-	if len(g.damage) != 1 || g.damage[0] != image.Rect(0, 0, 200, 100) {
-		t.Errorf("catching up changed %v", g.damage)
-	}
-	// The CPU's frame goes once the GPU has drawn alone for a second.
-	back = RGB(50, 50, 50)
-	frame()
-	check("a large change", 4, 2)
-	if h.soft.Image.Pix == nil {
-		t.Fatal("the CPU's frame went at once")
-	}
-	h.gpuSinceCPU = time.Now().Add(-2 * time.Second)
-	back = RGB(60, 60, 60)
-	frame()
-	check("a large change, a second later", 4, 3)
-	if h.soft.Image.Pix != nil {
-		t.Error("the CPU's frame stays while the GPU draws alone")
-	}
-	pause()
-	frame()
-	check("the next frame after a pause", 5, 3)
-}
-
-// TestBackToCPUInABurst checks that frames changing little draw on the
-// CPU again while frames still follow each other, after the GPU drew one
-// changing much, and that a frame like the one shown presents nothing.
-func TestBackToCPUInABurst(t *testing.T) {
-	g := &pixelGPU{}
-	h, _, frame := gpuHost(t, func() (gpuRenderer, error) { return g, nil })
-	x, back := float32(10), RGB(200, 200, 200)
-	h.rt = newRuntime(func(c *Context) {
-		Box(c).Fill().Background(back).Children(func() {
-			Box(c).Size(10, 10).Background(RGB(0, 0, 255)).Absolute().Left(x).Top(10)
-		})
-	}, h)
-	check := func(what string, pixels, frames int) {
-		t.Helper()
-		if g.pixels != pixels || g.frames != frames {
-			t.Fatalf("%s: %d frames drawn on the CPU, %d on the GPU", what, g.pixels, g.frames)
-		}
-	}
-	frame()
-	x = 20
-	frame()
-	check("two small changes", 2, 0)
-	// The same frame again shows already.
-	frame()
-	check("the same frame", 2, 0)
-	if h.path != "unchanged" {
-		t.Errorf("the same frame was %s", h.path)
-	}
-	// Much of the window changes, as a page slides in, then only the
-	// square moves, frame after frame.
-	back = RGB(100, 100, 100)
-	frame()
-	check("a large change in a burst", 2, 1)
-	x = 30
-	frame()
-	check("a small change after it", 3, 1)
-	if len(g.damage) != 1 || g.damage[0] != image.Rect(0, 0, 200, 100) {
-		t.Errorf("catching up on the large change changed %v", g.damage)
-	}
-	x = 40
-	frame()
-	check("the next small change", 4, 1)
-	if len(g.damage) == 0 || g.damage[0].Dx() > 40 || g.damage[0].Dy() > 20 {
-		t.Errorf("moving the square changed %v", g.damage)
-	}
-	// A small change after frames the GPU drew alone for a second, which
-	// freed the CPU's frame, draws all of it.
-	back = RGB(50, 50, 50)
-	frame()
-	h.gpuSinceCPU = time.Now().Add(-2 * time.Second)
-	back = RGB(60, 60, 60)
-	frame()
-	check("large changes", 4, 3)
-	if h.soft.Image.Pix != nil {
-		t.Fatal("the CPU's frame stays while the GPU draws alone")
-	}
-	x = 50
-	frame()
-	check("a small change after them", 5, 3)
-	if len(g.damage) != 1 || g.damage[0] != image.Rect(0, 0, 200, 100) {
-		t.Errorf("drawing the frame freed changed %v", g.damage)
-	}
-}
-
-// TestHeavyCPUBurstsDrawOnGPU checks that frames changing little draw on
-// the GPU once the CPU's frames of their burst cost too much, as an
-// animation over translucent layers may, and on the CPU after a pause.
-func TestHeavyCPUBurstsDrawOnGPU(t *testing.T) {
-	g := &pixelGPU{}
-	h, _, frame := gpuHost(t, func() (gpuRenderer, error) { return g, nil })
 	x := float32(10)
-	h.rt = newRuntime(func(c *Context) {
-		Box(c).Fill().Background(RGB(200, 200, 200)).Children(func() {
-			Box(c).Size(10, 10).Background(RGB(0, 0, 255)).Absolute().Left(x).Top(10)
+	h.rt = newRuntime(func(c *context) {
+		coreBox(c).Fill().Background(RGB(200, 200, 200)).Children(func() {
+			coreBox(c).Size(10, 10).Background(RGB(0, 0, 255)).Absolute().Left(x).Top(10)
 		})
 	}, h)
-	check := func(what string, pixels, frames int) {
-		t.Helper()
-		if g.pixels != pixels || g.frames != frames {
-			t.Fatalf("%s: %d frames drawn on the CPU, %d on the GPU", what, g.pixels, g.frames)
-		}
-	}
-	move := func() {
-		x++
-		frame()
-	}
 	frame()
-	move()
-	check("small changes", 2, 0)
-	// The CPU's frames of the burst so far took 8 ms each, at 60 Hz.
-	start := time.Now().Add(-300 * time.Millisecond)
-	h.cpuBurst = cpuLoad{}
-	for at := time.Duration(0); at < 300*time.Millisecond; at += 16 * time.Millisecond {
-		h.noteCPUFrame(start.Add(at), 8*time.Millisecond, 8*time.Millisecond)
-	}
-	if !h.cpuHeavy {
-		t.Fatal("frames of 8 ms at 60 Hz are not heavy")
-	}
-	move()
-	move()
-	check("small changes in a heavy burst", 2, 2)
-	// After a pause, the CPU draws again, catching up on where the square
-	// went while the GPU drew.
 	h.lastFrame = time.Now().Add(-time.Second)
-	h.frameEnd = h.lastFrame
-	move()
-	check("a small change after a pause", 3, 2)
-	if len(g.damage) == 0 || g.damage[0].Dx() > 40 || !g.damage[0].Overlaps(image.Rect(12, 10, 23, 20)) {
-		t.Errorf("catching up changed %v", g.damage)
-	}
-	// Light frames do not tip a burst over.
-	for range 30 {
-		move()
-	}
-	if h.cpuHeavy || g.frames != 2 {
-		t.Errorf("light frames: heavy %v, %d frames on the GPU", h.cpuHeavy, g.frames)
+	x = 30
+	frame()
+	x = 40
+	frame()
+	if g.frames != 3 || s.pixels != 0 || h.path != "drawn on the GPU" {
+		t.Errorf("%d frames on the GPU, %d drawn in memory, the last %q", g.frames, s.pixels, h.path)
 	}
 }
 
-func TestCPULoad(t *testing.T) {
-	var l cpuLoad
-	t0 := time.Now()
-	frame := func(at, took time.Duration) (time.Duration, bool) { return l.add(t0.Add(at), took, took) }
-	const refresh = 16 * time.Millisecond
-	// Frames of 2 ms at 60 Hz take an eighth of the time.
-	for i := range 60 {
-		if _, heavy := frame(time.Duration(i)*refresh, 2*time.Millisecond); heavy {
-			t.Fatalf("frames of 2 ms are heavy at the %dth", i)
+func TestTransformedFramesStayOnGPU(t *testing.T) {
+	g := &testGPU{}
+	h, s, frame := gpuHost(t, func() (gpuRenderer, error) { return g, nil })
+	active := true
+	h.rt = newRuntime(func(c *context) {
+		coreBox(c).Size(30, 20).Translate(10, 10).Rotate(8).Background(RGB(50, 80, 200))
+		if active {
+			c.AnimationFrame()
 		}
-	}
-	// After a pause, frames of 6 ms are a burst of their own, heavy once
-	// it lasted gpuBurst, and not slow.
-	var first time.Duration
-	for i := 0; first == 0 && i < 60; i++ {
-		if lasted, heavy := frame(2*time.Second+time.Duration(i)*refresh, 6*time.Millisecond); heavy {
-			first = lasted
-		}
-	}
-	if first < gpuBurst || first > gpuBurst+refresh {
-		t.Errorf("frames of 6 ms were heavy after %v", first)
-	}
-	if l.slow(refresh) {
-		t.Error("frames of 6 ms are slow at 60 Hz")
-	}
-	// Frames slower than the display, each soon after the last, are one
-	// burst, however far apart they begin.
-	var lasted time.Duration
-	var heavy bool
-	for i := range 4 {
-		lasted, heavy = frame(4*time.Second+time.Duration(i)*85*time.Millisecond, 80*time.Millisecond)
-	}
-	if !heavy || lasted < 300*time.Millisecond || !l.slow(refresh) {
-		t.Errorf("frames of 80 ms: lasted %v, heavy %v, slow %v", lasted, heavy, l.slow(refresh))
-	}
-	// Frames of 2 ms drawn on 8 cores take as much CPU as frames of 16 ms:
-	// heavy, though not slow.
-	first = 0
-	for i := 0; first == 0 && i < 60; i++ {
-		if lasted, heavy := l.add(t0.Add(6*time.Second+time.Duration(i)*refresh), 2*time.Millisecond, 16*time.Millisecond); heavy {
-			first = lasted
-		}
-	}
-	if first < gpuBurst || first > gpuBurst+refresh {
-		t.Errorf("frames of 2 ms on 8 cores were heavy after %v", first)
-	}
-	if l.slow(refresh) {
-		t.Error("frames of 2 ms on 8 cores are slow at 60 Hz")
+	}, h)
+	frame()
+	frame()
+	active = false
+	h.lastFrame = time.Now().Add(-time.Second)
+	frame()
+	if g.frames != 3 || s.pixels != 0 || h.soft.Image.Pix != nil {
+		t.Fatal("active or resting transforms switched to CPU rendering")
 	}
 }
 
-// lazySurface is a test surface that gives the GPU on demand, as Linux's
-// does, when it has one.
-type lazySurface struct {
-	testSurface
-	hasGPU, given bool
-	asked, idled  int
-}
-
-func (s *lazySurface) Native() platform.SurfaceNative {
-	if s.given {
-		return platform.SurfaceNative{HWND: 1}
-	}
-	return platform.SurfaceNative{Widget: 1}
-}
-
-func (s *lazySurface) UseGPU() bool {
-	s.asked++
-	s.given = s.hasGPU
-	return s.given
-}
-
-func (s *lazySurface) Idle() { s.idled++ }
-
-// lazyHost returns a window host on a lazySurface, a function drawing a
-// frame, and one running what the host posted to the main thread.
-func lazyHost(t *testing.T, hasGPU bool) (*windowHost, *lazySurface, func(), func()) {
-	t.Setenv("MYGO_GPU", "")
-	newGPU = func(n platform.SurfaceNative) (gpuRenderer, error) {
-		if n.HWND == 0 {
-			return nil, nil
+// A painter tells whether its frame draws on a GPU: from the first frame,
+// whose renderer is made as it paints; not with a renderer drawing in
+// software, nor in memory, nor headless. When that changes as a frame is
+// presented, the window is painted again.
+func TestAccelerated(t *testing.T) {
+	soft, fail := false, false
+	h, _, frame := gpuHost(t, func() (gpuRenderer, error) {
+		switch {
+		case fail:
+			return nil, errors.New("no device")
+		case soft:
+			return &softGPU{}, nil
 		}
 		return &testGPU{}, nil
+	})
+	var told []bool
+	h.rt = newRuntime(func(c *context) {
+		coreBox(c).Size(20, 20).Draw(func(p *Painter, r Rect) { told = append(told, p.Accelerated()) })
+	}, h)
+	invalidated := 0
+	h.conn.Invalidate = func() { invalidated++ }
+	frame()
+	if len(told) != 1 || !told[0] || invalidated != 0 {
+		t.Fatalf("on a GPU: told %v, invalidated %d times", told, invalidated)
 	}
-	t.Cleanup(func() { newGPU = newGPURenderer })
-	s := &lazySurface{hasGPU: hasGPU}
-	var mu sync.Mutex
+
+	// The GPU goes away as a frame presents: the next is painted without.
+	h.gpu.(*testGPU).fail, fail = true, true
+	frame()
+	if invalidated != 1 || h.gpu != nil {
+		t.Fatalf("after the loss: invalidated %d times, renderer %v", invalidated, h.gpu)
+	}
+	told = told[:0]
+	frame()
+	if len(told) != 1 || told[0] || invalidated != 1 {
+		t.Fatalf("in memory: told %v, invalidated %d times", told, invalidated)
+	}
+
+	// A renderer drawing in software, as WARP, is not a GPU.
+	h.event(platform.SurfaceEvent{Kind: platform.SurfaceRenew})
+	soft, fail = true, false
+	told = told[:0]
+	frame()
+	if len(told) != 1 || told[0] {
+		t.Errorf("in software: told %v", told)
+	}
+
+	var headless []bool
+	coreRender(func(c *context) {
+		coreBox(c).Size(20, 20).Draw(func(p *Painter, r Rect) { headless = append(headless, p.Accelerated()) })
+	}, 40, 40, 1)
+	if len(headless) == 0 || slices.Contains(headless, true) {
+		t.Errorf("headless: told %v", headless)
+	}
+}
+
+// pacedSurface is a test surface whose frames following each other are
+// paced by the display, and which draws one at once on FrameNow.
+type pacedSurface struct {
+	testSurface
+	h   *windowHost
+	now int
+}
+
+func (s *pacedSurface) FrameNow() {
+	s.now++
+	s.h.event(platform.SurfaceEvent{Kind: platform.SurfaceFrame})
+}
+
+// waitingGPU is a GPU renderer that has a frame wait until wake is called,
+// while ready is false.
+type waitingGPU struct {
+	testGPU
+	ready bool
+	wake  func()
+}
+
+func (g *waitingGPU) Ready(wake func()) bool {
+	if g.ready {
+		return true
+	}
+	g.wake = wake
+	return false
+}
+
+// TestPacedFrameWaitsForTheDisplay checks that a frame paced by the
+// display waits, without drawing, for the GPU renderer to be able to draw
+// it, and draws once it wakes the window, through the main thread.
+func TestPacedFrameWaitsForTheDisplay(t *testing.T) {
+	var gpus []*waitingGPU
+	h, _, frame := gpuHost(t, func() (gpuRenderer, error) {
+		g := &waitingGPU{ready: true}
+		gpus = append(gpus, g)
+		return g, nil
+	})
+	s := &pacedSurface{h: h}
 	var posted []func()
-	h := &windowHost{conn: &surface.Conn{Surface: s, Post: func(fn func()) {
-		mu.Lock()
-		posted = append(posted, fn)
-		mu.Unlock()
-	}}}
-	h.rt = newRuntime(func(c *Context) { Text(c, "Hello") }, h)
-	t.Cleanup(func() { h.idleTimer.Stop() })
-	run := func() {
-		mu.Lock()
+	h.conn.Surface = s
+	h.conn.Post = func(fn func()) { posted = append(posted, fn) }
+	paced := func() { h.event(platform.SurfaceEvent{Kind: platform.SurfaceFrame, Paced: true}) }
+	runPosted := func() {
 		fns := posted
 		posted = nil
-		mu.Unlock()
 		for _, fn := range fns {
 			fn()
 		}
 	}
-	return h, s, func() { h.event(platform.SurfaceEvent{Kind: platform.SurfaceFrame}) }, run
-}
+	frame()
+	g := gpus[0]
+	paced()
+	if g.frames != 2 {
+		t.Fatalf("a paced frame the renderer is ready for: %d frames, want 2", g.frames)
+	}
 
-// burst notes frames drawn in memory at 60 Hz for lasting, each taking
-// took on one core, as the frames of a lazy surface's host would.
-func burst(h *windowHost, start time.Time, lasted, took time.Duration) {
-	burstOn(h, start, lasted, took, took)
-}
+	// Not ready: the frame waits.
+	g.ready = false
+	paced()
+	if g.frames != 2 || g.wake == nil || !h.waiting {
+		t.Fatalf("waiting: %d frames, wake %v, waiting %v", g.frames, g.wake != nil, h.waiting)
+	}
+	// The renderer wakes the window through the main thread, which draws
+	// the frame at once.
+	g.ready = true
+	g.wake()
+	if g.frames != 2 || len(posted) != 1 {
+		t.Fatalf("woken off the main thread: %d frames, %d posted", g.frames, len(posted))
+	}
+	runPosted()
+	if g.frames != 3 || s.now != 1 || h.waiting {
+		t.Fatalf("woken: %d frames, %d drawn at once, waiting %v", g.frames, s.now, h.waiting)
+	}
 
-// burstOn notes frames drawn in memory at 60 Hz for lasting, each taking
-// took, and cpu of CPU time on several cores.
-func burstOn(h *windowHost, start time.Time, lasted, took, cpu time.Duration) {
-	for at := time.Duration(0); at < lasted; at += 16 * time.Millisecond {
-		h.noteCPU(start.Add(at), took, cpu)
+	// Refreshes passing while a frame waits ask for the same frame, which
+	// draws at the time the first asked for it.
+	g.ready = false
+	paced()
+	asked := h.waitedAt
+	paced()
+	if h.waitedAt != asked {
+		t.Fatal("a later refresh changed the time of the frame waiting")
 	}
-}
+	g.ready = true
+	g.wake()
+	runPosted()
+	if g.frames != 4 || s.now != 2 || h.waiting || h.rt.c.now != asked {
+		t.Fatalf("waited across refreshes: %d frames, %d drawn at once, waiting %v, frame time %v (asked %v)", g.frames, s.now, h.waiting, h.rt.c.now, asked)
+	}
 
-func TestLazyGPUWhenIdle(t *testing.T) {
-	h, s, frame, run := lazyHost(t, true)
+	// A frame the surface draws for another reason, as a resize's, draws
+	// the waiting one: a wake after it draws nothing more.
+	g.ready = false
+	g.wake = nil
+	paced()
 	frame()
-	if s.pixels != 1 || s.asked != 0 || h.gpu != nil || h.soft.Image.Pix == nil {
-		t.Fatalf("first frame: %d in memory, asked %d times", s.pixels, s.asked)
+	if g.frames != 5 || h.waiting {
+		t.Fatalf("drawn meanwhile: %d frames, waiting %v", g.frames, h.waiting)
 	}
-	// Idle, the host frees its frame and lets the surface give memory back.
-	h.lastFrame = time.Now().Add(-frameIdle)
-	h.idle()
-	if h.soft.Image.Pix != nil || s.idled != 1 || s.asked != 0 {
-		t.Fatalf("idle: frame kept %v, %d idles, asked %d times", h.soft.Image.Pix != nil, s.idled, s.asked)
+	g.wake()
+	runPosted()
+	if g.frames != 5 || s.now != 2 {
+		t.Fatalf("a late wake: %d frames, %d drawn at once", g.frames, s.now)
 	}
-	// Light frames ask for nothing; heavy ones for the GPU, once idle.
-	burst(h, time.Now(), time.Second, 2*time.Millisecond)
-	burst(h, time.Now().Add(2*time.Second), 400*time.Millisecond, 8*time.Millisecond)
-	run()
-	if !h.wantGPU || s.asked != 0 {
-		t.Fatalf("after a heavy burst: wanted %v, asked %d times", h.wantGPU, s.asked)
-	}
-	h.lastFrame = time.Now().Add(-gpuIdle / 2)
-	h.idle()
-	if s.asked != 0 {
-		t.Fatal("asked for the GPU before the window was idle")
-	}
-	h.lastFrame = time.Now().Add(-gpuIdle)
-	h.idle()
-	if s.asked != 1 || h.wantGPU {
-		t.Fatalf("idle after a heavy burst: asked %d times", s.asked)
-	}
-	frame()
-	if h.gpu == nil || h.path != "drawn on the GPU" || s.pixels != 1 {
-		t.Errorf("the frame after: %q, %d in memory", h.path, s.pixels)
-	}
-}
 
-func TestLazyGPUAtOnce(t *testing.T) {
-	// A burst going on asks at once.
-	h, s, frame, run := lazyHost(t, true)
-	frame()
-	burst(h, time.Now(), gpuBurstLong+100*time.Millisecond, 6*time.Millisecond)
-	run()
-	if s.asked != 1 {
-		t.Errorf("a long heavy burst asked %d times", s.asked)
+	// A renderer let go while a frame waits for it never wakes the window:
+	// the next paced frame asks the renderer taking its place.
+	paced()
+	if !h.waiting {
+		t.Fatal("not waiting")
 	}
-	// So do frames the CPU draws slower than the display shows them.
-	h, s, frame, run = lazyHost(t, true)
-	frame()
-	start := time.Now()
-	for at := time.Duration(0); at < 300*time.Millisecond; at += 40 * time.Millisecond {
-		h.noteCPU(start.Add(at), 30*time.Millisecond, 30*time.Millisecond)
+	g.fail = true
+	frame() // fails, and another renderer draws it
+	if len(gpus) != 2 || h.waiting {
+		t.Fatalf("after a failure: %d renderers, waiting %v", len(gpus), h.waiting)
 	}
-	run()
-	if s.asked != 1 {
-		t.Errorf("slow frames asked %d times", s.asked)
+	gpus[1].ready = false
+	paced()
+	if !h.waiting || h.waitingOn != gpus[1] {
+		t.Fatal("the paced frame did not wait for the new renderer")
 	}
-	frame()
-	if h.gpu == nil {
-		t.Errorf("the frame after: %q", h.path)
-	}
-	// So does a burst of frames that last little but take several cores,
-	// as scrolling a large window does.
-	h, s, frame, run = lazyHost(t, true)
-	frame()
-	burstOn(h, time.Now(), gpuBurstLong+100*time.Millisecond, 1500*time.Microsecond, 12*time.Millisecond)
-	run()
-	if s.asked != 1 {
-		t.Errorf("a long burst of frames on several cores asked %d times", s.asked)
-	}
-}
-
-func TestLazyGPUNone(t *testing.T) {
-	h, s, frame, run := lazyHost(t, false)
-	frame()
-	burst(h, time.Now(), gpuBurstLong+100*time.Millisecond, 8*time.Millisecond)
-	run()
-	burst(h, time.Now().Add(2*time.Second), gpuBurstLong+100*time.Millisecond, 8*time.Millisecond)
-	run()
-	frame()
-	if s.asked != 1 || h.gpu != nil || s.pixels != 2 {
-		t.Errorf("without a GPU: asked %d times, %d frames in memory", s.asked, s.pixels)
+	h.gpu = &waitingGPU{ready: true}
+	paced()
+	if h.waiting {
+		t.Fatal("a paced frame still waits for a renderer let go")
 	}
 }

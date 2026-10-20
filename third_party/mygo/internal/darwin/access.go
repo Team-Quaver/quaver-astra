@@ -33,6 +33,8 @@ type accessElement struct {
 	node     platform.AccessNode
 	parent   id
 	children []uint64
+	// webView is the web view whose page is the first child.
+	webView *window
 	// chosen are the rows of a list or table that are chosen, and count
 	// its rows, built or not.
 	chosen []uint64
@@ -377,6 +379,7 @@ func (s *surface) UpdateAccessibility(tree *platform.AccessTree) {
 			children[n.Parent] = append(children[n.Parent], n.ID)
 			childObjs[n.Parent] = append(childObjs[n.Parent], objs[i])
 		}
+		grafted := map[*window]bool{}
 		for i, n := range tree.Nodes {
 			el := s.elements[n.ID]
 			parent := s.view
@@ -387,10 +390,25 @@ func (s *surface) UpdateAccessibility(tree *platform.AccessTree) {
 				el.parent = parent
 				send(el.obj, "setAccessibilityParent:", uintptr(parent))
 			}
-			if !slices.Equal(el.children, children[i]) {
-				el.children = children[i]
-				send(el.obj, "setAccessibilityChildren:", uintptr(nsArray(childObjs[i]...)))
+			// The page of a web view is inside the element showing it.
+			var web *window
+			if v, ok := n.WebView.(*window); ok && v.host == s.w && !v.closed && !grafted[v] {
+				web, grafted[v] = v, true
+				v.accessParent = el.obj
+			}
+			if !slices.Equal(el.children, children[i]) || el.webView != web {
+				el.children, el.webView = children[i], web
+				kids := childObjs[i]
+				if web != nil {
+					kids = append([]id{web.web}, kids...)
+				}
+				send(el.obj, "setAccessibilityChildren:", uintptr(nsArray(kids...)))
 				changed = true
+			}
+		}
+		for _, v := range s.w.webViews {
+			if !grafted[v] {
+				v.accessParent = 0
 			}
 		}
 		// Lists and tables: their rows, those that show, those chosen, and
@@ -478,6 +496,9 @@ func (s *surface) UpdateAccessibility(tree *platform.AccessTree) {
 
 // destroyAccess releases the elements of a surface.
 func (s *surface) destroyAccess() {
+	for _, v := range s.w.webViews {
+		v.accessParent = 0
+	}
 	for nid, el := range s.elements {
 		postNote(el.obj, "AXUIElementDestroyed")
 		delete(s.w.b.byAccess, el.obj)
@@ -546,6 +567,7 @@ func registerAccessClass() {
 		"accessibilityPerformIncrement": platform.ActionIncrement,
 		"accessibilityPerformDecrement": platform.ActionDecrement,
 		"setAccessibilityValue:":        platform.ActionSetValue,
+		"setAccessibilitySelectedText:": platform.ActionSetValue,
 		"setAccessibilityFocused:":      platform.ActionFocus,
 		"setAccessibilityDisclosed:":    platform.ActionExpand,
 	}
@@ -609,6 +631,8 @@ func registerAccessClass() {
 			switch stringOf(attr) {
 			case "AXValue":
 				return !textual(el.node.Role) || el.node.Actions&platform.ActionSetValue != 0
+			case "AXSelectedText":
+				return textual(el.node.Role) && el.node.Actions&platform.ActionSetValue != 0
 			case "AXFocused":
 				return true
 			case "AXDisclosing":
@@ -690,6 +714,28 @@ func registerAccessClass() {
 				el.act(platform.AccessSetValue, stringOf(value))
 			}
 		}),
+		// Typing into a text field over its selection, as Voice Control,
+		// dictation and automation insert text (kAXSelectedTextAttribute).
+		method("setAccessibilitySelectedText:", func(self id, cmd objc.SEL, text id) {
+			sendSuper(self, "MyGoAccessibilityElement", cmd, uintptr(text))
+			if el := b().accessElementOf(self); el != nil && textual(el.node.Role) && el.node.Actions&platform.ActionSetValue != 0 {
+				el.act(platform.AccessInsertText, stringOf(text))
+			}
+		}),
+		// Moving the selection of a text field, as VoiceOver does.
+		method("setAccessibilitySelectedTextRange:", func(self id, cmd objc.SEL, r nsRange) {
+			sendSuper(self, "MyGoAccessibilityElement", cmd, uintptr(r.Location), uintptr(r.Length))
+			el := b().accessElementOf(self)
+			if el == nil || !textual(el.node.Role) || el.s.updating {
+				return
+			}
+			u := utf16.Encode([]rune(el.node.Value))
+			lo := int(min(r.Location, uint(len(u))))
+			hi := int(min(uint(lo)+r.Length, uint(len(u))))
+			start := len(utf16.Decode(u[:lo]))
+			end := start + len(utf16.Decode(u[lo:hi]))
+			el.s.send(platform.SurfaceEvent{Kind: platform.AccessAction, ID: el.node.ID, Action: platform.AccessSelectText, From: start, To: end})
+		}),
 		// The text of text fields, for reading by characters and lines.
 		method("accessibilityStringForRange:", func(self id, _ objc.SEL, r nsRange) id {
 			el := b().accessElementOf(self)
@@ -700,6 +746,16 @@ func registerAccessClass() {
 			lo := int(min(r.Location, uint(len(u))))
 			hi := int(min(uint(lo)+r.Length, uint(len(u))))
 			return nsString(string(utf16.Decode(u[lo:hi])))
+		}),
+		// The formats of a rich text's runs, as NSTextView gives them, in
+		// accessibility's own keys: VoiceOver reads them as bold, italic,
+		// links.
+		method("accessibilityAttributedStringForRange:", func(self id, _ objc.SEL, r nsRange) id {
+			el := b().accessElementOf(self)
+			if el == nil {
+				return 0
+			}
+			return attributedAccessString(&el.node, r)
 		}),
 		method("accessibilityLineForIndex:", func(self id, _ objc.SEL, i int) int { return 0 }),
 		method("accessibilityRangeForLine:", func(self id, _ objc.SEL, line int) nsRange {

@@ -12,25 +12,25 @@ func TestToastViewportBase(t *testing.T) {
 	var shown []Toast
 	var lefts []time.Duration
 	var closed, undone []string
-	tt, now := clockTester(func(c *Context) {
+	tt, now := clockTester(func(c *context) {
 		shown, lefts = shown[:0], lefts[:0]
-		if Button(c, "Delete").Clicked() {
+		if coreButton(c, "Delete").Clicked() {
 			c.AddToast(Toast{ID: "deleted", Title: "Note deleted", Action: "Undo", Type: "info",
 				OnAction: func() { undone = append(undone, "deleted") },
 				OnClose:  func() { closed = append(closed, "deleted") }})
 		}
-		ToastViewportBase(c, func(viewport *Element, toasts []Toast) {
+		coreToastViewportBase(c, func(viewport *node, toasts []Toast) {
 			shown = append(shown, toasts...)
 			viewport.Padding(16).AlignItems(End).Gap(8)
 			for _, t := range toasts {
-				toast := ToastBase(c, t)
+				toast := coreToastBase(c, t)
 				lefts = append(lefts, toast.Left())
 				toast.Root.Row().Gap(8).Children(func() {
-					Text(c, t.Title)
+					coreText(c, t.Title)
 					if t.Action != "" {
-						toast.ActionButton().Children(func() { Text(c, t.Action) })
+						toast.ActionButton().Children(func() { coreText(c, t.Action) })
 					}
-					toast.CloseButton().Label("Close").Children(func() { Text(c, "×") })
+					toast.CloseButton().Label("Close").Children(func() { coreText(c, "×") })
 				})
 			}
 		})
@@ -91,15 +91,15 @@ func TestToastViewportBase(t *testing.T) {
 func TestToastManager(t *testing.T) {
 	var shown []string
 	var lefts []time.Duration
-	var c *Context
-	tt, now := clockTester(func(ctx *Context) {
+	var c *context
+	tt, now := clockTester(func(ctx *context) {
 		c = ctx
 		shown, lefts = shown[:0], lefts[:0]
-		ToastViewportBase(c, func(viewport *Element, toasts []Toast) {
+		coreToastViewportBase(c, func(viewport *node, toasts []Toast) {
 			for _, t := range toasts {
-				toast := ToastBase(c, t)
+				toast := coreToastBase(c, t)
 				shown, lefts = append(shown, t.Title), append(lefts, toast.Left())
-				toast.Root.Children(func() { Text(c, t.Title) })
+				toast.Root.Children(func() { coreText(c, t.Title) })
 			}
 		})
 	}, 400, 300)
@@ -164,9 +164,49 @@ func TestToastManager(t *testing.T) {
 	}
 }
 
+// TestToastAfterDialog shows a toast as an alert dialog the pointer
+// clicked closes, at once and frames later: its time runs out, though the
+// pointer rests where the dialog was, on none of the toast.
+func TestToastAfterDialog(t *testing.T) {
+	for _, later := range []bool{false, true} {
+		open, toast := true, false
+		tt, now := clockTester(func(c *context) {
+			if coreAlertDialog(c, &open, "Remove “python”?", "", "Cancel", "Remove") == 1 {
+				toast = !later
+			}
+			if toast {
+				c.Toast("Removed python")
+				toast = false
+			}
+		}, 400, 300)
+		tick := ticker(tt, now)
+		if err := tt.Click("Remove"); err != nil {
+			t.Fatal(err)
+		}
+		tick(100 * time.Millisecond)
+		if later {
+			tick(time.Second)
+			toast = true
+			tick(100 * time.Millisecond)
+		}
+		if !tt.HasText("Removed python") {
+			t.Fatalf("later %v: no toast: %q", later, tt.Texts())
+		}
+		r, _ := tt.Find("Removed python")
+		if r.Contains(tt.rt.pointerX, tt.rt.pointerY) {
+			t.Fatalf("later %v: the pointer is on the toast", later)
+		}
+		tick(toastTime)
+		tick(time.Second)
+		if tt.HasText("Removed python") {
+			t.Errorf("later %v: the toast stays after its time, its time stopped as if the pointer rested on it", later)
+		}
+	}
+}
+
 func TestToastDescription(t *testing.T) {
-	var c *Context
-	tt := NewTester(func(ctx *Context) { c = ctx }, 400, 300)
+	var c *context
+	tt := coreNewTester(func(ctx *context) { c = ctx }, 400, 300)
 	tt.send(platform.SurfaceEvent{Kind: platform.AccessibilityOn})
 	c.AddToast(Toast{Title: "Upload failed", Description: "The server is not reachable."})
 	tt.Frame()
@@ -179,13 +219,13 @@ func TestToastDescription(t *testing.T) {
 }
 
 func TestToastExits(t *testing.T) {
-	var c *Context
+	var c *context
 	red := RGB(255, 0, 0)
-	tt, now := clockTester(func(ctx *Context) {
+	tt, now := clockTester(func(ctx *context) {
 		c = ctx
-		ToastViewportBase(c, func(viewport *Element, toasts []Toast) {
+		coreToastViewportBase(c, func(viewport *node, toasts []Toast) {
 			for _, t := range toasts {
-				toast := ToastBase(c, t)
+				toast := coreToastBase(c, t)
 				toast.Root.Size(100, 40).Background(red).
 					Transition(ElementTransition{Duration: 200 * time.Millisecond, Ease: Linear, Exit: &Motion{Y: 40}})
 			}

@@ -35,7 +35,8 @@ A `MenuItem` has:
 - `Label`, and an `Accelerator`, its keyboard shortcut (see
   [accelerators](#accelerators));
 - `Click`, called on the main thread when the item is chosen, with the item
-  and the focused window, or nil;
+  and, on Linux and Windows, the window whose menu bar or context menu was
+  chosen. Other menus use the focused window, or nil;
 - `Type`: `MenuItemNormal`, `MenuItemCheckbox`, `MenuItemRadio`,
   `MenuItemSeparator` or `MenuItemSubmenu`; items with a `Submenu` are
   submenus, others normal items unless set. Adjacent radio items form a
@@ -52,15 +53,25 @@ shortcut, which `Label` and `Accelerator` override:
 
 - editing: `RoleUndo`, `RoleRedo`, `RoleCut`, `RoleCopy`, `RolePaste`,
   `RoleDelete`, `RoleSelectAll`, and on macOS `RolePasteAndMatchStyle`;
+- formatting: `RoleBold`, `RoleItalic`, `RoleUnderline`,
+  `RoleStrikethrough`, `RoleAlignLeft`, `RoleAlignCenter` and
+  `RoleAlignRight`, which format the selection of a [rich text
+  editor](ui/rich-text-editor.md) of native UI, or of an editable page
+  (`document.execCommand`); Paste and Match Style pastes plain text into a
+  rich text editor;
 - the page: `RoleReload`, `RoleForceReload`, `RoleToggleDevTools` (in a
   window of native UI, its [inspector](ui/inspector.md)),
   `RoleResetZoom`, `RoleZoomIn`, `RoleZoomOut`;
 - the window: `RoleToggleFullScreen`, `RoleMinimize`, `RoleZoom`,
   `RoleClose`;
+- [documents](documents.md#the-file-menu): `RoleNew`, `RoleOpen`,
+  `RoleOpenRecent`, `RoleSave`, `RoleSaveAs`, `RoleDuplicate`,
+  `RoleRename`, `RoleMoveTo`, `RoleRevert`;
 - the app: `RoleQuit`, and on macOS `RoleAbout`, `RoleHide`,
   `RoleHideOthers`, `RoleUnhide`, `RoleFront`, `RoleServices`,
   `RoleStartSpeaking`, `RoleStopSpeaking`;
-- whole menus: `RoleFileMenu`, `RoleEditMenu`, `RoleViewMenu` and
+- whole menus: `RoleFileMenu`, `RoleEditMenu`, `RoleFormatMenu` (Bold,
+  Italic, Underline, Strikethrough and the alignments), `RoleViewMenu` and
   `RoleWindowMenu`, and on macOS `RoleAppMenu` (the menu named after the
   app), `RoleWindow` (the menu listing the windows) and `RoleHelp` (the
   menu with the search field).
@@ -94,8 +105,14 @@ paste work.
 
 On Linux and Windows menu bars belong to windows. `App.SetMenu` gives its
 menu to every window without one of its own, `Window.SetMenu` gives a
-window its own, and windows have none by default. `App.SetMenu(nil)`
+window its own, and windows have none by default, except in apps with
+[documents](documents.md), which get File and Edit menus. `App.SetMenu(nil)`
 removes the menu.
+
+On Windows, menu bars and menus follow the appearance, light or dark, as
+the title bar does (see [dark mode](frontend.md#dark-mode)). On Windows 11
+they look like the system's own menus, as File Explorer's: roomier items,
+highlights with rounded corners, and shortcuts in a fainter color.
 
 A window with `AutoHideMenuBar` keeps its menu bar out of sight, and the
 room for the page. Alt pressed alone, or F10, shows the bar with the
@@ -192,6 +209,34 @@ menu, clicks reach `OnClick`, and `OnRightClick` gets right-clicks. Change
 the tray with `SetIcon`, `SetMenu`, `SetToolTip` and, on macOS,
 `SetTitle`, the text next to the icon; `Destroy` removes it.
 
+An app may show several icons, as a menu bar app showing its measures each
+in an item of its own. On macOS a new icon goes left of those already
+there, and the user moves icons by dragging them with ⌘ held: give each an
+`ID`, unique among the app's icons, and it goes back where the user put it
+whenever it is made again, at the next launch or after `Destroy`. On
+Windows, where the user chooses which icons show on the taskbar rather
+than in its overflow, an icon with an `ID` keeps that choice, whatever
+order the app makes its icons in.
+
+A template icon follows the menu bar by itself. An icon in color, as one
+drawing each of its measures in its own color, draws its ink for the bar
+it shows on: `Tray.Dark` reports whether that bar is dark (the macOS menu
+bar, as the system's appearance or the wallpaper under it tints it, or the
+Windows taskbar), and `OnAppearanceChange` tells when it turns, to set the
+icon again:
+
+```go
+draw := func() { tray.SetIcon(meterIcon(tray.Dark()), false) }
+tray.OnAppearanceChange(draw)
+draw()
+```
+
+`Tray.PopUpMenu` opens the menu set with `SetMenu` programmatically. On
+macOS, AppKit places it below the status item and highlights its button
+while the menu is open. To show a menu only on right-click while keeping
+primary clicks available, set the menu in `OnRightClick`, call
+`PopUpMenu`, then clear it with `SetMenu(nil)` when the call returns.
+
 On Linux tray icons use AppIndicator, which needs
 `libayatana-appindicator3`: they show a menu and report no clicks, and
 `NewTray` returns an error without the library.
@@ -201,6 +246,13 @@ Apps that live in the menu bar usually drop their Dock icon on macOS:
 ```go
 mygo.App.SetActivationPolicy(mygo.ActivationPolicyAccessory)
 ```
+
+For an icon that opens a window of native UI, see
+[the menu bar example](https://github.com/egoist/mygo/tree/main/examples/menubar-native).
+It leaves the tray menu unset on macOS and Windows, uses `OnClick` to
+toggle a frameless window positioned with `Tray.Bounds`, and hides it on
+`OnBlur` or Escape. On Linux, an AppIndicator menu item opens the same
+window.
 
 ## Accelerators
 

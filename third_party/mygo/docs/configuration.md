@@ -25,6 +25,7 @@ export default defineConfig({
   urlSchemes: ["myapp"],
   fileAssociations: [{ ext: ["md"], name: "Markdown Document", mimeType: "text/markdown" }],
 
+  i18n: { dir: "locales", source: "en" },
   updates: { publicKey: "…", github: "you/my-app" },
   macos: { signingIdentity: "Developer ID Application: Jane Doe (TEAMID)" },
   windows: { certificate: "certs/code-signing.pfx" },
@@ -45,7 +46,7 @@ the fields of [the frontend](#development-and-the-frontend).
 | `identifier` | `com.mygo.` and the name's letters and digits, e.g. `com.mygo.myapp` | a reverse DNS name unique to the app, e.g. `com.example.myapp`; systems key preferences, permissions and registrations on it |
 | `version` | `0.1.0` | the version of the app, which `App.Version()` returns and updates compare |
 | `copyright` | | the copyright notice of the app, in its `Info.plist` (macOS) and file properties (Windows) |
-| `icon` | `resources/icon.png` when it exists | a square PNG, ideally 1024×1024 |
+| `icon` | `resources/icon.png` when it exists | a square PNG, ideally 1024×1024; its name with `-dev`, as `icon-dev.png`, beside it is the development app's, when it exists |
 | `main` | `.` | the Go package of the app, relative to the project |
 
 ## Development and the frontend
@@ -79,6 +80,16 @@ Each file association has:
 | `mimeType` | their MIME type, by which Linux identifies files; without one the app defines `application/x-<app>-<ext>` |
 | `role` | `Editor` (the default) or `Viewer`, on macOS |
 
+## i18n
+
+The catalogs of the app's messages, a JSON file per language; see
+[Languages](i18n.md). Without `i18n`, the app ships English only.
+
+| Field | Default | |
+|---|---|---|
+| `dir` | `locales` | the directory of the catalogs, `<tag>.json` for each language the app ships (`de.json`, `zh-Hant.json`); a Go package of its own, where `mygo generate` writes the Go functions of the messages |
+| `source` | `en` | the language the app is written in, whose catalog has every message and which the others fall back to |
+
 ## updates
 
 Signed [auto-updates](updates.md). `publicKey` and one of `github` and
@@ -99,9 +110,11 @@ Signed [auto-updates](updates.md). `publicKey` and one of `github` and
 
 | Field | Default | |
 |---|---|---|
+| `icon` | | the icon as an asset catalog, an `Assets.car` or an Icon Composer `.icon`, beside the `.icns` of `icon`. See [the icon](distribution.md#name-icon-and-version) |
 | `minimumSystemVersion` | `12.0` | the oldest macOS the app runs on |
 | `signingIdentity` | `-`, ad hoc | the identity that signs the app and its disk image, e.g. `Developer ID Application: Jane Doe (TEAMID)` |
 | `entitlements` | | a property list of entitlements to sign the app with |
+| `provisioningProfile` | | a profile embedded as `Contents/embedded.provisionprofile` before signing; must match the app's identifier, entitlements and signing identity; cannot be used with ad-hoc signing. See [provisioning profiles](distribution.md#provisioning-profiles) |
 | `helperEntitlements` | | property lists of entitlements for code among the resources, by its path there, e.g. `{ "bin/server": "server.entitlements.plist" }`; other code keeps the entitlements it is signed with. See [helper executables](distribution.md#helper-executables) |
 | `infoPlist` | | keys added to the app's `Info.plist`, replacing MyGo's, e.g. `NSCameraUsageDescription` |
 | `dmgTitle` | `name` | the volume name of the disk image |

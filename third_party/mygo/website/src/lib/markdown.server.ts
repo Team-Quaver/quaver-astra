@@ -2,11 +2,12 @@
 // heading anchors that match GitHub's, links rewritten for the site, and code
 // highlighted by Shiki for both color schemes.
 
-import path from "node:path"
 import { codeToKeyedTokens } from "@shikijs/magic-move/core"
 import type { KeyedTokensInfo } from "@shikijs/magic-move/types"
 import GithubSlugger from "github-slugger"
 import type { Element, ElementContent, Root, RootContent } from "hast"
+import type { Root as MdRoot } from "mdast"
+import { toString as mdToString } from "mdast-util-to-string"
 import { toString } from "hast-util-to-string"
 import rehypeStringify from "rehype-stringify"
 import remarkGfm from "remark-gfm"
@@ -17,6 +18,9 @@ import { unified } from "unified"
 import { visit } from "unist-util-visit"
 
 import type { TocItem } from "@/lib/docs"
+import { omitRepositoryOnly, rewriteHref, type LinkOptions } from "@/lib/markdown-source"
+
+export { slugOf } from "@/lib/markdown-source"
 
 /** The text of a page under one heading, for search. */
 export interface Section {
@@ -34,17 +38,6 @@ export interface RenderedMarkdown {
   sections: Section[]
 }
 
-export interface LinkOptions {
-  /**
-   * The directory of the docs: `x.md` there is `/docs/x`, `plugins/x.md`
-   * is `/docs/plugins/x`, README.md is `/docs`.
-   */
-  docsDir: string
-  /** The repository: links to its other files go to GitHub. */
-  repoDir: string
-  repoUrl: string
-}
-
 const themes = { light: "github-light-default", dark: "github-dark-default" } as const
 
 let highlighter: Promise<Highlighter> | undefined
@@ -56,29 +49,14 @@ function getHighlighter() {
   return highlighter
 }
 
-/**
- * The slug of a page by its path in the docs: "plugins/fetch.md" →
- * "plugins/fetch", "README.md" → "", and a directory's README its own:
- * "ui/README.md" → "ui".
- */
-export function slugOf(file: string) {
-  const name = file.replace(/\.md$/, "").split(path.sep).join("/")
-  return name === "README" ? "" : name.replace(/\/README$/, "")
-}
-
-/** The slug of the page at an absolute path, or undefined outside the docs. */
-function docSlug(abs: string, docsDir: string) {
-  const rel = path.relative(docsDir, abs)
-  if (!abs.endsWith(".md") || rel.startsWith("..") || path.isAbsolute(rel)) return undefined
-  return slugOf(rel)
-}
-
 export async function renderMarkdown(source: string, file: string, links: LinkOptions): Promise<RenderedMarkdown> {
   const shiki = await getHighlighter()
   const out: RenderedMarkdown = { title: "", lead: "", html: "", toc: [], sections: [] }
   const processor = unified()
     .use(remarkParse)
     .use(remarkGfm)
+    .use(() => omitRepositoryOnly)
+    .use(() => previews)
     .use(remarkRehype)
     .use(() => (tree: Root) => transform(tree, out, shiki, file, links))
     .use(rehypeStringify)
@@ -140,6 +118,69 @@ function transform(tree: Root, out: RenderedMarkdown, shiki: Highlighter, file: 
   cardLists(tree)
 }
 
+const preview = /^<!--\s*(preview|app)\s+([\w-]+)\s+(\d+)\s*-->$/
+
+/**
+ * A comment `<!-- preview button 140 -->`, which GitHub does not show,
+ * becomes a frame of the demo of that name (website/docs-demo), as high
+ * as it says, in a window of macOS titled as the page. `<!-- app mayoi
+ * 480 -->` runs the example app of that name (examples/mayoi, one of
+ * docs-demo.ts's apps), in a window titled as the app.
+ */
+function previews(tree: MdRoot) {
+  const heading = tree.children.find((node) => node.type === "heading" && node.depth === 1)
+  const pageTitle = heading ? mdToString(heading) : ""
+  visit(tree, "html", (node, index, parent) => {
+    const m = preview.exec(node.value.trim())
+    if (!m || !parent || index === undefined) return
+    const [, kind, name, height] = m
+    const isApp = kind === "app"
+    const title = isApp ? name[0].toUpperCase() + name.slice(1) : pageTitle
+    const el = (tagName: string, className: string, children: ElementContent[] = [], properties: Element["properties"] = {}): Element => ({
+      type: "element",
+      tagName,
+      properties: { className: [className], ...properties },
+      children,
+    })
+    const src = isApp ? `/docs-demo?app=${name}` : `/docs-demo?demo=${name}`
+    // Lucide's square-arrow-out-up-right.
+    const icon: Element = {
+      type: "element",
+      tagName: "svg",
+      properties: {
+        viewBox: "0 0 24 24", width: 14, height: 14, fill: "none", stroke: "currentColor",
+        strokeWidth: 2, strokeLinecap: "round", strokeLinejoin: "round", ariaHidden: "true",
+      },
+      children: ["M21 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h6", "m21 3-9 9", "M15 3h6v6"].map(
+        (d): Element => ({ type: "element", tagName: "path", properties: { d }, children: [] }),
+      ),
+    }
+    const titlebar = el("div", "ui-preview-titlebar", [
+      el("span", "ui-preview-lights", [el("i", "close"), el("i", "minimize"), el("i", "zoom")], { ariaHidden: "true" }),
+      el("span", "ui-preview-title", [{ type: "text", value: title || name }]),
+      el("a", "ui-preview-open", [icon], {
+        href: src,
+        target: "_blank",
+        rel: "noopener",
+        title: "Open in a new tab",
+        ariaLabel: `Open ${title || name} in a new tab`,
+      }),
+    ])
+    const iframe = el("iframe", "ui-preview-frame", [], {
+      src,
+      title: isApp ? `${title}, running` : `A preview of ${title || name}`,
+      loading: "lazy",
+      style: `height:${height}px`,
+    })
+    // A node of its own type: remark-rehype makes it the element its data
+    // names, where it drops HTML.
+    parent.children[index] = {
+      type: "uiPreview",
+      data: { hName: "figure", hProperties: { className: ["ui-preview"] }, hChildren: [titlebar, iframe] },
+    } as unknown as (typeof parent.children)[number]
+  })
+}
+
 function headingDepth(node: Element) {
   const m = /^h([1-6])$/.exec(node.tagName)
   return m ? Number(m[1]) : 0
@@ -150,22 +191,9 @@ function containsLink(node: Element): boolean {
 }
 
 function rewriteLink(node: Element, href: string, file: string, links: LinkOptions) {
-  if (/^[a-z][a-z0-9+.-]*:|^\/\//i.test(href)) {
-    if (/^https?:/.test(href)) node.properties.rel = ["noreferrer"]
-    return
-  }
-  if (href.startsWith("#")) return
-  const [target = "", hash] = href.split("#", 2)
-  const abs = path.resolve(path.dirname(file), decodeURIComponent(target))
-  const suffix = hash ? `#${hash}` : ""
-  const slug = docSlug(abs, links.docsDir)
-  if (slug !== undefined) {
-    node.properties.href = (slug ? `/docs/${slug}` : "/docs") + suffix
-    return
-  }
-  const rel = path.relative(links.repoDir, abs).split(path.sep).join("/")
-  node.properties.href = `${links.repoUrl}/${path.extname(abs) ? "blob" : "tree"}/main/${rel}${suffix}`
-  node.properties.rel = ["noreferrer"]
+  const rewritten = rewriteHref(href, file, links)
+  node.properties.href = rewritten
+  if (/^https?:/.test(rewritten)) node.properties.rel = ["noreferrer"]
 }
 
 /** A highlighted code block with a copy button, from remark-rehype's `<pre><code>`. */

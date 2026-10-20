@@ -4,6 +4,8 @@ import tailwindcss from "@tailwindcss/vite"
 import { tanstackStart } from "@tanstack/react-start/plugin/vite"
 import viteReact from "@vitejs/plugin-react"
 import { defineConfig } from "vite"
+import { docsDemo } from "./docs-demo.ts"
+import { llmsDocs } from "./llms.ts"
 
 const repo = (file: string) => new URL(`../${file}`, import.meta.url)
 
@@ -26,10 +28,14 @@ export default defineConfig({
   },
   resolve: { tsconfigPaths: true },
   plugins: [
+    llmsDocs(path.resolve(import.meta.dirname, "..")),
+    docsDemo(path.resolve(import.meta.dirname, "..")),
     tailwindcss(),
     tanstackStart({
       // A static site: every page is rendered to HTML at build time.
-      prerender: { enabled: true, crawlLinks: true, filter: ({ path }) => !path.includes("#") },
+      // /docs-demo is not a page but files of docs-demo.ts, which previews
+      // link to.
+      prerender: { enabled: true, crawlLinks: true, filter: ({ path }) => !path.includes("#") && !path.startsWith("/docs-demo") },
       pages: [
         ...docs.map((path) => ({ path })),
         { path: "/docs/search.json" },

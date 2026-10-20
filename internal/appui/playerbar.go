@@ -101,27 +101,41 @@ func (a *App) playerBar(c *ui.Context, t *ui.Theme) {
 			ui.Text(c, sub).FontSize(fz(11.5)).TextColor(t.TextMuted).SingleLine().Ellipsis("…")
 		})
 
-		// 中：上一首 / 播放 / 下一首
+		// 中：上一首 / 播放 / 下一首。无限电台只向前，上一首在底层与
+		// 界面两层都关掉，不能只藏一个按钮。
 		ui.Spacer(c)
-		a.iconBtn(c, "prev", "上一首"+a.hotkeyTip(hkPrev), 20, func() { a.PL.Prev() })
+		if a.PL.RadioActive() {
+			a.iconBtnDisabled(c, "prev", "无限电台只向前播放", 20)
+		} else {
+			a.iconBtn(c, "prev", "上一首"+a.hotkeyTip(hkPrev), 20, func() { a.PL.Prev() })
+		}
 		a.playBtn(c, t)
 		a.iconBtn(c, "next", "下一首"+a.hotkeyTip(hkNext), 20, func() { a.PL.Next(false) })
 		ui.Spacer(c)
 
-		// 右：时间 / 音量 / 模式 / 随机 / 音质 / 红心 / 队列
+		// 右：时间 / 音量 / 模式 / 随机 / 音质 / 红心 / 队列。
+		// 电台没有可编辑队列、循环与随机也不参与推进，所以这些入口收掉。
 		ui.Textf(c, "%s / %s", fmtTime(a.PL.Position()), fmtTime(a.PL.Duration())).
 			FontSize(fz(11.5)).TextColor(t.TextMuted).Font("monospace")
 		a.volumeCtl(c, t)
-		a.modeBtn(c, t)
+		if a.PL.RadioActive() {
+			ui.Row(c).Padding(4, 8).Radius(999).Border(1, t.Accent.Alpha(0.35)).Children(func() {
+				ui.Text(c, "∞ 无限电台").FontSize(fz(10.5)).FontWeight(700).TextColor(t.Accent)
+			})
+		} else {
+			a.modeBtn(c, t)
+		}
 		a.qualityPill(c, t)
 		a.loveBtn(c, cur, hasCur, t)
-		a.queueBtn(c, t)
+		if !a.PL.RadioActive() {
+			a.queueBtn(c, t)
+		}
 	})
 }
 
 // barSeek 是覆盖整条播放条的 seek 面（在子控件之下拿指针）。
 // 它只挂事件、不渲染内容；子控件优先拿到指针。
-func (a *App) barSeek(c *ui.Context, bar *ui.Element) {
+func (a *App) barSeek(c *ui.Context, bar ui.Element) {
 	_ = c
 	if bar.Pressed() {
 		if !a.seekDragging {
@@ -194,6 +208,19 @@ func (a *App) iconBtn(c *ui.Context, icon, label string, size float32, fn func()
 	}
 	if b.Clicked() {
 		fn()
+	}
+}
+
+// iconBtnDisabled 是保持占位但不接受点击的图标按钮。电台的上一首用它，
+// 避免布局在中段塌掉；禁用态压暗，tooltip 说明原因。
+func (a *App) iconBtnDisabled(c *ui.Context, icon, label string, size float32) {
+	b := ui.ButtonBase(c).Size(32, 32).Radius(16).Center().Opacity(0.34)
+	b.Children(func() {
+		ui.Icon(c, Icons[icon]).FontSize(fz(size)).AlignSelf(ui.Center)
+	})
+	b.Disabled(true)
+	if label != "" {
+		b.Tooltip(label)
 	}
 }
 
@@ -319,7 +346,7 @@ func (a *App) qualityText() string {
 
 // qualityMenu 是音档选择菜单。播放条与正在播放页共用——两处只有配色不同，
 // 逻辑（选中项高亮、切换后关闭、写回配置）完全一致。
-func (a *App) qualityMenu(c *ui.Context, anchor *ui.Element, fg ui.Color, activeBg, hoverBg ui.Color) {
+func (a *App) qualityMenu(c *ui.Context, anchor ui.Element, fg ui.Color, activeBg, hoverBg ui.Color) {
 	ui.Popover(c, anchor, &a.qualityOpen, func() {
 		t := c.Theme()
 		panel := ui.Column(c).Width(210).Padding(6).

@@ -1,5 +1,7 @@
 # Accordion
 
+<!-- preview accordion 300 -->
+
 `ui.Accordion` creates sections, one above the other in a bordered box,
 that `ui.AccordionItem` builds: a header showing a title, which a click
 opens and closes, as do Enter and Space, and below it what its function
@@ -20,12 +22,12 @@ For one section open at a time, close the others as one opens:
 ```go
 for i, s := range sections {
 	open := app.section == i
-	if ui.AccordionItem(c, s.Title, &open, s.Build).Changed() {
+	ui.AccordionItem(c, s.Title, &open, s.Build).OnChange(func() {
 		app.section = -1
 		if open {
 			app.section = i
 		}
-	}
+	})
 }
 ```
 

@@ -1,6 +1,7 @@
 package text
 
 import (
+	"image"
 	"math"
 	"runtime"
 	"slices"
@@ -8,6 +9,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/egoist/mygo/internal/scene"
+	"golang.org/x/image/font/gofont/gobold"
+	"golang.org/x/image/font/gofont/gomono"
 	"golang.org/x/image/font/gofont/goregular"
 )
 
@@ -148,7 +152,8 @@ func TestGlyphShades(t *testing.T) {
 		t.Skip("font smoothing is off")
 	}
 	for i := 1; i < Shades; i++ {
-		if ink[i] <= ink[i-1] {
+		// Browsers' canvases embolden in fewer steps than Core Text.
+		if ink[i] < ink[i-1] || ink[i] == ink[i-1] && runtime.GOOS != "js" {
 			t.Errorf("ink of the shades %v", ink)
 		}
 	}
@@ -192,6 +197,34 @@ func TestThick(t *testing.T) {
 	}
 }
 
+// TestFlat rasterizes Flat text unsmoothed, thinner than the darkest shade
+// where the engine smooths fonts, and as other text elsewhere.
+func TestFlat(t *testing.T) {
+	s := newSystem()
+	l := s.Layout(Params{Text: "O", Style: Style{Size: 13}})
+	g := l.Lines[0].Glyphs[0]
+	ink := func(f *Font, shade Shade) (n int) {
+		img := s.Glyph(f, g.ID, 2, 0, shade, false)
+		for y := range int(img.H) {
+			for x := range int(img.W) {
+				n += int(s.MaskAtlas.Pix[(int(img.Y)+y)*s.MaskAtlas.W+int(img.X)+x])
+			}
+		}
+		return n
+	}
+	dark, flat := ink(g.Font, 0), ink(g.Font, Flat)
+	unsmoothed := *g.Font
+	unsmoothed.shaded = false
+	if plain := ink(&unsmoothed, 0); flat != plain {
+		t.Errorf("flat text has ink %d, unsmoothed text %d", flat, plain)
+	}
+	// Browsers' canvases smooth text as they do, and draw Flat text as the
+	// darkest shade.
+	if g.Font.shaded && flat >= dark && runtime.GOOS != "js" {
+		t.Errorf("flat text has ink %d, the darkest shade %d", flat, dark)
+	}
+}
+
 // square draws a w×w mask filled with v.
 func square(w int, v byte, calls *int) func() (int, int, []byte) {
 	return func() (int, int, []byte) {
@@ -210,6 +243,7 @@ func (s *System) maskPixel(g GlyphImage) byte {
 
 func TestMaskLastsOnceDrawnAgain(t *testing.T) {
 	s := newSystem()
+	width := s.MaskAtlas.W
 	var calls int
 	s.BeginFrame()
 	first := s.Mask(1, square(8, 7, &calls))
@@ -247,13 +281,16 @@ func TestMaskLastsOnceDrawnAgain(t *testing.T) {
 			t.Fatalf("frame %d: %+v", i, g)
 		}
 	}
-	if s.MaskAtlas.W != 1024 {
+	if s.MaskAtlas.W != width {
 		t.Errorf("the atlas grew to %d", s.MaskAtlas.W)
 	}
 }
 
 func TestMakeRoom(t *testing.T) {
 	s := newSystem()
+	// Room for several old masks, so the test exercises eviction and
+	// repacking rather than the small atlas's first growth.
+	s.MaskAtlas = scene.NewAtlas(1, 1024, 1024)
 	var calls int
 	// Fill the lasting rows with masks of earlier frames.
 	var old []uint64
@@ -303,6 +340,30 @@ func TestMakeRoom(t *testing.T) {
 		t.Error("kept a mask the frame did not draw")
 	}
 	s.EndFrame()
+}
+
+// Thin masks can need a much wider or taller atlas without taking much
+// area: one MakeRoom must accommodate them, whatever the starting size.
+func TestMakeRoomForLongMasks(t *testing.T) {
+	for _, size := range []image.Point{{X: 2000, Y: 3}, {X: 3, Y: 2000}} {
+		s := newSystem()
+		s.BeginFrame()
+		draw := func() (int, int, []byte) {
+			pix := make([]byte, size.X*size.Y)
+			for i := range pix {
+				pix[i] = 123
+			}
+			return size.X, size.Y, pix
+		}
+		if s.Mask(1, draw).OK || !s.Full() {
+			t.Fatal("the long mask fit the initial atlas")
+		}
+		s.MakeRoom()
+		if g := s.Mask(1, draw); !g.OK || s.maskPixel(g) != 123 || s.Full() {
+			t.Fatalf("mask %v still does not fit after making room: %+v", size, g)
+		}
+		s.EndFrame()
+	}
 }
 
 func TestRightToLeft(t *testing.T) {
@@ -389,6 +450,68 @@ func TestRegisterFont(t *testing.T) {
 	system := font("")
 	if font("MyGo Test Sans") == system || font("Go") == system {
 		t.Error("text does not use the registered font")
+	}
+}
+
+// TestFontFamilies lists the app's families first, each under the name
+// it registered it with, or its own, then the system's, telling the
+// monospaced ones, and lists the system's again after RegisterFont.
+func TestFontFamilies(t *testing.T) {
+	s := newSystem()
+	if err := s.RegisterFont(goregular.TTF, "MyGo Test Families"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.RegisterFont(gomono.TTF, ""); err != nil {
+		t.Fatal(err)
+	}
+	start := time.Now()
+	all := s.FontFamilies()
+	t.Logf("%d families in %v", len(all), time.Since(start))
+	app := []FontFamily{{Name: "Go Mono", Monospaced: true, Registered: true}, {Name: "MyGo Test Families", Registered: true}}
+	if len(all) < len(app) || !slices.Equal(all[:len(app)], app) {
+		t.Fatalf("the registered families are not first: %+v", all[:min(4, len(all))])
+	}
+	name := func(f FontFamily) string { return f.Name }
+	names := func(fs []FontFamily) []string {
+		out := make([]string, len(fs))
+		for i, f := range fs {
+			out[i] = name(f)
+		}
+		return out
+	}
+	if slices.Contains(names(all), "Go") {
+		t.Error("a font registered under a name the app gave is listed under its own too")
+	}
+	system := all[len(app):]
+	if slices.ContainsFunc(system, func(f FontFamily) bool { return f.Registered }) ||
+		!slices.IsSortedFunc(system, func(a, b FontFamily) int { return strings.Compare(strings.ToLower(a.Name), strings.ToLower(b.Name)) }) {
+		t.Errorf("the system's families are not sorted without regard to case: %q", names(system)[:min(8, len(system))])
+	}
+	start = time.Now()
+	if again := s.FontFamilies(); !slices.Equal(again, all) {
+		t.Error("listing again changed the families")
+	}
+	t.Logf("again in %v", time.Since(start))
+	if err := s.RegisterFont(gobold.TTF, ""); err != nil {
+		t.Fatal(err)
+	}
+	if i := slices.IndexFunc(s.FontFamilies(), func(f FontFamily) bool { return f.Name == "Go" }); i != 0 {
+		t.Errorf("a font registered after listing is at %d", i)
+	}
+
+	// A monospaced and a proportional family every such system has.
+	known, ok := map[string][2]string{
+		"windows": {"Consolas", "Segoe UI"},
+		"darwin":  {"Menlo", "Helvetica"},
+	}[runtime.GOOS]
+	if !ok {
+		return // the families of Linux desktops vary
+	}
+	for i, want := range known {
+		j := slices.IndexFunc(system, func(f FontFamily) bool { return f.Name == want })
+		if j < 0 || system[j].Monospaced != (i == 0) {
+			t.Errorf("%s: at %d of the system's families, %+v", want, j, system[max(j, 0)])
+		}
 	}
 }
 
@@ -495,11 +618,11 @@ func TestSpans(t *testing.T) {
 }
 
 func TestEncodeSpans(t *testing.T) {
-	spans := []Span{{End: 3, Family: "A, B", Size: 1.5, Weight: 600, Italic: true, LetterSpacing: -0.5, Features: "tnum"}, {End: 9}}
-	if got := decodeSpans(EncodeSpans(spans)); !slices.Equal(got, spans) {
+	spans := []Span{{End: 3, Family: "A, B", Size: 1.5, Weight: 600, Italic: true, LetterSpacing: -0.5, Features: "tnum", Lang: "ja"}, {End: 9}}
+	if got := DecodeSpans(EncodeSpans(spans)); !slices.Equal(got, spans) {
 		t.Errorf("decoded %+v, want %+v", got, spans)
 	}
-	if got := decodeSpans(EncodeSpans(spans)[:5]); len(got) != 0 {
+	if got := DecodeSpans(EncodeSpans(spans)[:5]); len(got) != 0 {
 		t.Errorf("a cut encoding decodes to %+v", got)
 	}
 	// The spans of a paragraph, relative to it.
@@ -543,6 +666,11 @@ func TestDigitFeatures(t *testing.T) {
 // the next family that has it, before the system's choice.
 func TestFontListFallback(t *testing.T) {
 	second := map[string]string{"windows": "MS Gothic", "darwin": "Hiragino Mincho ProN", "linux": "Noto Serif CJK JP"}[runtime.GOOS]
+	if second == "" {
+		// Browsers fall back within a list themselves (package text's
+		// canvas engine), and their fonts vary.
+		t.Skip("no font of another family to fall back to on " + runtime.GOOS)
+	}
 	s := newSystem()
 	if err := s.RegisterFont(goregular.TTF, "MyGo Latin"); err != nil {
 		t.Fatal(err)
@@ -666,5 +794,54 @@ func TestDecorate(t *testing.T) {
 		if n := len(s.Decorate(l, 0, 0, len(l.Lines[0].Glyphs), 0, 0, 2, Underline, 0)); n < 3 {
 			t.Errorf("an underline of gypsy in %d pieces", n)
 		}
+	}
+}
+
+func TestLangRuns(t *testing.T) {
+	for _, c := range []struct {
+		text, base string
+		spans      []Span
+		want       []langRun
+	}{
+		{"abc 直", "", nil, nil},
+		{"abc 直", "zh-Hans", nil, nil},
+		{"abc", "en", nil, nil},
+		// Han characters, and their punctuation, in a language that does
+		// not write them keep the engine's own language.
+		{"ab直骨。c", "en", nil, []langRun{{2, 5, ""}}},
+		{"ab直c", "en", []Span{{End: 2}, {End: 3, Lang: "ja"}}, []langRun{{2, 3, "ja"}}},
+		{"ab直c", "", []Span{{End: 1, Lang: "fr"}}, []langRun{{0, 1, "fr"}}},
+		{"直直", "ja", []Span{{End: 1, Lang: "zh-Hans"}}, []langRun{{0, 1, "zh-Hans"}}},
+		{"a直", "", []Span{{End: 2, Lang: "en"}}, []langRun{{0, 1, "en"}}},
+	} {
+		if got := langRuns([]rune(c.text), c.base, c.spans); !slices.Equal(got, c.want) {
+			t.Errorf("langRuns(%q, %q, %+v) = %+v, want %+v", c.text, c.base, c.spans, got, c.want)
+		}
+	}
+	for lang, want := range map[string]bool{"zh-Hant": true, "ja_JP": true, "ko": true, "yue": true, "en": false, "vi": false, "": false} {
+		if writesHan(lang) != want {
+			t.Errorf("writesHan(%q) = %v", lang, !want)
+		}
+	}
+}
+
+// TestSetLanguage holds the system's language to a new generation of
+// layouts, which the layouts of text without a language are made anew in.
+func TestSetLanguage(t *testing.T) {
+	s := newSystem()
+	p := Params{Text: "abc", Style: Style{Size: 14}}
+	before, gen := s.Layout(p), s.Generation()
+	s.SetLanguage("ja")
+	if s.Generation() == gen || s.Language() != "ja" {
+		t.Fatal("SetLanguage kept the generation")
+	}
+	after := s.Layout(p)
+	if after == before || after.Params != p {
+		t.Errorf("the layout of text without a language was kept, or took other parameters: %+v", after.Params)
+	}
+	gen = s.Generation()
+	s.SetLanguage("ja")
+	if s.Generation() != gen {
+		t.Error("the same language made a new generation")
 	}
 }

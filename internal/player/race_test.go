@@ -136,6 +136,9 @@ type liveBackend struct {
 	likeErr  error
 	likes    int
 	tiers    *TierTable
+	// guessRounds 依次作为无限的电台每一轮返回；空时给默认两首。
+	guessRounds [][]Song
+	guessCalls  int
 	// loadFail 指定哪些档位在引擎侧载入失败（模拟 mpv 打不开该流）。
 	loadFail map[string]bool
 }
@@ -153,6 +156,16 @@ func (b *liveBackend) LikedPage(page, num int) ([]Song, int64, bool, error) {
 	return nil, 0, false, nil
 }
 func (b *liveBackend) Playlists() ([]PlaylistRef, error) { return nil, nil }
+func (b *liveBackend) GuessSongs(int) ([]Song, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.guessCalls++
+	if len(b.guessRounds) > 0 {
+		at := min(b.guessCalls-1, len(b.guessRounds)-1)
+		return append([]Song(nil), b.guessRounds[at]...), nil
+	}
+	return []Song{{Mid: "radio-1", SongID: 101, SongType: 1}, {Mid: "radio-2", SongID: 102, SongType: 1}}, nil
+}
 func (b *liveBackend) Tiers() (*TierTable, error) {
 	b.mu.Lock()
 	t := b.tiers
@@ -173,11 +186,11 @@ func (b *liveBackend) LoadFailFor(tier string) bool {
 	defer b.mu.Unlock()
 	return b.loadFail[tier]
 }
-func (b *liveBackend) FetchLyric(mid string, trans bool) (string, string, error) {
+func (b *liveBackend) FetchLyric(mid string, trans, roma bool) (string, string, string, error) {
 	if b.lyricOK {
-		return "[00:01.0]hello\n[00:02.0]world", "[00:01.1]你好\n[00:02.1]世界", nil
+		return "[00:01.0]hello\n[00:02.0]world", "[00:01.1]你好\n[00:02.1]世界", "[00:01.0]hello\n[00:02.0]world", nil
 	}
-	return "", "", nil
+	return "", "", "", nil
 }
 func (b *liveBackend) LikeSong(int64, int64, bool) error {
 	b.mu.Lock()

@@ -29,7 +29,7 @@ func queueNPApp(t *testing.T) (*App, *ui.Tester) {
 	// 浮窗的右滑淡入从它被建出来的那一帧起算，先渲染一帧把它挂上，
 	// 再等正在播放页的上滑淡入与它一起落定（两者都走 Transition）。
 	tester.Frame()
-	time.Sleep(450 * time.Millisecond)
+	tester.Advance(450 * time.Millisecond)
 	tester.Frame()
 	return app, tester
 }

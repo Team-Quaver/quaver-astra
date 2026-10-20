@@ -15,14 +15,14 @@ func ticker(tt *Tester, now *time.Time) (tick func(d time.Duration)) {
 }
 
 func TestTooltipBase(t *testing.T) {
-	var save, tip *Element
-	tt, now := clockTester(func(c *Context) {
-		Column(c).Padding(80, 40).Gap(20).Children(func() {
-			save = Button(c, "Save").Label("save")
-			tip = TooltipBase(c, save, func(tip *Element) {
-				tip.Padding(4).Children(func() { Text(c, "Saves the file") })
+	var save, tip *node
+	tt, now := clockTester(func(c *context) {
+		coreColumn(c).Padding(80, 40).Gap(20).Children(func() {
+			save = coreButton(c, "Save").Label("save")
+			tip = coreTooltipBase(c, save, func(tip *node) {
+				tip.Padding(4).Children(func() { coreText(c, "Saves the file") })
 			})
-			Button(c, "Open").Label("open").Tooltip("Opens a file")
+			coreButton(c, "Open").Label("open").Tooltip("Opens a file")
 		})
 	}, 400, 300)
 	tick := ticker(tt, now)
@@ -74,21 +74,21 @@ func TestTooltipBase(t *testing.T) {
 
 func TestTooltipFocus(t *testing.T) {
 	disabled := false
-	tt, now := clockTester(func(c *Context) {
-		Column(c).Padding(40).Gap(20).Children(func() {
-			Button(c, "Save").Tooltip("Saves the file").Disabled(disabled)
-			Button(c, "Open").Tooltip("Opens a file")
+	tt, now := clockTester(func(c *context) {
+		coreColumn(c).Padding(40).Gap(20).Children(func() {
+			coreButton(c, "Save").Tooltip("Saves the file").Disabled(disabled)
+			coreButton(c, "Open").Tooltip("Opens a file")
 		})
 	}, 400, 300)
 	tick := ticker(tt, now)
-	// The keyboard focus shows the tip at once, below the element.
+	// The keyboard focus shows the tip at once, above the element.
 	tt.Key(0, KeyTab)
 	if !tt.HasText("Saves the file") {
 		t.Fatalf("no tip for the focus; texts %q", tt.Texts())
 	}
 	b, _ := tt.Find("Save")
-	if r, _ := tt.Find("Saves the file"); r.Y < b.Y+b.H {
-		t.Errorf("the tip of the focus is at %v, not below %v", r, b)
+	if r, _ := tt.Find("Saves the file"); r.Y+r.H > b.Y {
+		t.Errorf("the tip of the focus is at %v, not above %v", r, b)
 	}
 	tt.Key(0, KeyTab)
 	if tt.HasText("Saves the file") || !tt.HasText("Opens a file") {
@@ -126,10 +126,54 @@ func TestTooltipFocus(t *testing.T) {
 	}
 }
 
+// TestTooltipAnchored checks that the tip of Tooltip goes by its element,
+// not by the pointer: above it, centered, wherever the pointer rests on it,
+// and below it where there is no room above.
+func TestTooltipAnchored(t *testing.T) {
+	tt, now := clockTester(func(c *context) {
+		coreColumn(c).Children(func() {
+			coreButton(c, "Top").Label("top").Tooltip("At the top")
+			coreBox(c).Height(100)
+			coreButton(c, "A wide button, to rest on its ends").Label("wide").Tooltip("Wide")
+		})
+	}, 400, 300)
+	tick := ticker(tt, now)
+	w, _ := tt.Find("wide")
+	var at Rect
+	for i, x := range []float32{w.X + 4, w.X + w.W - 4} {
+		tt.Move(390, 290)
+		tick(time.Second)
+		tt.Move(x, w.Y+w.H-2)
+		tick(time.Second)
+		tt.Frame()
+		r, ok := tt.Find("Wide")
+		if !ok {
+			t.Fatalf("no tip with the pointer at %v; texts %q", x, tt.Texts())
+		}
+		if r.Y+r.H > w.Y || abs32(r.X+r.W/2-(w.X+w.W/2)) > 12 {
+			t.Errorf("with the pointer at %v, the tip's text is at %v, not above the middle of %v", x, r, w)
+		}
+		if i > 0 && r != at {
+			t.Errorf("the tip moved with the pointer: %v, then %v", at, r)
+		}
+		at = r
+	}
+	// No room above: below it.
+	tt.Move(390, 290)
+	tick(time.Second)
+	b, _ := tt.Find("top")
+	tt.Move(b.X+b.W/2, b.Y+b.H/2)
+	tick(time.Second)
+	tt.Frame()
+	if r, ok := tt.Find("At the top"); !ok || r.Y < b.Y+b.H {
+		t.Errorf("the tip of an element at the window's top is at %v, not below %v", r, b)
+	}
+}
+
 func TestTooltipInnermost(t *testing.T) {
-	tt, now := clockTester(func(c *Context) {
-		Row(c).Padding(20).Tooltip("The toolbar").Children(func() {
-			Button(c, "Cut").Label("cut").Tooltip("Cut the selection")
+	tt, now := clockTester(func(c *context) {
+		coreRow(c).Padding(20).Tooltip("The toolbar").Children(func() {
+			coreButton(c, "Cut").Label("cut").Tooltip("Cut the selection")
 		})
 	}, 300, 200)
 	tick := ticker(tt, now)

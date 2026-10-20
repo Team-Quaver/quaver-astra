@@ -10,7 +10,7 @@ import (
 func TestParseLrc(t *testing.T) {
 	lrc := "[00:01.00]first line\n[00:12.5]second\n[01:02.300]third\n[00:01.00]//comment-ish\n作词：某人\n"
 	trans := "[00:01.10]first trans\n[00:12.60]second trans\n[01:03.10]third trans\n"
-	lines := ParseLrc(lrc, trans)
+	lines := ParseLrc(lrc, trans, "")
 	if len(lines) != 3 {
 		t.Fatalf("want 3 lines, got %d: %+v", len(lines), lines)
 	}
@@ -27,14 +27,14 @@ func TestParseLrc(t *testing.T) {
 }
 
 func TestParseLrcMultiTimestamp(t *testing.T) {
-	lines := ParseLrc("[00:05.00][01:05.00]repeat", "")
+	lines := ParseLrc("[00:05.00][01:05.00]repeat", "", "")
 	if len(lines) != 2 || lines[0].Time != 5 || lines[1].Time != 65 {
 		t.Fatalf("multi-timestamp expand failed: %+v", lines)
 	}
 }
 
 func TestLyricIndexAt(t *testing.T) {
-	lines := ParseLrc("[00:10.00]a\n[00:20.00]b\n[00:30.00]c\n", "")
+	lines := ParseLrc("[00:10.00]a\n[00:20.00]b\n[00:30.00]c\n", "", "")
 	cases := []struct {
 		t    float64
 		want int
@@ -183,11 +183,14 @@ func (stubBackend) LoginStatus() (bool, error)                      { return fal
 func (stubBackend) UserInfo() (UserInfo, error)                     { return UserInfo{}, nil }
 func (stubBackend) LikedPage(int, int) ([]Song, int64, bool, error) { return nil, 0, false, nil }
 func (stubBackend) Playlists() ([]PlaylistRef, error)               { return nil, nil }
+func (stubBackend) GuessSongs(int) ([]Song, error)                  { return nil, nil }
 func (stubBackend) Tiers() (*TierTable, error)                      { return nil, nil }
 func (stubBackend) Resolve(string, string, int64, string, []string) (*StreamInfo, error) {
 	return nil, nil
 }
-func (stubBackend) FetchLyric(string, bool) (string, string, error) { return "", "", nil }
+func (stubBackend) FetchLyric(string, bool, bool) (string, string, string, error) {
+	return "", "", "", nil
+}
 func (stubBackend) LikeSong(int64, int64, bool) error               { return nil }
 func (stubBackend) StreamOpen(string, int64) (io.ReadCloser, error) { return nil, nil }
 
@@ -313,5 +316,97 @@ func TestMoveInQueuePreservesOrder(t *testing.T) {
 	}
 	if strings.Join(got, ",") != "a,c,b,b,d" {
 		t.Fatalf("duplicate MoveInQueue order = %v, want [a c b b d]", got)
+	}
+}
+
+func TestLyricAuxPriorityAndFallback(t *testing.T) {
+	lines := ParseLrc(
+		"[00:01.00]君の名\n[00:02.00]二行目",
+		"[00:01.10]你的名字",
+		"[00:01.00]kimi no na\n[00:02.10]ni gyou me",
+	)
+	if len(lines) != 2 {
+		t.Fatalf("行数错误：%+v", lines)
+	}
+	if got := AuxText(lines[0], "translation"); got != "你的名字" {
+		t.Errorf("翻译优先 = %q", got)
+	}
+	if got := AuxText(lines[0], "romanization"); got != "kimi no na" {
+		t.Errorf("音译优先 = %q", got)
+	}
+	if got := AuxText(lines[0], "off"); got != "" {
+		t.Errorf("关闭档仍有辅助行 %q", got)
+	}
+	// 第二行没有翻译，音译档与翻译档都必须回落音译。
+	if got := AuxText(lines[1], "translation"); got != "ni gyou me" {
+		t.Errorf("缺翻译时应回落音译，实得 %q", got)
+	}
+}
+
+func TestQMAtmosFallbackIncludesSevenOne(t *testing.T) {
+	seen := map[string]bool{}
+	for _, tier := range qmAtmosFallbackTiers {
+		seen[tier] = true
+	}
+	if !seen["atmos71"] || !seen["atmos51"] {
+		t.Fatalf("Fallback Atmos 应同时包含 7.1 与 5.1，实得 %v", qmAtmosFallbackTiers)
+	}
+}
+
+func TestRadioMovesForwardOnlyAndExtendsAtRoundEnd(t *testing.T) {
+	eng := &fakeEngine{}
+	be := &liveBackend{guessRounds: [][]Song{
+		{{Mid: "r1", SongID: 1, SongType: 1}, {Mid: "r2", SongID: 2, SongType: 1}},
+		{{Mid: "r3", SongID: 3, SongType: 1}, {Mid: "r4", SongID: 4, SongType: 1}},
+	}}
+	p := New(be, eng, fakePrefs{})
+	p.StartRadio(false)
+	wait(t, func() bool { return p.RadioActive() && !p.RadioLoading() && p.QueueLen() == 2 })
+
+	// 上一首、循环、随机与插队都不能破坏单向电台。
+	if cur, _ := p.Current(); cur.Mid != "r1" {
+		t.Fatalf("首轮首曲 = %q", cur.Mid)
+	}
+	p.Prev()
+	if p.Index() != 0 {
+		t.Error("电台不应允许上一首")
+	}
+	before := p.QueueLen()
+	p.EnqueueNext(Song{Mid: "insert", SongID: 9, SongType: 1})
+	if p.QueueLen() != before {
+		t.Error("电台不应允许插队")
+	}
+	p.SetMode("one")
+	p.SetShuffle(true)
+	if p.Mode() != "all" || p.Shuffle() {
+		t.Error("电台中循环/随机设置应被忽略")
+	}
+
+	p.Next(false)
+	wait(t, func() bool {
+		if cur, ok := p.Current(); ok {
+			return cur.Mid == "r2"
+		}
+		return false
+	})
+	// 播到轮末：续下一轮、裁掉当前曲之前的历史，并自动落到 r3。
+	p.Next(false)
+	wait(t, func() bool {
+		if cur, ok := p.Current(); ok {
+			return cur.Mid == "r3"
+		}
+		return false
+	})
+	if p.QueueLen() != 3 {
+		t.Errorf("续轮后队列应为 [当前曲+下一轮] 共 3 首，实得 %d", p.QueueLen())
+	}
+	if p.Index() != 1 {
+		t.Errorf("续轮后当前下标 = %d，期望 1", p.Index())
+	}
+
+	// 手动换整张歌单退出电台，但当前播放队列保留。
+	p.PlayList([]Song{{Mid: "normal", SongID: 99, SongType: 1}}, 0)
+	if p.RadioActive() {
+		t.Error("手动播放歌单后应退出电台")
 	}
 }

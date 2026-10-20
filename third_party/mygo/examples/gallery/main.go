@@ -1,9 +1,10 @@
 // Gallery tours MyGo's own user interface toolkit: a window drawn on the
 // GPU from Go, without a web page. It shows layout, the widgets, text
 // editing, a list of ten thousand rows with context menus, a chat of
-// messages of every height, styling (grids, borders, gradients, text
-// decorations, motion), custom drawing, overlays, file drops and updates
-// from other goroutines. Its pages are paths of a router, with a history.
+// messages of every height, charts, styling (grids, borders, gradients,
+// text decorations, motion), custom drawing, overlays, file drops,
+// updates from other goroutines, and languages: a menu of them, numbers
+// and dates formatted in each, and right-to-left layout. Its pages are paths of a router, with a history.
 //
 //	go run ./examples/gallery
 package main
@@ -12,6 +13,7 @@ import (
 	"fmt"
 	"log"
 	"math"
+	"math/rand/v2"
 	"path/filepath"
 	"runtime"
 	"slices"
@@ -22,14 +24,22 @@ import (
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/plugins/glass"
 	"github.com/egoist/mygo/ui"
+	"github.com/egoist/mygo/ui/richtext"
 )
 
 type gallery struct {
 	win *mygo.Window
+	md  markdownDemo
 	// router shows the pages: "/overview", "/list", and a row of the list,
 	// "/list/42".
 	router *ui.Router
 
+	// rtl lays the gallery out right to left, as an app in Arabic or
+	// Hebrew is (MYGO_DIRECTION=rtl does it for the whole window).
+	rtl bool
+	// language is the language chosen on the Languages page, "" for the
+	// system's.
+	language string
 	count    int
 	agree    bool
 	notify   bool
@@ -67,9 +77,23 @@ type gallery struct {
 	eased              bool
 	// The items of the Motion page's list, the next one's number, and
 	// whether its panel is open.
-	items     []motionItem
-	nextItem  int
-	panelOpen bool
+	items                          []motionItem
+	nextItem                       int
+	panelOpen                      bool
+	motionTarget, transformPopover bool
+	motionRun                      uint64
+	motionText                     string
+	// The card thrown on the Motion page: where it rests, and the spring
+	// it lands with; and the tile open, 1 + its index, 0 for none.
+	fling      ui.Point
+	flingStyle int
+	tileOpen   int
+	// The card turned over, the counter, and the task done on the Motion
+	// page.
+	cardFlipped bool
+	counter     int
+	countDown   bool
+	taskDone    bool
 	// The disclosure, the sections of the accordion, and their choices.
 	advanced, verbose, share, news bool
 	sections                       [3]bool
@@ -98,6 +122,8 @@ type gallery struct {
 	stars               int
 	battery, quality    float64
 	priceLow, priceHigh float64
+	// The note of the Rich Text page.
+	note *richtext.Document
 	// The grid of swatches, the one last chosen, those chosen, and their
 	// order; the tasks dragged between two columns.
 	swatches       ui.GridState
@@ -115,6 +141,8 @@ type gallery struct {
 	table    ui.ListState
 	messages []message
 	draft    string
+	// chart is the state of the Charts page.
+	chart galleryCharts
 }
 
 // galleryTask is a task of the Drag and drop card.
@@ -249,7 +277,7 @@ func makeMessage(id int) message {
 	return message{id: id, text: strings.Join(lines, " "), mine: r%3 == 0}
 }
 
-var pages = []string{"Overview", "Controls", "Text", "List", "Styling", "Drawing", "Glass", "Overlays", "Motion"}
+var pages = []string{"Overview", "Controls", "Text", "Rich Text", "List", "Charts", "Markdown", "Styling", "Drawing", "Glass", "Overlays", "Motion", "Languages"}
 
 // icon parses the shapes of a 24×24 stroked icon, drawn in currentColor
 // as icon sets draw them.
@@ -260,15 +288,19 @@ func icon(shapes string) *ui.SVG {
 // The icons of the pages, and two for buttons.
 var (
 	pageIcons = map[string]*ui.SVG{
-		"Overview": icon(`<rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/>`),
-		"Controls": icon(`<path d="M4 7h10M18 7h2M4 17h2M10 17h10"/><circle cx="16" cy="7" r="2"/><circle cx="8" cy="17" r="2"/>`),
-		"Text":     icon(`<path d="M5 6V5h14v1M12 5v14M9 19h6"/>`),
-		"List":     icon(`<path d="M9 6h11M9 12h11M9 18h11M4 6h.01M4 12h.01M4 18h.01"/>`),
-		"Styling":  icon(`<path d="M12 21a9 9 0 1 1 9-9c0 2.5-2 3.5-3.5 3.5H16a2 2 0 0 0-1.5 3.3c.4.5.4 2.2-2.5 2.2z"/><circle cx="7.5" cy="11" r="1"/><circle cx="11" cy="7" r="1"/><circle cx="16" cy="8.5" r="1"/>`),
-		"Drawing":  icon(`<path d="M15 5l4 4M4 20l1-4.5L16.5 4a2.1 2.1 0 0 1 3 3L8 18.5z"/>`),
-		"Glass":    icon(`<rect x="3" y="6" width="18" height="12" rx="6"/><path d="M7 10.5a3 3 0 0 1 2.5-1.5"/>`),
-		"Overlays": icon(`<path d="M12 3 3 8l9 5 9-5z"/><path d="m3 13 9 5 9-5"/>`),
-		"Motion":   icon(`<path d="M3 12h4M5 7h6M5 17h6"/><circle cx="16" cy="12" r="5"/>`),
+		"Overview":  icon(`<rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/>`),
+		"Controls":  icon(`<path d="M4 7h10M18 7h2M4 17h2M10 17h10"/><circle cx="16" cy="7" r="2"/><circle cx="8" cy="17" r="2"/>`),
+		"Text":      icon(`<path d="M5 6V5h14v1M12 5v14M9 19h6"/>`),
+		"Rich Text": icon(`<path d="M6 4h6a4 4 0 0 1 0 8H6zM6 12h7a4 4 0 0 1 0 8H6z"/>`),
+		"List":      icon(`<path d="M9 6h11M9 12h11M9 18h11M4 6h.01M4 12h.01M4 18h.01"/>`),
+		"Charts":    icon(`<path d="M3 3v18h18"/><path d="M8 17v-5M13 17V8M18 17v-8"/>`),
+		"Markdown":  icon(`<rect x="2.5" y="5" width="19" height="14" rx="2"/><path d="M6 15V9l2.5 3L11 9v6M15.5 9v6M13.5 13l2 2 2-2"/>`),
+		"Styling":   icon(`<path d="M12 21a9 9 0 1 1 9-9c0 2.5-2 3.5-3.5 3.5H16a2 2 0 0 0-1.5 3.3c.4.5.4 2.2-2.5 2.2z"/><circle cx="7.5" cy="11" r="1"/><circle cx="11" cy="7" r="1"/><circle cx="16" cy="8.5" r="1"/>`),
+		"Drawing":   icon(`<path d="M15 5l4 4M4 20l1-4.5L16.5 4a2.1 2.1 0 0 1 3 3L8 18.5z"/>`),
+		"Glass":     icon(`<rect x="3" y="6" width="18" height="12" rx="6"/><path d="M7 10.5a3 3 0 0 1 2.5-1.5"/>`),
+		"Overlays":  icon(`<path d="M12 3 3 8l9 5 9-5z"/><path d="m3 13 9 5 9-5"/>`),
+		"Motion":    icon(`<path d="M3 12h4M5 7h6M5 17h6"/><circle cx="16" cy="12" r="5"/>`),
+		"Languages": icon(`<circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18"/>`),
 	}
 	starIcon    = icon(`<path d="M12 3l2.7 5.6 6.1.9-4.4 4.3 1 6.1-5.4-2.9-5.4 2.9 1-6.1L3.2 9.5l6.1-.9z"/>`)
 	checkIcon   = icon(`<path d="M20 6 9 17l-5-5"/>`)
@@ -289,7 +321,7 @@ var (
 )
 
 // pagePath returns the path of a page, and pageOf the page of a path.
-func pagePath(page string) string { return "/" + strings.ToLower(page) }
+func pagePath(page string) string { return "/" + strings.ReplaceAll(strings.ToLower(page), " ", "-") }
 
 func pageOf(path string) string {
 	for _, p := range pages {
@@ -301,7 +333,12 @@ func pageOf(path string) string {
 }
 
 func (g *gallery) view(c *ui.Context) {
-	ui.Row(c).Fill().AlignItems(ui.Stretch).Children(func() {
+	root := ui.Row(c)
+	if g.rtl {
+		// Given first, so that what is built inside reads it.
+		root.Direction(ui.RightToLeft)
+	}
+	root.Fill().AlignItems(ui.Stretch).Children(func() {
 		g.sidebar(c)
 		ui.Column(c).Grow(1).MinWidth(0).Children(func() {
 			g.toolbar(c)
@@ -328,8 +365,14 @@ func (g *gallery) view(c *ui.Context) {
 						g.controls(c)
 					case "Text":
 						g.text(c)
+					case "Rich Text":
+						g.richText(c)
 					case "List":
 						g.list(c)
+					case "Charts":
+						g.charts(c)
+					case "Markdown":
+						g.markdownPage(c)
 					case "Styling":
 						g.styling(c)
 					case "Drawing":
@@ -340,13 +383,15 @@ func (g *gallery) view(c *ui.Context) {
 						g.overlays(c)
 					case "Motion":
 						g.motion(c)
+					case "Languages":
+						g.languages(c)
 					}
 				})
 			})
 		})
 	})
-	// Ctrl+1…7 (Cmd on macOS) switch pages.
-	for i, p := range pages {
+	// Ctrl+1…9 (Cmd on macOS) switch to the first nine pages.
+	for i, p := range pages[:min(len(pages), 9)] {
 		if c.Shortcut(ui.Cmd, ui.Key1+ui.Key(i)) {
 			g.router.Push(pagePath(p))
 		}
@@ -369,6 +414,8 @@ func (g *gallery) toolbar(c *ui.Context) {
 		if ui.Breadcrumbs(c, path, &chosen).Label("Path").Changed() {
 			g.router.Push(pagePath(page))
 		}
+		ui.Spacer(c)
+		ui.Toggle(c, &g.rtl, "Right to left").Tooltip("Lay the gallery out right to left")
 	}).Label("Navigation").Padding(8, 24, 0)
 }
 
@@ -424,7 +471,7 @@ func (g *gallery) sidebar(c *ui.Context) {
 			for k, section := range []struct {
 				title string
 				pages []string
-			}{{"Widgets", pages[:4]}, {"Look", pages[4:]}} {
+			}{{"Widgets", pages[:6]}, {"Look", pages[6:]}} {
 				ui.SidebarSection(c, section.title, &g.sectionsOpen[k], func() {
 					for _, p := range section.pages {
 						item := ui.SidebarItem(c, p, pageIcons[p], p)
@@ -441,7 +488,7 @@ func (g *gallery) sidebar(c *ui.Context) {
 	})
 }
 
-func card(c *ui.Context, title string, body func()) *ui.Element {
+func card(c *ui.Context, title string, body func()) ui.Element {
 	t := c.Theme()
 	return ui.Column(c).Padding(18).Gap(12).Radius(10).Background(t.Background).Border(1, t.Border).
 		Shadow(0, 1, 3, 0, ui.RGBA(0, 0, 0, 0.06)).Children(func() {
@@ -464,45 +511,45 @@ func wideColors(c *ui.Context) {
 	ui.Text(c, "Compare the columns on a Display P3 screen: the right one is more vivid.").FontSize(12).TextColor(t.TextMuted)
 
 	// pair builds a sample twice, in sRGB and then in Oklch, in equal columns.
-	pair := func(sample func(wide bool) *ui.Element) {
+	pair := func(sample func(wide bool) ui.Element) {
 		ui.Row(c).Gap(12).Children(func() {
 			for _, wide := range []bool{false, true} {
 				sample(wide).Basis(0).Grow(1)
 			}
 		})
 	}
-	box := func(label string) *ui.Element {
+	box := func(label string) ui.Element {
 		return ui.Row(c).Height(30).Radius(6).Center().Children(func() {
 			ui.Text(c, label).FontSize(12).Bold().TextColor(black)
 		})
 	}
 
-	pair(func(wide bool) *ui.Element {
+	pair(func(wide bool) ui.Element {
 		if wide {
 			return ui.Text(c, "Oklch").FontSize(12).Bold().TextColor(t.TextMuted)
 		}
 		return ui.Text(c, "sRGB").FontSize(12).Bold().TextColor(t.TextMuted)
 	})
-	pair(func(wide bool) *ui.Element {
+	pair(func(wide bool) ui.Element {
 		if wide {
 			return box("Fill").Background(vivid)
 		}
 		return box("Fill").Background(vivid.SRGB())
 	})
-	pair(func(wide bool) *ui.Element {
+	pair(func(wide bool) ui.Element {
 		if wide {
 			return box("Gradient").LinearGradient(ui.LinearGradient{From: warm, To: vivid, Angle: 90, Oklab: true})
 		}
 		return box("Gradient").LinearGradient(ui.LinearGradient{From: warm.SRGB(), To: vivid.SRGB(), Angle: 90, Oklab: true})
 	})
-	pair(func(wide bool) *ui.Element {
+	pair(func(wide bool) ui.Element {
 		white := ui.RGB(255, 255, 255)
 		if wide {
 			return box("Stripes").Background(white).Stripes(vivid, 4, 6, 45)
 		}
 		return box("Stripes").Background(white).Stripes(vivid.SRGB(), 4, 6, 45)
 	})
-	pair(func(wide bool) *ui.Element {
+	pair(func(wide bool) ui.Element {
 		return ui.Row(c).Height(30).Radius(6).Center().Background(ui.RGB(20, 20, 20)).Children(func() {
 			text := ui.Text(c, "Text").FontSize(14).Bold()
 			if wide {
@@ -512,7 +559,7 @@ func wideColors(c *ui.Context) {
 			}
 		})
 	})
-	pair(func(wide bool) *ui.Element {
+	pair(func(wide bool) ui.Element {
 		e := box("Shadow").Margin(6).Background(ui.RGB(255, 255, 255))
 		if wide {
 			return e.Shadow(0, 4, 12, 0, vivid)
@@ -566,7 +613,7 @@ func (g *gallery) overview(c *ui.Context) {
 	})
 }
 
-func (g *gallery) sparkline(c *ui.Context) *ui.Element {
+func (g *gallery) sparkline(c *ui.Context) ui.Element {
 	t := c.Theme()
 	return ui.Box(c).Radius(6).Background(t.Surface).Draw(func(p *ui.Painter, r ui.Rect) {
 		if len(g.samples) < 2 {
@@ -631,7 +678,7 @@ func (g *gallery) controls(c *ui.Context) {
 					ui.Text(c, title).FontWeight(600)
 					for i := range g.tasks {
 						if task := &g.tasks[i]; task.done == done {
-							ui.Row(c).Key(task.name).Padding(7, 10).Radius(6).Background(t.Background).Border(1, t.Border).Cursor(ui.CursorPointer).Drag(task).Children(func() {
+							ui.Row(c.Key(task.name)).Padding(7, 10).Radius(6).Background(t.Background).Border(1, t.Border).Cursor(ui.CursorPointer).Drag(task).Children(func() {
 								ui.Text(c, task.name)
 							})
 						}
@@ -802,7 +849,7 @@ func (g *gallery) controls(c *ui.Context) {
 				ui.Text(c, g.fruit)
 				ui.Icon(c, chevronIcon).TextColor(t.TextMuted)
 			})
-			sel.Popup(func(panel *ui.Element) {
+			sel.Popup(func(panel ui.Element) {
 				panel.Margin(4, 0, 0, 0).Padding(4).Radius(10).Background(t.Background).Border(1, t.Border)
 				panel.Shadow(0, 8, 24, 0, ui.RGBA(0, 0, 0, 0.15))
 				for _, fruit := range []string{"Apple", "Banana", "Cherry", "Durian"} {
@@ -876,6 +923,13 @@ func (g *gallery) text(c *ui.Context) {
 		ui.Text(c, strings.Repeat("Long text wraps to the width it gets. ", 6)).TextColor(t.TextMuted)
 		ui.Text(c, strings.Repeat("A single line that ends with an ellipsis when it does not fit. ", 4)).SingleLine()
 	})
+	card(c, "Text selection", func() {
+		ui.Column(c).Selectable().Gap(12).Children(func() {
+			ui.Text(c, "Drag from this paragraph into the next, then copy the selected text.")
+			ui.RichText(c, ui.Span{Text: "Each paragraph keeps its own layout. "}, ui.Span{Text: "They share one selection.", Weight: 700})
+			ui.Text(c, "This hint is excluded from selection.").Unselectable().TextColor(t.TextMuted)
+		})
+	})
 }
 
 func (g *gallery) list(c *ui.Context) {
@@ -905,9 +959,6 @@ func (g *gallery) list(c *ui.Context) {
 	list := ui.List(c, &g.rows, len(rows), func(i int) {
 		n := rows[i]
 		row := ui.Row(c).Height(32).PaddingX(12).Gap(10)
-		if row.DoubleClicked() {
-			open(n)
-		}
 		row.ContextMenu(func(m *ui.Menu) {
 			if m.Item("Open").Chosen() {
 				open(n)
@@ -935,8 +986,8 @@ func (g *gallery) list(c *ui.Context) {
 	if list.Changed() {
 		g.picked = rows[at]
 	}
-	if list.Shortcut(0, ui.KeyEnter) && at >= 0 {
-		open(g.picked)
+	if list.Submitted() && at >= 0 {
+		open(rows[at])
 	}
 	g.chatCard(c)
 	ui.Row(c).Gap(18).AlignItems(ui.Stretch).Height(260).Children(func() {
@@ -948,7 +999,11 @@ func (g *gallery) list(c *ui.Context) {
 					open = &o
 					defer func() { g.tree[path] = o }()
 				}
-				if ui.TreeItem(c, label, open, children).Selected(g.leaf == path).Clicked() {
+				if ui.TreeItem(c, label, open, func() {
+					if children != nil {
+						children()
+					}
+				}).Selected(g.leaf == path).Clicked() {
 					g.leaf = path
 				}
 			}
@@ -1135,7 +1190,7 @@ func (g *gallery) styling(c *ui.Context) {
 	ui.Grid(c).Columns(2).Gap(16).Children(func() {
 		card(c, "Grid", func() {
 			ui.Grid(c).ColumnTracks(ui.FitContent(), ui.Fr(1), ui.Fr(1)).Gap(6).Children(func() {
-				cell := func(s string) *ui.Element {
+				cell := func(s string) ui.Element {
 					return ui.Box(c).Padding(8, 10).Radius(6).Background(t.Surface).Children(func() { ui.Text(c, s).FontSize(12) })
 				}
 				cell("ColumnSpan(-1)").ColumnSpan(-1).Background(t.Accent).TextColor(t.AccentText)
@@ -1158,7 +1213,7 @@ func (g *gallery) styling(c *ui.Context) {
 		})
 		card(c, "Fills", func() {
 			blue, yellow := ui.Hex("#2563eb"), ui.Hex("#facc15")
-			bar := func(label string) *ui.Element {
+			bar := func(label string) ui.Element {
 				return ui.Row(c).Height(30).PaddingX(10).Radius(6).Children(func() {
 					ui.Text(c, label).FontSize(12).Bold().TextColor(ui.RGB(255, 255, 255))
 				})
@@ -1194,7 +1249,7 @@ func (g *gallery) styling(c *ui.Context) {
 				name string
 				ease ui.Easing
 			}{{"Linear", ui.Linear}, {"EaseIn", ui.EaseIn}, {"EaseOut", ui.EaseOut}, {"EaseInOut", ui.EaseInOut}} {
-				track := ui.Row(c).Height(18).Key(e.name)
+				track := ui.Row(c.Key(e.name)).Height(18)
 				to := float32(0)
 				if g.eased {
 					to = 1
@@ -1223,6 +1278,11 @@ func (g *gallery) styling(c *ui.Context) {
 				ui.Text(c, "Inbox")
 				ui.Text(c, "3").FontSize(10).Bold().Padding(1, 5).Radius(8).Background(t.Danger).TextColor(ui.RGB(255, 255, 255)).Top(-6)
 				ui.Text(c, "Top(-6) moves a badge up").FontSize(12).TextColor(t.TextMuted)
+			})
+			ui.Row(c).Gap(6).AlignItems(ui.Baseline).Children(func() {
+				ui.Text(c, "$42").FontSize(28).Bold()
+				ui.Text(c, "/month").TextColor(t.TextMuted)
+				ui.Text(c, "AlignItems(Baseline) lines up text").FontSize(12).TextColor(t.TextMuted).Margin(0, 0, 0, ui.Auto)
 			})
 		})
 		card(c, "Scrolling both ways", func() {
@@ -1406,12 +1466,185 @@ var motionColors = []ui.Color{ui.Hex("#2563eb"), ui.Hex("#16a34a"), ui.Hex("#d97
 var itemMotion = ui.ElementTransition{
 	Duration: 250 * time.Millisecond,
 	Ease:     ui.EaseInOut,
-	Enter:    &ui.Motion{Collapse: true},
-	Exit:     &ui.Motion{Collapse: true},
+	Enter:    &ui.Motion{Collapse: true, Scale: 0.9},
+	Exit:     &ui.Motion{Collapse: true, Scale: 0.9},
 }
+
+// flingStyles are the springs the thrown card can land with.
+var flingStyles = []ui.Animation{ui.Smooth, ui.Snappy, ui.Bouncy}
+
+// tileMatch is the identity a tile of the Motion page shares with its
+// detail view.
+type tileMatch struct{ i int }
+
+// tileMotion moves the tiles into their detail view and back.
+var tileMotion = ui.ElementTransition{Animation: &ui.Animation{Spring: ui.SpringOptions{Duration: 450 * time.Millisecond, Bounce: 0.12}}}
 
 func (g *gallery) motion(c *ui.Context) {
 	t := c.Theme()
+	ui.Grid(c).Columns(2).Gap(16).Children(func() {
+		card(c, "Transforms and interruptible springs", func() {
+			ui.Text(c, "Click repeatedly while moving. Edit the transformed field or open its anchored panel.").FontSize(12).TextColor(t.TextMuted)
+			if ui.Button(c, "Retarget the spring").Clicked() {
+				g.motionTarget = !g.motionTarget
+			}
+			stage := ui.Box(c).Key("transform-stage").Height(220).Radius(10).Border(1, t.Border).Clip()
+			target := float32(0)
+			if g.motionTarget {
+				target = 1
+			}
+			pose := stage.Spring("pose", target, ui.SpringOptions{Damping: 14})
+			stage.Children(func() {
+				ui.Column(c).Key("transformed-card").Absolute().Left(35).Top(45).Size(185, 125).Padding(12).Gap(8).
+					Background(t.Surface).Radius(10).Border(1, t.Border).Scale(0.95+0.1*pose, 1).Rotate(-8+16*pose).Translate(65*pose, 0).Children(func() {
+					ui.Text(c, "Nested interactive content").Bold().FontSize(12)
+					ui.TextInput(c, &g.motionText).Width(155).Placeholder("Type here")
+					anchor := ui.Button(c, "Open a popover")
+					if anchor.Clicked() {
+						g.transformPopover = !g.transformPopover
+					}
+					ui.Popover(c, anchor, &g.transformPopover, func() { ui.Text(c, "I follow the transformed anchor.") })
+				})
+			})
+		})
+		card(c, "Keyframe sequences", func() {
+			ui.Text(c, "Replay during a sequence to interrupt it continuously. Motion follows the desktop preference.").FontSize(12).TextColor(t.TextMuted)
+			if ui.Button(c, "Replay the sequence").Clicked() {
+				g.motionRun++
+			}
+			stage := ui.Box(c).Key("sequence-stage").Height(220).Radius(10).Border(1, t.Border).Clip()
+			progress := stage.Keyframes("pose", []ui.Keyframe{
+				{Value: 0}, {At: 250 * time.Millisecond, Value: 1, Ease: ui.EaseOut},
+				{At: 650 * time.Millisecond, Value: 0.4, Ease: ui.EaseInOut}, {At: time.Second, Value: 0, Ease: ui.EaseInOut},
+			}, ui.KeyframeOptions{Run: g.motionRun})
+			stage.Children(func() {
+				ui.Row(c).Absolute().Left(40).Top(80).Size(160, 55).Center().Radius(8).Background(t.Accent).
+					Scale(1+0.08*progress, 1+0.08*progress).Rotate(12*progress).Translate(80*progress, 0).Children(func() {
+					ui.Text(c, "Four timed keyframes").TextColor(t.AccentText).FontSize(12).Bold()
+				})
+			})
+		})
+	})
+
+	ui.Grid(c).Columns(2).Gap(16).Children(func() {
+		card(c, "Flings that land", func() {
+			ui.Text(c, "Throw the card (Draggable): a spring takes over at the pointer's velocity, to the side the throw carries it to.").FontSize(12).TextColor(t.TextMuted)
+			ui.Segmented(c, &g.flingStyle, "Smooth", "Snappy", "Bouncy")
+			const travel = 200
+			ui.Box(c).Key("fling-track").Height(110).Radius(10).Border(1, t.Border).Clip().Children(func() {
+				thrown := ui.Box(c).Key("fling-card").Absolute().Left(16).Top(24).Size(90, 60).Center().Radius(10).Background(t.Accent)
+				// Under the pointer, a little past either end, and to the
+				// side the throw carries it to once let go.
+				thrown.Draggable(&g.fling, ui.DraggableOptions{
+					Axis:      ui.Horizontal,
+					Bounds:    &ui.Rect{W: travel},
+					Snap:      ui.Nearest(ui.Point{}, ui.Point{X: travel}),
+					Animation: flingStyles[g.flingStyle],
+				})
+				lift, cursor := ui.Pose{}, ui.CursorGrab
+				if thrown.Dragging() {
+					lift, cursor = ui.Pose{Scale: 1.06}, ui.CursorGrabbing
+				}
+				thrown.AnimatePose(lift, ui.Snappy).Cursor(cursor).Children(func() {
+					ui.Text(c, "Throw me").TextColor(t.AccentText).FontSize(12).Bold()
+				})
+			})
+		})
+		card(c, "Shared elements", func() {
+			ui.Text(c, "A tile opens into its detail view from where it was, and goes back to its place.").FontSize(12).TextColor(t.TextMuted)
+			ui.Box(c).Key("tile-stage").Height(190).Radius(10).Border(1, t.Border).Clip().Padding(12).Children(func() {
+				if g.tileOpen == 0 {
+					ui.Row(c).Gap(12).Children(func() {
+						for i, col := range motionColors[:3] {
+							tr := tileMotion
+							tr.Match = tileMatch{i}
+							if ui.Box(c.Key(i)).Size(64, 64).Radius(12).Background(col).Cursor(ui.CursorPointer).Transition(tr).Clicked() {
+								g.tileOpen = i + 1
+							}
+						}
+					})
+					return
+				}
+				i := g.tileOpen - 1
+				ui.Column(c).Gap(10).Children(func() {
+					tr := tileMotion
+					tr.Match = tileMatch{i}
+					ui.Box(c.Key("hero")).Size(240, 120).Radius(16).Background(motionColors[i]).Transition(tr)
+					ui.Row(c).Gap(10).AlignItems(ui.Center).Children(func() {
+						ui.Text(c, fmt.Sprintf("Tile %d", i+1)).Bold().Grow(1)
+						if ui.Button(c, "Back").Clicked() {
+							g.tileOpen = 0
+						}
+					})
+				})
+			})
+		})
+	})
+
+	ui.Grid(c).Columns(2).Gap(16).Children(func() {
+		card(c, "Cards that turn over", func() {
+			ui.Text(c, "Turned in 3D and seen in perspective, each face hides while it is turned away.").FontSize(12).TextColor(t.TextMuted)
+			stage := ui.Box(c).Key("flip-stage").Height(150).Center()
+			turn := float32(0)
+			if g.cardFlipped {
+				turn = 180
+			}
+			turn = stage.AnimateTo("turn", turn, ui.Animation{Spring: ui.SpringOptions{Duration: 600 * time.Millisecond, Bounce: 0.15}})
+			stage.Children(func() {
+				ui.Box(c).Key("flip-card").Size(200, 120).Children(func() {
+					front := ui.Column(c).Key("front").Absolute().Fill().Center().Gap(4).Radius(14).Background(t.Surface).Border(1, t.Border).Shadow(0, 4, 16, 0, ui.RGBA(0, 0, 0, 0.12))
+					front.RotateY(turn).Perspective(800).BackfaceHidden().Children(func() {
+						ui.Text(c, "Front").Bold()
+						ui.Text(c, "Click to turn over").FontSize(12).TextColor(t.TextMuted)
+					})
+					back := ui.Column(c).Key("back").Absolute().Fill().Center().Radius(14).Background(t.Accent)
+					back.RotateY(turn + 180).Perspective(800).BackfaceHidden().Children(func() {
+						ui.Text(c, "Back").Bold().TextColor(t.AccentText)
+					})
+					if front.Clicked() || back.Clicked() {
+						g.cardFlipped = !g.cardFlipped
+					}
+				})
+			})
+		})
+		card(c, "Counters, check marks and lifts", func() {
+			ui.Text(c, "Digits roll as they change, a check mark draws itself in, and tiles lift in frames that only paint.").FontSize(12).TextColor(t.TextMuted)
+			ui.Row(c).Gap(16).AlignItems(ui.Center).Children(func() {
+				if ui.Button(c, "−").Clicked() {
+					g.counter, g.countDown = g.counter-1, true
+				}
+				ui.Text(c, fmt.Sprint(g.counter)).FontSize(32).Bold().Width(80).TextAlign(ui.Center).
+					ContentTransition(ui.ContentTransition{Numeric: true, Down: g.countDown})
+				if ui.Button(c, "+").Clicked() {
+					g.counter, g.countDown = g.counter+1, false
+				}
+				check := ui.Box(c).Key("check").Size(36, 36).Radius(8).Border(2, t.Border).Cursor(ui.CursorPointer)
+				drawn := float32(0)
+				if g.taskDone {
+					drawn = 1
+				}
+				drawn = check.AnimateTo("drawn", drawn, ui.Smooth)
+				check.Draw(func(p *ui.Painter, r ui.Rect) {
+					mark := (&ui.Path{}).MoveTo(r.X+9, r.Y+19).LineTo(r.X+15, r.Y+25).LineTo(r.X+27, r.Y+11)
+					p.StrokePath(mark.Trim(0, drawn), 3, t.Accent)
+				})
+				if check.Clicked() {
+					g.taskDone = !g.taskDone
+				}
+			})
+			ui.Row(c).Gap(10).Children(func() {
+				for i, col := range motionColors[:4] {
+					tile := ui.Box(c.Key(i)).Size(56, 40).Radius(8).Background(col)
+					lift := ui.Pose{}
+					if tile.Hovered() {
+						lift = ui.Pose{Y: -6, Scale: 1.06}
+					}
+					tile.AnimatePose(lift, ui.Snappy)
+				}
+			})
+		})
+	})
+
 	ui.Text(c, "Transitions move elements where the layout puts them, and in and out as they come and go. "+
 		"F12 (Alt+Cmd+I) opens the inspector of the window's elements.").TextColor(t.TextMuted)
 	ui.Grid(c).Columns(2).Gap(16).Children(func() {
@@ -1426,11 +1659,11 @@ func (g *gallery) motion(c *ui.Context) {
 					g.items = slices.Insert(g.items, at, motionItem{g.nextItem, fmt.Sprintf("Item %d", g.nextItem)})
 				}
 				if ui.Button(c, "Shuffle").Disabled(len(g.items) < 2).Clicked() {
-					for i := range g.items {
-						j := (i*7 + g.nextItem) % len(g.items)
-						g.items[i], g.items[j] = g.items[j], g.items[i]
+					// Shuffle until the order changes, so that each click moves the items.
+					before := slices.Clone(g.items)
+					for slices.Equal(g.items, before) {
+						rand.Shuffle(len(g.items), func(i, j int) { g.items[i], g.items[j] = g.items[j], g.items[i] })
 					}
-					g.nextItem++
 				}
 				if ui.Button(c, "Sort").Disabled(len(g.items) < 2).Clicked() {
 					slices.SortFunc(g.items, func(a, b motionItem) int { return a.id - b.id })
@@ -1443,7 +1676,7 @@ func (g *gallery) motion(c *ui.Context) {
 				Transition(ui.ElementTransition{Size: true, Duration: itemMotion.Duration, Ease: itemMotion.Ease}).Children(func() {
 				removed := -1
 				for _, it := range g.items {
-					ui.Row(c).Key(it.id).Padding(8, 10).Gap(10).AlignItems(ui.Center).Background(t.Background).Transition(itemMotion).Children(func() {
+					ui.Row(c.Key(it.id)).Padding(8, 10).Gap(10).AlignItems(ui.Center).Background(t.Background).Transition(itemMotion).Children(func() {
 						ui.Box(c).Size(10, 10).Radius(5).Background(motionColors[it.id%len(motionColors)])
 						ui.Text(c, it.name).Grow(1)
 						if ui.Button(c, "Remove").Clicked() {
@@ -1488,7 +1721,7 @@ func (g *gallery) motion(c *ui.Context) {
 			ui.Text(c, "Their backgrounds and borders fade as the pointer comes and goes.").FontSize(12).TextColor(t.TextMuted)
 			ui.Row(c).Gap(10).Children(func() {
 				for i, col := range motionColors[:3] {
-					tile := ui.Box(c).Key(i).Size(64, 48).Radius(8).Border(2, t.Border)
+					tile := ui.Box(c.Key(i)).Size(64, 48).Radius(8).Border(2, t.Border)
 					tile.Background(col.Alpha(0.15))
 					if tile.Hovered() {
 						tile.Background(col).BorderColor(col.Mix(ui.RGB(0, 0, 0), 0.3))
@@ -1530,7 +1763,7 @@ func (g *gallery) overlays(c *ui.Context) {
 			}
 			ui.Popover(c, menu, &g.menu, func() {
 				for _, item := range []string{"New file", "Open…", "Save as…"} {
-					entry := ui.Row(c).Key(item).Padding(6, 12).Radius(5).Width(180)
+					entry := ui.Row(c.Key(item)).Padding(6, 12).Radius(5).Width(180)
 					if entry.Hovered() {
 						entry.Background(t.Accent).TextColor(t.AccentText)
 					}
@@ -1570,7 +1803,9 @@ func (g *gallery) overlays(c *ui.Context) {
 }
 
 func main() {
-	g := &gallery{router: ui.NewRouter("/overview"), items: []motionItem{{1, "Item 1"}, {2, "Item 2"}, {3, "Item 3"}}, nextItem: 3, size: "Medium", fruit: "Apple", plan: "Pro", volume: 35, picked: -1, starred: map[int]bool{}, split: 160, copies: 1, tree: map[string]bool{"ui": true}, birthday: time.Date(1815, 12, 10, 0, 0, 0, 0, time.UTC), now: time.Now(), font: "Helvetica", tags: []string{"go", "native"}, sections: [3]bool{true}, sectionsOpen: [2]bool{true, true}, stars: 4, battery: 35, quality: 75, priceLow: 100, priceHigh: 350, meeting: time.Date(2026, 10, 15, 9, 30, 0, 0, time.Local), tint: ui.Hex("#2563eb"), lens: [2]float32{110, 190}, glassEdge: 1, notes: 12, notifyMail: true, pathDepth: 4}
+	g := &gallery{router: ui.NewRouter("/overview"), items: []motionItem{{1, "Item 1"}, {2, "Item 2"}, {3, "Item 3"}}, nextItem: 3, size: "Medium", fruit: "Apple", plan: "Pro", volume: 35, picked: -1, starred: map[int]bool{}, split: 160, copies: 1, tree: map[string]bool{"ui": true}, birthday: time.Date(1815, 12, 10, 0, 0, 0, 0, time.UTC), now: time.Now(), font: "Helvetica", tags: []string{"go", "native"}, sections: [3]bool{true}, sectionsOpen: [2]bool{true, true}, stars: 4, battery: 35, quality: 75, priceLow: 100, priceHigh: 350, meeting: time.Date(2026, 10, 15, 9, 30, 0, 0, time.Local), tint: ui.Hex("#2563eb"), lens: [2]float32{110, 190}, glassEdge: 1, notes: 12, notifyMail: true, pathDepth: 4, chart: newCharts()}
+	// The languages of the Languages page's menu.
+	mygo.App.SetLanguages(galleryLanguages...)
 	mygo.App.WhenReady(func() {
 		g.win = mygo.NewWindow(mygo.WindowOptions{
 			Title:    "MyGo UI Gallery",

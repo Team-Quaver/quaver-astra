@@ -43,7 +43,17 @@ type Player struct {
 	lyrics     []LyricLine
 	qrc        []QrcLine // 逐字时间轴，与 lyrics 同源同序；无逐字歌词时为空
 	lyricState string    // idle|loading|ok|none
-	showTrans  bool
+	lyricAux   string    // off|translation|romanization
+
+	// 猜你喜欢无限电台。Queue/Index 仍是唯一播放队列；radioEnd 是本轮
+	// 最后一首的下标，播到它时续一轮并裁掉当前曲之前的历史。
+	radioOn          bool
+	radioEnd         int
+	radioLoading     bool
+	radioWaitingNext bool
+	radioRetryAt     time.Time
+	radioSeq         uint64
+	radioErr         string
 
 	loggedIn bool
 	me       UserInfo
@@ -121,11 +131,12 @@ type Backend interface {
 	Playlists() (pls []PlaylistRef, err error)
 	Tiers() (*TierTable, error)
 	Resolve(mid, mediaMid string, songType int64, tier string, deprioritize []string) (*StreamInfo, error)
-	FetchLyric(mid string, trans bool) (lrc, translation string, err error)
+	FetchLyric(mid string, trans, roma bool) (lrc, translation, romanization string, err error)
+	GuessSongs(rounds int) ([]Song, error)
 	LikeSong(songID int64, writeType int64, like bool) error
 }
 
-// PlaylistRef 侧栏歌单项。
+// PlaylistRef 用户歌单引用（歌单页与选择菜单共用）。
 type PlaylistRef struct {
 	ID    int64
 	DirID int64
@@ -179,9 +190,22 @@ func New(b Backend, e Engine, prefs Preferences) *Player {
 		index:      -1,
 		lyricState: "idle",
 		loved:      map[string]struct{}{},
-		showTrans:  prefs.Bool("Style.ShowTranslation", true),
+		lyricAux:   readLyricAux(prefs),
 	}
 	return p
+}
+
+// readLyricAux 兼容旧配置：先读三档 Style.LyricAux；没有就按布尔
+// Style.ShowTranslation 回落（旧版本只有翻译开关）。
+func readLyricAux(prefs Preferences) string {
+	switch strings.ToLower(strings.TrimSpace(prefs.String("Style.LyricAux", ""))) {
+	case "off", "translation", "romanization":
+		return strings.ToLower(strings.TrimSpace(prefs.String("Style.LyricAux", "")))
+	}
+	if prefs.Bool("Style.ShowTranslation", true) {
+		return "translation"
+	}
+	return "off"
 }
 
 // OnNotify 注册状态变化回调。
@@ -395,6 +419,7 @@ func (p *Player) PlayList(songs []Song, i int) {
 		p.mu.Unlock()
 		return
 	}
+	p.exitRadioLocked()
 	p.queue = append([]Song(nil), songs...)
 	if i < 0 || i >= len(p.queue) {
 		i = 0
@@ -427,6 +452,10 @@ func (p *Player) Jump(i int) {
 // （与主项目 player.enqueueNext 同一语义分叉）。
 func (p *Player) EnqueueNext(s Song) {
 	p.mu.Lock()
+	if p.radioOn {
+		p.mu.Unlock()
+		return
+	}
 	if p.index < 0 || len(p.queue) == 0 {
 		p.mu.Unlock()
 		p.PlayList([]Song{s}, 0)
@@ -444,6 +473,10 @@ func (p *Player) EnqueueNext(s Song) {
 // PlayNextNow 插队并立即播放。
 func (p *Player) PlayNextNow(s Song) {
 	p.mu.Lock()
+	if p.radioOn {
+		p.mu.Unlock()
+		return
+	}
 	at := p.index + 1
 	if p.index < 0 {
 		at = len(p.queue)
@@ -461,6 +494,7 @@ func (p *Player) PlayNextNow(s Song) {
 // EnqueueMany 追加到队列尾部。
 func (p *Player) EnqueueMany(songs []Song) {
 	p.mu.Lock()
+	p.exitRadioLocked()
 	p.queue = append(p.queue, songs...)
 	p.mu.Unlock()
 	p.sessionSaveSoon(false)
@@ -470,6 +504,7 @@ func (p *Player) EnqueueMany(songs []Song) {
 // RemoveAt 删除队列第 i 首（删当前曲则原地停/换歌）。
 func (p *Player) RemoveAt(i int) {
 	p.mu.Lock()
+	p.exitRadioLocked()
 	if i < 0 || i >= len(p.queue) {
 		p.mu.Unlock()
 		return
@@ -504,6 +539,7 @@ func (p *Player) RemoveAt(i int) {
 // ClearQueue 清空队列。
 func (p *Player) ClearQueue() {
 	p.mu.Lock()
+	p.exitRadioLocked()
 	p.queue = nil
 	p.index = -1
 	p.stopLocked()
@@ -512,9 +548,176 @@ func (p *Player) ClearQueue() {
 	p.notifyChange()
 }
 
+// ===== 猜你喜欢 · 无限电台 =====
+
+func (p *Player) RadioActive() bool {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.radioOn
+}
+
+func (p *Player) RadioLoading() bool {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.radioLoading
+}
+
+func (p *Player) RadioError() string {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.radioErr
+}
+
+// CanPrev 报告上一首是否可用。无限电台只向前走，必须把按钮、快捷键和
+// 媒体键的共同底层入口一起关掉，不能只在 UI 里藏按钮。
+func (p *Player) CanPrev() bool {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return len(p.queue) > 0 && !p.radioOn
+}
+
+func (p *Player) exitRadioLocked() {
+	p.radioSeq++
+	p.radioOn = false
+	p.radioEnd = -1
+	p.radioLoading = false
+	p.radioWaitingNext = false
+	p.radioRetryAt = time.Time{}
+	p.radioErr = ""
+}
+
+// StartRadio 开始 / 换一批猜你喜欢无限电台。先取一轮 5 首，播到本轮末
+// 自动续下一轮并裁掉当前曲之前的历史；再次调用会换掉整轮队列。
+func (p *Player) StartRadio(autoplay bool) {
+	p.mu.Lock()
+	seq := p.radioSeq + 1
+	p.radioSeq = seq
+	wasRadio := p.radioOn
+	prevEnd := p.radioEnd
+	waiting := p.radioWaitingNext
+	p.radioOn = true
+	p.radioEnd = -1
+	p.radioLoading = true
+	p.radioWaitingNext = false
+	p.radioRetryAt = time.Time{}
+	p.radioErr = ""
+	p.mu.Unlock()
+	p.notifyChange()
+
+	go func() {
+		songs, err := p.api.GuessSongs(1)
+		p.mu.Lock()
+		if seq != p.radioSeq {
+			p.mu.Unlock()
+			return
+		}
+		if err != nil || len(songs) == 0 {
+			if err == nil {
+				err = errRadioEmpty
+			}
+			p.radioLoading = false
+			p.radioErr = err.Error()
+			if !wasRadio && len(p.queue) == 0 {
+				p.radioOn = false
+			} else {
+				p.radioEnd = prevEnd
+				p.radioWaitingNext = waiting
+			}
+			p.mu.Unlock()
+			p.notifyChange()
+			return
+		}
+		p.queue = append([]Song(nil), songs...)
+		p.index = 0
+		p.radioEnd = len(p.queue) - 1
+		p.radioLoading = false
+		p.radioErr = ""
+		p.shufOrder = nil
+		p.mu.Unlock()
+		p.sessionSaveSoon(true)
+		p.notifyChange()
+		p.startCurrent(0, autoplay, "")
+	}()
+}
+
+// StopRadio 退出电台会话但不动当前播放队列。
+func (p *Player) StopRadio() {
+	p.mu.Lock()
+	if !p.radioOn {
+		p.mu.Unlock()
+		return
+	}
+	p.exitRadioLocked()
+	p.mu.Unlock()
+	p.notifyChange()
+}
+
+var errRadioEmpty = errors.New("猜你喜欢暂无推荐，登录后可得")
+
+// requestRadioExtendLocked 在轮末请求下一轮。返回 true 表示已经开始请求。
+func (p *Player) requestRadioExtendLocked() bool {
+	if !p.radioOn || p.radioLoading || p.radioEnd < 0 {
+		return false
+	}
+	p.radioLoading = true
+	p.radioWaitingNext = true
+	p.radioRetryAt = time.Time{}
+	p.radioErr = ""
+	seq := p.radioSeq
+	p.mu.Unlock()
+	p.notifyChange()
+	go p.extendRadio(seq)
+	return true
+}
+
+func (p *Player) extendRadio(seq uint64) {
+	songs, err := p.api.GuessSongs(1)
+	p.mu.Lock()
+	if seq != p.radioSeq || !p.radioOn {
+		p.mu.Unlock()
+		return
+	}
+	if err != nil || len(songs) == 0 {
+		if err == nil {
+			err = errors.New("猜你喜欢暂无更多推荐")
+		}
+		p.radioLoading = false
+		p.radioErr = err.Error()
+		// 自然播完会在每个 tick 再调 Next；失败后必须退避，不能 200ms
+		// 一次锤上游。用户手点下一首（auto=false）可立即重试。
+		p.radioRetryAt = time.Now().Add(5 * time.Second)
+		p.mu.Unlock()
+		p.notifyChange()
+		return
+	}
+	anchor := p.index
+	p.queue = append(p.queue, songs...)
+	drop := max(0, anchor)
+	if drop > 0 {
+		p.queue = append([]Song(nil), p.queue[drop:]...)
+		p.index -= drop
+	}
+	if p.index < 0 {
+		p.index = 0
+	}
+	p.radioEnd = len(p.queue) - 1
+	p.radioLoading = false
+	p.radioRetryAt = time.Time{}
+	waiting := p.radioWaitingNext
+	p.radioWaitingNext = false
+	next := p.index + 1
+	p.mu.Unlock()
+	p.sessionSaveSoon(false)
+	p.notifyChange()
+	if waiting && next < p.QueueLen() {
+		p.Jump(next)
+	}
+}
+
 // MoveInQueue 拖拽排序（rows 的歌移到 to 之前；当前曲跟随）。
 func (p *Player) MoveInQueue(rows []int, to int) {
 	p.mu.Lock()
+	p.exitRadioLocked()
 	if len(rows) == 0 || to < 0 || to > len(p.queue) {
 		p.mu.Unlock()
 		return
@@ -578,6 +781,10 @@ func (p *Player) Mode() string {
 
 func (p *Player) CycleMode() {
 	p.mu.Lock()
+	if p.radioOn {
+		p.mu.Unlock()
+		return
+	}
 	switch p.mode {
 	case "off":
 		p.mode = "all"
@@ -597,6 +804,10 @@ func (p *Player) SetMode(mode string) {
 		return
 	}
 	p.mu.Lock()
+	if p.radioOn {
+		p.mu.Unlock()
+		return
+	}
 	changed := p.mode != mode
 	p.mode = mode
 	p.mu.Unlock()
@@ -614,6 +825,10 @@ func (p *Player) Shuffle() bool {
 
 func (p *Player) SetShuffle(on bool) {
 	p.mu.Lock()
+	if p.radioOn {
+		p.mu.Unlock()
+		return
+	}
 	p.shuf = on
 	p.shufOrder = nil
 	p.mu.Unlock()
@@ -750,6 +965,30 @@ func mulberry32(seed uint32) func() float64 {
 
 func (p *Player) Next(auto bool) {
 	p.mu.Lock()
+	if p.radioOn {
+		if p.radioEnd < 0 {
+			p.mu.Unlock()
+			return
+		}
+		if p.index >= p.radioEnd || p.index+1 >= len(p.queue) {
+			if auto && time.Now().Before(p.radioRetryAt) {
+				p.mu.Unlock()
+				return
+			}
+			if p.requestRadioExtendLocked() {
+				return
+			}
+			p.mu.Unlock()
+			return
+		}
+		next := p.index + 1
+		p.index = next
+		p.mu.Unlock()
+		p.sessionSaveSoon(true)
+		p.notifyChange()
+		p.playFrom(0, true, "")
+		return
+	}
 	next := p.nextIndexLocked(auto)
 	if next < 0 {
 		p.stopLocked()
@@ -767,6 +1006,10 @@ func (p *Player) Next(auto bool) {
 
 func (p *Player) Prev() {
 	p.mu.RLock()
+	if p.radioOn {
+		p.mu.RUnlock()
+		return
+	}
 	replay := p.conf.String("Playing.PrevReplay", "replay") == "replay" && p.pos > 3
 	p.mu.RUnlock()
 	if replay {
@@ -1016,6 +1259,9 @@ func pickTier(table *TierTable, want string) string {
 
 // ===== 内部：起播 =====
 
+// qmAtmosFallbackTiers 是「回退到全景声」开关降权的全部档位。
+var qmAtmosFallbackTiers = []string{"atmos71", "atmos51"}
+
 func (p *Player) stopLocked() {
 	p.eng.Stop()
 	p.playing = false
@@ -1064,7 +1310,9 @@ func (p *Player) startCurrent(resumeTo float64, autoplay bool, overrideTier stri
 	}
 	dep := []string{}
 	if p.conf.Bool("Quality.FallbackToQMAtmos", false) {
-		dep = []string{"atmos51", "atmos71"}
+		// 显式列出两档全景声：7.1 与 5.1 都属于「Fallback Atmos」，
+		// 不能只降权 5.1 而让 7.1 仍按普通高档位优先。
+		dep = append([]string(nil), qmAtmosFallbackTiers...)
 	}
 	p.mu.Unlock()
 	p.notifyChange()
@@ -1292,7 +1540,7 @@ func (p *Player) fetchLyric(song Song, seq uint64) {
 	p.lyricState = "loading"
 	p.mu.Unlock()
 	p.notifyChange()
-	src, trans, err := p.api.FetchLyric(song.Mid, p.ShowTranslation())
+	src, trans, roma, err := p.api.FetchLyric(song.Mid, true, true)
 	p.mu.Lock()
 	if seq != p.playSeq {
 		p.mu.Unlock()
@@ -1310,13 +1558,19 @@ func (p *Player) fetchLyric(song Song, seq uint64) {
 	//
 	// 逐字歌词仍以「行级视图」喂给列表（滚动/索引/点击跳转那一套不用改），
 	// 词级时间轴平行存在 p.qrc 里，按行号回查。
-	if ql := ParseQRC(src); HasWordTiming(ql) {
-		alignQrcTrans(ql, lrcLines(trans))
-		p.qrc = ql
+	if ql := ParseQRC(src); len(ql) > 0 {
+		alignQrcAux(ql, trans, roma)
 		p.lyrics = qrcToLines(ql)
+		if HasWordTiming(ql) {
+			p.qrc = ql
+		} else {
+			// 只有行时间、词时长全 0 的伪 QRC 仍按行级渲染，但保留
+			// QRC 行本身，避免退回 ParseLrc 时把 [kana:] 行级数据丢掉。
+			p.qrc = nil
+		}
 	} else {
 		p.qrc = nil
-		p.lyrics = ParseLrc(src, trans)
+		p.lyrics = ParseLrc(src, trans, roma)
 	}
 	if len(p.lyrics) == 0 {
 		p.lyrics, p.qrc = nil, nil
@@ -1359,25 +1613,44 @@ func (p *Player) LyricIndex(t float64) int {
 	return LyricIndexAt(lines, t)
 }
 
-// SetShowTranslation 切换翻译显示（重新拉当前歌词）。
-func (p *Player) SetShowTranslation(on bool) {
-	p.mu.Lock()
-	p.showTrans = on
-	p.mu.Unlock()
-	p.conf.Set("Style.ShowTranslation", on)
-	if cur, ok := p.Current(); ok {
-		p.mu.RLock()
-		seq := p.playSeq
-		p.mu.RUnlock()
-		go p.fetchLyric(cur, seq)
+// SetLyricAuxMode 切换歌词辅助行：关闭 / 翻译优先 / 音译优先。
+// 翻译与音译在首次拉取时都已拿到，切换不必重走网络。
+func (p *Player) SetLyricAuxMode(mode string) {
+	switch mode {
+	case "off", "translation", "romanization":
+	default:
+		return
 	}
+	p.mu.Lock()
+	if p.lyricAux == mode {
+		p.mu.Unlock()
+		return
+	}
+	p.lyricAux = mode
+	p.mu.Unlock()
+	p.conf.Set("Style.LyricAux", mode)
+	// 兼容仍会读旧布尔键的代码/插件。
+	p.conf.Set("Style.ShowTranslation", mode == "translation")
 	p.notifyChange()
 }
 
-func (p *Player) ShowTranslation() bool {
+func (p *Player) LyricAuxMode() string {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
-	return p.showTrans
+	return p.lyricAux
+}
+
+// SetShowTranslation 是旧入口，保留为翻译档 / 关闭的二元兼容。
+func (p *Player) SetShowTranslation(on bool) {
+	if on {
+		p.SetLyricAuxMode("translation")
+		return
+	}
+	p.SetLyricAuxMode("off")
+}
+
+func (p *Player) ShowTranslation() bool {
+	return p.LyricAuxMode() != "off"
 }
 
 // ===== 收藏 =====

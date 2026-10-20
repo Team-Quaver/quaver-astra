@@ -28,8 +28,9 @@ func main() {
 }
 ```
 
-- It checks in the background once a day, the first time 10 seconds after
-  launch when a check is due. When a new version is out, a window shows its
+- It checks in the background 10 seconds after launch, then once a day
+  while the app runs, so a version that came out since the app last ran
+  shows when it opens again. When a new version is out, a window shows its
   release notes and offers **Install Update**, **Remind Me Later** and
   **Skip This Version**. Background checks do not offer a skipped version
   again, but offer the next one.
@@ -134,6 +135,12 @@ mygo.Use(updater.New(updater.Options{
 	},
 }))
 ```
+
+A window speaks the language the app shows when its check begins, and keeps
+it while it is open. After `App.SetLocale`, or a change of the user's
+languages while the app follows them, the next window takes the new one, as
+does an item that `MenuItem` returns then: an app that rebuilds its menu in
+`App.OnLocaleChanged` gets "Check for Updates…" in the new language.
 
 Some texts are formats, such as `AvailableMessage`, whose arguments are the
 app's name, the new version and the running one: indexed verbs (`%[2]s`)

@@ -104,7 +104,31 @@ func (a *App) settingsAppearance(c *ui.Context, t *ui.Theme) {
 		ui.Text(c, "自定义字体填写字体 family 名，可用逗号写多个候选，例如「Noto Sans CJK SC, sans-serif」。").
 			FontSize(fz(11.5)).TextColor(t.TextMuted).MaxLines(2)
 
-		a.prefRow(c, "显示歌词翻译", func() bool { return a.PL.ShowTranslation() }, func(v bool) { a.PL.SetShowTranslation(v) })
+		// 歌词辅助行三档：翻译优先 / 音译优先 / 关闭。翻译与音译共用歌词下方
+		// 那一行，互斥显示；本行缺首选那一路时自动回落另一路。
+		auxIDs := []string{"off", "translation", "romanization"}
+		auxLabels := []string{"关闭", "翻译优先", "音译优先"}
+		curAux := a.PL.LyricAuxMode()
+		curAuxLabel := auxLabels[0]
+		for i, id := range auxIDs {
+			if id == curAux {
+				curAuxLabel = auxLabels[i]
+			}
+		}
+		ui.Column(c).FillWidth().Gap(6).Children(func() {
+			ui.Text(c, "歌词辅助行").FontSize(fz(12.5)).TextColor(t.TextMuted)
+			sel := ui.Select(c, &curAuxLabel, auxLabels).Width(280)
+			if sel.Changed() {
+				for i, label := range auxLabels {
+					if label == curAuxLabel {
+						a.PL.SetLyricAuxMode(auxIDs[i])
+						break
+					}
+				}
+			}
+			ui.Text(c, "翻译优先时缺翻译回落音译；音译优先时缺音译回落翻译。").
+				FontSize(fz(11.5)).TextColor(t.TextMuted).MaxLines(2)
+		})
 
 		ui.Divider(c)
 
@@ -257,7 +281,7 @@ func (a *App) settingsPlayback(c *ui.Context, t *ui.Theme) {
 			}
 		}
 
-		a.prefRow(c, "回退到全景声（不推荐）", func() bool { return a.Conf.Bool("Quality.FallbackToQMAtmos", false) },
+		a.prefRow(c, "回退到全景声（含 7.1 / 5.1，不推荐）", func() bool { return a.Conf.Bool("Quality.FallbackToQMAtmos", false) },
 			func(v bool) { a.Conf.Set("Quality.FallbackToQMAtmos", v) })
 
 		ui.Divider(c)

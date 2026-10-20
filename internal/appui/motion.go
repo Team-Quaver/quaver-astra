@@ -1,6 +1,7 @@
 package appui
 
 import (
+	"strings"
 	"time"
 
 	"github.com/Team-Quaver/quaver-astra/internal/player"
@@ -36,16 +37,6 @@ var (
 
 // hoverFade 是悬停/选中底色的过渡（主项目 transition: background .14s）。
 var hoverFade = ui.ElementTransition{Colors: true, Duration: 140 * time.Millisecond}
-
-// growFade 给「会异步进出、并且有悬停底色」的列表项用：进出时撑开/收拢
-// （主项目 Enter/Exit Motion{Collapse}），底色变化仍走颜色过渡。
-var growFade = ui.ElementTransition{
-	Duration: 200 * time.Millisecond,
-	Ease:     easePage,
-	Colors:   true,
-	Enter:    &ui.Motion{Collapse: true},
-	Exit:     &ui.Motion{Collapse: true},
-}
 
 // bezier 返回 CSS cubic-bezier(x1,y1,x2,y2) 对应的缓动函数。
 //
@@ -135,7 +126,7 @@ func (m motion) at(now time.Time) (float32, bool) {
 
 // styleEnter 把元素摆成「从下方 dy 处淡入」的入场姿态。动画结束后不再碰
 // 元素——不留残留的透明度与位移。
-func styleEnter(c *ui.Context, m motion, e *ui.Element, dy float32) {
+func styleEnter(c *ui.Context, m motion, e ui.Element, dy float32) {
 	k, moving := m.at(c.Now())
 	if moving {
 		c.AnimationFrame()
@@ -150,7 +141,7 @@ func styleEnter(c *ui.Context, m motion, e *ui.Element, dy float32) {
 }
 
 // styleFade 按进度把透明度从 from 送到 to（给不该位移的装饰层用）。
-func styleFade(c *ui.Context, m motion, e *ui.Element, from, to float32) {
+func styleFade(c *ui.Context, m motion, e ui.Element, from, to float32) {
 	k, moving := m.at(c.Now())
 	if moving {
 		c.AnimationFrame()
@@ -186,7 +177,7 @@ func (a *App) routeEnter(c *ui.Context) *enterState {
 
 // enterBlock 让路由页里的第 i 个区块按主项目 route-in 的节奏入场。
 // i 是区块在页面内的序号（0 起），块间 40ms 递增。
-func (a *App) enterBlock(c *ui.Context, i int, e *ui.Element) {
+func (a *App) enterBlock(c *ui.Context, i int, e ui.Element) {
 	st := a.routeEnter(c)
 	styleEnter(c, motion{
 		start: st.base,
@@ -198,7 +189,7 @@ func (a *App) enterBlock(c *ui.Context, i int, e *ui.Element) {
 
 // pageEnter 给路由页的最外层容器挂上统一的入场（route-in 的单块版）：
 // 整页由下 8px 淡入。首页那种分块错峰的页面自己再按序号调 enterBlock。
-func (a *App) pageEnter(c *ui.Context, e *ui.Element) *ui.Element {
+func (a *App) pageEnter(c *ui.Context, e ui.Element) ui.Element {
 	a.enterBlock(c, 0, e)
 	return e
 }
@@ -315,4 +306,76 @@ func (a *App) karaokeLine(c *ui.Context, ql player.QrcLine, size float32, width 
 		Draw(func(p *ui.Painter, r ui.Rect) {
 			p.RichText(r.X, r.Y, width, spans...)
 		})
+}
+
+// qrcRubyLine 画带振假名（QRC [kana:]）的逐字歌词行。
+//
+// MyGo 的 RichText 没有 ruby/词上方注音，所以这里把每个 QRC 词拆成一个
+// 纵向小单元：上假名、下原文。整行用 Wrap 排，换行行为与普通文本一致；
+// 当前句仍按每个词的时间轴着色，注音也按自己的时间轴淡入。
+func (a *App) qrcRubyLine(c *ui.Context, ql player.QrcLine, current bool, size float32) {
+	pos := a.lyricPos(c)
+	if current && a.PL.Playing() && pos < ql.End() {
+		c.AnimationFrame()
+	}
+	fills := ql.WordFills(pos, a.karaBuf[:0])
+	a.karaBuf = fills
+
+	row := ui.Row(c).FillWidth().Wrap().AlignItems(ui.End).GapX(0).GapY(1)
+	row.Label(ql.Text)
+	row.Children(func() {
+		for i, w := range ql.Words {
+			if w.Text == "" {
+				continue
+			}
+			fill := float32(0)
+			if i < len(fills) {
+				fill = fills[i]
+			}
+			base := ui.Hex("#ffffff")
+			weight := 500
+			if current {
+				base = karaokeColor(fill)
+				weight = 800
+			}
+			word := ui.Column(c).Shrink(0).AlignItems(ui.Center).Gap(0)
+			word.Children(func() {
+				if ruby := rubyText(w.Ruby); ruby != "" {
+					col := ui.RGBA(255, 255, 255, 0.52)
+					if current {
+						col = karaokeColor(rubyFill(w.Ruby, pos)).Alpha(0.78)
+					}
+					ui.Text(c, ruby).Font(a.lyricFontFamily()).FontSize(fz(size * 0.45)).
+						TextColor(col).SingleLine()
+				} else {
+					// 没有注音的词也占住假名那一行，避免同一句里基线忽上忽下。
+					ui.Box(c).Height(size * 0.5)
+				}
+				ui.Text(c, w.Text).Font(a.lyricFontFamily()).FontSize(fz(size)).
+					FontWeight(weight).TextColor(base)
+			})
+		}
+	})
+}
+
+func rubyText(spans []player.RubySpan) string {
+	if len(spans) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	for _, span := range spans {
+		b.WriteString(span.Text)
+	}
+	return b.String()
+}
+
+func rubyFill(spans []player.RubySpan, pos float64) float32 {
+	if len(spans) == 0 {
+		return 0
+	}
+	var total float32
+	for _, span := range spans {
+		total += span.Fill(pos)
+	}
+	return total / float32(len(spans))
 }

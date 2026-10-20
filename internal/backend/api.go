@@ -210,11 +210,65 @@ type SonglistDetail struct {
 	Total   int64           `json:"total"`
 }
 
-// Lyric 歌词（服务端已解密；trans=1 时带翻译）。
+// Lyric 歌词（服务端已解密；trans=1 带翻译，roma=1 带音译）。
 type Lyric struct {
 	Songid int64  `json:"songid"`
 	Lyric  string `json:"lyric"`
 	Trans  string `json:"trans"`
+	Roma   string `json:"roma"`
+}
+
+// RecommendSonglists /recommend/songlist 响应。
+type RecommendSonglists struct {
+	Songlists []SonglistSummary `json:"songlists"`
+}
+
+// AISonglists /recommend/ai-songlist 响应。
+type AISonglists struct {
+	Songlists []SonglistSummary `json:"songlists"`
+	Total     int64             `json:"total"`
+	HasMore   bool              `json:"hasmore"`
+}
+
+// GuessSongs /recommend/guess 响应（一轮约 5 首）。
+type GuessSongs struct {
+	Songs  []Song `json:"songs"`
+	Rounds int    `json:"rounds"`
+}
+
+// ToplistSummary 首页榜单卡片（/top/category 归一化后的形状）。
+type ToplistSummary struct {
+	ID               int64  `json:"id"`
+	Title            string `json:"title"`
+	Picurl           string `json:"picurl"`
+	Desc             string `json:"desc"`
+	Songnum          int64  `json:"songnum"`
+	Listennum        int64  `json:"listennum"`
+	Period           string `json:"period"`
+	UpdateType       int    `json:"update_type"`
+	UpdateTime       string `json:"update_time"`
+	UpdateTips       string `json:"update_tips"`
+	HistorySupported bool   `json:"history_supported"`
+}
+
+// ToplistGroup 榜单分类。
+type ToplistGroup struct {
+	ID       int64            `json:"id"`
+	Name     string           `json:"name"`
+	Toplists []ToplistSummary `json:"toplists"`
+}
+
+// ToplistCategories /top/category 响应。
+type ToplistCategories struct {
+	Groups []ToplistGroup `json:"groups"`
+}
+
+// ToplistDetail /top/{id}/detail 响应；info 与歌单摘要同形。
+type ToplistDetail struct {
+	Info    SonglistSummary `json:"info"`
+	Songs   []Song          `json:"songs"`
+	Total   int64           `json:"total"`
+	Hasmore bool            `json:"hasmore"`
 }
 
 // Tier 音质档位。
@@ -511,16 +565,20 @@ func (c *Client) ResolveStream(mid, mediaMid string, songType int, tier string, 
 // Lyric 取歌词。qrc=true 时向上游要逐字（QRC）歌词——上游会把它塞在
 // 同一个 Lyric 字段里（XML 信封形态，服务端已解密），歌词没有逐字
 // 时间轴时上游自动回落到普通 LRC，所以这个开关总是安全可开的。
-func (c *Client) Lyric(mid string, trans, qrc bool) (Lyric, error) {
-	t, qc := "", ""
+// trans/roma 分别要翻译与音译；两者可同时请求，由播放器按档位挑选。
+func (c *Client) Lyric(mid string, trans, roma, qrc bool) (Lyric, error) {
+	t, r, qc := "", "", ""
 	if trans {
 		t = "1"
+	}
+	if roma {
+		r = "1"
 	}
 	if qrc {
 		qc = "1"
 	}
 	var out Lyric
-	err := c.getJSON("/song/"+mid+"/lyric", q("trans", t, "qrc", qc), &out)
+	err := c.getJSON("/song/"+mid+"/lyric", q("trans", t, "roma", r, "qrc", qc), &out)
 	return out, err
 }
 
@@ -662,13 +720,16 @@ func (c *Client) SearchHotkey() ([]string, error) {
 	return out, nil
 }
 
-func (c *Client) RecommendSonglists(page, num int) (struct {
-	Songlists []SonglistSummary `json:"songlists"`
-}, error) {
-	var out struct {
-		Songlists []SonglistSummary `json:"songlists"`
-	}
+func (c *Client) RecommendSonglists(page, num int) (RecommendSonglists, error) {
+	var out RecommendSonglists
 	err := c.getJSON("/recommend/songlist", q("page", page, "num", num), &out)
+	return out, err
+}
+
+// RecommendAISonglists 取 AI 歌单；失败时首页块单独降级，不影响其他推荐。
+func (c *Client) RecommendAISonglists(page, num int) (AISonglists, error) {
+	var out AISonglists
+	err := c.getJSON("/recommend/ai-songlist", q("page", page, "num", num), &out)
 	return out, err
 }
 
@@ -688,15 +749,23 @@ func (c *Client) RecommendDaily() (SonglistDetail, error) {
 	return out, err
 }
 
-func (c *Client) RecommendGuess(rounds int) (struct {
-	Songs  []Song `json:"songs"`
-	Rounds int    `json:"rounds"`
-}, error) {
-	var out struct {
-		Songs  []Song `json:"songs"`
-		Rounds int    `json:"rounds"`
-	}
+func (c *Client) RecommendGuess(rounds int) (GuessSongs, error) {
+	var out GuessSongs
 	err := c.getJSON("/recommend/guess", q("rounds", rounds), &out)
+	return out, err
+}
+
+// ToplistCategories 首页排行榜分组。
+func (c *Client) ToplistCategories() (ToplistCategories, error) {
+	var out ToplistCategories
+	err := c.getJSON("/top/category", nil, &out)
+	return out, err
+}
+
+// ToplistDetail 榜单详情，形状与歌单详情近似，可复用歌曲行。
+func (c *Client) ToplistDetail(id int64, page, num int) (ToplistDetail, error) {
+	var out ToplistDetail
+	err := c.getJSON("/top/"+strconv.FormatInt(id, 10)+"/detail", q("page", page, "num", num), &out)
 	return out, err
 }
 

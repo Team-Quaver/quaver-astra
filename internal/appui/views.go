@@ -2,6 +2,7 @@ package appui
 
 import (
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/Team-Quaver/quaver-astra/internal/backend"
@@ -25,8 +26,23 @@ type homeState struct {
 	loaded  bool
 	loading bool
 	err     string
+
 	recs    []backend.SonglistSummary
 	newsong []player.Song
+	newsErr string
+
+	ai       []backend.SonglistSummary
+	aiPage   int
+	aiMore   bool
+	aiLoaded bool
+	aiBusy   bool
+	aiErr    string
+
+	topGroups []backend.ToplistGroup
+	topGroup  int
+	topLoaded bool
+	topBusy   bool
+	topErr    string
 }
 
 func (a *App) homeView(c *ui.Context) {
@@ -34,98 +50,371 @@ func (a *App) homeView(c *ui.Context) {
 	a.ensureHome()
 	t := c.Theme()
 
-	ui.Scroll(c).Fill().Padding(20, 24, 28, 24).Gap(20).Children(func() {
-		if st.err != "" {
-			blk := ui.Column(c).FillWidth().Center().Gap(8).Padding(40)
-			a.enterBlock(c, 0, blk)
-			blk.Children(func() {
-				ui.Text(c, st.err).FontSize(fz(13)).TextColor(t.TextMuted)
-				plainBtn(c, "重试", func() { st.loaded = false; st.err = "" })
-			})
-			return
-		}
-		if len(st.recs) == 0 {
-			blk := ui.Column(c).FillWidth().Center().Padding(40)
-			a.enterBlock(c, 0, blk)
-			blk.Children(func() { ui.Spinner(c) })
-			return
-		}
-
-		// 两栏头部：今日精选 hero + 新歌速递。
-		// hero 带 MinWidth，新歌速递用基准宽 + Grow：内容区不够同时放下
-		// 两栏时新歌速递折到下一行并铺开，hero 不再被挤瘪。
-		head := ui.Row(c).FillWidth().Wrap().GapX(18).GapY(20).AlignItems(ui.Start)
-		a.enterBlock(c, 0, head)
-		head.Children(func() {
-			a.homeHero(c, st.recs[0])
-			ui.Column(c).Grow(1).Basis(430).MinWidth(360).Gap(2).Children(func() {
-				ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(8).Children(func() {
-					ui.Text(c, "新歌速递").FontSize(fz(15)).FontWeight(800).Grow(1)
-					linkButton(c, "播放全部", func() {
-						a.playListNow(st.newsong, 0)
-					})
-				})
-				for i := 0; i < len(st.newsong) && i < 6; i++ {
-					idx := i
-					a.compactSongRow(c, st.newsong, idx)
-				}
-			})
+	a.pageEnter(c, ui.Scroll(c).Fill().Padding(20, 24, 28, 24).Gap(22)).Children(func() {
+		ui.Column(c).FillWidth().Gap(3).Children(func() {
+			ui.Text(c, "首页").FontSize(fz(26)).FontWeight(800)
+			ui.Text(c, "从无限电台、新歌与歌单开始，开启今日").FontSize(fz(12.5)).TextColor(t.TextMuted)
 		})
 
-		// 推荐歌单网格（flex wrap 自适应列数）
-		recs := ui.Column(c).FillWidth().Gap(12)
-		a.enterBlock(c, 1, recs)
-		recs.Children(func() {
-			// 首条已经作为今日精选 hero 展示，下面的网格从第二条开始，
-			// 避免同一个歌单在同一屏里出现两次。
-			if len(st.recs) > 1 {
-				sectionHeader(c, "推荐歌单", nil)
-				a.playlistGrid(c, st.recs[1:])
+		// 快速开始 + 新歌速递。宽屏双栏，窄屏自动换行。
+		lead := ui.Row(c).FillWidth().Wrap().GapX(18).GapY(18).AlignItems(ui.Stretch)
+		lead.Children(func() {
+			a.homeRadioCard(c)
+			a.homeNewSongs(c, st)
+		})
+
+		a.homeRecommendations(c, st)
+		a.homeAI(c, st)
+		a.homeToplists(c, st)
+	})
+}
+
+// homeRadioCard 是首页的无限电台入口：未开始时负责开台，播放中则直接
+// 展示当前曲并给出播放/暂停、下一首、收藏。进入详情页只恢复主舞台，
+// 不会打断队列——这正是电台的「退出页面保留」语义。
+func (a *App) homeRadioCard(c *ui.Context) {
+	t := c.Theme()
+	cur, hasCur := a.PL.Current()
+	active := a.PL.RadioActive()
+	busy := a.PL.RadioLoading()
+	artURL := ""
+	if active && hasCur {
+		artURL = coverURL(cur.AlbumPmid, cur.AlbumMid, 300)
+	}
+	art := a.Covers.Get(artURL, a.invalidate)
+
+	card := ui.Row(c).Grow(2).Basis(480).MinWidth(420).MinHeight(212).Padding(18).Gap(18).
+		Radius(16).Background(t.Surface).Border(1, t.Border).AlignItems(ui.Center)
+	card.Children(func() {
+		box := ui.Box(c).Size(172, 172).Radius(14).Clip().Background(t.SurfaceHover).Shrink(0)
+		box.Children(func() {
+			if art != nil {
+				ui.Image(c, art).Fill().Fit(ui.Cover)
+			} else {
+				ui.Box(c).Fill().Center().Children(func() {
+					ui.Text(c, "∞").FontSize(fz(64)).FontWeight(800).TextColor(t.Accent)
+				})
 			}
+		})
+
+		ui.Column(c).Grow(1).Gap(7).Children(func() {
+			ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(6).Children(func() {
+				ui.Text(c, "∞").FontSize(fz(14)).FontWeight(800).TextColor(t.Accent)
+				ui.Text(c, "无限电台").FontSize(fz(11.5)).FontWeight(700).TextColor(t.Accent)
+				ui.Spacer(c)
+				if active && busy {
+					ui.Text(c, "正在续歌…").FontSize(fz(11)).TextColor(t.TextMuted)
+				}
+			})
+			title := "猜你喜欢"
+			sub := "按你的口味持续播放"
+			if active && hasCur {
+				title = cur.DisplayName()
+				sub = cur.Artists
+				if cur.Album != "" {
+					sub += " · " + cur.Album
+				}
+			} else if busy {
+				title = "正在为你取歌…"
+				sub = "首轮约 5 首，播到轮末会自动续歌"
+			} else if e := a.PL.RadioError(); e != "" {
+				sub = e
+			}
+			ui.Text(c, title).FontSize(fz(21)).FontWeight(800).SingleLine().Ellipsis("…")
+			ui.Text(c, sub).FontSize(fz(12.5)).TextColor(t.TextMuted).SingleLine().Ellipsis("…")
+			ui.Spacer(c)
+			ui.Row(c).FillWidth().Wrap().Gap(8).Children(func() {
+				if !active {
+					primaryBtn(c, "开始电台", func() { a.startRadioFromUI(true) })
+				} else {
+					playLabel := "播放"
+					if a.PL.Playing() {
+						playLabel = "暂停"
+					}
+					primaryBtn(c, playLabel, func() { a.PL.PlayOrPause() })
+					plainBtn(c, "下一首", func() { a.PL.Next(false) })
+					if hasCur {
+						loveLabel := "收藏"
+						if a.PL.IsLoved(cur.Mid) {
+							loveLabel = "已收藏"
+						}
+						plainBtn(c, loveLabel, func() { a.PL.ToggleLove(cur) })
+					}
+				}
+				linkButton(c, "打开电台", func() { a.Router.Push("/guess") })
+			})
 		})
 	})
 }
 
-func (a *App) homeHero(c *ui.Context, pl backend.SonglistSummary) {
+func (a *App) homeNewSongs(c *ui.Context, st *homeState) {
 	t := c.Theme()
-	art := a.Covers.Get(pl.Picurl, a.invalidate)
-	card := ui.Row(c).Grow(1).MinWidth(460).Gap(18).Padding(18).Radius(14).
-		Background(t.Surface).Border(1, t.Border).AlignItems(ui.Center).
-		Transition(ui.ElementTransition{Colors: true, Duration: 160 * time.Millisecond})
-	card.Children(func() {
-		if art != nil {
-			ui.Image(c, art).Size(160, 160).Fit(ui.Cover).Radius(10)
-		} else {
-			ui.Box(c).Size(160, 160).Radius(10).Background(t.SurfaceHover).Center().Children(func() {
-				ui.Icon(c, Icons["note"]).FontSize(fz(44)).TextColor(t.TextMuted).AlignSelf(ui.Center)
+	ui.Column(c).Grow(1).Basis(380).MinWidth(340).Gap(2).Children(func() {
+		ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(8).Children(func() {
+			ui.Text(c, "新歌速递").FontSize(fz(15)).FontWeight(800).Grow(1)
+			if len(st.newsong) > 0 {
+				linkButton(c, "播放全部", func() { a.playListNow(st.newsong, 0) })
+			}
+		})
+		if st.loading && len(st.newsong) == 0 {
+			ui.Column(c).FillWidth().Center().Padding(36).Children(func() { ui.Spinner(c) })
+			return
+		}
+		if len(st.newsong) == 0 {
+			msg := st.newsErr
+			if msg == "" {
+				msg = "暂时没有新歌"
+			}
+			ui.Text(c, msg).FontSize(fz(12.5)).TextColor(t.TextMuted).Padding(20)
+			return
+		}
+		for i := 0; i < len(st.newsong) && i < 6; i++ {
+			a.compactSongRow(c, st.newsong, i)
+		}
+	})
+}
+
+func (a *App) homeRecommendations(c *ui.Context, st *homeState) {
+	if st.loading && len(st.recs) == 0 {
+		ui.Column(c).FillWidth().Gap(10).Children(func() {
+			sectionHeader(c, "推荐歌单", nil)
+			ui.Row(c).FillWidth().Center().Padding(28).Children(func() { ui.Spinner(c) })
+		})
+		return
+	}
+	if len(st.recs) == 0 {
+		if st.err != "" {
+			ui.Column(c).FillWidth().Gap(10).Children(func() {
+				sectionHeader(c, "推荐歌单", nil)
+				ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(10).Children(func() {
+					ui.Text(c, st.err).FontSize(fz(12.5)).TextColor(c.Theme().TextMuted).Grow(1)
+					plainBtn(c, "重试", func() { st.loaded, st.loading = false, false })
+				})
 			})
 		}
-		ui.Column(c).Grow(1).Gap(8).Children(func() {
-			ui.Text(c, "PLAYLIST · 今日精选").FontSize(fz(11)).FontWeight(600).TextColor(t.Accent)
-			ui.Text(c, pl.Title).FontSize(fz(20)).FontWeight(800).MaxLines(2).Ellipsis("…")
-			meta := ""
-			if pl.Nickname != "" {
-				meta = pl.Nickname
-			}
-			if pl.Songnum > 0 {
-				if meta != "" {
-					meta += " · "
-				}
-				meta += strconv.FormatInt(pl.Songnum, 10) + " 首"
-			}
-			ui.Text(c, meta).FontSize(fz(12.5)).TextColor(t.TextMuted)
-			if pl.Desc != "" {
-				ui.Text(c, pl.Desc).FontSize(fz(12)).TextColor(t.TextMuted).MaxLines(2).Ellipsis("…")
-			}
-			ui.Row(c).Gap(8).Margin(6, 0, 0, 0).Children(func() {
-				primaryBtn(c, "播放歌单", func() { a.openPlaylistAndPlay(pl.ID) })
-				plainBtn(c, "查看详情", func() { a.Router.Push("/playlist/" + strconv.FormatInt(pl.ID, 10)) })
+		return
+	}
+	ui.Column(c).FillWidth().Gap(12).Children(func() {
+		sectionHeader(c, "推荐歌单", func() {
+			linkButton(c, "刷新", func() {
+				st.loaded, st.loading = false, false
 			})
 		})
+		a.playlistGrid(c, st.recs)
 	})
-	if card.Clicked() {
-		a.Router.Push("/playlist/" + strconv.FormatInt(pl.ID, 10))
+}
+
+func (a *App) homeAI(c *ui.Context, st *homeState) {
+	if st.aiErr != "" {
+		ui.Column(c).FillWidth().Gap(10).Children(func() {
+			sectionHeader(c, "AI 歌单", func() {
+				linkButton(c, "重试", func() { a.loadHomeAI(1) })
+			})
+			ui.Text(c, st.aiErr).FontSize(fz(12.5)).TextColor(c.Theme().TextMuted)
+		})
+		return
 	}
+	if !st.aiLoaded && !st.aiBusy {
+		return
+	}
+	ui.Column(c).FillWidth().Gap(12).Children(func() {
+		sectionHeader(c, "AI 歌单", func() {
+			label := "换一批"
+			if st.aiBusy {
+				label = "生成中…"
+			}
+			if !st.aiBusy {
+				linkButton(c, label, func() {
+					page := st.aiPage + 1
+					if !st.aiMore {
+						page = 1
+					}
+					a.loadHomeAI(page)
+				})
+			}
+		})
+		if st.aiBusy && len(st.ai) == 0 {
+			ui.Row(c).FillWidth().Center().Padding(28).Children(func() { ui.Spinner(c) })
+			return
+		}
+		if len(st.ai) == 0 {
+			ui.Text(c, "AI 暂时没有生成内容").FontSize(fz(12.5)).TextColor(c.Theme().TextMuted).Padding(16)
+			return
+		}
+		a.playlistGrid(c, st.ai)
+	})
+}
+
+func (a *App) homeToplists(c *ui.Context, st *homeState) {
+	if st.topErr != "" {
+		ui.Column(c).FillWidth().Gap(10).Children(func() {
+			sectionHeader(c, "排行榜", func() {
+				linkButton(c, "重试", func() {
+					st.topErr = ""
+					st.loaded, st.loading = false, false
+				})
+			})
+			ui.Text(c, st.topErr).FontSize(fz(12.5)).TextColor(c.Theme().TextMuted)
+		})
+		return
+	}
+	if st.topBusy && len(st.topGroups) == 0 {
+		ui.Column(c).FillWidth().Gap(10).Children(func() {
+			sectionHeader(c, "排行榜", nil)
+			ui.Row(c).FillWidth().Center().Padding(28).Children(func() { ui.Spinner(c) })
+		})
+		return
+	}
+	if len(st.topGroups) == 0 {
+		return
+	}
+	if st.topGroup < 0 || st.topGroup >= len(st.topGroups) {
+		st.topGroup = 0
+	}
+	ui.Column(c).FillWidth().Gap(12).Children(func() {
+		sectionHeader(c, "排行榜", func() {
+			ui.Row(c).Wrap().Gap(6).Children(func() {
+				for i, g := range st.topGroups {
+					idx := i
+					label := g.Name
+					if label == "" {
+						label = "分类"
+					}
+					b := ui.ButtonBase(c).Padding(4, 10).Radius(999)
+					b.Children(func() {
+						ui.Text(c, label).FontSize(fz(11.5))
+					})
+					if i == st.topGroup {
+						b.Background(c.Theme().Accent.Alpha(0.14))
+					} else if b.Hovered() {
+						b.Background(c.Theme().SurfaceHover)
+					}
+					if b.Clicked() {
+						st.topGroup = idx
+					}
+				}
+			})
+		})
+		a.toplistGrid(c, st.topGroups[st.topGroup].Toplists)
+	})
+}
+
+func (a *App) ensureHome() {
+	st := &a.home
+	if st.loaded || st.loading {
+		return
+	}
+	st.loading = true
+	st.err = ""
+	st.newsErr = ""
+	st.aiBusy = true
+	st.topBusy = true
+
+	var wg sync.WaitGroup
+	wg.Add(4)
+	go func() {
+		defer wg.Done()
+		var recs backend.RecommendSonglists
+		var err error
+		a.withAPILimit(func() { recs, err = a.API.RecommendSonglists(1, 13) })
+		a.update(func() {
+			if err != nil {
+				st.err = err.Error()
+				return
+			}
+			st.err = ""
+			st.recs = recs.Songlists
+		})
+	}()
+	go func() {
+		defer wg.Done()
+		var newest struct {
+			Songs []backend.Song `json:"songs"`
+		}
+		var err error
+		a.withAPILimit(func() { newest, err = a.API.RecommendNewsong() })
+		a.update(func() {
+			if err != nil {
+				st.newsErr = err.Error()
+				return
+			}
+			st.newsErr = ""
+			st.newsong = toPlayerSongs(newest.Songs)
+		})
+	}()
+	go func() {
+		defer wg.Done()
+		var ai backend.AISonglists
+		var err error
+		a.withAPILimit(func() { ai, err = a.API.RecommendAISonglists(1, 8) })
+		a.update(func() {
+			st.aiLoaded = true
+			st.aiBusy = false
+			st.aiPage = 1
+			if err != nil {
+				st.aiErr = err.Error()
+				return
+			}
+			st.aiErr = ""
+			st.ai = ai.Songlists
+			st.aiMore = ai.HasMore
+		})
+	}()
+	go func() {
+		defer wg.Done()
+		var tops backend.ToplistCategories
+		var err error
+		a.withAPILimit(func() { tops, err = a.API.ToplistCategories() })
+		a.update(func() {
+			st.topLoaded = true
+			st.topBusy = false
+			if err != nil {
+				st.topErr = err.Error()
+				return
+			}
+			st.topErr = ""
+			st.topGroups = tops.Groups
+		})
+	}()
+	go func() {
+		wg.Wait()
+		a.update(func() {
+			st.loading = false
+			st.loaded = true
+		})
+	}()
+}
+
+func (a *App) loadHomeAI(page int) {
+	st := &a.home
+	if st.aiBusy {
+		return
+	}
+	st.aiBusy = true
+	st.aiErr = ""
+	go func() {
+		var res backend.AISonglists
+		var err error
+		a.withAPILimit(func() { res, err = a.API.RecommendAISonglists(page, 8) })
+		a.update(func() {
+			st.aiBusy = false
+			if err != nil {
+				st.aiErr = err.Error()
+				return
+			}
+			st.ai = res.Songlists
+			st.aiPage = page
+			st.aiMore = res.HasMore
+		})
+	}()
+}
+
+// startRadioFromUI 统一处理首页与电台页的开台入口：收起可编辑队列，
+// 开台本身由 player 维护，离开页面不会停。
+func (a *App) startRadioFromUI(autoplay bool) {
+	a.queueOpen = false
+	a.Conf.Set("Window.QueueOpen", false)
+	a.PL.StartRadio(autoplay)
 }
 
 // compactSongRow 是新歌速递的紧凑行（无封面）。
@@ -145,32 +434,6 @@ func (a *App) compactSongRow(c *ui.Context, songs []player.Song, i int) {
 	if row.DoubleClicked() {
 		a.playListNow(songs, i)
 	}
-}
-
-func (a *App) ensureHome() {
-	st := &a.home
-	if st.loaded || st.loading {
-		return
-	}
-	st.loading = true
-	go func() {
-		a.withAPILimit(func() {
-			recs, err1 := a.API.RecommendSonglists(1, 13)
-			newsong, err2 := a.API.RecommendNewsong()
-			a.update(func() {
-				st.loading = false
-				st.loaded = true
-				if err1 != nil {
-					st.err = err1.Error()
-				} else {
-					st.recs = recs.Songlists
-				}
-				if err2 == nil {
-					st.newsong = toPlayerSongs(newsong.Songs)
-				}
-			})
-		})
-	}()
 }
 
 func (a *App) openPlaylistAndPlay(id int64) {
@@ -241,7 +504,7 @@ func (a *App) playlistCard(c *ui.Context, pl backend.SonglistSummary, cardMenu .
 		ui.Box(c).FillWidth().Height(fz(35)).Children(func() {
 			ui.Text(c, pl.Title).FontSize(fz(12.5)).MaxLines(2).Ellipsis("…").LineHeight(1.35)
 		})
-		sub := strconv.FormatInt(pl.Listennum, 10) + " 次播放"
+		sub := compactNumber(pl.Listennum) + " 次播放"
 		ui.Box(c).FillWidth().Height(fz(16)).Children(func() {
 			ui.Text(c, sub).FontSize(fz(11)).TextColor(t.TextMuted).SingleLine().Ellipsis("…")
 		})
@@ -335,64 +598,96 @@ func (a *App) ensureDaily() {
 // ===== 猜你喜欢 =====
 
 type guessState struct {
-	list   songListState
-	rounds int
+	autoStarted bool
 }
 
+// guessView 是猜你喜欢无限电台的主舞台。电台状态在 player 里，页面只读：
+// 离开再回来不会重开一轮；「换一批」是唯一主动换歌的入口。
 func (a *App) guessView(c *ui.Context) {
 	st := &a.guess
-	a.ensureGuess()
-	a.pageEnter(c, ui.Column(c).Fill().Padding(20, 24, 24, 24).Gap(14)).Children(func() {
-		ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(10).Children(func() {
-			ui.Text(c, "猜你喜欢").FontSize(fz(24)).FontWeight(800)
+	if !st.autoStarted {
+		st.autoStarted = true
+		if !a.PL.RadioActive() && !a.PL.RadioLoading() {
+			a.startRadioFromUI(true)
+		}
+	}
+	t := c.Theme()
+	cur, hasCur := a.PL.Current()
+	active := a.PL.RadioActive()
+	busy := a.PL.RadioLoading()
+	artURL := ""
+	if active && hasCur {
+		artURL = coverURL(cur.AlbumPmid, cur.AlbumMid, 500)
+	}
+	art := a.Covers.Get(artURL, a.invalidate)
+
+	a.pageEnter(c, ui.Column(c).Fill().Padding(28, 32, 32, 32).Gap(18).AlignItems(ui.Center)).Children(func() {
+		ui.Row(c).FillWidth().MaxWidth(680).AlignItems(ui.Center).Gap(8).Children(func() {
+			ui.Text(c, "∞").FontSize(fz(17)).FontWeight(800).TextColor(t.Accent)
+			ui.Text(c, "无限电台").FontSize(fz(15)).FontWeight(800).TextColor(t.Accent)
 			ui.Spacer(c)
-			plainBtn(c, "换一批", func() {
-				st.list.songs = nil
-				st.list.loaded = false
-			})
-			if len(st.list.songs) > 0 {
-				primaryBtn(c, "播放全部", func() { a.playListNow(st.list.songs, 0) })
+			if busy {
+				ui.Text(c, "正在续上下一轮…").FontSize(fz(11.5)).TextColor(t.TextMuted)
+			} else if active {
+				ui.Text(c, "只向前播放").FontSize(fz(11.5)).TextColor(t.TextMuted)
 			}
 		})
-		if st.list.err != "" {
-			ui.Text(c, st.list.err).FontSize(fz(13)).TextColor(c.Theme().TextMuted).Padding(24)
-			return
-		}
-		if len(st.list.songs) == 0 {
-			ui.Column(c).FillWidth().Center().Padding(48).Children(func() { ui.Spinner(c) })
-			return
-		}
-		a.songList(c, &st.list, nil, func(i int) { a.playListNow(st.list.songs, i) })
-	})
-}
 
-func (a *App) ensureGuess() {
-	st := &a.guess
-	if st.list.loaded || st.list.loading {
-		return
-	}
-	st.list.loading = true
-	rounds := st.rounds
-	if rounds != 2 {
-		rounds = 2
-	} else {
-		rounds = 4
-	}
-	st.rounds = rounds
-	go func() {
-		a.withAPILimit(func() {
-			res, err := a.API.RecommendGuess(rounds)
-			a.update(func() {
-				st.list.loading = false
-				st.list.loaded = true
-				if err != nil {
-					st.list.err = err.Error()
-					return
+		ui.Spacer(c)
+		stage := ui.Column(c).Width(520).MaxWidth(640).AlignItems(ui.Center).Gap(14)
+		stage.Children(func() {
+			cover := ui.Box(c).Size(252, 252).Radius(20).Clip().Background(t.SurfaceHover).
+				Shadow(0, 18, 48, 0, ui.RGBA(0, 0, 0, 0.22))
+			cover.Children(func() {
+				if art != nil {
+					ui.Image(c, art).Fill().Fit(ui.Cover)
+				} else {
+					ui.Box(c).Fill().Center().Children(func() {
+						ui.Text(c, "∞").FontSize(fz(92)).FontWeight(800).TextColor(t.Accent)
+					})
 				}
-				st.list.songs = toPlayerSongs(res.Songs)
+			})
+
+			title := "猜你喜欢"
+			sub := "按你的口味持续播放"
+			if active && hasCur {
+				title = cur.DisplayName()
+				sub = cur.Artists
+				if cur.Album != "" {
+					sub += " · " + cur.Album
+				}
+			} else if busy {
+				title = "正在为你取歌…"
+				sub = "首轮约 5 首，播到轮末会自动续歌"
+			} else if e := a.PL.RadioError(); e != "" {
+				sub = e
+			}
+			ui.Text(c, title).FontSize(fz(27)).FontWeight(800).SingleLine().Ellipsis("…")
+			ui.Text(c, sub).FontSize(fz(13)).TextColor(t.TextMuted).SingleLine().Ellipsis("…")
+
+			ui.Row(c).AlignItems(ui.Center).Gap(10).Margin(4, 0, 0, 0).Children(func() {
+				if !active {
+					primaryBtn(c, "开始电台", func() { a.startRadioFromUI(true) })
+				} else {
+					label := "播放"
+					if a.PL.Playing() {
+						label = "暂停"
+					}
+					primaryBtn(c, label, func() { a.PL.PlayOrPause() })
+					plainBtn(c, "下一首", func() { a.PL.Next(false) })
+					if hasCur {
+						love := "收藏"
+						if a.PL.IsLoved(cur.Mid) {
+							love = "已收藏"
+						}
+						plainBtn(c, love, func() { a.PL.ToggleLove(cur) })
+					}
+				}
+				plainBtn(c, "换一批", func() { a.startRadioFromUI(true) })
 			})
 		})
-	}()
+		ui.Spacer(c)
+	})
 }
 
 // ===== 歌单详情 =====

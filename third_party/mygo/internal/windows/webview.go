@@ -102,6 +102,7 @@ func (w *window) withWebViewOr(fn func(), fail func(error)) {
 
 // failPending fails the calls waiting for the webview.
 func (w *window) failPending(err error) {
+	failCookieRequests(w, err)
 	pending := w.pending
 	w.pending = nil
 	for _, c := range pending {
@@ -146,14 +147,22 @@ func (w *window) createWebView() {
 		testFailWebViews--
 	}
 	hr := withHandler(func(hr, controller uintptr) {
+		// A web view in a window of native UI gets a composition
+		// controller, whose controller closes it.
+		closeController := func() {
+			if c := queryInterface(controller, &iidICoreWebView2Controller); c != 0 {
+				comCall(c, ctlClose)
+				release(c)
+			}
+		}
 		if fail && controller != 0 { // TestFailWebViews
-			comCall(controller, ctlClose)
+			closeController()
 			hr, controller = eFail, 0
 		}
 		// Closing the window aborts the creation (E_ABORT).
-		if w.closed || w.destroying {
+		if w.closed || w.destroying || w.host != nil && w.host.closed {
 			if controller != 0 {
-				comCall(controller, ctlClose)
+				closeController()
 			}
 			return
 		}
@@ -162,8 +171,16 @@ func (w *window) createWebView() {
 			return
 		}
 		addRef(controller)
+		if w.host != nil {
+			controller = w.setUpEmbedded(controller)
+		}
 		w.setUp(controller)
-	}, func(h uintptr) uintptr { return comCall(w.b.env, envCreateController, w.hwnd, h) })
+	}, func(h uintptr) uintptr {
+		if w.host != nil {
+			return w.createEmbedded(h)
+		}
+		return comCall(w.b.env, envCreateController, w.hwnd, h)
+	})
 	if failed(hr) {
 		w.creationFailed(hr)
 	}
@@ -179,7 +196,11 @@ func (w *window) creationFailed(hr uintptr) {
 		return
 	}
 	log.Printf("%v; trying again", err)
-	procSetTimer.Call(w.hwnd, timerWebView, uintptr(backoff(w.webViewFails-1)/time.Millisecond), 0)
+	hwnd := w.hwnd
+	if w.host != nil && w.host.surface != nil {
+		hwnd = w.host.surface.hwnd // which asks again for its web views
+	}
+	procSetTimer.Call(hwnd, timerWebView, uintptr(backoff(w.webViewFails-1)/time.Millisecond), 0)
 }
 
 func (w *window) setUp(controller uintptr) {
@@ -195,29 +216,12 @@ func (w *window) setUp(controller uintptr) {
 	comCall(s, setPutAreDevToolsEnabled, boolArg(o.DevTools))
 	comCall(s, setPutAreDefaultContextMenusEnabled, 1)
 	comCall(s, setPutIsZoomControlEnabled, 1)
-	if o.UserAgent != "" {
-		w.setUserAgent(o.UserAgent)
+	if o.UserAgent != "" || o.UserAgentSuffix != "" {
+		w.setUpUserAgent()
 	}
 	w.applyWebViewBackground()
 
-	scripts := o.UserScripts
-	if w.caption != nil {
-		// After the bridge, which it tells.
-		scripts = append(scripts[:len(scripts):len(scripts)], platform.UserScript{Source: w.titleBarScript()})
-	}
-	for _, us := range scripts {
-		src := us.Source
-		if us.AtDocumentEnd {
-			src = "document.readyState===\"loading\"?document.addEventListener(\"DOMContentLoaded\",()=>{\n" + src + "\n},{once:true}):(()=>{\n" + src + "\n})();"
-		}
-		if !us.AllFrames {
-			// Scripts run in every frame unless told otherwise.
-			src = "if(window===window.top){\n" + src + "\n}"
-		}
-		withHandler(func(uintptr, uintptr) {}, func(h uintptr) uintptr {
-			return comCall(w.webview, wvAddScriptToExecuteOnDocumentCreated, uintptr(unsafe.Pointer(u16(src))), h)
-		})
-	}
+	w.addUserScripts()
 
 	var token int64
 	tok := uintptr(unsafe.Pointer(&token))
@@ -269,8 +273,15 @@ func (w *window) setUp(controller uintptr) {
 		return comCall(controller, ctlAddAcceleratorKeyPressed, h, tok)
 	})
 
-	comCall(controller, ctlPutIsVisible, 1)
-	w.resizeWebView()
+	if w.host != nil {
+		w.placeEmbedded()
+		if l := w.host.surface.layer; l != nil {
+			l.commit()
+		}
+	} else {
+		comCall(controller, ctlPutIsVisible, 1)
+		w.resizeWebView()
+	}
 	if w.caption != nil {
 		w.caption.layout() // above the webview's window
 	}
@@ -282,7 +293,19 @@ func (w *window) setUp(controller uintptr) {
 		w.focusWebView()
 	}
 
+	if !w.b.holdForCookies(w) {
+		w.becomeReady()
+	}
+}
+
+// becomeReady runs the calls that waited for the web view, its first
+// navigation among them.
+func (w *window) becomeReady() {
+	if w.closed {
+		return
+	}
 	w.ready = true
+	w.b.closeCookieView()
 	pending := w.pending
 	w.pending = nil
 	for i, c := range pending {
@@ -321,17 +344,45 @@ func (w *window) navigationStarting(_, args uintptr) {
 	uri := w.appURL(takeWstr(p))
 	var user int32
 	comCall(args, navStartingGetIsUserInitiated, uintptr(unsafe.Pointer(&user)))
-	nav := platform.Navigation{URL: uri, IsMainFrame: true, UserInitiated: user != 0}
+	kind := navigationKind(args)
+	nav := platform.Navigation{URL: uri, IsMainFrame: true, UserInitiated: user != 0, Unasked: kind == navReload || kind == navBackOrForward, Reload: kind == navReload}
 	if w.programmatic {
 		w.programmatic = false
-		nav.IsReload = true
+		nav.Unasked = true
 	}
 	if !w.h.WillNavigate(nav) {
 		comCall(args, navStartingPutCancel, 1)
 		return
 	}
+	// LoadHTML serves its document to its navigation, which may request
+	// it more than once, and not to later ones.
+	if w.htmlNext {
+		w.htmlNext = false
+	} else {
+		clear(w.htmlFor)
+	}
 	w.loading = true
 	w.h.NavigationStarted(uri)
+}
+
+// COREWEBVIEW2_NAVIGATION_KIND
+const (
+	navReload = iota
+	navBackOrForward
+	navNewDocument
+)
+
+// navigationKind returns the COREWEBVIEW2_NAVIGATION_KIND of a navigation,
+// or -1 on runtimes older than it.
+func navigationKind(args uintptr) int32 {
+	args3 := queryInterface(args, &iidICoreWebView2NavigationStartingEventArgs3)
+	if args3 == 0 {
+		return -1
+	}
+	defer release(args3)
+	kind := int32(-1)
+	comCall(args3, navStarting3GetNavigationKind, uintptr(unsafe.Pointer(&kind)))
+	return kind
 }
 
 func (w *window) navigationCompleted(_, args uintptr) {
@@ -494,6 +545,7 @@ func (w *window) newWindowRequested(_, args uintptr) {
 // Accelerator keys reach the webview, not the window: run the menu items
 // they belong to from here.
 func (w *window) acceleratorKeyPressed(_, args uintptr) {
+	w = w.top() // a web view's keys are its window's
 	var kind int32
 	comCall(args, accelGetKeyEventKind, uintptr(unsafe.Pointer(&kind)))
 	if kind != 0 && kind != 2 { // KEY_DOWN, SYSTEM_KEY_DOWN
@@ -527,6 +579,7 @@ func (w *window) LoadHTML(html, baseURL string) {
 		// and custom schemes work as in the other backends.
 		target := w.webURL(baseURL)
 		w.htmlFor[target] = html
+		w.htmlNext = true
 		if w.appURL(target) == target { // not covered by the filters of the schemes
 			w.addFilter(target)
 		}
@@ -575,6 +628,58 @@ func (w *window) URL() string {
 }
 
 func (w *window) IsLoading() bool { return w.loading }
+
+// addUserScripts adds the user scripts of the options to every document,
+// and the title bar's after them, keeping their ids, which arrive later.
+func (w *window) addUserScripts() {
+	scripts := w.opts.UserScripts
+	if w.caption != nil {
+		// After the bridge, which it tells.
+		scripts = append(scripts[:len(scripts):len(scripts)], platform.UserScript{Source: w.titleBarScript()})
+	}
+	gen := w.scriptGen
+	for _, us := range scripts {
+		src := us.Source
+		if us.AtDocumentEnd {
+			src = "document.readyState===\"loading\"?document.addEventListener(\"DOMContentLoaded\",()=>{\n" + src + "\n},{once:true}):(()=>{\n" + src + "\n})();"
+		}
+		if !us.AllFrames {
+			// Scripts run in every frame unless told otherwise.
+			src = "if(window===window.top){\n" + src + "\n}"
+		}
+		withHandler(func(hr, id uintptr) {
+			if failed(hr) || id == 0 || w.closed || w.webview == 0 {
+				return
+			}
+			if s := wstr(id); w.scriptGen == gen {
+				w.scriptIDs = append(w.scriptIDs, s)
+			} else {
+				// Replaced while it was being added.
+				comCall(w.webview, wvRemoveScriptToExecuteOnDocumentCreated, uintptr(unsafe.Pointer(u16(s))))
+			}
+		}, func(h uintptr) uintptr {
+			return comCall(w.webview, wvAddScriptToExecuteOnDocumentCreated, uintptr(unsafe.Pointer(u16(src))), h)
+		})
+	}
+}
+
+// SetUserScripts replaces the user scripts. Scripts run in the order they
+// were added, so all of them are removed and added again.
+func (w *window) SetUserScripts(scripts []platform.UserScript) {
+	if w.closed {
+		return
+	}
+	w.opts.UserScripts = scripts
+	if w.webview == 0 {
+		return // setUp adds them
+	}
+	w.scriptGen++
+	for _, id := range w.scriptIDs {
+		comCall(w.webview, wvRemoveScriptToExecuteOnDocumentCreated, uintptr(unsafe.Pointer(u16(id))))
+	}
+	w.scriptIDs = nil
+	w.addUserScripts()
+}
 
 func (w *window) Eval(js string) {
 	w.withWebView(func() {
@@ -665,13 +770,55 @@ func (w *window) SetZoom(f float64) {
 
 func (w *window) Zoom() float64 { return w.zoom }
 
+// setUpUserAgent applies UserAgent and UserAgentSuffix, which appends to
+// WebView2's own user agent when it is all that is set.
+func (w *window) setUpUserAgent() {
+	s2 := queryInterface(w.settings, &iidICoreWebView2Settings2)
+	if s2 == 0 {
+		return
+	}
+	defer release(s2)
+	ua := w.opts.UserAgent
+	if suffix := w.opts.UserAgentSuffix; suffix != "" {
+		if ua == "" {
+			ua = userAgentOf(s2)
+		}
+		if ua != "" {
+			ua += " " + suffix
+		}
+	}
+	if ua != "" {
+		comCall(s2, set2PutUserAgent, uintptr(unsafe.Pointer(u16(ua))))
+	}
+}
+
+// userAgentOf returns the user agent Settings2 sets.
+func userAgentOf(s2 uintptr) string {
+	var p uintptr
+	comCall(s2, set2GetUserAgent, uintptr(unsafe.Pointer(&p)))
+	return takeWstr(p)
+}
+
+// setUserAgent sets the user agent the page sends, which WebView2 decides for
+// an empty one. The suffix the options set stays on the end of it.
 func (w *window) setUserAgent(ua string) {
 	s2 := queryInterface(w.settings, &iidICoreWebView2Settings2)
 	if s2 == 0 {
 		return
 	}
 	defer release(s2)
+	suffix := w.opts.UserAgentSuffix
+	if ua != "" && suffix != "" {
+		ua += " " + suffix
+	}
 	comCall(s2, set2PutUserAgent, uintptr(unsafe.Pointer(u16(ua))))
+	if ua == "" && suffix != "" {
+		// Whether WebView2 kept the user agent or went back to its own,
+		// the suffix stays on the end of it.
+		if cur := userAgentOf(s2); cur != "" && !strings.HasSuffix(cur, " "+suffix) {
+			comCall(s2, set2PutUserAgent, uintptr(unsafe.Pointer(u16(cur+" "+suffix))))
+		}
+	}
 }
 
 func (w *window) SetUserAgent(ua string) { w.withWebView(func() { w.setUserAgent(ua) }) }
@@ -685,9 +832,7 @@ func (w *window) UserAgent() string {
 		return ""
 	}
 	defer release(s2)
-	var p uintptr
-	comCall(s2, set2GetUserAgent, uintptr(unsafe.Pointer(&p)))
-	return takeWstr(p)
+	return userAgentOf(s2)
 }
 
 func (w *window) OpenDevTools() {
@@ -797,9 +942,11 @@ func (w *window) resourceRequested(_, args uintptr) {
 	var p uintptr
 	comCall(req, reqGetURI, uintptr(unsafe.Pointer(&p)))
 	uri := takeWstr(p)
+	var resource int32
+	comCall(args, resReqGetResourceContext, uintptr(unsafe.Pointer(&resource)))
+	const document = 1 // COREWEBVIEW2_WEB_RESOURCE_CONTEXT_DOCUMENT
 
-	if html, ok := w.htmlFor[uri]; ok {
-		delete(w.htmlFor, uri)
+	if html, ok := w.htmlFor[uri]; ok && resource == document {
 		w.respond(args, 0, http.StatusOK, http.Header{"Content-Type": {"text/html; charset=utf-8"}}, []byte(html))
 		return
 	}
@@ -821,9 +968,6 @@ func (w *window) resourceRequested(_, args uintptr) {
 	addRef(args)
 	ctx, cancel := context.WithCancel(context.Background())
 	sreq.Context = ctx
-	var resource int32
-	comCall(args, resReqGetResourceContext, uintptr(unsafe.Pointer(&resource)))
-	const document = 1 // COREWEBVIEW2_WEB_RESOURCE_CONTEXT_DOCUMENT
 	sreq.Responder = &schemeResponse{w: w, args: args, deferral: deferral, cancel: cancel, url: target, document: resource == document}
 	w.h.SchemeRequest(sreq)
 }
@@ -893,7 +1037,7 @@ type schemeResponse struct {
 	done     bool
 }
 
-func (r *schemeResponse) Respond(status int, header http.Header) {
+func (r *schemeResponse) Respond(status int, header map[string][]string) {
 	r.status, r.header = status, header
 }
 

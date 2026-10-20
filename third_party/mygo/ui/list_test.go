@@ -6,6 +6,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/egoist/mygo/internal/platform"
 )
@@ -57,9 +58,9 @@ func varied(i int) float32 { return float32(20 + i*7%45) }
 
 func TestListVariableHeights(t *testing.T) {
 	var s ListState
-	tt := NewTester(func(c *Context) {
-		List(c, &s, 10000, func(i int) {
-			Box(c).Height(varied(i)).Children(func() { Textf(c, "Row %d", i) })
+	tt := coreNewTester(func(c *context) {
+		coreList(c, &s, 10000, func(i int) {
+			coreBox(c).Height(varied(i)).Children(func() { coreTextf(c, "Row %d", i) })
 		}).Grow(1)
 	}, 300, 400)
 	if first, last := s.Visible(); first != 0 || last < 10 {
@@ -96,9 +97,9 @@ func TestListFillsTheFirstFrame(t *testing.T) {
 	// out, and the first frame shows no gap.
 	var s ListState
 	frames := 0
-	tt := NewTester(func(c *Context) {
+	tt := coreNewTester(func(c *context) {
 		frames++
-		List(c, &s, 1000, func(i int) { Box(c).Height(3) }).Grow(1)
+		coreList(c, &s, 1000, func(i int) { coreBox(c).Height(3) }).Grow(1)
 	}, 300, 400)
 	if first, last := s.Visible(); first != 0 || last < 133 {
 		t.Errorf("the first frame shows rows %d to %d of 3 DIPs in 400", first, last)
@@ -114,8 +115,8 @@ func TestListHugeScrollsByFractions(t *testing.T) {
 	// counts in steps of 64.
 	const n = 50_000_000
 	var s ListState
-	tt := NewTester(func(c *Context) {
-		List(c, &s, n, func(i int) { Box(c).Height(20) }).Grow(1)
+	tt := coreNewTester(func(c *context) {
+		coreList(c, &s, n, func(i int) { coreBox(c).Height(20) }).Grow(1)
 	}, 300, 400)
 	s.ScrollTo(n/2, Start)
 	tt.Frame()
@@ -141,8 +142,8 @@ func TestListHugeScrollsByFractions(t *testing.T) {
 
 func TestListScrollTo(t *testing.T) {
 	var s ListState
-	tt := NewTester(func(c *Context) {
-		List(c, &s, 5000, func(i int) { Box(c).Height(varied(i)) }).Grow(1).Padding(10, 0)
+	tt := coreNewTester(func(c *context) {
+		coreList(c, &s, 5000, func(i int) { coreBox(c).Height(varied(i)) }).Grow(1).Padding(10, 0)
 	}, 300, 400)
 	for _, tc := range []struct {
 		row   int
@@ -198,13 +199,13 @@ func TestListScrollTo(t *testing.T) {
 func TestListKeepsPlaceAsRowsAboveChange(t *testing.T) {
 	var s ListState
 	grow := float32(0)
-	tt := NewTester(func(c *Context) {
-		List(c, &s, 1000, func(i int) {
+	tt := coreNewTester(func(c *context) {
+		coreList(c, &s, 1000, func(i int) {
 			h := float32(30)
 			if i < 40 {
 				h += grow
 			}
-			Box(c).Height(h).Children(func() { Textf(c, "Row %d", i) })
+			coreBox(c).Height(h).Children(func() { coreTextf(c, "Row %d", i) })
 		}).Grow(1)
 	}, 300, 400)
 	s.ScrollTo(45, Start)
@@ -234,12 +235,12 @@ func TestListKeys(t *testing.T) {
 	}
 	opened := map[int]bool{}
 	s := ListState{Key: func(i int) any { return ids[i] }}
-	tt := NewTester(func(c *Context) {
-		List(c, &s, len(ids), func(i int) {
+	tt := coreNewTester(func(c *context) {
+		coreList(c, &s, len(ids), func(i int) {
 			id := ids[i]
 			// State kept in the row: whether it was opened.
-			open := Local(Box(c).Height(30), "open", func() bool { return opened[id] })
-			Textf(c, "Item %d %v", id, *open)
+			open := coreLocal(coreBox(c).Height(30), "open", func() bool { return opened[id] })
+			coreTextf(c, "Item %d %v", id, *open)
 		}).Grow(1)
 	}, 300, 400)
 	s.ScrollTo(100, Start)
@@ -273,9 +274,9 @@ func TestListKeys(t *testing.T) {
 func TestListFollowEnd(t *testing.T) {
 	n := 5
 	s := ListState{FollowEnd: true}
-	tt := NewTester(func(c *Context) {
-		List(c, &s, n, func(i int) {
-			Box(c).Height(varied(i)).Children(func() { Textf(c, "Message %d", i) })
+	tt := coreNewTester(func(c *context) {
+		coreList(c, &s, n, func(i int) {
+			coreBox(c).Height(varied(i)).Children(func() { coreTextf(c, "Message %d", i) })
 		}).Grow(1)
 	}, 300, 400)
 	// Few rows fit, from the top.
@@ -317,8 +318,8 @@ func TestListFollowEnd(t *testing.T) {
 
 func TestListFollowEndStartsAtTheEnd(t *testing.T) {
 	s := ListState{FollowEnd: true}
-	tt := NewTester(func(c *Context) {
-		List(c, &s, 1000, func(i int) { Box(c).Height(varied(i)) }).Grow(1)
+	tt := coreNewTester(func(c *context) {
+		coreList(c, &s, 1000, func(i int) { coreBox(c).Height(varied(i)) }).Grow(1)
 	}, 300, 400)
 	if r, _ := rowBox(tt, &s, 999); r.Y+r.H != 400 || !s.AtEnd() {
 		t.Errorf("the first frame: the last row ends at %v", r.Y+r.H)
@@ -328,8 +329,8 @@ func TestListFollowEndStartsAtTheEnd(t *testing.T) {
 
 func TestListJustifyEnd(t *testing.T) {
 	var s ListState
-	tt := NewTester(func(c *Context) {
-		List(c, &s, 3, func(i int) { Box(c).Height(50) }).Grow(1).Justify(End).Padding(8)
+	tt := coreNewTester(func(c *context) {
+		coreList(c, &s, 3, func(i int) { coreBox(c).Height(50) }).Grow(1).Justify(End).Padding(8)
 	}, 300, 400)
 	for i := range 3 {
 		if r, _ := rowBox(tt, &s, i); r.Y != 400-8-50*float32(3-i) {
@@ -340,8 +341,8 @@ func TestListJustifyEnd(t *testing.T) {
 
 func TestListGapAndPadding(t *testing.T) {
 	var s ListState
-	tt := NewTester(func(c *Context) {
-		List(c, &s, 100, func(i int) { Box(c).Height(varied(i)) }).Grow(1).Gap(6).Padding(12, 4).Border(1, RGB(0, 0, 0))
+	tt := coreNewTester(func(c *context) {
+		coreList(c, &s, 100, func(i int) { coreBox(c).Height(varied(i)) }).Grow(1).Gap(6).Padding(12, 4).Border(1, RGB(0, 0, 0))
 	}, 300, 400)
 	if r, _ := rowBox(tt, &s, 0); r.Y != 13 || r.X != 5 || r.W != 300-10 {
 		t.Errorf("row 0 is at %v", r)
@@ -368,8 +369,8 @@ func TestListGapAndPadding(t *testing.T) {
 func TestListRowsGoAway(t *testing.T) {
 	n := 1000
 	var s ListState
-	tt := NewTester(func(c *Context) {
-		List(c, &s, n, func(i int) { Box(c).Height(30) }).Grow(1)
+	tt := coreNewTester(func(c *context) {
+		coreList(c, &s, n, func(i int) { coreBox(c).Height(30) }).Grow(1)
 	}, 300, 400)
 	s.ScrollToEnd()
 	tt.Frame()
@@ -395,10 +396,10 @@ func TestListSelection(t *testing.T) {
 	sel := -1
 	s := ListState{Selected: &sel}
 	submitted := 0
-	var list *Element
-	tt := NewTester(func(c *Context) {
-		list = List(c, &s, 500, func(i int) {
-			Box(c).Height(varied(i)).Children(func() { Textf(c, "Row %d", i) })
+	var list *node
+	tt := coreNewTester(func(c *context) {
+		list = coreList(c, &s, 500, func(i int) {
+			coreBox(c).Height(varied(i)).Children(func() { coreTextf(c, "Row %d", i) })
 		}).Grow(1)
 		if list.Submitted() {
 			submitted++
@@ -453,8 +454,8 @@ func TestListKeysKeepTheChoice(t *testing.T) {
 	ids := []string{"a", "b", "c", "d"}
 	sel := 2
 	s := ListState{Selected: &sel, Key: func(i int) any { return ids[i] }}
-	tt := NewTester(func(c *Context) {
-		List(c, &s, len(ids), func(i int) { Text(c, ids[i]).Height(20) }).Grow(1)
+	tt := coreNewTester(func(c *context) {
+		coreList(c, &s, len(ids), func(i int) { coreText(c, ids[i]).Height(20) }).Grow(1)
 	}, 300, 400)
 	ids = append([]string{"z", "y"}, ids...)
 	tt.Frame()
@@ -469,13 +470,57 @@ func TestListKeysKeepTheChoice(t *testing.T) {
 	}
 }
 
+// The app choosing a row of rows it changed, at the index the choice had,
+// is not rows moving: with a Selection, the choice follows its item only
+// while the Selection still holds it.
+func TestListKeysAppChoiceAtTheSameIndex(t *testing.T) {
+	ids := []string{"notes", "plan"}
+	sel := 0
+	var chosen Selection[string]
+	chosen.Add("notes")
+	s := ListState{Selected: &sel, Selection: &chosen, Key: func(i int) any { return ids[i] }}
+	tt := coreNewTester(func(c *context) {
+		coreList(c, &s, len(ids), func(i int) { coreText(c, ids[i]).Height(20) }).Grow(1)
+	}, 300, 400)
+	// A paste brings "icon", which sorts first: the app chooses it, at the
+	// row "notes" had.
+	ids = []string{"icon", "notes", "plan"}
+	chosen.Clear()
+	chosen.Add("icon")
+	sel = 0
+	tt.Frame()
+	if sel != 0 || !chosen.Has("icon") || chosen.Len() != 1 {
+		t.Errorf("chose the pasted row 0: cursor %d, chosen %v", sel, slices.Collect(chosen.All()))
+	}
+	// "notes", chosen, renamed in its place: the app chooses it by its
+	// new name.
+	chosen.Clear()
+	chosen.Add("notes")
+	sel = 1
+	tt.Frame()
+	ids = []string{"icon", "minutes", "plan"}
+	chosen.Clear()
+	chosen.Add("minutes")
+	tt.Frame()
+	if sel != 1 {
+		t.Errorf("the renamed row, chosen by the app, lost the cursor: %d", sel)
+	}
+	// Rows coming above a choice the app keeps still move the cursor
+	// with it.
+	ids = []string{"a", "b", "icon", "minutes", "plan"}
+	tt.Frame()
+	if sel != 3 || ids[sel] != "minutes" {
+		t.Errorf("two rows added above: cursor %d", sel)
+	}
+}
+
 func TestListKeepsTheFocusedRow(t *testing.T) {
 	texts := make([]string, 300)
 	var s ListState
-	tt := NewTester(func(c *Context) {
-		List(c, &s, len(texts), func(i int) {
-			Row(c).Height(30).Children(func() {
-				TextInput(c, &texts[i]).Label(fmt.Sprintf("Field %d", i))
+	tt := coreNewTester(func(c *context) {
+		coreList(c, &s, len(texts), func(i int) {
+			coreRow(c).Height(30).Children(func() {
+				coreTextInput(c, &texts[i]).Label(fmt.Sprintf("Field %d", i))
 			})
 		}).Grow(1)
 	}, 300, 400)
@@ -503,13 +548,13 @@ func TestListStickyHeaders(t *testing.T) {
 	// Sections of a header and 20 rows of 30 DIPs.
 	header := func(i int) bool { return i%21 == 0 }
 	s := ListState{Header: header}
-	tt := NewTester(func(c *Context) {
-		List(c, &s, 2100, func(i int) {
+	tt := coreNewTester(func(c *context) {
+		coreList(c, &s, 2100, func(i int) {
 			if header(i) {
-				Box(c).Height(24).Background(RGB(200, 200, 200)).Children(func() { Textf(c, "Section %d", i/21) })
+				coreBox(c).Height(24).Background(RGB(200, 200, 200)).Children(func() { coreTextf(c, "Section %d", i/21) })
 				return
 			}
-			Box(c).Height(30).Children(func() { Textf(c, "Row %d", i) })
+			coreBox(c).Height(30).Children(func() { coreTextf(c, "Row %d", i) })
 		}).Grow(1)
 	}, 300, 400)
 	if r, _ := rowBox(tt, &s, 0); r.Y != 0 {
@@ -566,13 +611,13 @@ func TestListRowsShowBelowThePinnedHeader(t *testing.T) {
 	header := func(i int) bool { return i%21 == 0 }
 	sel := 300
 	s := ListState{Header: header, Selected: &sel}
-	tt := NewTester(func(c *Context) {
-		List(c, &s, 2100, func(i int) {
+	tt := coreNewTester(func(c *context) {
+		coreList(c, &s, 2100, func(i int) {
 			if header(i) {
-				Box(c).Height(24).Background(RGB(200, 200, 200))
+				coreBox(c).Height(24).Background(RGB(200, 200, 200))
 				return
 			}
-			Box(c).Height(30)
+			coreBox(c).Height(30)
 		}).Grow(1)
 	}, 300, 400)
 	s.ScrollTo(300, Start)
@@ -594,8 +639,8 @@ func TestListStickyHeadersSkipTheChoice(t *testing.T) {
 	header := func(i int) bool { return i%5 == 0 }
 	sel := 1
 	s := ListState{Header: header, Selected: &sel}
-	tt := NewTester(func(c *Context) {
-		List(c, &s, 50, func(i int) { Box(c).Height(20) }).Grow(1)
+	tt := coreNewTester(func(c *context) {
+		coreList(c, &s, 50, func(i int) { coreBox(c).Height(20) }).Grow(1)
 	}, 300, 400)
 	tt.rt.focused = s.frame.e.id
 	for range 3 {
@@ -613,12 +658,12 @@ func TestListStickyHeadersSkipTheChoice(t *testing.T) {
 
 func TestListScrollBarDragReachesTheEnd(t *testing.T) {
 	var s ListState
-	tt := NewTester(func(c *Context) {
-		List(c, &s, 5000, func(i int) { Box(c).Height(varied(i)) }).Grow(1)
+	tt := coreNewTester(func(c *context) {
+		coreList(c, &s, 5000, func(i int) { coreBox(c).Height(varied(i)) }).Grow(1)
 	}, 300, 400)
 	tt.Move(150, 200)
 	st := listStateOf(&s)
-	g := scrollBars(Rect{st.x, st.y, st.w, st.h}, st.barInset, float32(st.contentH), float32(st.contentH), 0, float32(st.scrollY), st.flags, 6)
+	g := scrollBars(Rect{st.x, st.y, st.w, st.h}, st.barInset, float32(st.contentH), float32(st.contentH), 0, float32(st.scrollY), st.flags, 6, false)
 	x, y := g.v.X+g.v.W/2, g.v.Y+g.v.H/2
 	tt.Move(x, y)
 	tt.Press(x, y)
@@ -644,12 +689,12 @@ func TestListScrollBarDragFollowsThePointerAsEstimatesChange(t *testing.T) {
 		}
 		return 20
 	}
-	tt := NewTester(func(c *Context) {
-		List(c, &s, 5000, func(i int) { Box(c).Height(height(i)) }).Grow(1)
+	tt := coreNewTester(func(c *context) {
+		coreList(c, &s, 5000, func(i int) { coreBox(c).Height(height(i)) }).Grow(1)
 	}, 300, 400)
 	tt.Move(150, 200)
 	st := listStateOf(&s)
-	g := scrollBars(Rect{st.x, st.y, st.w, st.h}, st.barInset, float32(st.contentH), float32(st.contentH), 0, float32(st.scrollY), st.flags, 6)
+	g := scrollBars(Rect{st.x, st.y, st.w, st.h}, st.barInset, float32(st.contentH), float32(st.contentH), 0, float32(st.scrollY), st.flags, 6, false)
 	x, y := g.v.X+g.v.W/2, g.v.Y+g.v.H/2
 	travel := g.vTrack.H - 4 - g.v.H
 	tt.Move(x, y)
@@ -685,17 +730,17 @@ func TestListStateOfTwoListsPanics(t *testing.T) {
 			t.Error("no panic")
 		}
 	}()
-	NewTester(func(c *Context) {
-		List(c, &s, 3, func(int) {}).Grow(1)
-		List(c, &s, 3, func(int) {}).Grow(1)
+	coreNewTester(func(c *context) {
+		coreList(c, &s, 3, func(int) {}).Grow(1)
+		coreList(c, &s, 3, func(int) {}).Grow(1)
 	}, 300, 400)
 }
 
 func TestListTabRevealsRows(t *testing.T) {
 	var s ListState
-	tt := NewTester(func(c *Context) {
-		List(c, &s, 1000, func(i int) {
-			Row(c).Height(float32(44 + i%3*10)).Children(func() { Button(c, fmt.Sprintf("Button %d", i)) })
+	tt := coreNewTester(func(c *context) {
+		coreList(c, &s, 1000, func(i int) {
+			coreRow(c).Height(float32(44 + i%3*10)).Children(func() { coreButton(c, fmt.Sprintf("Button %d", i)) })
 		}).Grow(1)
 	}, 300, 400)
 	for k := 0; k < 60; k++ {
@@ -717,17 +762,17 @@ func TestListViewSeesWhereItIs(t *testing.T) {
 	// buttons beside it are where the next click finds them.
 	s := ListState{FollowEnd: true}
 	n, older := 200, 0
-	tt := NewTester(func(c *Context) {
-		Row(c).Gap(8).Children(func() {
-			Textf(c, "%d messages", n).Grow(1)
-			if Button(c, "Load older").Clicked() {
+	tt := coreNewTester(func(c *context) {
+		coreRow(c).Gap(8).Children(func() {
+			coreTextf(c, "%d messages", n).Grow(1)
+			if coreButton(c, "Load older").Clicked() {
 				older++
 			}
-			if !s.AtEnd() && Button(c, "Jump to latest").Clicked() {
+			if !s.AtEnd() && coreButton(c, "Jump to latest").Clicked() {
 				s.ScrollToEnd()
 			}
 		})
-		List(c, &s, n, func(i int) { Box(c).Height(varied(i)) }).Grow(1)
+		coreList(c, &s, n, func(i int) { coreBox(c).Height(varied(i)) }).Grow(1)
 	}, 500, 400)
 	tt.Move(100, 300)
 	tt.Scroll(100, 300, 0, -230)
@@ -745,9 +790,9 @@ func TestListViewSeesWhereItIs(t *testing.T) {
 func TestListKeepsPlaceAcrossResizes(t *testing.T) {
 	// Rows of text that wraps anew at each width.
 	var s ListState
-	tt := NewTester(func(c *Context) {
-		List(c, &s, 1000, func(i int) {
-			Textf(c, "Row %d %s", i, strings.Repeat("words that wrap ", 1+i%7))
+	tt := coreNewTester(func(c *context) {
+		coreList(c, &s, 1000, func(i int) {
+			coreTextf(c, "Row %d %s", i, strings.Repeat("words that wrap ", 1+i%7))
 		}).Grow(1)
 	}, 400, 400)
 	s.ScrollTo(500, Start)
@@ -764,12 +809,12 @@ func TestListKeepsPlaceAcrossResizes(t *testing.T) {
 func TestListKeepsPlaceWhenBuiltAnew(t *testing.T) {
 	var s ListState
 	show := true
-	tt := NewTester(func(c *Context) {
+	tt := coreNewTester(func(c *context) {
 		if !show {
-			Text(c, "Another page")
+			coreText(c, "Another page")
 			return
 		}
-		List(c, &s, 1000, func(i int) { Box(c).Height(varied(i)) }).Grow(1)
+		coreList(c, &s, 1000, func(i int) { coreBox(c).Height(varied(i)) }).Grow(1)
 	}, 300, 400)
 	s.ScrollTo(500, Start)
 	tt.Frame()
@@ -790,12 +835,12 @@ func TestListKeepsPlaceWhenBuiltAnew(t *testing.T) {
 func TestListNewStateStartsAtTheStart(t *testing.T) {
 	var s ListState
 	loading := false
-	tt := NewTester(func(c *Context) {
+	tt := coreNewTester(func(c *context) {
 		if loading {
-			Box(c).Grow(1)
+			coreBox(c).Grow(1)
 			return
 		}
-		List(c, &s, 1000, func(i int) { Box(c).Height(varied(i)) }).Grow(1)
+		coreList(c, &s, 1000, func(i int) { coreBox(c).Height(varied(i)) }).Grow(1)
 	}, 300, 400)
 	s.ScrollTo(500, Start)
 	tt.Frame()
@@ -882,18 +927,18 @@ func TestListPinnedHeaderHandlesAClickOnce(t *testing.T) {
 	header := func(i int) bool { return i%21 == 0 }
 	s := ListState{Header: header}
 	n, clicks := 2100, 0
-	tt := NewTester(func(c *Context) {
+	tt := coreNewTester(func(c *context) {
 		n++
-		List(c, &s, n, func(i int) {
+		coreList(c, &s, n, func(i int) {
 			if header(i) {
-				Box(c).Height(24).Background(RGB(200, 200, 200)).Children(func() {
-					if Textf(c, "Section %d", i/21).Clicked() {
+				coreBox(c).Height(24).Background(RGB(200, 200, 200)).Children(func() {
+					if coreTextf(c, "Section %d", i/21).Clicked() {
 						clicks++
 					}
 				})
 				return
 			}
-			Box(c).Height(30)
+			coreBox(c).Height(30)
 		}).Grow(1)
 	}, 300, 400)
 	s.ScrollTo(5*21+15, Start)
@@ -915,8 +960,8 @@ func TestListScrollAndRowsAboveInOneFrame(t *testing.T) {
 		ids[i] = 1000 + i
 	}
 	s := ListState{Key: func(i int) any { return ids[i] }}
-	tt := NewTester(func(c *Context) {
-		List(c, &s, len(ids), func(i int) { Textf(c, "Item %d", ids[i]).Height(30) }).Grow(1)
+	tt := coreNewTester(func(c *context) {
+		coreList(c, &s, len(ids), func(i int) { coreTextf(c, "Item %d", ids[i]).Height(30) }).Grow(1)
 	}, 300, 400)
 	s.ScrollTo(100, Start)
 	tt.Frame()
@@ -939,13 +984,13 @@ func TestListEndShowsTheEnd(t *testing.T) {
 	// The last rows are taller than the heights known estimate them.
 	var s ListState
 	var sc ScrollState
-	tt := NewTester(func(c *Context) {
-		List(c, &s, 2000, func(i int) {
+	tt := coreNewTester(func(c *context) {
+		coreList(c, &s, 2000, func(i int) {
 			h := float32(20)
 			if i >= 1000 {
 				h = 100
 			}
-			Box(c).Height(h)
+			coreBox(c).Height(h)
 		}).Grow(1).TrackScroll(&sc)
 	}, 300, 400)
 	tt.Move(100, 100)
@@ -965,13 +1010,13 @@ func TestListScrollsByTheStepIntoRowsNotMeasured(t *testing.T) {
 	// A chat read upward from its end: the rows above were never measured,
 	// and every fifth is ten times as tall as the others.
 	s := ListState{FollowEnd: true}
-	tt := NewTester(func(c *Context) {
-		List(c, &s, 5000, func(i int) {
+	tt := coreNewTester(func(c *context) {
+		coreList(c, &s, 5000, func(i int) {
 			h := float32(24)
 			if i%5 == 0 {
 				h = 240
 			}
-			Box(c).Height(h)
+			coreBox(c).Height(h)
 		}).Grow(1)
 	}, 300, 400)
 	tt.Move(100, 100)
@@ -997,8 +1042,8 @@ func TestListScrollsByTheStepIntoRowsNotMeasured(t *testing.T) {
 
 func TestListTrackScrollBeforeTheFirstFrame(t *testing.T) {
 	sc := ScrollState{Y: 10000}
-	tt := NewTester(func(c *Context) {
-		List(c, nil, 1000, func(i int) { Textf(c, "Row %d", i).Height(20) }).Grow(1).TrackScroll(&sc)
+	tt := coreNewTester(func(c *context) {
+		coreList(c, nil, 1000, func(i int) { coreTextf(c, "Row %d", i).Height(20) }).Grow(1).TrackScroll(&sc)
 	}, 300, 400)
 	if r, ok := tt.Find("Row 500"); !ok || r.Y != 0 || sc.Y != 10000 {
 		t.Errorf("set to 10000 before the list showed: row 500 at %v (%v), the state %v", r.Y, ok, sc.Y)
@@ -1009,8 +1054,8 @@ func TestListOfManyStates(t *testing.T) {
 	// One list showing the place of each page.
 	var pages [2]ListState
 	page := 0
-	tt := NewTester(func(c *Context) {
-		List(c, &pages[page], 1000, func(i int) { Textf(c, "Page %d row %d", page, i).Height(20) }).Grow(1)
+	tt := coreNewTester(func(c *context) {
+		coreList(c, &pages[page], 1000, func(i int) { coreTextf(c, "Page %d row %d", page, i).Height(20) }).Grow(1)
 	}, 300, 400)
 	pages[0].ScrollTo(500, Start)
 	tt.Frame()
@@ -1028,9 +1073,9 @@ func TestListOfManyStates(t *testing.T) {
 
 func TestListRevealsAFarRowWithoutAGap(t *testing.T) {
 	var s ListState
-	tt := NewTester(func(c *Context) {
-		List(c, &s, 1000, func(i int) {
-			Row(c).Height(float32(40 + i%3*10)).Children(func() { Button(c, fmt.Sprintf("Button %d", i)) })
+	tt := coreNewTester(func(c *context) {
+		coreList(c, &s, 1000, func(i int) {
+			coreRow(c).Height(float32(40 + i%3*10)).Children(func() { coreButton(c, fmt.Sprintf("Button %d", i)) })
 		}).Grow(1)
 	}, 300, 400)
 	if err := tt.Click("Button 3"); err != nil {
@@ -1051,10 +1096,10 @@ func TestListSizedByItsRows(t *testing.T) {
 	// A list without a size is as high as its rows, frame after frame, and
 	// scrolls once it is bounded.
 	var s, bounded ListState
-	tt := NewTester(func(c *Context) {
-		Scroll(c).Grow(1).Children(func() {
-			List(c, &s, 30, func(i int) { Box(c).Height(20) }).Shrink(0)
-			List(c, &bounded, 1000, func(i int) { Box(c).Height(20) }).MaxHeight(200).Shrink(0)
+	tt := coreNewTester(func(c *context) {
+		coreScroll(c).Grow(1).Children(func() {
+			coreList(c, &s, 30, func(i int) { coreBox(c).Height(20) }).Shrink(0)
+			coreList(c, &bounded, 1000, func(i int) { coreBox(c).Height(20) }).MaxHeight(200).Shrink(0)
 		})
 	}, 300, 400)
 	for range 5 {
@@ -1071,10 +1116,10 @@ func TestListSizedByItsRows(t *testing.T) {
 func TestListEmpty(t *testing.T) {
 	// What else is built in a list shows while it has no rows.
 	n := 0
-	tt := NewTester(func(c *Context) {
-		List(c, nil, n, func(i int) { Textf(c, "Row %d", i) }).Grow(1).Children(func() {
+	tt := coreNewTester(func(c *context) {
+		coreList(c, nil, n, func(i int) { coreTextf(c, "Row %d", i) }).Grow(1).Children(func() {
 			if n == 0 {
-				Text(c, "No rows")
+				coreText(c, "No rows")
 			}
 		})
 	}, 300, 400)
@@ -1095,8 +1140,8 @@ func TestListChoiceAtTheEnds(t *testing.T) {
 		ids[i] = i
 	}
 	s := ListState{Selected: &sel, Key: func(i int) any { return ids[i] }}
-	tt := NewTester(func(c *Context) {
-		List(c, &s, len(ids), func(i int) { Box(c).Height(30) }).Grow(1)
+	tt := coreNewTester(func(c *context) {
+		coreList(c, &s, len(ids), func(i int) { coreBox(c).Height(30) }).Grow(1)
 	}, 300, 400)
 	tt.rt.focused = s.frame.e.id
 	s.ScrollTo(100, Start)
@@ -1118,11 +1163,11 @@ func TestListChoiceAtTheEnds(t *testing.T) {
 // a frame a step.
 func BenchmarkListScroll(b *testing.B) {
 	var s ListState
-	tt := NewTester(func(c *Context) {
-		List(c, &s, 1_000_000, func(i int) {
-			Row(c).Height(varied(i)).Gap(8).Children(func() {
-				Textf(c, "Row %d", i).Grow(1)
-				Text(c, "detail").TextColor(c.Theme().TextMuted)
+	tt := coreNewTester(func(c *context) {
+		coreList(c, &s, 1_000_000, func(i int) {
+			coreRow(c).Height(varied(i)).Gap(8).Children(func() {
+				coreTextf(c, "Row %d", i).Grow(1)
+				coreText(c, "detail").TextColor(c.Theme().TextMuted)
 			})
 		}).Grow(1)
 	}, 980, 720)
@@ -1131,4 +1176,263 @@ func BenchmarkListScroll(b *testing.B) {
 	for b.Loop() {
 		tt.Scroll(400, 300, 0, 97)
 	}
+}
+
+// TestListFollowAnimation checks that a list following its end with a
+// FollowAnimation glides to the end as its last row grows and rows come,
+// and that the user scrolling stops it.
+func TestListFollowAnimation(t *testing.T) {
+	n, last := 30, 40
+	s := ListState{FollowEnd: true, FollowAnimation: &Smooth}
+	now := time.Unix(1000, 0)
+	tt := coreNewTester(func(c *context) {
+		coreList(c, &s, n, func(i int) {
+			h := float32(40)
+			if i == n-1 {
+				h = float32(last)
+			}
+			coreBox(c).Height(h).Children(func() { coreTextf(c, "Message %d", i) })
+		}).Grow(1)
+	}, 300, 400)
+	tt.rt.clock = func() time.Time { return now }
+	tt.Frame()
+	if r, _ := rowBox(tt, &s, n-1); r.Y+r.H != 400 {
+		t.Fatalf("at first, the last row ends at %v", r.Y+r.H)
+	}
+	// The last row grows by 60: its end shows below the list, then comes
+	// up.
+	last += 60
+	tt.Frame()
+	r0, _ := rowBox(tt, &s, n-1)
+	if r0.Y+r0.H <= 400+50 || !s.AtEnd() {
+		t.Fatalf("grown: the last row ends at %v, at the end %v", r0.Y+r0.H, s.AtEnd())
+	}
+	now = now.Add(80 * time.Millisecond)
+	tt.Frame()
+	r1, _ := rowBox(tt, &s, n-1)
+	if !(r1.Y+r1.H < r0.Y+r0.H && r1.Y+r1.H > 400) {
+		t.Errorf("on the way: the last row ends at %v, after %v", r1.Y+r1.H, r0.Y+r0.H)
+	}
+	now = now.Add(2 * time.Second)
+	tt.Frame()
+	if r, _ := rowBox(tt, &s, n-1); r.Y+r.H != 400 || !s.AtEnd() {
+		t.Errorf("done: the last row ends at %v", r.Y+r.H)
+	}
+	// A row comes, and the user scrolls up on the way: the list stays.
+	n++
+	tt.Frame()
+	now = now.Add(30 * time.Millisecond)
+	tt.Move(100, 100)
+	tt.Scroll(100, 100, 0, -150)
+	r2, _ := rowBox(tt, &s, n-5)
+	now = now.Add(time.Second)
+	tt.Frame()
+	if r, _ := rowBox(tt, &s, n-5); r != r2 || s.AtEnd() {
+		t.Errorf("scrolled up on the way: the row moved from %v to %v, at the end %v", r2, r, s.AtEnd())
+	}
+	// Without motion, it shows the end at once.
+	tt.SetPreferences(Preferences{ReduceMotion: true})
+	s.ScrollToEnd()
+	tt.Frame()
+	last += 60
+	tt.Frame()
+	if r, _ := rowBox(tt, &s, n-1); r.Y+r.H != 400 {
+		t.Errorf("reduced motion: the last row ends at %v", r.Y+r.H)
+	}
+}
+
+// A List built inside another constructor, as a Split's pane, reports
+// its changes and submits in the pass they come, as one built alone does.
+func TestListInsideConstructorReportsChanged(t *testing.T) {
+	for _, rows := range []bool{false, true} {
+		sel := -1
+		s := ListState{Selected: &sel}
+		size := float32(150)
+		changed, submitted := 0, 0
+		tt := NewTester(func(c *Context) {
+			Split(c, &size, func() {
+				var list Element
+				if rows {
+					list = List(c, &s, 5).Rows(func(r ListRow) { Textf(r.Context, "Row %d", r.Index) })
+				} else {
+					list = List(c, &s, 5, func(i int) { Textf(c, "Row %d", i) })
+				}
+				if list.Grow(1).Changed() {
+					changed++
+				}
+				if list.Submitted() {
+					submitted++
+				}
+			}, func() {})
+		}, 400, 300)
+		tt.Frame()
+		if err := tt.Click("Row 2"); err != nil {
+			t.Fatal(err)
+		}
+		tt.Key(0, KeyDown)
+		tt.Key(0, KeyEnter)
+		if sel != 3 || changed != 2 || submitted != 1 {
+			t.Errorf("rows %v: chose %d, changed %d times, submitted %d times; want 3, 2, 1", rows, sel, changed, submitted)
+		}
+	}
+}
+
+func chosenRows(sel *Selection[int]) []int { return slices.Sorted(sel.All()) }
+
+// ExtendTo chooses from the row Shift extends from, as Shift-click does.
+func TestExtendToFromPivot(t *testing.T) {
+	var s ListState
+	var sel Selection[int]
+	s.Selection = &sel
+	extend := -1
+	tt := NewTester(func(c *Context) {
+		List(c, &s, 10, func(i int) { Textf(c, "Row %d", i) }).Grow(1)
+		if extend >= 0 {
+			s.ExtendTo(extend)
+			extend = -1
+		}
+	}, 300, 400)
+	tt.Frame()
+	tt.Click("Row 2")
+	extend = 6
+	tt.Frame()
+	if got := chosenRows(&sel); !slices.Equal(got, []int{2, 3, 4, 5, 6}) {
+		t.Fatalf("ExtendTo(6) from row 2: chose %v", got)
+	}
+	tt.Key(Shift, KeyUp)
+	if got := chosenRows(&sel); !slices.Equal(got, []int{2, 3, 4, 5}) {
+		t.Fatalf("then Shift+Up: chose %v", got)
+	}
+}
+
+// A right-click on a row outside the choice chooses it before its menu
+// opens, as Finder does; one on a chosen row keeps the choice.
+func TestRightClickChoosesRowOutsideSelection(t *testing.T) {
+	var s ListState
+	var sel Selection[int]
+	s.Selection = &sel
+	menuRow := -1
+	tt := NewTester(func(c *Context) {
+		List(c, &s, 6, func(i int) {
+			Text(c, "Row "+string(rune('0'+i))).ContextMenu(func(m *Menu) {
+				menuRow = i
+				m.Item("Delete")
+			})
+		}).Grow(1)
+	}, 300, 300)
+	tt.Frame()
+	tt.Click("Row 1")
+	if err := tt.RightClick("Row 4"); err != nil {
+		t.Fatal(err)
+	}
+	if got := chosenRows(&sel); !slices.Equal(got, []int{4}) || menuRow != 4 {
+		t.Fatalf("right-click Row 4 with Row 1 chosen: chose %v, menu of row %d", got, menuRow)
+	}
+	tt.CloseMenu()
+	tt.Click("Row 1")
+	tt.ClickWith(Shift, "Row 3")
+	if err := tt.RightClick("Row 2"); err != nil {
+		t.Fatal(err)
+	}
+	if got := chosenRows(&sel); !slices.Equal(got, []int{1, 2, 3}) {
+		t.Fatalf("right-click a chosen row: chose %v, want [1 2 3] kept", got)
+	}
+	tt.CloseMenu()
+}
+
+// A list with Selected alone leaves its choice as it is on a right-click:
+// only lists with Selection choose the row first.
+func TestRightClickSingleChoiceKeepsChoice(t *testing.T) {
+	sel := 1
+	s := ListState{Selected: &sel}
+	menuRow := -1
+	tt := NewTester(func(c *Context) {
+		List(c, &s, 6, func(i int) {
+			Text(c, "Row "+string(rune('0'+i))).ContextMenu(func(m *Menu) {
+				menuRow = i
+				m.Item("Delete")
+			})
+		}).Grow(1)
+	}, 300, 300)
+	tt.Frame()
+	if err := tt.RightClick("Row 4"); err != nil {
+		t.Fatal(err)
+	}
+	if sel != 1 || menuRow != 4 {
+		t.Fatalf("right-click Row 4 with Row 1 chosen: chose %d, menu of row %d", sel, menuRow)
+	}
+	tt.CloseMenu()
+}
+
+// MenuKeepsSelection leaves the rows chosen as they are on a right-click,
+// and the menu still opens on the row clicked.
+func TestMenuKeepsSelection(t *testing.T) {
+	var sel Selection[int]
+	s := ListState{Selection: &sel, MenuKeepsSelection: true}
+	menuRow := -1
+	tt := NewTester(func(c *Context) {
+		List(c, &s, 6, func(i int) {
+			Text(c, "Row "+string(rune('0'+i))).ContextMenu(func(m *Menu) {
+				menuRow = i
+				m.Item("Delete")
+			})
+		}).Grow(1)
+	}, 300, 300)
+	tt.Frame()
+	tt.Click("Row 1")
+	if err := tt.RightClick("Row 4"); err != nil {
+		t.Fatal(err)
+	}
+	if got := chosenRows(&sel); !slices.Equal(got, []int{1}) || menuRow != 4 {
+		t.Fatalf("right-click Row 4 with Row 1 chosen: chose %v, menu of row %d", got, menuRow)
+	}
+	tt.CloseMenu()
+}
+
+// Shift extends from the row clicked last though the view builds the frame
+// again, as one reading the list's Changed does: a rebuild does not take
+// the row Shift extends from back to where the last frame had it.
+func TestPivotKeptAcrossRebuilds(t *testing.T) {
+	var s ListState
+	var sel Selection[int]
+	s.Selection = &sel
+	s.Key = func(i int) any { return i }
+	rebuilt := 0
+	tt := NewTester(func(c *Context) {
+		if List(c, &s, 6, func(i int) { Textf(c, "Row %d", i) }).Grow(1).Changed() {
+			rebuilt++
+			c.Invalidate()
+		}
+	}, 300, 300)
+	tt.Frame()
+	tt.Click("Row 1")
+	tt.Key(0, KeyDown)
+	tt.Click("Row 0")
+	tt.Key(Shift, KeyDown)
+	if got := chosenRows(&sel); !slices.Equal(got, []int{0, 1}) {
+		t.Fatalf("click Row 1, Down, click Row 0, Shift+Down: chose %v (rebuilt %d times)", got, rebuilt)
+	}
+}
+
+// A right-click that chooses a row reports the new choice through the
+// list's Changed, as a click does.
+func TestRightClickChoiceIsChanged(t *testing.T) {
+	var sel Selection[int]
+	s := ListState{Selection: &sel}
+	changed := 0
+	tt := NewTester(func(c *Context) {
+		if List(c, &s, 5, func(i int) {
+			Textf(c, "Row %d", i).ContextMenu(func(m *Menu) { m.Item("Open") })
+		}).Grow(1).Changed() {
+			changed++
+		}
+	}, 300, 300)
+	tt.Frame()
+	if err := tt.RightClick("Row 3"); err != nil {
+		t.Fatal(err)
+	}
+	if got := chosenRows(&sel); !slices.Equal(got, []int{3}) || changed != 1 {
+		t.Fatalf("right-click Row 3: chose %v, changed %d times", got, changed)
+	}
+	tt.CloseMenu()
 }

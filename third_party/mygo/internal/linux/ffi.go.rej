@@ -1,0 +1,9 @@
+diff a/internal/linux/ffi.go b/internal/linux/ffi.go	(rejected hunks)
+@@ -175,6 +176,7 @@
+ var (
+ 	gdkScreenGetRGBAVisual      func(screen ptr) ptr
+ 	gdkDisplayGetDefault        func() ptr
++	gdkSetProgramClass          func(class *byte)
+ 	gdkDisplayGetNMonitors      func(d ptr) int32
+ 	gdkDisplayGetMonitor        func(d ptr, i int32) ptr
+ 	gdkDisplayGetPrimaryMonitor func(d ptr) ptr

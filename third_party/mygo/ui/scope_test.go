@@ -14,35 +14,35 @@ type dialogView struct {
 	behind, inside int
 }
 
-func (d *dialogView) view(c *Context) {
-	Row(c).Gap(8).Children(func() {
-		Button(c, "Before")
-		if Button(c, "Open").Clicked() {
+func (d *dialogView) view(c *context) {
+	coreRow(c).Gap(8).Children(func() {
+		coreButton(c, "Before")
+		if coreButton(c, "Open").Clicked() {
 			d.open = true
 		}
-		Button(c, "After")
+		coreButton(c, "After")
 	})
 	if c.Shortcut(Cmd, KeyN) {
 		d.behind++
 	}
-	Modal(c, &d.open, func() {
-		TextInput(c, &d.name).Label("Name")
-		Select(c, &d.size, []string{"Small", "Large"})
+	coreModal(c, &d.open, func() {
+		coreTextInput(c, &d.name).Label("Name")
+		coreSelect(c, &d.size, []string{"Small", "Large"})
 		if c.Shortcut(Cmd, KeyS) {
 			d.inside++
 		}
-		Row(c).Gap(8).Children(func() {
-			if Button(c, "OK").Clicked() {
+		coreRow(c).Gap(8).Children(func() {
+			if coreButton(c, "OK").Clicked() {
 				d.open = false
 			}
-			Button(c, "Cancel")
+			coreButton(c, "Cancel")
 		})
 	})
 }
 
 func TestDialogKeepsTheFocus(t *testing.T) {
 	d := &dialogView{size: "Small"}
-	tt := NewTester(d.view, 500, 400)
+	tt := coreNewTester(d.view, 500, 400)
 	tt.Click("Open")
 	// The dialog takes the focus as it opens, on its first element.
 	if !tt.Focused("Name") {
@@ -77,7 +77,7 @@ func TestDialogKeepsTheFocus(t *testing.T) {
 
 func TestEscapeClosesTheOverlayOnTop(t *testing.T) {
 	d := &dialogView{size: "Small"}
-	tt := NewTester(d.view, 500, 400)
+	tt := coreNewTester(d.view, 500, 400)
 	tt.Click("Open")
 	tt.Click("Small") // the select's popup opens
 	if !tt.HasText("Large") {
@@ -93,9 +93,80 @@ func TestEscapeClosesTheOverlayOnTop(t *testing.T) {
 	}
 }
 
+// TestUnhandledEscape tells the window of the Escapes nothing handled,
+// which close a flyout, and of no other.
+func TestUnhandledEscape(t *testing.T) {
+	d := &dialogView{size: "Small"}
+	tt := coreNewTester(d.view, 500, 400)
+	tt.Key(0, KeyEscape)
+	if tt.h.escapes != 1 {
+		t.Fatalf("an Escape nothing handled reached the window %d times", tt.h.escapes)
+	}
+	tt.Click("Open")
+	tt.Key(0, KeyEscape) // closes the dialog
+	tt.Key(Shift, KeyEscape)
+	if d.open || tt.h.escapes != 1 {
+		t.Errorf("the dialog open %v, Escapes for the window %d", d.open, tt.h.escapes)
+	}
+}
+
+// TestEscapeBeforeTheFrame presses Escape as the view changes, before a
+// frame built since: the shortcut the frame handling the key registers
+// takes it, though the last frame had none, and the window gets the
+// Escape that a shortcut the view no longer asks for leaves.
+func TestEscapeBeforeTheFrame(t *testing.T) {
+	handles, took := false, 0
+	tt := coreNewTester(func(c *context) {
+		if handles && c.Shortcut(0, KeyEscape) {
+			took++
+		}
+	}, 200, 100)
+
+	handles = true // no frame shows it yet
+	tt.Key(0, KeyEscape)
+	if took != 1 || tt.h.escapes != 0 {
+		t.Fatalf("Escape as the view took a shortcut for it: the view took %d, the window %d", took, tt.h.escapes)
+	}
+	tt.Key(0, KeyEscape)
+	if took != 2 || tt.h.escapes != 0 {
+		t.Fatalf("Escape with the shortcut shown: the view took %d, the window %d", took, tt.h.escapes)
+	}
+
+	handles = false
+	tt.Key(0, KeyEscape)
+	if took != 2 || tt.h.escapes != 1 {
+		t.Fatalf("Escape as the view dropped its shortcut: the view took %d, the window %d", took, tt.h.escapes)
+	}
+}
+
+// TestKeyRetriedOnce gives a key that the frame it came to found no
+// shortcut for one more frame, not more, though the view keeps
+// registering it for an element it then leaves out.
+func TestKeyRetriedOnce(t *testing.T) {
+	frames := 0
+	tt := coreNewTester(func(c *context) {
+		frames++
+		// A shortcut of the window every other frame: the frame routing a
+		// retried key never builds it.
+		if frames%2 == 0 {
+			c.Shortcut(0, KeyEscape)
+		}
+	}, 200, 100)
+	before := frames
+	tt.Key(0, KeyEscape)
+	if n := frames - before; n > 4 {
+		t.Fatalf("one Escape built %d frames", n)
+	}
+	// The frame it was retried in, which had no shortcut for it, left it
+	// to the window.
+	if tt.h.escapes != 1 {
+		t.Fatalf("the window got %d Escapes, not 1", tt.h.escapes)
+	}
+}
+
 func TestOverlayGivesTheFocusBack(t *testing.T) {
 	d := &dialogView{size: "Small"}
-	tt := NewTester(d.view, 500, 400)
+	tt := coreNewTester(d.view, 500, 400)
 	tt.Click("Open")
 	tt.Key(0, KeyEscape)
 	if d.open || !tt.Focused("Open") {
@@ -108,9 +179,34 @@ func TestOverlayGivesTheFocusBack(t *testing.T) {
 	}
 }
 
+func TestPopoverRestoresFocusWithToastViewport(t *testing.T) {
+	open := false
+	tt := coreNewTester(func(c *context) {
+		anchor := coreButton(c, "Open")
+		if anchor.Clicked() {
+			open = true
+		}
+		corePopover(c, anchor, &open, func() {
+			coreButton(c, "Inside")
+		})
+		// The viewport comes after the popover, as it does when the
+		// engine builds the theme's toasts after the view.
+		coreToastViewportBase(c, func(*node, []Toast) {})
+	}, 400, 300)
+	tt.Click("Open")
+	tt.Key(0, KeyTab)
+	if !tt.Focused("Inside") {
+		t.Fatal("Tab did not move focus into the popover")
+	}
+	tt.Key(0, KeyEscape)
+	if open || !tt.Focused("Open") {
+		t.Errorf("closing the popover did not restore focus to its anchor (open %v)", open)
+	}
+}
+
 func TestShortcutsWaitBehindADialog(t *testing.T) {
 	d := &dialogView{size: "Small"}
-	tt := NewTester(d.view, 500, 400)
+	tt := coreNewTester(d.view, 500, 400)
 	tt.Key(Cmd, KeyN)
 	if d.behind != 1 {
 		t.Fatalf("Cmd+N with no dialog: %d", d.behind)
@@ -125,14 +221,14 @@ func TestShortcutsWaitBehindADialog(t *testing.T) {
 
 func TestPopoverFollowsItsAnchor(t *testing.T) {
 	open := false
-	tt := NewTester(func(c *Context) {
-		Row(c).Gap(8).Children(func() {
-			Button(c, "A")
-			menu := Button(c, "Menu")
-			Button(c, "B")
-			Popover(c, menu, &open, func() {
-				Button(c, "P1")
-				Button(c, "P2")
+	tt := coreNewTester(func(c *context) {
+		coreRow(c).Gap(8).Children(func() {
+			coreButton(c, "A")
+			menu := coreButton(c, "Menu")
+			coreButton(c, "B")
+			corePopover(c, menu, &open, func() {
+				coreButton(c, "P1")
+				coreButton(c, "P2")
 			})
 		})
 	}, 500, 300)
@@ -158,7 +254,7 @@ func TestPopoverFollowsItsAnchor(t *testing.T) {
 
 func TestBehindADialogIsHidden(t *testing.T) {
 	d := &dialogView{size: "Small"}
-	tt := NewTester(d.view, 500, 400)
+	tt := coreNewTester(d.view, 500, 400)
 	tt.send(platform.SurfaceEvent{Kind: platform.AccessibilityOn})
 	tt.Click("Open")
 	labels := map[string]bool{}
@@ -176,9 +272,9 @@ func TestBehindADialogIsHidden(t *testing.T) {
 func TestEscapeGoesToTheFocusedElementFirst(t *testing.T) {
 	// A terminal in a dialog takes Escape, as vim needs it.
 	open, escapes := true, 0
-	tt := NewTester(func(c *Context) {
-		Modal(c, &open, func() {
-			Box(c).Size(100, 100).Focusable().Label("Terminal").AutoFocus().HandleInput(func(ev InputEvent) bool {
+	tt := coreNewTester(func(c *context) {
+		coreModal(c, &open, func() {
+			coreBox(c).Size(100, 100).Focusable().Label("Terminal").AutoFocus().HandleInput(func(ev InputEvent) bool {
 				if ev.Kind == InputKeyDown && ev.Key == KeyEscape {
 					escapes++
 					return true

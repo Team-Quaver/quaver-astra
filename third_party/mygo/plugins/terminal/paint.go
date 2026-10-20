@@ -9,8 +9,17 @@ import (
 	"github.com/egoist/mygo/ui"
 )
 
-// Padding around the grid, in DIPs.
+// The padding around the grid when Options.Padding leaves it zero, in
+// DIPs.
 const padX, padY = 6, 4
+
+// padding returns the padding around the grid, in DIPs.
+func (o *Options) padding() (x, y float32) {
+	if o.Padding == (Padding{}) {
+		return padX, padY
+	}
+	return max(o.Padding.X, 0), max(o.Padding.Y, 0)
+}
 
 // rowCache is what a row of the screen draws, made when it changes:
 // backgrounds, runs of glyphs, lines and drawn characters, in cells.
@@ -24,11 +33,18 @@ type rowCache struct {
 	selB  int
 	sel   bool
 	wide  []int16 // the columns of wide characters
+	// filled tells that every cell has a background of its own, other
+	// than the default, from which PaddingExtend extends.
+	filled bool
 }
 
 type bgSpan struct {
 	x0, x1 int
 	c      ui.Color
+	// cursor tells that the span is one character in inverse video, as
+	// a program draws its own cursor: its background does not extend
+	// into the padding.
+	cursor bool
 }
 
 // glyphRun is the glyphs of a run of cells of one style, placed in their
@@ -62,7 +78,8 @@ type boxCell struct {
 func (v *view) layout(r ui.Rect, scale float32) {
 	t := v.t
 	t.mu.Lock()
-	fk := t.opts.Font.key(scale)
+	f := t.font()
+	fk := f.key(scale)
 	t.mu.Unlock()
 	if fk != v.font {
 		v.font, v.scale = fk, scale
@@ -80,7 +97,8 @@ func (v *view) layout(r ui.Rect, scale float32) {
 		v.shaped.clear()
 		v.lines = v.lines[:0]
 	}
-	v.ox, v.oy = int(math.Round(padX*float64(scale))), int(math.Round(padY*float64(scale)))
+	px, py := t.opts.padding()
+	v.ox, v.oy = int(math.Round(float64(px*scale))), int(math.Round(float64(py*scale)))
 	w, h := int(math.Round(float64(r.W*scale)))-2*v.ox, int(math.Round(float64(r.H*scale)))-2*v.oy
 	v.cols, v.rows = max(w/v.cellW, 1), max(h/v.cellH, 1)
 }
@@ -100,7 +118,7 @@ func (v *view) paint(p *ui.Painter, r ui.Rect) {
 		}
 		return
 	}
-	t.resize(gridSize{v.cols, v.rows, v.cellW, v.cellH})
+	t.viewResize(gridSize{v.cols, v.rows, v.cellW, v.cellH})
 	if v.ticking && v.gesture != nil {
 		v.autoscroll()
 	}
@@ -116,6 +134,7 @@ func (v *view) paint(p *ui.Painter, r ui.Rect) {
 		t.rs.BeginUpdate(t.term)
 	}
 	v.scrollbar = t.term.Scrollbar()
+	v.alt = t.term.AltScreen()
 	t.mu.Unlock()
 	rs := t.rs
 	if !held {
@@ -145,6 +164,7 @@ type resolved struct {
 	fg, bg, ul       ui.Color
 	hasBg, hasUl     bool
 	variant          int // 1 bold, 2 italic
+	inverse          bool
 	invisible        bool
 	underline        int
 	strike, overline bool
@@ -166,7 +186,7 @@ func (v *view) resolve(s vt.Style) resolved {
 	r.bg, r.hasBg = col(s.BG, v.colors.Background)
 	r.ul, r.hasUl = col(s.UnderlineColor, v.colors.Foreground)
 	if s.Inverse {
-		r.fg, r.bg, r.hasBg = r.bg, r.fg, true
+		r.fg, r.bg, r.hasBg, r.inverse = r.bg, r.fg, true, true
 	}
 	if s.Faint {
 		r.fg = r.fg.Alpha(0.5)
@@ -183,7 +203,7 @@ func (v *view) resolve(s vt.Style) resolved {
 
 // buildRow makes the cache of the render state's current row.
 func (v *view) buildRow(line *rowCache, rs *vt.RenderState, cols int) {
-	*line = rowCache{ok: true, bgs: line.bgs[:0], runs: line.runs[:0], decos: line.decos[:0], boxes: line.boxes[:0], wide: line.wide[:0]}
+	*line = rowCache{ok: true, bgs: line.bgs[:0], runs: line.runs[:0], decos: line.decos[:0], boxes: line.boxes[:0], wide: line.wide[:0], filled: true}
 	cells := rs.RowCells()
 	line.selA, line.selB, line.sel = rs.RowSelection()
 	def := resolved{fg: color(v.colors.Foreground), bg: color(v.colors.Background)}
@@ -237,11 +257,14 @@ func (v *view) buildRow(line *rowCache, rs *vt.RenderState, cols int) {
 			}
 			st.bg, st.hasBg = color(bg), true
 		}
+		if !st.hasBg || st.bg == def.bg {
+			line.filled = false
+		}
 		if st.hasBg && st.bg != def.bg {
 			if n := len(line.bgs); n > 0 && line.bgs[n-1].x1 == x && line.bgs[n-1].c == st.bg {
-				line.bgs[n-1].x1 = x + w
+				line.bgs[n-1].x1, line.bgs[n-1].cursor = x+w, false
 			} else {
-				line.bgs = append(line.bgs, bgSpan{x, x + w, st.bg})
+				line.bgs = append(line.bgs, bgSpan{x, x + w, st.bg, st.inverse})
 			}
 		}
 		if st.underline != 0 {
@@ -398,6 +421,9 @@ func (v *view) draw(p *ui.Painter, r ui.Rect) {
 	if !v.t.opts.Transparent {
 		p.Fill(r, color(v.colors.Background), 0)
 	}
+	if v.t.opts.PaddingColor != PaddingBackground {
+		v.extendPadding(p, r, ox, oy, cw, ch)
+	}
 	selection := v.theme.Selection
 	if selection.A == 0 {
 		selection = color(v.colors.Foreground).Alpha(0.3)
@@ -461,6 +487,60 @@ func (v *view) draw(p *ui.Painter, r ui.Rect) {
 		v.drawPreedit(p, ox, oy, cw, ch, base)
 	}
 	v.drawScrollbar(p, r)
+}
+
+// extendPadding paints the padding around the grid with the backgrounds
+// of the cells nearest to it (Options.PaddingColor): a row's beside it,
+// and the top and the bottom rows' above and below the grid, out to the
+// corners.
+func (v *view) extendPadding(p *ui.Painter, r ui.Rect, ox, oy, cw, ch float32) {
+	if len(v.lines) == 0 {
+		return
+	}
+	always := v.t.opts.PaddingColor == PaddingExtendAlways || v.alt
+	extends := func(line *rowCache) bool { return always || line.filled }
+	cols := v.cols
+	left, right := r.X, r.X+r.W
+	gx1 := ox + float32(cols)*cw
+	// The span's left and right in the view: the edges' spans reach the
+	// view's edges.
+	span := func(b bgSpan) (x0, x1 float32) {
+		x0, x1 = ox+float32(b.x0)*cw, ox+float32(b.x1)*cw
+		if b.x0 == 0 {
+			x0 = left
+		}
+		if b.x1 >= cols {
+			x1 = right
+		}
+		return x0, x1
+	}
+	for y := range v.lines {
+		line := &v.lines[y]
+		if !extends(line) || len(line.bgs) == 0 {
+			continue
+		}
+		ry := oy + float32(y)*ch
+		if first := line.bgs[0]; first.x0 == 0 && !first.cursor && ox > left {
+			p.Fill(ui.Rect{X: left, Y: ry, W: ox - left, H: ch}, first.c, 0)
+		}
+		if last := line.bgs[len(line.bgs)-1]; last.x1 >= cols && !last.cursor && right > gx1 {
+			p.Fill(ui.Rect{X: gx1, Y: ry, W: right - gx1, H: ch}, last.c, 0)
+		}
+	}
+	vertical := func(line *rowCache, y0, y1 float32) {
+		if y1 <= y0 || !extends(line) {
+			return
+		}
+		for _, b := range line.bgs {
+			if b.cursor {
+				continue
+			}
+			x0, x1 := span(b)
+			p.Fill(ui.Rect{X: x0, Y: y0, W: x1 - x0, H: y1 - y0}, b.c, 0)
+		}
+	}
+	vertical(&v.lines[0], r.Y, oy)
+	vertical(&v.lines[len(v.lines)-1], oy+float32(len(v.lines))*ch, r.Y+r.H)
 }
 
 // drawText draws the glyphs, drawn characters and lines of a row, in their

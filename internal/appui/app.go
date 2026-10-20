@@ -118,6 +118,8 @@ type App struct {
 	singerRec   []string
 	albums      map[string]*albumState // 专辑页（按 mid 缓存）
 	albumRec    []string
+	toplists    map[int64]*toplistState // 排行榜页（按 top id 缓存）
+	toplistRec  []int64
 
 	// apiSlots 限制 UI 侧同时进行的 HTTP 请求，避免快速浏览时多个大响应
 	// 同时驻留。请求本身仍由各页面后台 goroutine 发起。
@@ -258,6 +260,12 @@ func (a *App) View(c *ui.Context) {
 		}
 	}
 
+	// 电台没有可编辑队列：状态一旦生效就收起队列停靠/浮窗。
+	if a.PL.RadioActive() && a.queueOpen {
+		a.queueOpen = false
+		a.Conf.Set("Window.QueueOpen", false)
+	}
+
 	// 当前歌变化时重取色
 	if cur, ok := a.PL.Current(); ok && cur.Mid != a.probedMid {
 		a.probedMid = cur.Mid
@@ -328,9 +336,16 @@ func (a *App) routeArea(c *ui.Context) {
 		case r.Match("/liked"):
 			r.Title("我喜欢")
 			a.likedView(c)
+		case r.Match("/playlists"):
+			r.Title("歌单")
+			a.playlistsView(c)
 		case r.Match("/favlists"):
 			r.Title("收藏的歌单")
 			a.favListsView(c)
+		case r.Match("/toplist/{id}"):
+			r.Title("排行榜")
+			id, _ := strconv.ParseInt(r.Param("id"), 10, 64)
+			a.toplistView(c, id)
 		case r.Match("/playlist/{id}"):
 			r.Title("歌单")
 			id, _ := strconv.ParseInt(r.Param("id"), 10, 64)
@@ -372,7 +387,7 @@ var navItems = []navItem{
 	{"/guess", "guess", "猜你喜欢"},
 	{"/daily", "daily", "每日 30 首"},
 	{"/liked", "heart", "我喜欢"},
-	{"/favlists", "star", "收藏的歌单"},
+	{"/playlists", "list", "歌单"},
 }
 
 // 侧栏几何。展开 216，收起 64。收起态只放得下 44 宽的内容区，
@@ -476,62 +491,19 @@ func (a *App) sidebar(c *ui.Context) {
 			}
 		}
 
-		for _, it := range navItems {
-			a.sideNavItem(c, t, it, label)
-		}
-
-		// 歌单列表（收起态只留图标）
-		pls := a.PL.Playlists()
-		if len(pls) > 0 && label {
-			ui.Text(c, "我创建的歌单").FontSize(fz(11)).TextColor(t.TextMuted).
-				Padding(10, 12, 4, 14)
-		}
-		for _, pl := range pls {
-			path := fmt.Sprintf("/playlist/%d", pl.ID)
-			// growFade：歌单是登录后异步到的，让它撑开入场而不是凭空出现。
-			btn := ui.ButtonBase(c).Height(sideBtnHeight).Padding(0, a.sidePad()).
-				MarginX(a.sidePad()).Radius(8).AlignItems(ui.Center).Gap(10).
-				Transition(growFade)
-			active := a.Router.Path() == path
-			btn.Children(func() {
-				a.sidePlaylistArt(c, pl)
-				if label {
-					ui.Text(c, pl.Title).FontSize(fz(13)).SingleLine().Ellipsis("…").Grow(1)
-				}
-			})
-			if collapsed {
-				btn.Center()
+		// 头像固定在顶部、设置/收起固定在底部；上下两个弹性留白等分，
+		// 把中间这组导航压到剩余空间的真正中心。
+		ui.Spacer(c)
+		nav := ui.Column(c).FillWidth().Gap(2)
+		nav.Children(func() {
+			for _, it := range navItems {
+				a.sideNavItem(c, t, it, label)
 			}
-			a.styleSideBtn(btn, active, c)
-			if btn.Clicked() {
-				a.Router.Push(path)
-			}
-		}
-
+		})
 		ui.Spacer(c)
 
 		a.sideFooter(c, t, collapsed, w)
 	})
-}
-
-// sidePlaylistArt 是侧栏歌单行的行首图：歌单自己的封面，而不是通用♪。
-//
-// 边长取 sideIconSize（18）而不是更显眼的 22：侧栏的图标列是一条公共基准线
-// （导航项与用户头像都按它排，见上方常量注释），封面大一圈就把歌单标题推离
-// 导航项标题所在的文字列，同一组里「有封面」与「退回♪」的行也会彼此错开。
-// 圆角按边长比例取 4（songRow 的 44 封面是 6），小尺寸下比直角方块柔和些。
-//
-// 地址是后端给的 picurl，走 CoverCache 异步拉取：首帧返回 nil，先画♪占位，
-// 下载解码完成后 invalidate 触发重绘换成图。取不到（歌单没封面、图挂了）就
-// 一直是♪——空方块比♪更难看。Shrink(0) 是必须的：行里标题 Grow(1)，而元素
-// 默认 shrink=1，长标题（「屑作｜非独立发行」）会把封面压成非正方形的竖条。
-func (a *App) sidePlaylistArt(c *ui.Context, pl player.PlaylistRef) {
-	if art := a.Covers.Get(pl.Cover, a.invalidate); art != nil {
-		ui.Image(c, art).Size(sideIconSize, sideIconSize).Fit(ui.Cover).
-			Radius(4).Shrink(0).AlignSelf(ui.Center)
-		return
-	}
-	ui.Icon(c, Icons["note"]).FontSize(fz(sideIconSize)).AlignSelf(ui.Center)
 }
 
 // sideFooter 是侧栏底部：设置 + 收起/展开。
@@ -545,7 +517,7 @@ func (a *App) sidePlaylistArt(c *ui.Context, pl player.PlaylistRef) {
 //
 // 返回容器元素，供布局测试读实际位置（测试不该硬编码 y 坐标——播放器条
 // 占掉底部高度，靠算常数极易与真实布局脱节）。
-func (a *App) sideFooter(c *ui.Context, t *ui.Theme, collapsed bool, w float32) *ui.Element {
+func (a *App) sideFooter(c *ui.Context, t *ui.Theme, collapsed bool, w float32) ui.Element {
 	// 收起/展开图标按宽度进度旋转 180°（主项目是同一个 chevron 转 180°，
 	// 而不是在两个方向上硬换图标）。0 = 收起态指右（提示「展开」），
 	// 180 = 展开态指左（提示「收起」）。
@@ -586,6 +558,7 @@ func (a *App) sideIconBtn(c *ui.Context, t *ui.Theme, icon, tip string, rot floa
 		b.Background(t.SurfaceHover)
 	}
 	b.Tooltip(tip)
+	b.Label(tip)
 	if b.Clicked() {
 		onClick()
 	}
@@ -620,7 +593,7 @@ func (a *App) sideNavItem(c *ui.Context, t *ui.Theme, it navItem, label bool) {
 }
 
 // styleSideBtn 统一侧栏按钮的激活/悬停样式。
-func (a *App) styleSideBtn(btn *ui.Element, active bool, c *ui.Context) {
+func (a *App) styleSideBtn(btn ui.Element, active bool, c *ui.Context) {
 	t := c.Theme()
 	if active {
 		btn.Background(t.Accent.Alpha(0.13))

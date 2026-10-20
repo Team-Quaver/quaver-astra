@@ -1,17 +1,20 @@
 package ui
 
 import (
+	"slices"
 	"testing"
 	"time"
 
+	"github.com/egoist/mygo/i18n"
+	"github.com/egoist/mygo/internal/l10n"
 	"github.com/egoist/mygo/internal/platform"
 )
 
 func TestCalendar(t *testing.T) {
 	day := time.Date(2026, 10, 15, 9, 41, 0, 0, time.UTC)
 	changes := 0
-	tt := NewTester(func(c *Context) {
-		if Calendar(c, &day).Changed() {
+	tt := coreNewTester(func(c *context) {
+		if coreCalendar(c, &day).Changed() {
 			changes++
 		}
 	}, 400, 400)
@@ -34,7 +37,7 @@ func TestCalendar(t *testing.T) {
 	}
 	// Assistive technology reads the day chosen.
 	tt.send(platform.SurfaceEvent{Kind: platform.AccessibilityOn})
-	if n := node(t, tt.h.access, platform.RoleButton, "October 31, 2026"); tt.h.access.Focus != n.ID || n.States&platform.AccessChecked == 0 {
+	if n := accessNode(t, tt.h.access, platform.RoleButton, "October 31, 2026"); tt.h.access.Focus != n.ID || n.States&platform.AccessChecked == 0 {
 		t.Errorf("the focus on %d, the day %+v", tt.h.access.Focus, n)
 	}
 }
@@ -42,11 +45,12 @@ func TestCalendar(t *testing.T) {
 func TestTimeInput(t *testing.T) {
 	alarm := time.Date(2026, 10, 4, 7, 30, 0, 0, time.UTC)
 	changes := 0
-	tt := NewTester(func(c *Context) {
-		if TimeInput(c, &alarm).Label("Alarm").Changed() {
+	tt := coreNewTester(func(c *context) {
+		if coreTimeInput(c, &alarm).Label("Alarm").Changed() {
 			changes++
 		}
 	}, 300, 100)
+	tt.SetRegion(i18n.Region{Locale: "en-GB", FirstWeekday: time.Monday, HourCycle: 24})
 	if !tt.HasText("07") || !tt.HasText("30") {
 		t.Fatalf("shows %q", tt.Texts())
 	}
@@ -82,11 +86,11 @@ func TestTimeInput(t *testing.T) {
 		t.Errorf("the date changed: %v", alarm)
 	}
 	tt.send(platform.SurfaceEvent{Kind: platform.AccessibilityOn})
-	hours := node(t, tt.h.access, platform.RoleStepper, "Alarm hours")
+	hours := accessNode(t, tt.h.access, platform.RoleStepper, "Alarm hours")
 	if hours.Now != 9 || hours.Max != 23 {
 		t.Errorf("hours: %+v", hours)
 	}
-	node(t, tt.h.access, platform.RoleStepper, "Alarm minutes")
+	accessNode(t, tt.h.access, platform.RoleStepper, "Alarm minutes")
 	// Assistive technology steps the hours, not the focus to the minutes.
 	tt.send(platform.SurfaceEvent{Kind: platform.AccessAction, ID: hours.ID, Action: platform.AccessIncrement})
 	if alarm.Hour() != 10 {
@@ -94,11 +98,91 @@ func TestTimeInput(t *testing.T) {
 	}
 }
 
+// TestTimeInput12 checks a time field in 12 hours: the half of the day a
+// segment of its own, after the hours in English and before them in
+// Chinese, as the locale's pattern writes it.
+func TestTimeInput12(t *testing.T) {
+	alarm := time.Date(2026, 10, 4, 7, 30, 0, 0, time.UTC)
+	tt := coreNewTester(func(c *context) { coreTimeInput(c, &alarm).Label("Alarm") }, 300, 100)
+	tt.SetRegion(i18n.Region{Locale: "en-US", FirstWeekday: time.Sunday, HourCycle: 12})
+	if got := tt.Texts(); !slices.Equal(got, []string{"Alarm", "hours", "7", ":", "minutes", "30", "AM/PM", "AM"}) {
+		t.Fatalf("shows %q", got)
+	}
+	tt.Click("AM")
+	tt.Key(0, KeyUp)
+	if alarm.Hour() != 19 {
+		t.Fatalf("Up on AM: %v", alarm)
+	}
+	tt.Key(0, KeyA)
+	if alarm.Hour() != 7 {
+		t.Fatalf("A: %v", alarm)
+	}
+	tt.Click("7")
+	tt.Key(0, KeyDown)
+	tt.Key(0, KeyDown)
+	tt.Key(0, KeyDown)
+	tt.Key(0, KeyDown)
+	tt.Key(0, KeyDown)
+	tt.Key(0, KeyDown)
+	tt.Key(0, KeyDown)
+	if alarm.Hour() != 0 || !tt.HasText("12") {
+		t.Fatalf("seven hours down from 7 AM: %v, %q", alarm, tt.Texts())
+	}
+	tt.Key(0, Key1)
+	tt.Key(0, Key1)
+	if alarm.Hour() != 11 || !tt.Focused("30") {
+		t.Fatalf("1 and 1: %v", alarm)
+	}
+	tt.SetLocale("zh-Hans")
+	if got := tt.Texts(); !slices.Equal(got, []string{"Alarm", "上午/下午", "上午", "小时", "11", ":", "分钟", "30"}) {
+		t.Errorf("in Chinese, shows %q", got)
+	}
+}
+
+// TestCalendarRegion checks that a calendar starts its weeks on the first
+// day of the user's formats and says its names in the window's language.
+func TestCalendarRegion(t *testing.T) {
+	day := time.Date(2026, 10, 15, 9, 41, 0, 0, time.UTC)
+	tt := coreNewTester(func(c *context) { coreCalendar(c, &day) }, 400, 400)
+	tt.SetRegion(i18n.Region{Locale: "en-US", FirstWeekday: time.Sunday, HourCycle: 12})
+	week := func(first string) []string {
+		texts := tt.Texts()
+		i := slices.Index(texts, first)
+		if i < 0 || i+8 > len(texts) {
+			return texts
+		}
+		return texts[i : i+8]
+	}
+	// October 2026 starts on a Thursday: the 27th of September before it.
+	if got := week("Su"); !slices.Equal(got, []string{"Su", "Mo", "Tu", "We", "Th", "Fr", "Sa", "September 27, 2026"}) {
+		t.Errorf("the days of a week from Sunday: %q", got)
+	}
+	tt.SetRegion(i18n.Region{Locale: "en-GB", FirstWeekday: time.Monday, HourCycle: 24})
+	if got := week("Mo"); !slices.Equal(got, []string{"Mo", "Tu", "We", "Th", "Fr", "Sa", "Su", "28 September 2026"}) {
+		t.Errorf("the days of a week from Monday: %q", got)
+	}
+	tt.SetLocale("zh-Hans")
+	if !tt.HasText("2026年10月") || !tt.HasText("一") {
+		t.Errorf("in Chinese: %q", tt.Texts())
+	}
+	tt.SetLocale("fa")
+	if !tt.HasText("۱۵") {
+		t.Errorf("in Persian, the days are not in its digits: %q", tt.Texts())
+	}
+	tt.send(platform.SurfaceEvent{Kind: platform.AccessibilityOn})
+	tt.SetLocale("de")
+	accessNode(t, tt.h.access, platform.RoleButton, "15. Oktober 2026")
+	// MyGo's own strings have no German: the source language's.
+	accessNode(t, tt.h.access, platform.RoleButton, "Next month")
+	tt.SetLocale("zh-Hant")
+	accessNode(t, tt.h.access, platform.RoleButton, l10n.In("zh-Hant").NextMonth())
+}
+
 func TestColorPicker(t *testing.T) {
 	color := Hex("#3b82f6")
 	changes := 0
-	tt := NewTester(func(c *Context) {
-		if ColorPicker(c, &color).Changed() {
+	tt := coreNewTester(func(c *context) {
+		if coreColorPicker(c, &color).Changed() {
 			changes++
 		}
 	}, 400, 500)
@@ -116,7 +200,7 @@ func TestColorPicker(t *testing.T) {
 	}
 	// The square: its top-right corner is the hue itself; its bottom black.
 	tt.send(platform.SurfaceEvent{Kind: platform.AccessibilityOn})
-	sq := node(t, tt.h.access, platform.RoleSlider, "Saturation and brightness").Bounds
+	sq := accessNode(t, tt.h.access, platform.RoleSlider, "Saturation and brightness").Bounds
 	tt.ClickAt(float32(sq.X+sq.W-1), float32(sq.Y+1))
 	if h := toHSVA(color); h.s < 0.98 || h.v < 0.98 || h.h < 115 || h.h > 125 {
 		t.Fatalf("the top-right corner: %v (%+v)", hexOf(color), h)
@@ -130,10 +214,10 @@ func TestColorPicker(t *testing.T) {
 	// The app sets another color.
 	color = Hex("#ffffff")
 	tt.Frame()
-	if n := node(t, tt.h.access, platform.RoleTextField, "Hex"); n.Value != "#ffffff" {
+	if n := accessNode(t, tt.h.access, platform.RoleTextField, "Hex"); n.Value != "#ffffff" {
 		t.Errorf("the hex shows %q", n.Value)
 	}
-	n := node(t, tt.h.access, platform.RoleSlider, "Hue")
+	n := accessNode(t, tt.h.access, platform.RoleSlider, "Hue")
 	if n.Max != 360 {
 		t.Errorf("the hue: %+v", n)
 	}
@@ -141,11 +225,11 @@ func TestColorPicker(t *testing.T) {
 
 func TestColorWell(t *testing.T) {
 	color := Hex("#3b82f6")
-	tt := NewTester(func(c *Context) {
-		ColorWell(c, &color).Label("Tint")
+	tt := coreNewTester(func(c *context) {
+		coreColorWell(c, &color).Label("Tint")
 	}, 400, 500)
 	tt.send(platform.SurfaceEvent{Kind: platform.AccessibilityOn})
-	if n := node(t, tt.h.access, platform.RoleColorWell, "Tint"); n.Value != "#3b82f6" || n.States&platform.AccessExpanded != 0 {
+	if n := accessNode(t, tt.h.access, platform.RoleColorWell, "Tint"); n.Value != "#3b82f6" || n.States&platform.AccessExpanded != 0 {
 		t.Fatalf("the well: %+v", n)
 	}
 	tt.Click("Tint")
@@ -156,11 +240,38 @@ func TestColorWell(t *testing.T) {
 	if color != Hex("#22c55e") {
 		t.Errorf("chose %v", hexOf(color))
 	}
-	if n := node(t, tt.h.access, platform.RoleColorWell, "Tint"); n.Value != "#22c55e" || n.States&platform.AccessExpanded == 0 {
+	if n := accessNode(t, tt.h.access, platform.RoleColorWell, "Tint"); n.Value != "#22c55e" || n.States&platform.AccessExpanded == 0 {
 		t.Errorf("the well: %+v", n)
 	}
 	tt.Key(0, KeyEscape)
 	if tt.HasText("Red") {
 		t.Error("Escape left the picker open")
+	}
+}
+
+func TestTimeLayout(t *testing.T) {
+	for _, c := range []struct {
+		pattern, sep string
+		periodFirst  bool
+	}{
+		{"h:mm a", ":", false},
+		{"ah:mm", ":", true},
+		{"H 'h' mm", " h ", false},
+		{"HH.mm", ".", false},
+		{"H'm' mm", "m ", false},
+		{"a h'''h' mm", "'h ", true},
+		{"B h:mm", ":", true},
+	} {
+		if sep, first := timeLayout(c.pattern); sep != c.sep || first != c.periodFirst {
+			t.Errorf("timeLayout(%q) = %q, %v; want %q, %v", c.pattern, sep, first, c.sep, c.periodFirst)
+		}
+	}
+	// French of Canada writes 07 h 30.
+	alarm := time.Date(2026, 10, 4, 7, 30, 0, 0, time.UTC)
+	tt := coreNewTester(func(c *context) { coreTimeInput(c, &alarm) }, 300, 100)
+	tt.SetLocale("fr-CA")
+	tt.SetRegion(i18n.Region{Locale: "fr-CA", FirstWeekday: time.Sunday, HourCycle: 24})
+	if !tt.HasText(" h ") {
+		t.Errorf("fr-CA: %q", tt.Texts())
 	}
 }

@@ -22,11 +22,17 @@ own on them, as headless component libraries do on the web.
 | `ToastViewportBase`, `ToastBase` | the window's toasts in a viewport of your own, each a status with an `ActionButton` and a `CloseButton`, their time stopping while the pointer or the focus is on them ([Toast](toast.md#without-a-look)) |
 | `TextInputBase`, `TextAreaBase` | text inputs without padding, background, border or corners, `ReadOnly` or not |
 
+Charts have bases of their own: [package `ui/chart`](chart.md) has scales,
+axes, marks and a selection without a look.
+
+Base constructors return value parts with the same build lifetime as other
+elements. Give stateful bases a key with `Context.Key` before construction.
+
 A segmented control on `SegmentedBase`, and a select on `SelectBase`:
 
 ```go
 t := c.Theme()
-view := ui.SegmentedBase(c, &app.view, 3)
+view := ui.SegmentedBase(c.Key("period"), &app.view, 3)
 view.Track.Padding(3).Radius(999).Background(t.Surface).Children(func() {
 	for i, name := range []string{"Day", "Week", "Month"} {
 		seg := view.Segment(i).Padding(5, 14).Radius(999)
@@ -37,12 +43,12 @@ view.Track.Padding(3).Radius(999).Background(t.Surface).Children(func() {
 	}
 })
 
-sel := ui.SelectBase(c, &app.size)
+sel := ui.SelectBase(c.Key("size"), &app.size)
 sel.Trigger.Gap(6).Padding(6, 10).Radius(8).Border(1, t.Border).Children(func() {
 	ui.Text(c, app.size)
 	ui.Icon(c, chevron)
 })
-sel.Popup(func(panel *ui.Element) {
+sel.Popup(func(panel ui.Element) {
 	panel.Margin(4, 0, 0, 0).Padding(4).Radius(10).Background(t.Background).Border(1, t.Border)
 	for _, size := range sizes {
 		item := sel.Item(size).Padding(6, 10).Radius(6)
@@ -59,6 +65,9 @@ the focus is; `FocusRing(false)` turns the ring off for a widget that draws
 its own, with `Painter.FocusRing` while `FocusVisible`.
 
 ## Widgets of your own
+
+For text controls with their own buffer or selection model, use
+[`HandleTextInput` and retained text geometry](text-input-client.md).
 
 Build your own widgets from elements. An element keeps state of its own
 from frame to frame with `ui.Local`:
@@ -80,6 +89,10 @@ func Spoiler(c *ui.Context, text string) {
 	box.Children(func() { ui.Text(c, text) })
 }
 ```
+
+A widget whose input changes what it edits reports it with `SetChanged`
+on its element, as it builds: `Changed` then returns true for it, as for
+the widgets' own. The [rich text editor](rich-text-editor.md) does so.
 
 Give a widget a [role](accessibility.md#roles), a name and its
 [states](accessibility.md#states) for assistive technology, take the keys

@@ -9,25 +9,34 @@ import (
 
 var reLrcTS = regexp.MustCompile(`\[(\d{1,2}):(\d{2})(?:[.:](\d{1,3}))?\]`)
 
-// LyricLine 一行歌词（时间 + 原文 + 可选翻译）。
+// LyricLine 一行歌词（时间 + 原文 + 可选翻译 / 音译）。
+//
+// Trans 与 Roma 是同一位置的辅助行：翻译档优先 Trans，音译档优先 Roma，
+// 本行缺哪一路就回落另一路。振假名不在这里——它挂在 QrcWord.Ruby 上。
 type LyricLine struct {
 	Time  float64 // 秒
 	Text  string
 	Trans string
+	Roma  string
 }
 
-// ParseLrc 解析行级 LRC（多时间戳展开、// 与占位行跳过），并把翻译行
-// 按最近时间戳（1.5s 内、一一对应）对齐进主行。
-func ParseLrc(lrc, trans string) []LyricLine {
+// ParseLrc 解析行级 LRC（多时间戳展开、// 与占位行跳过），并分别把
+// 翻译 / 音译行按最近时间戳（1.5s 内、一一对应）对齐进主行。
+func ParseLrc(lrc, trans, roma string) []LyricLine {
 	base := lrcLines(lrc)
 	if len(base) == 0 {
 		return nil
 	}
-	if t := lrcLines(trans); len(t) > 0 {
-		alignTrans(base, t)
-	}
+	attachAux(base, lrcLines(trans), "trans")
+	attachAux(base, lrcLines(roma), "roma")
 	sort.Slice(base, func(i, j int) bool { return base[i].Time < base[j].Time })
 	return base
+}
+
+// AttachLrcAux 把翻译与音译两路辅助行挂到已有行级歌词上（QRC 行同样用）。
+func AttachLrcAux(base []LyricLine, trans, roma string) {
+	attachAux(base, lrcLines(trans), "trans")
+	attachAux(base, lrcLines(roma), "roma")
 }
 
 var junkPrefixes = []string{"//", "作词", "作曲", "编曲", "填词", "谱曲", "Lyric", "lyric"}
@@ -89,24 +98,52 @@ func lrcStrip(line string) string {
 	}
 }
 
-// alignTrans 把翻译行按时间就近（<1.5s）对齐进主行，一一对应。
-func alignTrans(base, trans []LyricLine) {
-	used := make([]bool, len(trans))
+// attachAux 把一路辅助行按时间就近（<1.5s）对齐进主行，一一对应。
+func attachAux(base, aux []LyricLine, field string) {
+	if len(aux) == 0 {
+		return
+	}
+	used := make([]bool, len(aux))
 	for i := range base {
 		best, bestD := -1, 1.5
-		for j := range trans {
+		for j := range aux {
 			if used[j] {
 				continue
 			}
-			d := abs(base[i].Time - trans[j].Time)
+			d := abs(base[i].Time - aux[j].Time)
 			if d < bestD {
 				bestD, best = d, j
 			}
 		}
-		if best >= 0 {
-			used[best] = true
-			base[i].Trans = trans[best].Text
+		if best < 0 {
+			continue
 		}
+		used[best] = true
+		switch field {
+		case "trans":
+			base[i].Trans = aux[best].Text
+		case "roma":
+			base[i].Roma = aux[best].Text
+		}
+	}
+}
+
+// AuxText 按档位挑唯一一条辅助行：翻译档优先翻译、音译档优先音译，
+// 本行缺哪一路就回落另一路；off 永远返回空串。
+func AuxText(line LyricLine, mode string) string {
+	switch mode {
+	case "translation":
+		if strings.TrimSpace(line.Trans) != "" {
+			return line.Trans
+		}
+		return line.Roma
+	case "romanization":
+		if strings.TrimSpace(line.Roma) != "" {
+			return line.Roma
+		}
+		return line.Trans
+	default:
+		return ""
 	}
 }
 

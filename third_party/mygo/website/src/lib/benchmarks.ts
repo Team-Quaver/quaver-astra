@@ -51,6 +51,8 @@ export const metrics = [
   { id: "time", unit: "ns/op", label: "Time", text: "time per operation" },
   { id: "memory", unit: "B/op", label: "Memory", text: "memory allocated per operation" },
   { id: "allocs", unit: "allocs/op", label: "Allocations", text: "allocations per operation" },
+  { id: "gpu", unit: "GPU-ms", label: "GPU", text: "milliseconds the GPU spent per frame, by its timestamps" },
+  { id: "encode", unit: "encode-ms", label: "Encode", text: "milliseconds the CPU spent per frame encoding it for the GPU" },
 ] as const
 
 export type Metric = (typeof metrics)[number]["id"]
@@ -103,9 +105,14 @@ export const groups: Group[] = [
     title: "IPC, Go side",
     text: "What MyGo itself spends on calls, channels, events and custom schemes: decoding, calling, encoding and batching, on the fake backend, without a webview.",
   },
-  { pkg: "ui", title: "Native UI", text: "Frames of native UI built, laid out, painted and rendered on the CPU; text areas; lists." },
+  {
+    pkg: "ui",
+    title: "Native UI",
+    text: "Frames of native UI built, laid out, painted and rendered on the CPU; stress scenes changing every frame, and on macOS the GPU drawing them; text areas; lists.",
+  },
   { pkg: "internal/text", title: "Text layout", text: "Paragraphs and labels shaped and broken into lines." },
   { pkg: "internal/raster", title: "CPU renderer", text: "Scenes drawn into memory, as windows without a GPU draw them." },
+  { pkg: "internal/gpu/metal", title: "Metal renderer", text: "Scenes drawn by the GPU on macOS into a texture, waiting for each." },
   { pkg: "internal/svg", title: "SVG", text: "Icons parsed and drawn." },
   { pkg: "plugins/terminal", title: "Terminal", text: "The terminal plugin taking a program's output, and drawing its view." },
 ]
@@ -128,6 +135,11 @@ export const reading: NonNullable<Group["info"]> = {
   ],
 }
 
+/** Whether a unit is a timing, which compares only among the commits measured on the same machine. */
+export function isTiming(unit: string) {
+  return unit === "ns/op" || unit === "GPU-ms" || unit === "encode-ms"
+}
+
 /** What a unit measures, as the summary names it. */
 export function unitLabel(unit: string) {
   const metric = metrics.find((m) => m.unit === unit)
@@ -136,7 +148,7 @@ export function unitLabel(unit: string) {
 
 /** The smallest change of a series that stands out, whatever its noise. */
 function minChange(unit: string) {
-  return unit === "ns/op" ? 0.05 : unit === "bytes" ? 0.002 : 0.01
+  return isTiming(unit) ? 0.05 : unit === "bytes" ? 0.002 : 0.01
 }
 
 /**
@@ -193,7 +205,7 @@ export interface Step {
  * more than most changes.
  */
 export function findSteps(values: (number | null)[], unit: string, runners: (Runner | null)[]): Step[] {
-  if (unit !== "ns/op") return stepsOf(values, unit)
+  if (!isTiming(unit)) return stepsOf(values, unit)
   const cpus = new Set(runners.flatMap((r) => (r ? [r.cpu] : [])))
   return [...cpus].flatMap((cpu) => stepsOf(onCPU(values, runners, cpu), unit)).sort((a, b) => a.index - b.index)
 }
@@ -270,7 +282,7 @@ export function trendOf(values: (number | null)[], unit: string, runners: (Runne
   if (index < 0) return undefined
   const latest = values[index]!
   const nonNull = (v: number | null): v is number => v != null
-  const like = unit === "ns/op" ? onCPU(values, runners, runners[index]?.cpu) : values
+  const like = isTiming(unit) ? onCPU(values, runners, runners[index]?.cpu) : values
   const noise = noiseOf(like.slice(0, index).filter(nonNull).slice(-20), unit)
   const shown = like.slice(from, index).filter(nonNull)
   const steps = findSteps(values, unit, runners).filter((s) => s.index >= from)
@@ -319,6 +331,9 @@ export function formatValue(v: number, unit: string) {
       if (v >= 1e6) return `${sig(v / 1e6)} ms`
       if (v >= 1e3) return `${sig(v / 1e3)} µs`
       return `${sig(v)} ns`
+    case "GPU-ms":
+    case "encode-ms":
+      return `${sig(v)} ms`
     case "B/op":
     case "bytes":
     case "B":

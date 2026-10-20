@@ -1,16 +1,22 @@
+//go:build !js
+
 package mygo
 
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"image/png"
 	"log"
 	"os"
+	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/egoist/mygo/internal/fake"
 	"github.com/egoist/mygo/internal/platform"
+	"github.com/egoist/mygo/internal/wait"
 	"github.com/egoist/mygo/ui"
 )
 
@@ -27,6 +33,35 @@ func contentWindow(t *testing.T, view func(c *ui.Context)) (*Window, *fake.Windo
 	}
 	onMain(func() { s.Frame() })
 	return w, fw, s
+}
+
+// TestContentReadyToShow checks that a window showing Content is ready to
+// show once it drew its first frame, which also tells mygo dev that a new
+// build is up.
+func TestContentReadyToShow(t *testing.T) {
+	w := NewWindow(WindowOptions{Width: 300, Height: 200, Content: ui.View(func(c *ui.Context) {})})
+	t.Cleanup(w.Destroy)
+	ready := make(chan struct{}, 2)
+	w.OnReadyToShow(func() { ready <- struct{}{} })
+	wins := fb.Windows()
+	s := wins[len(wins)-1].FakeSurface()
+	onMain(func() {}) // what the window posted ran
+	if len(ready) != 0 {
+		t.Fatal("ready before its first frame")
+	}
+	onMain(func() { s.Frame() })
+	select {
+	case <-ready:
+	case <-time.After(wait.Guard):
+		t.Fatal("not ready after its first frame")
+	}
+	w.Invalidate()
+	onMain(func() {})
+	onMain(func() { s.Frame() })
+	onMain(func() {})
+	if s.Frames() != 2 || len(ready) != 0 {
+		t.Errorf("%d frames, ready %d more times", s.Frames(), len(ready))
+	}
 }
 
 func TestContentDrawsAndHandlesInput(t *testing.T) {
@@ -116,14 +151,36 @@ func TestContentInvalidateAndUpdate(t *testing.T) {
 // TestContentTitleBar checks that native UI gets the room the window
 // controls of a hidden title bar take, and a frame when it changes.
 func TestContentTitleBar(t *testing.T) {
+	for _, style := range []TitleBarStyle{TitleBarHidden, TitleBarHiddenInset} {
+		t.Run(string(style), func(t *testing.T) { testContentTitleBar(t, style) })
+	}
+}
+
+// A native UI window has no webview. On Linux, even the function that
+// reads its zoom is nil until the first webview is created.
+type contentTitleBarWindow struct {
+	platform.Window
+	t *testing.T
+}
+
+func (w *contentTitleBarWindow) Zoom() float64 {
+	w.t.Error("queried webview zoom for a native UI window")
+	return 1
+}
+
+func testContentTitleBar(t *testing.T, style TitleBarStyle) {
+	t.Helper()
 	var bar ui.TitleBar
 	view := func(c *ui.Context) { bar = c.TitleBar() }
-	w := NewWindow(WindowOptions{Width: 300, Height: 200, TitleBarStyle: TitleBarHidden, TitleBarHeight: 52, Content: ui.View(view)})
+	w := NewWindow(WindowOptions{Width: 300, Height: 200, TitleBarStyle: style, TitleBarHeight: 52, Content: ui.View(view)})
 	t.Cleanup(w.Destroy)
 	wins := fb.Windows()
 	fw := wins[len(wins)-1]
 	s := fw.FakeSurface()
-	onMain(func() { s.Frame() })
+	onMain(func() {
+		w.native = &contentTitleBarWindow{Window: w.native, t: t}
+		s.Frame()
+	})
 	if bar != (ui.TitleBar{Height: 52, Right: 138}) {
 		t.Errorf("TitleBar = %+v", bar)
 	}
@@ -135,6 +192,25 @@ func TestContentTitleBar(t *testing.T) {
 	})
 	if !framed || bar != (ui.TitleBar{Height: 46, Left: 80}) {
 		t.Errorf("after a change: frame %v, TitleBar = %+v", framed, bar)
+	}
+	// Full screen removes the controls, and leaving it restores them.
+	// Native UI must hear both changes without queuing events for a page
+	// that does not exist (or asking the backend for its webview's zoom).
+	for _, room := range []platform.TitleBar{{}, {Height: 46, Left: 80}} {
+		onMain(func() {
+			fw.TitleBarRoom = room
+			fw.H.TitleBarChanged()
+			framed = s.Frame()
+		})
+		if !framed || bar != (ui.TitleBar{Height: float32(room.Height), Left: float32(room.Left), Right: float32(room.Right)}) {
+			t.Errorf("after a full screen change: frame %v, TitleBar = %+v, want %+v", framed, bar, room)
+		}
+	}
+	w.outMu.Lock()
+	queued := len(w.held) + len(w.outbox)
+	w.outMu.Unlock()
+	if queued != 0 || len(fw.Scripts()) != 0 {
+		t.Errorf("title bar changes reached a page: %d queued events, scripts %q", queued, fw.Scripts())
 	}
 
 	// A window with its title bar has no room to keep clear of.
@@ -254,8 +330,8 @@ func TestContentMenuRoles(t *testing.T) {
 
 func TestContentDuplicateKeyTellsWhere(t *testing.T) {
 	view := func(c *ui.Context) {
-		ui.Row(c).Key(1)
-		ui.Row(c).Key(1)
+		ui.Row(c.Key(1))
+		ui.Row(c.Key(1))
 	}
 	var out bytes.Buffer
 	log.SetOutput(&out)
@@ -263,5 +339,86 @@ func TestContentDuplicateKeyTellsWhere(t *testing.T) {
 	_, _, _ = contentWindow(t, view)
 	if s := out.String(); !strings.Contains(s, "key 1") || !strings.Contains(s, "content_test.go:") {
 		t.Errorf("a duplicate key logs %q", s)
+	}
+}
+
+// TestContentMenuRightToLeft shows the context menu of an element laid
+// out right to left right to left, and others left to right.
+func TestContentMenuRightToLeft(t *testing.T) {
+	view := func(c *ui.Context) {
+		ui.Row(c).Fill().Children(func() {
+			ui.Box(c).Size(100, 100).ContextMenu(func(m *ui.Menu) { m.Item("Left to right") })
+			ui.Row(c).Direction(ui.RightToLeft).Size(100, 100).ContextMenu(func(m *ui.Menu) { m.Item("Right to left") })
+		})
+	}
+	_, _, s := contentWindow(t, view)
+	for _, x := range []float64{50, 150} {
+		onMain(func() {
+			s.Send(platform.SurfaceEvent{Kind: platform.PointerDown, X: x, Y: 50, Button: 1})
+			s.Send(platform.SurfaceEvent{Kind: platform.PointerUp, X: x, Y: 50, Button: 1})
+			s.Frame()
+		})
+		onMain(func() {}) // the menu, posted
+	}
+	var got []string
+	for _, p := range fb.Popups() {
+		got = append(got, fmt.Sprintf("%s %v", p.Menu.Items[0].Label, p.Menu.RightToLeft))
+	}
+	if want := []string{"Left to right false", "Right to left true"}; !slices.Equal(got, want) {
+		t.Errorf("the menus shown are %q, want %q", got, want)
+	}
+}
+
+// HideWindowButtons leaves native UI the whole title bar: the controls it
+// draws itself take no room of the system's.
+func TestContentHiddenWindowButtons(t *testing.T) {
+	var bar ui.TitleBar
+	view := func(c *ui.Context) { bar = c.TitleBar() }
+	w := NewWindow(WindowOptions{Width: 300, Height: 200, TitleBarStyle: TitleBarHidden, HideWindowButtons: true, Content: ui.View(view)})
+	t.Cleanup(w.Destroy)
+	wins := fb.Windows()
+	fw := wins[len(wins)-1]
+	if !fw.Opts.HideWindowButtons {
+		t.Error("the backend was not told to hide the window buttons")
+	}
+	s := fw.FakeSurface()
+	onMain(func() {
+		w.native = &contentTitleBarWindow{Window: w.native, t: t}
+		s.Frame()
+	})
+	if bar != (ui.TitleBar{}) {
+		t.Errorf("TitleBar = %+v, want none", bar)
+	}
+}
+
+// The view tells the backend where it shows the maximize button, and that
+// it shows none once the button goes.
+func TestContentMaximizeButton(t *testing.T) {
+	shown := true
+	view := func(c *ui.Context) {
+		ui.Row(c).Fill().AlignItems(ui.Start).Children(func() {
+			ui.Spacer(c)
+			if shown {
+				ui.ButtonBase(c.Key("max")).Size(40, 30).Label("Maximize").MaximizeButton()
+			}
+		})
+	}
+	w := NewWindow(WindowOptions{Width: 300, Height: 200, TitleBarStyle: TitleBarHidden, HideWindowButtons: true, Content: ui.View(view)})
+	t.Cleanup(w.Destroy)
+	wins := fb.Windows()
+	fw := wins[len(wins)-1]
+	s := fw.FakeSurface()
+	onMain(func() {
+		w.native = &contentTitleBarWindow{Window: w.native, t: t}
+		s.Frame()
+	})
+	if want := (platform.RectF{X: 260, Y: 0, W: 40, H: 30}); fw.MaximizeButton != want {
+		t.Errorf("maximize button at %+v, want %+v", fw.MaximizeButton, want)
+	}
+	onMain(func() { shown = false })
+	w.Invalidate()
+	onMain(func() { s.Frame() })
+	if fw.MaximizeButton != (platform.RectF{}) {
+		t.Errorf("maximize button at %+v after it went", fw.MaximizeButton)
 	}
 }

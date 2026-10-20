@@ -59,12 +59,33 @@ icon. The module has the CLI as a [tool](https://go.dev/doc/modules/managing-dep
 so `go tool mygo dev` and `go tool mygo build` run the version it pins,
 without Bun. See [native UI](getting-started.md#native-ui).
 
+Both templates include the `mygo-maintenance` agent skill in
+`.agents/skills/mygo-maintenance/`, with guidance on element lifetimes,
+stable identity, threading, and testing when maintaining the app.
+
 | Flag | |
 |---|---|
 | `-template` | `web`, a TypeScript frontend (the default), or `native`, native UI in Go |
 | `-name` | the app's name (default: the directory's name) |
 | `-module` | the Go module path (default: the directory's name) |
 | `-mygo` | a checkout of MyGo to use, through a `replace` directive, instead of the released module; the scripts then run the checkout's CLI with `go run`; run `bun install && bun run build` in the checkout first, for the web template |
+
+## mygo install-skills
+
+```sh
+mygo install-skills [dir]
+```
+
+Installs or updates the agent skills bundled with the CLI version you run
+in an existing project's `.agents/skills/`. The directory defaults to the
+current directory; no project configuration, Go build, or frontend tools
+are needed. New projects receive these skills through `mygo init` too.
+
+The command overwrites bundled files such as
+`mygo-maintenance/SKILL.md` and `mygo-maintenance/agents/openai.yaml`,
+including local edits to those files. Other skills and extra custom files
+are preserved. Upgrade the CLI, then run the command again to refresh its
+guidance.
 
 ## mygo dev
 
@@ -78,12 +99,21 @@ Develops the app with live reload. It writes the TypeScript client, runs
 place of its built frontend, and starts it. Without `devUrl` the app serves
 `frontendDist` from disk.
 
-Changes to the Go code, the configuration, the icon or the resources rebuild
-the app, regenerate the TypeScript client and restart the app: the running
+Changes to the Go code, the configuration, the icon, the resources or the
+[catalogs](i18n.md) rebuild the app, regenerate the TypeScript client and
+the functions of the catalogs, and restart the app: the running
 build quits, then the new one starts, so the two never hold the same files,
 locks or web view profile at once. A build that fails to compile keeps the
 running one. Frontend changes are the dev server's to handle. Quitting the app, or
-Ctrl+C, ends mygo dev, and `App.Relaunch` restarts the app.
+Ctrl+C, ends mygo dev (press Ctrl+C again not to wait for the app to quit),
+and `App.Relaunch` restarts the app.
+
+On a terminal, each step shows a spinner with what it does, such as the Go
+packages being compiled, then how long it took; what the dev server and the
+app print is labeled `web │` and `app │`, and a rebuild names the files that
+changed. Type a key, then Enter, as in Vite: `r` rebuilds and restarts the
+app, `c` clears the console, `q` quits and `h` lists them. `NO_COLOR` turns
+colors off, and output to a file or a pipe has a line per step.
 
 The development app is named `<name> Dev`, with the identifier
 `<identifier>.dev`, so that its data, preferences and single instance lock
@@ -93,8 +123,21 @@ version information that `mygo build` embeds.
 
 | Flag | |
 |---|---|
+With `-web`, mygo dev develops an app of [native UI in browsers](ui/browsers.md)
+instead: it compiles the app to WebAssembly, serves it at
+`http://localhost:5174` (or the next free port), opens it, and rebuilds it as
+its Go code changes, which reloads the page. A build that fails to compile
+leaves the page running the last one, and shows why over it until a fix
+compiles. `o` opens the page again.
+
+| Flag | |
+|---|---|
 | `-skip-dev-command` | does not run `devCommand`, e.g. when the dev server already runs |
 | `-sign` | the identity that signs the development app on macOS (default: `-`, ad hoc) |
+| `-web` | develops the app in browsers |
+| `-port` | with `-web`, the port to serve the app at, or the next free one (default: 5174) |
+| `-open` | with `-web`, opens the app in the browser (default: true) |
+| `-lang` | runs the app in a language, such as `de` or `zh-Hant`, or a pseudo locale, `en-XA` or `ar-XB`, without changing the language it keeps; see [trying a language](i18n.md#trying-a-language) |
 
 ## mygo build
 
@@ -106,9 +149,15 @@ Builds production apps: runs `buildCommand`, compiles the app with
 `frontendDist` embedded, and packages it for each platform in
 `<out>/<os>-<arch>`. See [Building and distributing](distribution.md).
 
+The platform `web` (or `js/wasm`) builds an app of native UI for browsers
+into `<out>/web`, a static site to serve from anywhere: `index.html`, which
+loads the app, Go's `wasm_exec.js`, the app's WebAssembly, named by its
+content so that it can be cached for good, and the icon. See
+[Browsers](ui/browsers.md).
+
 | Flag | |
 |---|---|
-| `-platform` | comma separated `GOOS/GOARCH` targets, e.g. `darwin/universal,windows/amd64,linux/amd64` (default: this machine's) |
+| `-platform` | comma separated `GOOS/GOARCH` targets, e.g. `darwin/universal,windows/amd64,linux/amd64`, or `web` (default: this machine's) |
 | `-debug` | keeps development features, such as the web inspector and the [inspector of native UI](ui/inspector.md) |
 | `-o` | the output directory (default: `out` of the configuration) |
 | `-sign` | the macOS signing identity (default: `macos.signingIdentity`) |
@@ -128,6 +177,22 @@ and the events declared with `mygo.NewEvent`, to `bindings` of the
 configuration unless `-o` names another file. `mygo dev` and `mygo build` run
 it for you; apps without a frontend get no client. See
 [the generated client](bindings.md#the-generated-client).
+
+With `i18n` in the configuration, it first checks the app's
+[catalogs](i18n.md) and writes their functions: `catalog_gen.go` in the
+catalogs' directory, and a TypeScript module next to the client, named
+after the directory (`src/locales.ts`). Errors in the catalogs stop it.
+
+## mygo i18n check
+
+```
+mygo i18n check [dir]
+```
+
+Checks the app's [catalogs](i18n.md#checking-the-catalogs): it lists their
+errors, such as messages that do not parse or arguments a translation adds,
+and their warnings, such as missing translations, and exits with status 1
+when there are errors.
 
 ## mygo keygen
 
@@ -160,8 +225,17 @@ Prints the version of the CLI.
 
 | Variable | |
 |---|---|
+| `CGO_ENABLED` | `0` by default when unset or empty; set to `1` for app dependencies that need cgo, including in `mygo dev`, `mygo build` and `mygo generate` |
 | `MYGO_INSPECTOR` | `1` keeps the [inspector of native UI](ui/inspector.md) in production builds of `mygo build`, which leave it out |
 | `MYGO_UPDATER_PRIVATE_KEY` | the secret key that signs updates, for `mygo build` |
 | `MYGO_WINDOWS_CERTIFICATE_PASSWORD` | the password of `windows.certificate`, for `mygo build` |
 | `MYGO_CLI_BINARY` | a build of the CLI for the `mygo-cli` package to run |
 | `MYGO_ENV` | `production` makes an app behave like a production build, e.g. without the web inspector |
+| `MYGO_LOCALE` | the language the app runs in, over the one it keeps, which `mygo dev -lang` sets |
+
+For an app with dependencies that need cgo:
+
+```sh
+CGO_ENABLED=1 go tool mygo dev
+CGO_ENABLED=1 go tool mygo build
+```

@@ -8,15 +8,15 @@ import (
 func TestSpacingScalesWidgets(t *testing.T) {
 	type sizes struct{ button, check, tab Rect }
 	measure := func(spacing float32) sizes {
-		tt := NewTester(func(c *Context) {
+		tt := coreNewTester(func(c *context) {
 			th := *c.Theme()
 			th.Spacing = spacing
 			c.SetTheme(&th)
-			Column(c).AlignItems(Start).Children(func() {
-				Button(c, "OK").Label("button")
+			coreColumn(c).AlignItems(Start).Children(func() {
+				coreButton(c, "OK").Label("button")
 				on, tab := false, 0
-				Checkbox(c, &on, "").Label("check")
-				Tabs(c, &tab, "One", "Two")
+				coreCheckbox(c, &on, "").Label("check")
+				coreTabs(c, &tab, "One", "Two")
 			})
 		}, 400, 300)
 		var s sizes
@@ -99,10 +99,10 @@ func TestInverseColors(t *testing.T) {
 // returns the colors they are filled with.
 func inverseFills(t *testing.T, th *Theme) (tooltip, toast Color) {
 	t.Helper()
-	tt := NewTester(func(c *Context) {
+	tt := coreNewTester(func(c *context) {
 		c.SetTheme(th)
-		Column(c).Padding(40).Children(func() {
-			if Button(c, "Save").Tooltip("Save the note").Clicked() {
+		coreColumn(c).Padding(40).Children(func() {
+			if coreButton(c, "Save").Tooltip("Save the note").Clicked() {
 				c.Toast("Saved")
 			}
 		})
@@ -118,12 +118,12 @@ func inverseFills(t *testing.T, th *Theme) (tooltip, toast Color) {
 	}
 	b, _ := tt.Find("Save")
 	tt.Move(b.X+b.W/2, b.Y+b.H/2)
-	tt.rt.tips.hoverSince = time.Now().Add(-time.Second)
+	tt.rt.tips.hoverSince = tt.now.Add(-time.Second)
 	tt.Frame()
 	tooltip = fill("Save the note")
 	tt.Click("Save")
 	// Past its fading in.
-	tt.rt.toasts[0].at = time.Now().Add(-time.Second)
+	tt.rt.toasts[0].at = tt.now.Add(-time.Second)
 	tt.Frame()
 	return tooltip, fill("Saved")
 }

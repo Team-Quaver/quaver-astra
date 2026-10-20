@@ -290,7 +290,7 @@ func sectionHeader(c *ui.Context, title string, action func()) {
 }
 
 // linkButton 是文字按钮。
-func linkButton(c *ui.Context, label string, onClick func()) *ui.Element {
+func linkButton(c *ui.Context, label string, onClick func()) ui.Element {
 	t := c.Theme()
 	b := ui.ButtonBase(c).Padding(4, 8).Radius(6).Children(func() {
 		ui.Text(c, label).FontSize(fz(12.5)).TextColor(t.TextMuted)

@@ -22,11 +22,15 @@ type Preferences struct {
 	// Windows's and GNOME's text size settings say, 1 for usual: the
 	// default theme's FontSize is that much larger.
 	TextScale float32
+	// UIFontSize is the size of the desktop's interface font in DIPs, as
+	// gtk-font-name's points on Linux say (a point is 4 over 3 DIPs); 0
+	// where the desktop doesn't say one.
+	UIFontSize float32
 }
 
 // Preferences returns the settings of the desktop that controls follow.
 // A frame follows their changes.
-func (c *Context) Preferences() Preferences { return c.rt.preferences() }
+func (c *context) Preferences() Preferences { return c.rt.preferences() }
 
 // preferences returns the desktop's settings, read once until they change.
 func (rt *engine) preferences() Preferences {
@@ -37,9 +41,13 @@ func (rt *engine) preferences() Preferences {
 			ReduceMotion: p.ReduceMotion,
 			HighContrast: p.HighContrast,
 			TextScale:    float32(p.TextScale),
+			UIFontSize:   float32(p.UIFontSize) * 4 / 3,
 		}
 		if rt.prefs.TextScale <= 0 {
 			rt.prefs.TextScale = 1
+		}
+		if s := rt.prefs.UIFontSize; s < 6 || s > 96 {
+			rt.prefs.UIFontSize = 0
 		}
 		rt.prefsKnown = true
 	}

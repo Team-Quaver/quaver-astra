@@ -5,6 +5,7 @@ package windows
 import (
 	"cmp"
 	"log"
+	"math"
 	"strings"
 	"unsafe"
 
@@ -89,6 +90,13 @@ type captionBar struct {
 	hot, pressed int
 	tracking     bool // TrackMouseEvent asked for WM_NCMOUSELEAVE
 	active       bool // the window is the active window
+	// snap is a window over the maximize button the content draws itself
+	// (SetMaximizeButton), 0 until it says where; snapRect is where, in
+	// DIPs, and snapPressed tells that the content has a press from it.
+	snap        uintptr
+	snapRect    platform.RectF
+	snapTrack   bool
+	snapPressed bool
 	// comp shows the buttons in a window without a redirection bitmap,
 	// where UpdateLayeredWindow cannot (compositor.go); nil otherwise.
 	comp *compositor
@@ -133,11 +141,18 @@ func (c *captionBar) forget() {
 	if c.edge != 0 {
 		delete(c.w.b.captions, c.edge)
 	}
+	if c.snap != 0 {
+		delete(c.w.b.captions, c.snap)
+	}
 }
 
 // shownButtons returns the buttons of the window, left to right: close alone
-// when it can be neither minimized nor maximized, as Windows does.
+// when it can be neither minimized nor maximized, as Windows does, and none
+// when the page draws its own (HideWindowButtons).
 func (w *window) shownButtons() []captionButton {
+	if w.opts.HideWindowButtons {
+		return nil
+	}
 	if !w.hasStyle(wsMinimizeBox) && !w.hasStyle(wsMaximizeBox) {
 		return []captionButton{buttonClose}
 	}
@@ -157,7 +172,7 @@ func (w *window) buttonEnabled(b captionButton) bool {
 func (w *window) titleBarHeight() int { return cmp.Or(w.opts.TitleBarHeight, captionHeight) }
 
 func (w *window) TitleBar() platform.TitleBar {
-	if w.caption == nil || w.fullScreen {
+	if w.caption == nil || w.fullScreen || len(w.shownButtons()) == 0 {
 		return platform.TitleBar{}
 	}
 	return platform.TitleBar{Height: w.titleBarHeight(), Right: captionButtonWidth * len(w.shownButtons())}
@@ -197,7 +212,7 @@ func (c *captionBar) layout() {
 	height := toPx(w.titleBarHeight(), dpi)
 	x := r.Right - width
 	show := uintptr(swpShowWindow)
-	if w.fullScreen {
+	if w.fullScreen || width == 0 {
 		show = swpHideWindow
 	}
 	// HWND_TOP (0): above the webview's window, created after them.
@@ -209,6 +224,7 @@ func (c *captionBar) layout() {
 		}
 		procSetWindowPos.Call(c.edge, 0, 0, 0, uintptr(max(x, 0)), uintptr(resizeBorder(dpi)), swpNoActivate|edge)
 	}
+	c.layoutSnap(dpi)
 	c.paint()
 }
 
@@ -283,6 +299,9 @@ func (c *captionBar) click(b captionButton) {
 // lets DefWindowProc run.
 func (c *captionBar) message(hwnd uintptr, m uint32, wp, lp uintptr) (uintptr, bool) {
 	w := c.w
+	if hwnd == c.snap {
+		return c.snapMessage(m, lp)
+	}
 	if hwnd == c.edge {
 		switch m {
 		case wmNCHitTest:
@@ -552,4 +571,117 @@ type trackMouseEvent struct {
 	Flags     uint32
 	Track     uintptr
 	HoverTime uint32
+}
+
+// The maximize button that the content draws, in a window without the
+// system's buttons (HideWindowButtons), gets Windows 11's snap layouts as
+// the system's does: a window over it, layered without pixels as the top
+// edge's, answers HTMAXBUTTON, and DefWindowProc then shows them as the
+// pointer rests there. The pointer's moves and presses over it, which come
+// as non-client messages, go on to the content, whose button hovers and
+// clicks as any other.
+
+// SetMaximizeButton puts the window that brings the snap layouts over the
+// content's maximize button, or hides it for the zero RectF.
+func (w *window) SetMaximizeButton(r platform.RectF) {
+	c := w.caption
+	if c == nil || c.snapRect == r {
+		return
+	}
+	c.snapRect = r
+	if c.snap == 0 && r != (platform.RectF{}) {
+		c.snap = createWindow(wsExLayered|wsExNoRedirect, captionClass, "", wsChild|wsClipSiblings, 0, 0, 0, 0, w.hwnd)
+		if c.snap == 0 {
+			return
+		}
+		procSetLayeredWindowAttributes.Call(c.snap, 0, 255, lwaAlpha)
+		w.b.captions[c.snap] = c
+	}
+	c.layoutSnap(dpiOf(w.hwnd))
+}
+
+func (c *captionBar) layoutSnap(dpi int) {
+	w := c.w
+	if c.snap == 0 {
+		return
+	}
+	r := c.snapRect
+	px := func(v float64) int32 { return int32(math.Round(v * float64(dpi) / 96)) }
+	x0, y0, x1, y1 := px(r.X), px(r.Y), px(r.X+r.W), px(r.Y+r.H)
+	show := uintptr(swpShowWindow)
+	if w.fullScreen || w.surface == nil || x1 <= x0 || y1 <= y0 || !w.hasStyle(wsMaximizeBox) {
+		show = swpHideWindow
+	}
+	// HWND_TOP (0): above the content's window.
+	procSetWindowPos.Call(c.snap, 0, uintptr(x0), uintptr(y0), uintptr(x1-x0), uintptr(y1-y0), swpNoActivate|show)
+}
+
+// toContent gives the content a pointer event at the screen position of a
+// non-client mouse message.
+func (c *captionBar) toContent(kind platform.SurfaceEventKind, lp uintptr) {
+	s := c.w.surface
+	if s == nil {
+		return
+	}
+	pt := point{getXParam(lp), getYParam(lp)}
+	procScreenToClient.Call(s.hwnd, uintptr(unsafe.Pointer(&pt)))
+	s.pointer(kind, uintptr(uint16(pt.X))|uintptr(uint16(pt.Y))<<16, 0)
+}
+
+// cursorOver reports whether the window under the pointer is hwnd.
+func cursorOver(hwnd uintptr) bool {
+	var pt point
+	procGetCursorPos.Call(uintptr(unsafe.Pointer(&pt)))
+	h, _, _ := procWindowFromPoint.Call(uintptr(uint32(pt.X)) | uintptr(uint32(pt.Y))<<32)
+	return h == hwnd
+}
+
+func (c *captionBar) snapMessage(m uint32, lp uintptr) (uintptr, bool) {
+	switch m {
+	case wmNCHitTest:
+		return htMaxButton, true
+	case wmNCMouseMove:
+		if !c.snapTrack {
+			tme := trackMouseEvent{Flags: tmeLeave | tmeNonClient, Track: c.snap}
+			tme.Size = uint32(unsafe.Sizeof(tme))
+			procTrackMouseEvent.Call(uintptr(unsafe.Pointer(&tme)))
+			c.snapTrack = true
+		}
+		c.toContent(platform.PointerMove, lp)
+		// DefWindowProc brings the snap layouts over HTMAXBUTTON.
+		return 0, false
+	case wmNCMouseLeave, wmMouseLeave:
+		c.snapTrack = false
+		s := c.w.surface
+		if s == nil {
+			return 0, true
+		}
+		var pt point
+		procGetCursorPos.Call(uintptr(unsafe.Pointer(&pt)))
+		if c.snapPressed {
+			// The press ends where the pointer went, as a captured one
+			// would: no click outside the button.
+			c.snapPressed = false
+			c.toContent(platform.PointerUp, uintptr(uint16(pt.X))|uintptr(uint16(pt.Y))<<16)
+		}
+		// The content tells its own pointer's moves.
+		if !cursorOver(s.hwnd) {
+			s.send(platform.SurfaceEvent{Kind: platform.PointerLeave})
+		}
+		return 0, true
+	case wmNCLButtonDown, wmNCLButtonDblClk:
+		// Not DefWindowProc, which would maximize the window itself.
+		c.snapPressed = true
+		c.toContent(platform.PointerDown, lp)
+		return 0, true
+	case wmNCLButtonUp:
+		if c.snapPressed {
+			c.snapPressed = false
+			c.toContent(platform.PointerUp, lp)
+		}
+		return 0, true
+	case wmNCRButtonDown, wmNCRButtonUp, wmNCRButtonDblClk:
+		return 0, true
+	}
+	return 0, false
 }

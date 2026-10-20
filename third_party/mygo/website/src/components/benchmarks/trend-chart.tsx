@@ -1,6 +1,6 @@
 import * as React from "react"
 
-import { commitUrl, formatChange, formatDate, formatValue, median, shortCPU, type Commit, type Runner, type Step } from "@/lib/benchmarks"
+import { commitUrl, formatChange, formatDate, formatValue, isTiming, median, shortCPU, type Commit, type Runner, type Step } from "@/lib/benchmarks"
 import { cn } from "@/lib/utils"
 
 const height = 112
@@ -50,7 +50,7 @@ export function TrendChart({
   const base = height - bottom
 
   // A line a CPU for timings, the last commit's drawn over the others'.
-  const byCPU = unit === "ns/op"
+  const byCPU = isTiming(unit)
   const cpuOf = (i: number) => (byCPU ? (runners[i]?.cpu ?? "") : "")
   const cpu = present.length ? cpuOf(present.at(-1)!) : ""
   const lines = new Map<string, number[]>()

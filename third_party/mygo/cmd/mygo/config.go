@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+
+	"github.com/egoist/mygo/i18n"
 )
 
 // The configuration of a project is in one of these files at its root.
@@ -27,7 +29,8 @@ type Config struct {
 	Version    string `json:"version"`
 	Copyright  string `json:"copyright"`
 	// Icon is a square PNG, ideally 1024x1024 (default:
-	// resources/icon.png when it exists).
+	// resources/icon.png when it exists). Beside it, the same name with
+	// -dev, as icon-dev.png, is the development app's, when it exists.
 	Icon string `json:"icon"`
 	// Main is the Go package of the app (default ".").
 	Main string `json:"main"`
@@ -35,9 +38,9 @@ type Config struct {
 	Out string `json:"out"`
 	// Bindings is the path of the generated TypeScript client (default:
 	// frontend/src/mygo.ts when there is a frontend directory,
-	// src/mygo.ts when the frontend is the project itself (package.json),
-	// else mygo.ts when the configuration has a frontend, and no client
-	// for an app without one, such as an app of native UI).
+	// src/mygo.ts when package.json is at the root, else mygo.ts when the
+	// configuration has a frontend, and no client for an app without one,
+	// such as an app of native UI).
 	Bindings string `json:"bindings"`
 
 	// DevURL is what the app loads during `mygo dev` in place of its built
@@ -75,6 +78,9 @@ type Config struct {
 	// FileAssociations are the types of files the app opens, which reach
 	// mygo.App.OnOpenFile.
 	FileAssociations []FileAssociation `json:"fileAssociations"`
+	// I18n configures the catalogs of the app's messages, which make the
+	// languages it ships. Without it, the app ships English only.
+	I18n *I18n `json:"i18n"`
 	// Updates configures signed updates, which mygo.Updater installs.
 	Updates *Updates `json:"updates"`
 	MacOS   MacOS    `json:"macos"`
@@ -83,6 +89,16 @@ type Config struct {
 
 	root string
 	file string // the configuration file, "" without one
+	// frontend is whether the app has a frontend of its own, for the
+	// TypeScript module of the catalogs. The defaults make one of a frontend
+	// directory, an explicit bindings path or the frontend options; a
+	// package.json at the root declares one unless it is a workspace root,
+	// which holds packages beside the app, such as its website.
+	frontend bool
+	// langs are the languages the app ships, which languages reads once.
+	langs     []appLanguage
+	langsErr  error
+	langsRead bool
 }
 
 // configName names the configuration file in messages.
@@ -116,8 +132,27 @@ func (c *Config) mimeType(fa FileAssociation) (string, bool) {
 	return "application/x-" + slugify(c.executableName()) + "-" + strings.ToLower(fa.Ext[0]), true
 }
 
+// I18n configures the catalogs of the app's messages: a JSON file per
+// language in Dir, named after its BCP 47 tag ("de.json", "zh-Hant.json"),
+// whose messages `mygo generate` writes typed Go and TypeScript functions
+// for. The languages the app ships are those of the files.
+type I18n struct {
+	// Dir is the directory of the catalogs (default "locales"), a Go
+	// package of its own, where the Go functions are written.
+	Dir string `json:"dir"`
+	// Source is the language the app is written in, whose catalog has
+	// every message, and which the others fall back to (default "en").
+	Source string `json:"source"`
+}
+
 // MacOS configures macOS packaging.
 type MacOS struct {
+	// Icon is the app's icon on macOS as an asset catalog: an Assets.car
+	// compiled with actool, whose app icon is named AppIcon unless
+	// infoPlist's CFBundleIconName says otherwise, or an Icon Composer .icon,
+	// which builds compile on a Mac with Xcode 26 or later and skip
+	// elsewhere. The .icns from icon remains the fallback.
+	Icon string `json:"icon"`
 	// MinimumSystemVersion is the oldest macOS version supported (default
 	// "12.0").
 	MinimumSystemVersion string `json:"minimumSystemVersion"`
@@ -128,6 +163,10 @@ type MacOS struct {
 	SigningIdentity string `json:"signingIdentity"`
 	// Entitlements is a plist of entitlements to sign the app with.
 	Entitlements string `json:"entitlements"`
+	// ProvisioningProfile is embedded as Contents/embedded.provisionprofile
+	// before signing. It must authorize the app's identifier and entitlements
+	// and match its signing identity; ad-hoc signing cannot use a profile.
+	ProvisioningProfile string `json:"provisioningProfile"`
 	// HelperEntitlements gives code among the resources entitlements of its
 	// own, by its path there: executables, libraries and bundles, e.g.
 	//   "bin/server": "server.entitlements.plist"
@@ -216,6 +255,9 @@ func (c *Config) validate() error {
 			return fmt.Errorf("fileAssociations[%d].role is Editor or Viewer", i)
 		}
 	}
+	if ext := strings.ToLower(filepath.Ext(c.MacOS.Icon)); c.MacOS.Icon != "" && ext != ".car" && ext != ".icon" {
+		return fmt.Errorf("macos.icon %s is an Assets.car or an Icon Composer .icon", c.MacOS.Icon)
+	}
 	for name, file := range c.MacOS.HelperEntitlements {
 		if name == "" || file == "" {
 			return fmt.Errorf("macos.helperEntitlements maps the path of code among the resources to a property list of entitlements, not %q to %q", name, file)
@@ -240,6 +282,14 @@ func (c *Config) validate() error {
 	for _, v := range []string{c.Name, c.Version, c.Identifier} {
 		if strings.Contains(v, "'") && strings.Contains(v, `"`) {
 			return fmt.Errorf("%q cannot contain both kinds of quotes", v)
+		}
+	}
+	if c.I18n != nil {
+		if src := i18n.Normalize(c.I18n.Source); src != c.I18n.Source || i18n.IsPseudo(src) {
+			return fmt.Errorf("i18n.source %q is not a BCP 47 tag in its canonical form, as en, de-CH or zh-Hans", c.I18n.Source)
+		}
+		if filepath.IsAbs(c.I18n.Dir) || filepath.Clean(c.I18n.Dir) == "." || strings.HasPrefix(filepath.Clean(c.I18n.Dir), "..") {
+			return fmt.Errorf("i18n.dir %q is not a directory of the project: the catalogs are a Go package of their own, as locales", c.I18n.Dir)
 		}
 	}
 	if c.DevURL != "" {
@@ -294,16 +344,43 @@ func (c *Config) applyDefaults() {
 	if c.Linux.Maintainer == "" {
 		c.Linux.Maintainer = c.Name
 	}
-	if c.Bindings == "" {
-		switch {
-		case isDir(filepath.Join(c.root, "frontend")):
-			c.Bindings = filepath.Join("frontend", "src", "mygo.ts")
-		case fileExists(filepath.Join(c.root, "package.json")):
-			c.Bindings = filepath.Join("src", "mygo.ts")
-		case c.DevURL != "" || c.DevCommand != "" || c.BuildCommand != "" || c.FrontendDist != "":
-			c.Bindings = "mygo.ts"
+	if c.I18n != nil {
+		if c.I18n.Dir == "" {
+			c.I18n.Dir = "locales"
+		}
+		if c.I18n.Source == "" {
+			c.I18n.Source = "en"
 		}
 	}
+	frontendOptions := c.DevURL != "" || c.DevCommand != "" || c.BuildCommand != "" || c.FrontendDist != ""
+	switch {
+	case c.Bindings != "":
+		c.frontend = true
+	case isDir(filepath.Join(c.root, "frontend")):
+		c.Bindings = filepath.Join("frontend", "src", "mygo.ts")
+		c.frontend = true
+	case fileExists(filepath.Join(c.root, "package.json")):
+		c.Bindings = filepath.Join("src", "mygo.ts")
+		c.frontend = !workspaceRoot(c.root) || frontendOptions
+	case frontendOptions:
+		c.Bindings = "mygo.ts"
+		c.frontend = true
+	}
+}
+
+// workspaceRoot reports whether the package.json of root declares
+// workspaces, as npm's and Bun's array and Yarn's object do: it holds
+// packages, such as the app's website, rather than being a frontend
+// itself.
+func workspaceRoot(root string) bool {
+	data, err := os.ReadFile(filepath.Join(root, "package.json"))
+	if err != nil {
+		return false
+	}
+	var pkg struct {
+		Workspaces json.RawMessage `json:"workspaces"`
+	}
+	return json.Unmarshal(data, &pkg) == nil && len(pkg.Workspaces) > 0 && string(pkg.Workspaces) != "null"
 }
 
 // packageAuthor returns the author in the package.json of root, which npm
@@ -367,4 +444,18 @@ func fsName(s string) string {
 func isDir(path string) bool {
 	st, err := os.Stat(path)
 	return err == nil && st.IsDir()
+}
+
+// devIcon returns the development app's icon, the icon's name with -dev
+// before its extension (icon.png, icon-dev.png), when it exists, else "".
+func (c *Config) devIcon() string {
+	if c.Icon == "" {
+		return ""
+	}
+	ext := filepath.Ext(c.Icon)
+	dev := strings.TrimSuffix(c.Icon, ext) + "-dev" + ext
+	if !fileExists(c.path(dev)) {
+		return ""
+	}
+	return dev
 }

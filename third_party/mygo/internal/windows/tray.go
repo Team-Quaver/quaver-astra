@@ -6,6 +6,9 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"hash/fnv"
+	"image"
+	"image/color"
 	"image/png"
 	"unsafe"
 
@@ -68,14 +71,36 @@ type tray struct {
 	// notification is the id of the notification the icon shows, if any.
 	notification string
 	temporary    bool // added only to show a notification
+	// dark is the taskbar's appearance, as last told.
+	dark bool
+	// image is the PNG the icon shows, and template whether it is black
+	// and transparent, which the icon shows white on a dark taskbar as
+	// macOS tints a template image.
+	image    []byte
+	template bool
 }
 
 func (b *Backend) NewTray(h platform.TrayHandler) (platform.Tray, error) {
 	b.nextTray++
 	t := &tray{b: b, h: h, id: b.nextTray}
+	t.dark = t.Dark()
 	b.trays[t.id] = t
-	t.add()
+	// Added once the call that made it gave it its number, image and
+	// tooltip, or as soon as asked where it is: the notification area keeps
+	// the choices of the user for an icon by its number and names it by
+	// its first tooltip, and keeps none for an icon numbered by its ID
+	// that came blank (see SetID).
+	postMessage(b.appHwnd, wmAppTrayAdd, 0, 0)
 	return t, nil
+}
+
+// addNewTrays adds the icons made since it last ran.
+func (b *Backend) addNewTrays() {
+	for _, t := range b.trays {
+		if !t.added && !t.temporary {
+			t.add()
+		}
+	}
 }
 
 func (t *tray) data(flags uint32) notifyIconData {
@@ -98,24 +123,95 @@ func (t *tray) add() {
 }
 
 func (t *tray) update() {
+	if !t.added {
+		return // NewTray adds it as it is
+	}
 	d := t.data(0)
 	procShellNotifyIconW.Call(nimModify, uintptr(unsafe.Pointer(&d)))
 }
 
 func (t *tray) SetImage(data []byte, template bool) error {
-	icon, err := iconFromPNG(data, 0)
+	img := data
+	if template && t.dark {
+		var err error
+		if img, err = whiten(data); err != nil {
+			return err
+		}
+	}
+	icon, err := iconFromPNG(img, 0)
 	if err != nil {
 		return err
 	}
 	if t.icon != 0 {
 		procDestroyIcon.Call(t.icon)
 	}
-	t.icon = icon
+	t.icon, t.image, t.template = icon, data, template
 	t.update()
 	return nil
 }
 
+// whiten draws a template image white, keeping its alpha.
+func whiten(data []byte) ([]byte, error) {
+	src, err := png.Decode(bytes.NewReader(data))
+	if err != nil {
+		return nil, err
+	}
+	r := src.Bounds()
+	dst := image.NewNRGBA(r)
+	for y := r.Min.Y; y < r.Max.Y; y++ {
+		for x := r.Min.X; x < r.Max.X; x++ {
+			_, _, _, a := src.At(x, y).RGBA()
+			dst.SetNRGBA(x, y, color.NRGBA{255, 255, 255, uint8(a >> 8)})
+		}
+	}
+	var b bytes.Buffer
+	if err := png.Encode(&b, dst); err != nil {
+		return nil, err
+	}
+	return b.Bytes(), nil
+}
+
 func (t *tray) SetTitle(string) {}
+
+// Dark reports whether the taskbar is dark: Windows draws it in the
+// system's mode, which may differ from the apps'.
+func (t *tray) Dark() bool {
+	light, ok := regDWORD(hkeyCurrentUser, personalizeKey, "SystemUsesLightTheme")
+	return ok && light == 0
+}
+
+// SetID numbers the icon by its ID. The notification area keeps whether
+// the user shows an icon on the taskbar by the executable's path and the
+// icon's number, which NewTray otherwise gives as icons come: an icon
+// made again, or after others in another order, would lose the user's
+// choice, or take another icon's. It keeps none for an icon of such a
+// number added blank, so NewTray adds icons once they show something. An
+// icon already added is added again under its new number; a number
+// another icon has keeps the old one.
+func (t *tray) SetID(id string) {
+	n := trayNumber(id)
+	if id == "" || n == t.id || t.b.trays[n] != nil {
+		return
+	}
+	if t.added {
+		d := t.data(0)
+		procShellNotifyIconW.Call(nimDelete, uintptr(unsafe.Pointer(&d)))
+	}
+	delete(t.b.trays, t.id)
+	t.id = n
+	t.b.trays[n] = t
+	if t.added {
+		t.add()
+	}
+}
+
+// trayNumber is the number of an icon of an ID: its FNV-1a hash, with the
+// high bit set, which the numbers NewTray counts never reach.
+func trayNumber(id string) uint32 {
+	h := fnv.New32a()
+	h.Write([]byte(id))
+	return h.Sum32() | 1<<31
+}
 
 func (t *tray) SetToolTip(tip string) {
 	t.tip = tip
@@ -137,12 +233,25 @@ func (t *tray) PopUpMenu(m *platform.Menu) {
 	defer procDestroyMenu.Call(menu)
 	var pt point
 	procGetCursorPos.Call(uintptr(unsafe.Pointer(&pt)))
-	if cmd := t.b.trackPopup(menu, t.b.appHwnd, pt); cmd != 0 {
+	if cmd := t.b.trackPopup(menu, t.b.appHwnd, pt, 0); cmd != 0 {
 		t.b.menuCommand(cmd, nil)
 	}
 }
 
 func (t *tray) Bounds() platform.Rect {
+	r, ok := t.rect()
+	if !ok {
+		return platform.Rect{}
+	}
+	dpi := monitorDPI(monitorAt(int(r.Left), int(r.Top)))
+	return platform.Rect{X: toDIP(r.Left, dpi), Y: toDIP(r.Top, dpi), Width: toDIP(r.Right-r.Left, dpi), Height: toDIP(r.Bottom-r.Top, dpi)}
+}
+
+// rect returns where the icon is on the screen, in physical pixels.
+func (t *tray) rect() (rect, bool) {
+	if !t.added && !t.temporary {
+		t.add() // it is somewhere once added
+	}
 	type identifier struct {
 		Size uint32
 		Wnd  uintptr
@@ -153,13 +262,12 @@ func (t *tray) Bounds() platform.Rect {
 	ident.Size = uint32(unsafe.Sizeof(ident))
 	var r rect
 	if !has(procShellNotifyIconGetRect) {
-		return platform.Rect{}
+		return r, false
 	}
 	if hr, _, _ := procShellNotifyIconGetRect.Call(uintptr(unsafe.Pointer(&ident)), uintptr(unsafe.Pointer(&r))); failed(hr) {
-		return platform.Rect{}
+		return r, false
 	}
-	dpi := monitorDPI(monitorAt(int(r.Left), int(r.Top)))
-	return platform.Rect{X: toDIP(r.Left, dpi), Y: toDIP(r.Top, dpi), Width: toDIP(r.Right-r.Left, dpi), Height: toDIP(r.Bottom-r.Top, dpi)}
+	return r, r.Right > r.Left && r.Bottom > r.Top
 }
 
 func (t *tray) Destroy() {
@@ -234,7 +342,7 @@ func (b *Backend) ShowNotification(n *platform.Notification, done func(error)) {
 func (b *Backend) showNotification(n *platform.Notification) error {
 	var t *tray
 	for _, x := range b.trays {
-		if !x.temporary && x.notification == "" {
+		if !x.temporary && x.notification == "" && x.added {
 			t = x
 			break
 		}
@@ -327,3 +435,16 @@ func (b *Backend) RegisterHotkey(id int, acc string) error {
 }
 
 func (b *Backend) UnregisterHotkey(id int) { procUnregisterHotKey.Call(b.appHwnd, uintptr(id)) }
+
+// traysAppearance tells the icons whose taskbar turned dark or light.
+func (b *Backend) traysAppearance() {
+	for _, t := range b.trays {
+		if dark := t.Dark(); dark != t.dark {
+			t.dark = dark
+			if t.template {
+				t.SetImage(t.image, true)
+			}
+			t.h.AppearanceChanged()
+		}
+	}
+}
