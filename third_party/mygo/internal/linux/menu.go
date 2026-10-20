@@ -35,6 +35,7 @@ var (
 
 	cbMenuActivate   ptr
 	cbMenuDeactivate ptr
+	cbTrayActivate   ptr
 
 	// Menu bars that hide (window.menuHides), and the keys of items with a
 	// role.
@@ -55,6 +56,12 @@ var editCommands = map[string]string{
 }
 
 func initMenuCallbacks() {
+	cbTrayActivate = purego.NewCallback(func(ind ptr, x, y int32, data ptr) {
+		t := theBackend.trays[int(data)]
+		if t != nil && t.h != nil {
+			t.h.Clicked()
+		}
+	})
 	cbMenuActivate = purego.NewCallback(func(item, data ptr) {
 		if settingState {
 			return
@@ -452,10 +459,11 @@ func (b *Backend) PopupMenu(m *platform.Menu, pw platform.Window, pos *platform.
 	gtkWidgetDestroy(menu)
 }
 
-// Tray icons use AppIndicator (StatusNotifierItem), which shows a menu on
-// click; click events are not available.
+// Tray icons use AppIndicator (StatusNotifierItem): the panel opens the
+// attached menu on a right-click and reports a left-click as "activate".
 type tray struct {
 	b       *Backend
+	h       platform.TrayHandler
 	id      int
 	ind     ptr
 	menu    ptr
@@ -469,12 +477,17 @@ func (b *Backend) NewTray(h platform.TrayHandler) (platform.Tray, error) {
 		return nil, fmt.Errorf("mygo: tray icons need libayatana-appindicator3: %w", platform.ErrUnsupported)
 	}
 	b.nextTray++
-	t := &tray{b: b, id: b.nextTray}
+	t := &tray{b: b, h: h, id: b.nextTray}
 	name := fmt.Sprintf("mygo-%d-%d", os.Getpid(), t.id)
 	t.ind = appIndicatorNew(cs(name), cs("application-x-executable"), 0) // APPLICATION_STATUS
 	appIndicatorSetStatus(t.ind, 1)                                      // ACTIVE
-	// AppIndicator only shows up once it has a menu.
+	// AppIndicator only shows up once it has a menu, and the same menu is
+	// what the panel opens on right-click.
 	t.SetMenu(&platform.Menu{})
+	// Modern libayatana-appindicator reports a left-click as Activate. Connect
+	// it before the panel asks, otherwise AppIndicator deliberately returns
+	// UnknownMethod and the panel falls back to opening the menu on left-click.
+	connect(t.ind, "activate", cbTrayActivate, ptr(t.id))
 	b.trays[t.id] = t
 	return t, nil
 }

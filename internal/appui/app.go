@@ -94,10 +94,10 @@ type App struct {
 	hotkeys hotkeyState
 	// 托盘与应用级资源。Close 幂等：OnQuit 与 main 的 defer 都会走一次。
 	tray        *mygo.Tray
+	trayRoot    *mygo.Menu
 	trayItems   *trayMenu
 	traySig     string
-	trayClickMu sync.Mutex
-	trayPending bool
+	trayClicks  trayClickTracker
 	sleep       *sleepBlocker
 	quitStarted atomic.Bool
 	closeOnce   sync.Once

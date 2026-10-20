@@ -8,6 +8,7 @@ import (
 	"image/png"
 	"os"
 	"strings"
+	"sync"
 	"time"
 	"unicode"
 
@@ -25,7 +26,8 @@ const (
 	trayTitleEllipsis     = "…"
 	trayTrackSeparator    = " - "
 	trayArtistSeparator   = " / "
-	trayWindowToggleLabel = "显示/隐藏 " + trayProductName
+	trayWindowShowLabel   = "显示 " + trayProductName
+	trayDoubleClickWindow = 500 * time.Millisecond
 )
 
 type trayMenu struct {
@@ -59,7 +61,7 @@ func (a *App) buildTrayMenu() (*mygo.Menu, *trayMenu) {
 		menu.next,
 		{Label: "循环模式", Submenu: []*mygo.MenuItem{menu.off, menu.all, menu.one, mygo.Separator(), menu.shuf}},
 		mygo.Separator(),
-		{Label: trayWindowToggleLabel, Click: func(*mygo.MenuItem, *mygo.Window) { a.toggleWindow() }},
+		{Label: trayWindowShowLabel, Click: func(*mygo.MenuItem, *mygo.Window) { a.showWindow() }},
 		mygo.Separator(),
 		{Label: "退出", Click: func(*mygo.MenuItem, *mygo.Window) { mygo.App.Quit() }},
 	})
@@ -75,21 +77,32 @@ func (a *App) setupTray() {
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "appui: 托盘图标生成失败（%v）\n", err)
 	}
-	tray, err := mygo.NewTray(mygo.TrayOptions{
+	opts := mygo.TrayOptions{
 		Icon:           icon,
 		IconIsTemplate: false,
 		ToolTip:        trayProductName,
-		Menu:           root,
-	})
+	}
+	// AppIndicator has no separate right-click entry point: it needs the menu
+	// attached to the icon, which the panel opens on secondary click. macOS
+	// would otherwise open that menu on a single left click, so only Linux
+	// keeps it attached; the other backends pop it up from OnRightClick.
+	if trayNeedsAttachedMenu() {
+		opts.Menu = root
+	}
+	tray, err := mygo.NewTray(opts)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "appui: 托盘不可用（%v）\n", err)
 		return
 	}
 	a.tray = tray
+	a.trayRoot = root
 	a.trayItems = menu
-	// Windows/macOS 会把图标点击送到这里；Linux AppIndicator 只提供菜单，
-	// 菜单中的「显示/隐藏」是该平台的可靠入口。
-	tray.OnClick(a.toggleWindowFromTray)
+	// 左键只认双击：第一次点击只记时间，第二次落在系统级双击窗口内才
+	// 把主窗口拉回前台。单击不隐藏、不切换，避免误触让窗口消失。
+	tray.OnClick(a.trayLeftClicked)
+	if !trayNeedsAttachedMenu() {
+		tray.OnRightClick(a.trayRightClicked)
+	}
 	a.syncTray()
 }
 
@@ -148,34 +161,62 @@ func (a *App) syncTray() {
 	})
 }
 
-// toggleWindowFromTray 合并 220ms 内的单击/双击。托盘双击原生层会送来
-// 两次 Activate/Click；若不合并，窗口会隐藏后立刻重新显示，看起来像失效。
-func (a *App) toggleWindowFromTray() {
-	a.trayClickMu.Lock()
-	if a.trayPending {
-		a.trayClickMu.Unlock()
-		return
-	}
-	a.trayPending = true
-	a.trayClickMu.Unlock()
-	time.AfterFunc(220*time.Millisecond, func() {
-		a.trayClickMu.Lock()
-		a.trayPending = false
-		a.trayClickMu.Unlock()
-		if a.quitStarted.Load() {
-			return
-		}
-		a.update(a.toggleWindow)
-	})
+// trayClickTracker turns the backend's individual click callbacks into the
+// only tray gesture that opens the app: a left double-click. A single click
+// stays inert, as it does in platform shells.
+type trayClickTracker struct {
+	mu   sync.Mutex
+	last time.Time
 }
 
-// toggleWindow 是托盘左键/菜单「显示或隐藏」共用入口。
-func (a *App) toggleWindow() {
-	if a.Win == nil || a.Win.IsDestroyed() {
+// click reports whether now completes a double-click. It also starts a new
+// sequence after the previous click fell outside the window.
+func (c *trayClickTracker) click(now time.Time) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if !c.last.IsZero() {
+		if dt := now.Sub(c.last); dt >= 0 && dt <= trayDoubleClickWindow {
+			c.last = time.Time{}
+			return true
+		}
+	}
+	c.last = now
+	return false
+}
+
+func (c *trayClickTracker) reset() {
+	c.mu.Lock()
+	c.last = time.Time{}
+	c.mu.Unlock()
+}
+
+// trayLeftClicked receives every primary click from the platform. Linux's
+// AppIndicator emits Activate for each one once MyGo connects its signal;
+// Windows and macOS report the same click through OnClick.
+func (a *App) trayLeftClicked() {
+	if !a.trayClicks.click(time.Now()) {
 		return
 	}
-	if a.Win.IsVisible() {
-		a.Win.Hide()
+	a.update(a.showWindow)
+}
+
+// trayRightClicked opens the menu only for platforms whose tray backend does
+// not attach one itself. SetMenu is temporary so a left click can never open
+// the menu there, then PopUpMenu shows it at the pointer.
+func (a *App) trayRightClicked() {
+	a.trayClicks.reset()
+	if a.tray == nil || a.trayRoot == nil {
+		return
+	}
+	a.tray.SetMenu(a.trayRoot)
+	defer a.tray.SetMenu(nil)
+	a.tray.PopUpMenu()
+}
+
+// showWindow brings the existing main window to the foreground, whether it
+// was hidden, minimized, or merely behind other windows.
+func (a *App) showWindow() {
+	if a.Win == nil || a.Win.IsDestroyed() {
 		return
 	}
 	if a.Win.IsMinimized() {

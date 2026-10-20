@@ -127,7 +127,7 @@ func (a *App) mediaCommands() *smedia.Commands {
 		SetLoop:    a.PL.SetMode,
 		SetShuffle: a.PL.SetShuffle,
 		Raise: func() {
-			a.update(a.toggleWindow)
+			a.update(a.showWindow)
 		},
 		Quit: func() {
 			// 退出必须回主线程；mygo.App.Quit 触发 OnQuit → App.Close 收口。

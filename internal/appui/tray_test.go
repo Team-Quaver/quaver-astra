@@ -4,6 +4,7 @@ import (
 	"image/png"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Team-Quaver/quaver-astra/internal/player"
 
@@ -82,7 +83,7 @@ func TestTrayMenuMatchesQuaverAstra(t *testing.T) {
 	}
 	wantLabels := []string{
 		trayIdleLabel, "上一曲", "播放", "下一曲", "循环模式",
-		"", trayWindowToggleLabel, "", "退出",
+		"", trayWindowShowLabel, "", "退出",
 	}
 	for i, want := range wantLabels {
 		if got[i].Label != want {
@@ -109,5 +110,44 @@ func TestTrayMenuMatchesQuaverAstra(t *testing.T) {
 		if loop[i].Label != want.label || loop[i].Type != want.typ {
 			t.Errorf("循环第 %d 项 = %q/%s, want %q/%s", i+1, loop[i].Label, loop[i].Type, want.label, want.typ)
 		}
+	}
+}
+
+func TestTrayClickTrackerRequiresDoubleClick(t *testing.T) {
+	var clicks trayClickTracker
+	start := time.Unix(1_700_000_000, 0)
+	if clicks.click(start) {
+		t.Fatal("第一次左键点击不应打开窗口")
+	}
+	if !clicks.click(start.Add(trayDoubleClickWindow)) {
+		t.Fatal("双击窗口内的第二次左键点击应打开窗口")
+	}
+	if clicks.click(start.Add(trayDoubleClickWindow + time.Millisecond)) {
+		t.Fatal("完成双击后应立即开始新的点击序列")
+	}
+}
+
+func TestTrayClickTrackerIgnoresLateSecondClick(t *testing.T) {
+	var clicks trayClickTracker
+	start := time.Unix(1_700_000_000, 0)
+	if clicks.click(start) {
+		t.Fatal("第一次左键点击不应打开窗口")
+	}
+	late := start.Add(trayDoubleClickWindow + time.Millisecond)
+	if clicks.click(late) {
+		t.Fatal("超出双击窗口的点击不应打开窗口")
+	}
+	if !clicks.click(late.Add(trayDoubleClickWindow)) {
+		t.Fatal("迟到点击应重新起算并可与下一击组成双击")
+	}
+}
+
+func TestTrayRightClickResetsPendingLeftClick(t *testing.T) {
+	var clicks trayClickTracker
+	start := time.Unix(1_700_000_000, 0)
+	clicks.click(start)
+	clicks.reset()
+	if clicks.click(start.Add(time.Millisecond)) {
+		t.Fatal("右键菜单后残留的左键点击不应组成双击")
 	}
 }
