@@ -233,7 +233,7 @@ func (npBackend) LikedPage(int, int) ([]player.Song, int64, bool, error) {
 func (npBackend) Playlists() ([]player.PlaylistRef, error) { return nil, nil }
 func (npBackend) GuessSongs(int) ([]player.Song, error)    { return nil, nil }
 func (npBackend) Tiers() (*player.TierTable, error)        { return nil, nil }
-func (npBackend) Resolve(string, string, int64, string, []string) (*player.StreamInfo, error) {
+func (npBackend) Resolve(string, string, int64, string, []string, int64) (*player.StreamInfo, error) {
 	return &player.StreamInfo{URL: "test://stream", Tier: "flac", TierLabel: "FLAC"}, nil
 }
 func (b npBackend) FetchLyric(string, bool, bool) (string, string, string, error) {

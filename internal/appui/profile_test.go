@@ -83,7 +83,7 @@ func (b profileBackend) LikedPage(int, int) ([]player.Song, int64, bool, error) 
 func (b profileBackend) Playlists() ([]player.PlaylistRef, error) { return nil, nil }
 func (b profileBackend) GuessSongs(int) ([]player.Song, error)    { return nil, nil }
 func (b profileBackend) Tiers() (*player.TierTable, error)        { return nil, nil }
-func (b profileBackend) Resolve(string, string, int64, string, []string) (*player.StreamInfo, error) {
+func (b profileBackend) Resolve(string, string, int64, string, []string, int64) (*player.StreamInfo, error) {
 	return nil, nil
 }
 func (b profileBackend) FetchLyric(string, bool, bool) (string, string, string, error) {

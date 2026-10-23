@@ -37,6 +37,8 @@ type Engine struct {
 	cmd      *exec.Cmd
 	done     chan struct{} // cmd.Wait 完成；Close 等它确认子进程已回收
 	doneOnce sync.Once
+	started  chan struct{} // 后台 spawn 结束（成功或失败）
+	startErr error
 	conn     ipcConn
 	rd       *bufio.Reader
 	wr       *bufio.Writer
@@ -121,20 +123,45 @@ type ipcResp struct {
 // ipcReadTimeout 是 IPC socket 单次读的默认超时。
 const ipcReadTimeout = 30 * time.Second
 
-// New 启动 mpv 子进程并完成 IPC 握手。失败时返回哑引擎：所有操作退化为
-// 返回错误，调用方无需区分「无音频设备」与「无 mpv」。
+// New 构造引擎并在后台启动 mpv。构造本身不碰磁盘/进程/音频设备：
+// 首次启动曾被放在 main 的窗口创建之前，mpv 初始化慢（无声卡、驱动
+// 初始化、杀软扫描随包 mpv）时窗口根本不出现，用户看到的是一次白屏
+// 或「没反应」。播放路径会等这次后台启动完成；启动失败则退化为哑引擎，
+// 所有操作返回错误，调用方无需区分「无音频设备」与「无 mpv」。
 func New() *Engine {
 	e := &Engine{
 		volume: 0.8, obsCh: make(chan struct{}, 1), done: make(chan struct{}),
-		readTimeout: ipcReadTimeout,
+		started: make(chan struct{}), readTimeout: ipcReadTimeout,
 	}
-	if err := e.spawn(); err != nil {
+	go e.start()
+	return e
+}
+
+// start 在后台完成 spawn 与 IPC 握手，并把结果交给 started。
+func (e *Engine) start() {
+	err := e.spawn()
+	e.mu.Lock()
+	e.startErr = err
+	// 启动失败即哑引擎；Close 先到则保持关闭。
+	if err != nil {
 		e.closed = true
+	}
+	e.mu.Unlock()
+	if err != nil {
 		e.markDone()
 		fmt.Fprintf(os.Stderr, "audio: mpv 不可用（%v），播放功能禁用\n", err)
-		return e
 	}
-	return e
+	close(e.started)
+}
+
+// awaitStart 等后台启动结束。仅播放路径调用；窗口启动路径不等待。
+func (e *Engine) awaitStart() error {
+	if e.started != nil {
+		<-e.started
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.startErr
 }
 
 // mpvPath 找可用的 mpv 可执行文件。
@@ -186,6 +213,10 @@ func mpvArgs(sock string) []string {
 
 // spawn 拉起 mpv 并连上 IPC。
 func (e *Engine) spawn() error {
+	// 握手命令的读超时收紧：后台启动不会挡窗口，但用户可能在启动完成前
+	// 退出；没有响应时也不该让引擎/退出路径陪着等满默认的 30 秒。
+	defer e.withReadTimeout(2 * time.Second)()
+
 	bin, err := mpvPath()
 	if err != nil {
 		return err
@@ -206,7 +237,16 @@ func (e *Engine) spawn() error {
 		cleanupIPC()
 		return err
 	}
+
+	e.mu.Lock()
+	if e.closed {
+		e.mu.Unlock()
+		_ = cmd.Process.Kill()
+		cleanupIPC()
+		return errors.New("引擎已关闭")
+	}
 	e.cmd = cmd
+	e.mu.Unlock()
 
 	// exited 是一个原子标志：mpv 进程退出时置位，用于建连失败时快速诊断。
 	// Wait 必须紧跟 Start：连接握手期间 mpv 自己退出也要立刻被观察到，
@@ -237,9 +277,19 @@ func (e *Engine) spawn() error {
 		cleanupIPC()
 		return errors.New("mpv IPC 未就绪（socket/命名管道未建立，进程可能已退出）")
 	}
+
+	e.mu.Lock()
+	if e.closed {
+		e.mu.Unlock()
+		_ = conn.Close()
+		_ = cmd.Process.Kill()
+		cleanupIPC()
+		return errors.New("引擎已关闭")
+	}
 	e.conn = conn
 	e.rd = bufio.NewReaderSize(conn, 64<<10)
 	e.wr = bufio.NewWriterSize(conn, 64<<10)
+	e.mu.Unlock()
 
 	// 注册观察属性并同步初始音量。
 	//
@@ -283,6 +333,14 @@ func (e *Engine) spawn() error {
 	}
 
 	// 握手完成，此刻才让观察协程接管 socket。
+	e.mu.Lock()
+	if e.closed {
+		e.mu.Unlock()
+		_ = conn.Close()
+		_ = cmd.Process.Kill()
+		return errors.New("引擎已关闭")
+	}
+	e.mu.Unlock()
 	go e.observe()
 	return nil
 }
@@ -691,6 +749,9 @@ func toFloat(v any) (float64, bool) {
 // OpenURL 让 mpv 播放 url，并从 startFrac（0..1）处开始。
 // url 通常是本地中继的音频流地址，mpv 自行发起 HTTP Range 与重试。
 func (e *Engine) OpenURL(url string, startFrac, dur float64, autoplay bool) error {
+	if err := e.awaitStart(); err != nil {
+		return fmt.Errorf("mpv 不可用：%w", err)
+	}
 	cmd := loadCmd{url: url, flags: "replace"}
 	if startFrac > 0 {
 		// 起点必须走 loadfile 的 options.start，不能载入后再 seek：mpv 会
@@ -845,6 +906,15 @@ func (e *Engine) SetVolume(v float64) {
 	e.commandQuiet("set_property", "volume", strconv.FormatFloat(v*100, 'f', 0, 64))
 }
 
+// SetStartVolume 设置后台启动握手时要同步给 mpv 的音量。它不发 IPC：
+// 启动可能还没完成，command 会被丢弃或阻塞；spawn 握手读到的是最新值。
+func (e *Engine) SetStartVolume(v float64) {
+	v = clamp01(v)
+	e.mu.Lock()
+	e.volume = v
+	e.mu.Unlock()
+}
+
 // Stop 停止当前曲目，回到空闲态。
 func (e *Engine) Stop() {
 	e.mu.Lock()
@@ -868,15 +938,18 @@ func (e *Engine) markDone() {
 
 // Close 终止 mpv 进程（应用退出时调用）。
 func (e *Engine) Close() {
-	e.mu.Lock()
-	if e.closed {
-		e.mu.Unlock()
-		return
+	if e.started != nil {
+		<-e.started
 	}
-	e.closed = true
+	e.mu.Lock()
+	already := e.closed
+	e.closed = true // 即便 spawn 刚失败，也由这里统一收口
 	conn, cmd := e.conn, e.cmd
 	e.conn = nil
 	e.mu.Unlock()
+	if already {
+		return
+	}
 	if conn != nil {
 		_ = conn.Close()
 	}
@@ -934,6 +1007,16 @@ func (e *Engine) Stalled() bool {
 
 // Available 报告 mpv 是否可用（设置页据此提示安装）。
 func (e *Engine) Available() bool {
+	if e.started != nil {
+		select {
+		case <-e.started:
+		default:
+			// 后台启动还没结束：不能在这里阻塞 UI。探测只回答「可执行文件
+			// 是否存在」，真正能否连上 IPC 由首次播放的 awaitStart 决定。
+			_, err := mpvPath()
+			return err == nil
+		}
+	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	return !e.closed

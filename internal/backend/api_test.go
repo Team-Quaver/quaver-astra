@@ -7,6 +7,31 @@ import (
 	"testing"
 )
 
+// TestResolveStreamSendsDuration 锁住与 Typhoeus 新版 stream guard 的契约：
+// 曲长提示必须随 resolve 一起到达，否则后端只能按 2 分钟兜底限速。
+func TestResolveStreamSendsDuration(t *testing.T) {
+	var got map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/stream/resolve" {
+			t.Errorf("path = %q", r.URL.Path)
+		}
+		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+			t.Errorf("decode body: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"code":0,"msg":"ok","data":{"token":"t","path":"/stream/t","tier":"flac","tier_label":"FLAC","mime":"audio/flac","size":123}}`))
+	}))
+	defer srv.Close()
+
+	c := NewClient(srv.URL)
+	if _, err := c.ResolveStream("mid", "", 1, "flac", true, nil, 245000); err != nil {
+		t.Fatal(err)
+	}
+	if got["duration_ms"] != float64(245000) {
+		t.Fatalf("duration_ms = %#v, want 245000", got["duration_ms"])
+	}
+}
+
 func TestEnvelopeDecode(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {

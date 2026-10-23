@@ -210,6 +210,9 @@ func (a *App) syncSleep() {
 // Attach 绑定窗口：接上重绘通知、启动播放器与登录态刷新、跑自检钩子。
 func (a *App) Attach(win *mygo.Window) {
 	a.Win = win
+	// 首帧前窗口已经存在；先按配置铺底色，避免深色模式下等首帧时闪
+	// 一下白底。MyGo 的首帧随后覆盖，设置页切主题时会再次同步。
+	a.ApplyWindowBackground()
 	// 系统标题栏/Alt+F4 走 OnClose，与自绘关闭按钮共用「关闭窗口行为」设置。
 	// 真正退出时 OnBeforeQuit 已置 quitStarted，放行原生关闭流程。
 	win.OnClose(func(e *mygo.CloseEvent) {
@@ -233,6 +236,30 @@ func (a *App) Attach(win *mygo.Window) {
 	}
 	a.maybeSelfCheck()
 	a.maybeAutoCheckUpdate()
+}
+
+// ApplyWindowBackground 让原生窗口的启动底色跟上配置的明暗。
+func (a *App) ApplyWindowBackground() error {
+	if a.Win == nil || a.Conf == nil {
+		return nil
+	}
+	return a.Win.SetBackgroundColor(WindowBackground(a.Conf))
+}
+
+// WindowBackground 返回启动首帧前的窗口底色：强制浅/深色按应用调色板，
+// 跟随系统时交给 MyGo 的 light-dark（原生侧据此解析当前桌面外观）。
+func WindowBackground(store *conf.Store) string {
+	if store == nil {
+		return "light-dark(#f7f7f8, #131417)"
+	}
+	switch store.String("Style.Theme", "system") {
+	case "light":
+		return "#f7f7f8"
+	case "dark":
+		return "#131417"
+	default:
+		return "light-dark(#f7f7f8, #131417)"
+	}
 }
 
 // View 是窗口根视图。

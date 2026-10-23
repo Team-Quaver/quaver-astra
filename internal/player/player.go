@@ -130,7 +130,7 @@ type Backend interface {
 	LikedPage(page, num int) (songs []Song, total int64, hasmore bool, err error)
 	Playlists() (pls []PlaylistRef, err error)
 	Tiers() (*TierTable, error)
-	Resolve(mid, mediaMid string, songType int64, tier string, deprioritize []string) (*StreamInfo, error)
+	Resolve(mid, mediaMid string, songType int64, tier string, deprioritize []string, durationMs int64) (*StreamInfo, error)
 	FetchLyric(mid string, trans, roma bool) (lrc, translation, romanization string, err error)
 	GuessSongs(rounds int) ([]Song, error)
 	LikeSong(songID int64, writeType int64, like bool) error
@@ -170,6 +170,13 @@ type Engine interface {
 	// 这类错误换档/跳歌都救不回来，player 据此直接收手。
 	LoadErrorFatal() bool
 	OnObserve(fn func())
+}
+
+// startVolumeSetter is the optional fast path of an asynchronous audio
+// engine: the saved volume is set locally before its background start
+// finishes, instead of queueing an IPC command that would be lost.
+type startVolumeSetter interface {
+	SetStartVolume(v float64)
 }
 
 // Preferences 是持久化配置读写接口。
@@ -1442,7 +1449,11 @@ func (p *Player) resolveWithFallback(song Song, want string, dep []string, seq u
 		if stale {
 			return nil, "", errStale
 		}
-		info, err := p.api.Resolve(song.Mid, "", song.SongType, tier, dep)
+		durationMs := int64(song.Interval * 1000)
+		if durationMs < 0 {
+			durationMs = 0
+		}
+		info, err := p.api.Resolve(song.Mid, "", song.SongType, tier, dep, durationMs)
 		if err == nil && info != nil {
 			return info, tier, nil
 		}
@@ -1841,9 +1852,14 @@ func (p *Player) Boot() {
 	p.mu.Lock()
 	p.vol = p.conf.Float("Playing.Volume", 0.8)
 	p.muted = p.conf.Bool("Playing.Muted", false)
-	p.eng.SetVolume(0)
-	if !p.muted {
-		p.eng.SetVolume(p.vol)
+	vol := p.vol
+	if p.muted {
+		vol = 0
+	}
+	if sv, ok := p.eng.(startVolumeSetter); ok {
+		sv.SetStartVolume(vol)
+	} else {
+		p.eng.SetVolume(vol)
 	}
 	p.mu.Unlock()
 	// 恢复退出前的播放列表与进度：只「就位」，不自动起播（见 session.go）。

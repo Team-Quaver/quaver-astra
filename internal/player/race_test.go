@@ -175,7 +175,7 @@ func (b *liveBackend) Tiers() (*TierTable, error) {
 	}
 	return &TierTable{Tiers: []Tier{{ID: "128", Rank: 10}, {ID: "320", Rank: 20}, {ID: "flac", Rank: 30}}}, nil
 }
-func (b *liveBackend) Resolve(mid, mediaMid string, songType int64, tier string, dep []string) (*StreamInfo, error) {
+func (b *liveBackend) Resolve(mid, mediaMid string, songType int64, tier string, dep []string, durationMs int64) (*StreamInfo, error) {
 	// URL 里带上档位，测试才能按档位模拟「这一档 mpv 打不开」
 	return &StreamInfo{URL: "http://x/" + mid + "/" + tier, Tier: tier, TierLabel: tier}, nil
 }

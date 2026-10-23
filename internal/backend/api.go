@@ -548,15 +548,21 @@ func (c *Client) StreamTiers() (Tiers, error) {
 	return out, err
 }
 
-// ResolveStream 解析播放流。tier 为档位 id 或 "auto"；deprioritize 降权档位。
-func (c *Client) ResolveStream(mid, mediaMid string, songType int, tier string, auto bool, deprioritize []string) (Resolved, error) {
+// ResolveStream 解析播放流。tier 为档位 id 或 "auto"；deprioritize 降权档位；
+// durationMs 是上游曲长提示，后端据此把中继限速定在该曲 ≈3× 实时码率
+// （缺省时按整曲 ≥2 分钟兜底，高码率档会被压得过慢）。
+func (c *Client) ResolveStream(mid, mediaMid string, songType int, tier string, auto bool, deprioritize []string, durationMs int64) (Resolved, error) {
 	if deprioritize == nil {
 		deprioritize = []string{}
+	}
+	if durationMs < 0 {
+		durationMs = 0
 	}
 	var out Resolved
 	body := map[string]any{
 		"mid": mid, "media_mid": mediaMid, "song_type": songType,
 		"tier": tier, "auto": auto, "deprioritize": deprioritize,
+		"duration_ms": durationMs,
 	}
 	err := c.postJSONInto("/stream/resolve", body, &out)
 	return out, err

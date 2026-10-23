@@ -100,7 +100,7 @@ func (loggedBackend) Playlists() ([]player.PlaylistRef, error) {
 }
 func (loggedBackend) GuessSongs(int) ([]player.Song, error) { return nil, nil }
 func (loggedBackend) Tiers() (*player.TierTable, error)     { return nil, nil }
-func (loggedBackend) Resolve(string, string, int64, string, []string) (*player.StreamInfo, error) {
+func (loggedBackend) Resolve(string, string, int64, string, []string, int64) (*player.StreamInfo, error) {
 	return nil, nil
 }
 func (loggedBackend) FetchLyric(string, bool, bool) (string, string, string, error) {

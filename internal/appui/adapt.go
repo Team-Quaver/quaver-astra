@@ -114,8 +114,8 @@ func (a apiAdapter) Tiers() (*player.TierTable, error) {
 	return out, nil
 }
 
-func (a apiAdapter) Resolve(mid, mediaMid string, songType int64, tier string, deprioritize []string) (*player.StreamInfo, error) {
-	r, err := a.c.ResolveStream(mid, mediaMid, int(songType), tier, true, deprioritize)
+func (a apiAdapter) Resolve(mid, mediaMid string, songType int64, tier string, deprioritize []string, durationMs int64) (*player.StreamInfo, error) {
+	r, err := a.c.ResolveStream(mid, mediaMid, int(songType), tier, true, deprioritize, durationMs)
 	if err != nil {
 		return nil, err
 	}

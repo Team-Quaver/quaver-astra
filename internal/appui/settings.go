@@ -397,6 +397,7 @@ func (a *App) setTheme(c *ui.Context, key string) {
 	if res, ok := a.tint.result(); ok {
 		a.tint.set(res, a.appearance(c))
 	}
+	_ = a.ApplyWindowBackground()
 	a.invalidate()
 }
 

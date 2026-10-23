@@ -185,7 +185,7 @@ func (stubBackend) LikedPage(int, int) ([]Song, int64, bool, error) { return nil
 func (stubBackend) Playlists() ([]PlaylistRef, error)               { return nil, nil }
 func (stubBackend) GuessSongs(int) ([]Song, error)                  { return nil, nil }
 func (stubBackend) Tiers() (*TierTable, error)                      { return nil, nil }
-func (stubBackend) Resolve(string, string, int64, string, []string) (*StreamInfo, error) {
+func (stubBackend) Resolve(string, string, int64, string, []string, int64) (*StreamInfo, error) {
 	return nil, nil
 }
 func (stubBackend) FetchLyric(string, bool, bool) (string, string, string, error) {

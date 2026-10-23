@@ -5,6 +5,8 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"sync/atomic"
+	"time"
 	_ "unsafe"
 
 	"github.com/Team-Quaver/quaver-astra/internal/appid"
@@ -30,6 +32,12 @@ var mygoPackageIdentifier string
 var version = "dev"
 
 func init() { mygoPackageIdentifier = appid.Identifier }
+
+// startupShowGrace 是窗口等首帧的上限。原生 UI 的窗口在隐藏状态下，
+// 某些平台会推迟绘制；超过这个时间就显示窗口并让系统先画窗口底色，
+// 不能因为「等就绪」把启动变成永远不出现的进程。启动动画约 4.6s，
+// 保险丝不能抢在它前面把还没画完的第一帧显示出来。
+const startupShowGrace = 5 * time.Second
 
 func main() {
 	// 必须早于 GTK/OpenGL 首次加载；见 gpu_linux.go。
@@ -84,17 +92,44 @@ func main() {
 			MinWidth:  940,
 			MinHeight: 600,
 			Frameless: true,
-			StateKey:  "main",
-			Content:   ui.View(app.View),
+			Hidden:    true,
+			// 首帧前不能是一块纯白：Windows 的 DWM/显卡驱动初始化与
+			// macOS 的 Metal drawable 都可能晚于窗口创建。按配置直接
+			// 铺主题底色，系统明暗则跟随 MyGo 的 light-dark 选项。
+			BackgroundColor: appui.WindowBackground(store),
+			StateKey:        "main",
+			Content:         ui.View(app.View),
 		})
 		_ = mainWin.SetIcon(appui.AppIconPNG())
 		app.ApplyThemeSource()
 		app.Attach(mainWin)
+		// 保险丝：首帧始终没来（平台不画隐藏窗口、驱动/合成器异常）
+		// 时也要把窗口交还给用户，而不是留一个没有窗口的后台进程。
+		// 正常首帧先到就只显示一次；超时后主线程才执行 Show。
+		var shown atomic.Bool
+		show := startupShowOnce(&shown, func() {
+			// 平台没有发首帧时，OnReadyToShow 不会来；在显示前
+			// 再校准一次底色（尤其配置为深色时）。
+			_ = app.ApplyWindowBackground()
+			mainWin.Show()
+		})
+		mainWin.OnReadyToShow(show)
+		time.AfterFunc(startupShowGrace, show)
 	})
 	if err := mygo.App.Run(); err != nil {
 		// fatal 会直接 os.Exit，普通 defer 不再有机会执行；先收掉 mpv。
 		app.Close()
 		fatal(err)
+	}
+}
+
+// startupShowOnce 返回只会执行一次 fn 的显示回调。首帧与超时保险丝
+// 可能同时到达；Show 虽幂等，但重复激活会抢焦点，这里只放行一次。
+func startupShowOnce(shown *atomic.Bool, fn func()) func() {
+	return func() {
+		if shown.CompareAndSwap(false, true) {
+			fn()
+		}
 	}
 }
 

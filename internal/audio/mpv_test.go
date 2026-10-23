@@ -108,6 +108,26 @@ func TestEngineHelpers(t *testing.T) {
 	})
 }
 
+// TestNewDoesNotWaitForMPV 锁住启动时序：没有 mpv 的机器上 New() 也必须
+// 立刻返回，否则窗口创建前就卡住，用户看到的是白屏/无响应。
+func TestNewDoesNotWaitForMPV(t *testing.T) {
+	t.Setenv("QAA_MPV", "/definitely/not/here/mpv")
+	t.Setenv("QAA_MPV_DIR", "")
+
+	start := time.Now()
+	e := New()
+	elapsed := time.Since(start)
+	if elapsed > 500*time.Millisecond {
+		e.Close()
+		t.Fatalf("New() blocked for %v waiting for mpv", elapsed)
+	}
+	t.Cleanup(e.Close)
+
+	if err := e.OpenURL("file:///nonexistent", 0, 1, true); err == nil {
+		t.Fatal("OpenURL should report the background start error")
+	}
+}
+
 // TestEngineRealMPV 在装有 mpv 的机器上做真实往返：起播本地生成的 WAV，
 // 验证位置随时长推进、暂停生效、seek 落点正确。
 // 用 QAA_TEST_MPV=1 开启（CI 无 mpv，默认跳过）。
