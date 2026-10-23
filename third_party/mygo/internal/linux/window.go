@@ -809,9 +809,6 @@ func (w *window) SetIgnoreMouseEvents(bool) {}
 func (w *window) SetContentProtection(bool) {}
 func (w *window) SetVibrancy(string)        {}
 
-// SetMaximizeButton does nothing: GTK has no snap layouts.
-func (w *window) SetMaximizeButton(platform.RectF) {}
-
 // StartDrag begins moving the window with the last button press. On an
 // undecorated window the compositor takes the pointer once the move
 // starts, so the move waits until the pointer moves, keeping a second
@@ -1131,16 +1128,14 @@ func userAgentWithSuffix(ua, suffix string) string {
 	return ua + " " + suffix
 }
 
-// webkitSettingsSetUserAgentSuffix appends application details to the default
-// user agent of settings. WebKitGTK takes them as two strings and joins them
-// with "/", which is where the suffix splits: at the first one.
+// webkitSettingsSetUserAgentSuffix appends suffix to the default user agent
+// of settings, after a space, as the other backends do. WebKitGTK's
+// application details would join a name and a version with "/", and give
+// a suffix without one WebKit's version.
 func webkitSettingsSetUserAgentSuffix(settings ptr, suffix string) {
-	name, version, hasVersion := strings.Cut(suffix, "/")
-	var v *byte
-	if hasVersion {
-		v = cs(version)
-	}
-	webkitSettingsSetUserAgentWithApplicationDetails(settings, cs(name), v)
+	webkitSettingsSetUserAgent(settings, nil)
+	ua := goStr(webkitSettingsGetUserAgent(settings))
+	webkitSettingsSetUserAgent(settings, cs(userAgentWithSuffix(ua, suffix)))
 }
 
 func (w *window) UserAgent() string {

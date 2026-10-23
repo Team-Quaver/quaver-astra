@@ -20,6 +20,7 @@ import (
 	"time"
 	"unsafe"
 
+	"github.com/egoist/mygo/internal/accelerator"
 	"github.com/egoist/mygo/internal/platform"
 )
 
@@ -214,6 +215,15 @@ func (w *window) setUp(controller uintptr) {
 	comCall(s, setPutAreDefaultScriptDialogsEnabled, 1)
 	comCall(s, setPutIsStatusBarEnabled, 0)
 	comCall(s, setPutAreDevToolsEnabled, boolArg(o.DevTools))
+	// The browser's own keys (F5 and Ctrl+R reload, Ctrl+P prints, Ctrl+F
+	// finds, Ctrl+Plus zooms) come with the inspector: WKWebView and
+	// WebKitGTK have none, and a reload is not a navigation OnWillNavigate
+	// is asked about. AcceleratorKeyPressed still sees every key, so the
+	// menu items' keys, as the View menu's Reload and Zoom In, still work.
+	if s3 := queryInterface(s, &iidICoreWebView2Settings3); s3 != 0 {
+		comCall(s3, set3PutAreBrowserAcceleratorKeysEnabled, boolArg(o.DevTools))
+		release(s3)
+	}
 	comCall(s, setPutAreDefaultContextMenusEnabled, 1)
 	comCall(s, setPutIsZoomControlEnabled, 1)
 	if o.UserAgent != "" || o.UserAgentSuffix != "" {
@@ -223,10 +233,12 @@ func (w *window) setUp(controller uintptr) {
 
 	w.addUserScripts()
 
-	var token int64
-	tok := uintptr(unsafe.Pointer(&token))
+	// The add methods write a registration token. Its address is taken in
+	// each call (go:uintptrescapes), as a uintptr saved earlier goes stale
+	// when the goroutine stack moves.
+	var tok int64
 	add := func(index int, fn func(sender, args uintptr)) {
-		withHandler(fn, func(h uintptr) uintptr { return comCall(w.webview, index, h, tok) })
+		withHandler(fn, func(h uintptr) uintptr { return comCall(w.webview, index, h, uintptr(unsafe.Pointer(&tok))) })
 	}
 	add(wvAddNavigationStarting, w.navigationStarting)
 	add(wvAddContentLoading, func(_, _ uintptr) { w.h.NavigationCommitted(w.URL()) })
@@ -249,7 +261,7 @@ func (w *window) setUp(controller uintptr) {
 	add(wvAddNewWindowRequested, w.newWindowRequested)
 	add(wvAddPermissionRequested, w.permissionRequested)
 	if wv4 := queryInterface(w.webview, &iidICoreWebView2_4); wv4 != 0 {
-		withHandler(w.downloadStarting, func(h uintptr) uintptr { return comCall(wv4, wv4AddDownloadStarting, h, tok) })
+		withHandler(w.downloadStarting, func(h uintptr) uintptr { return comCall(wv4, wv4AddDownloadStarting, h, uintptr(unsafe.Pointer(&tok))) })
 		release(wv4)
 	}
 	add(wvAddWindowCloseRequested, func(_, _ uintptr) { w.h.ClosedByPage() })
@@ -269,8 +281,9 @@ func (w *window) setUp(controller uintptr) {
 	for _, scheme := range o.Schemes {
 		w.addFilter("http://" + scheme + ".localhost/*")
 	}
+	w.filterAllRequests()
 	withHandler(w.acceleratorKeyPressed, func(h uintptr) uintptr {
-		return comCall(controller, ctlAddAcceleratorKeyPressed, h, tok)
+		return comCall(controller, ctlAddAcceleratorKeyPressed, h, uintptr(unsafe.Pointer(&tok)))
 	})
 
 	if w.host != nil {
@@ -362,6 +375,7 @@ func (w *window) navigationStarting(_, args uintptr) {
 		clear(w.htmlFor)
 	}
 	w.loading = true
+	w.navigating = uri
 	w.h.NavigationStarted(uri)
 }
 
@@ -553,12 +567,49 @@ func (w *window) acceleratorKeyPressed(_, args uintptr) {
 	}
 	var vk uint32
 	comCall(args, accelGetVirtualKey, uintptr(unsafe.Pointer(&vk)))
-	cmd, ok := w.accels[accelKey{vk: vk, mods: currentModifiers()}]
+	cmd, ok := w.pageAccelerator(accelKey{vk: vk, mods: currentModifiers()})
 	if !ok {
 		return
 	}
 	comCall(args, accelPutHandled, 1)
 	w.b.menuCommand(cmd, w)
+}
+
+// pageEditRoles are the roles whose keys a page keeps, as in a browser and
+// in native UI: WebView2 cuts, copies and pastes with the page's own events
+// and every format of the clipboard, where editRole pastes text alone.
+var pageEditRoles = map[string]bool{
+	"undo": true, "redo": true, "cut": true, "copy": true, "paste": true,
+	"pasteAndMatchStyle": true, "delete": true, "selectAll": true,
+}
+
+// pageAccelerator returns the menu command a key pressed in a page runs,
+// if any.
+func (w *window) pageAccelerator(key accelKey) (uint16, bool) {
+	cmd, ok := w.accels[key]
+	if !ok {
+		return 0, false
+	}
+	if e := w.b.menus.entries[cmd]; e != nil && pageEditRoles[e.role] && pageEditKey(key) {
+		return 0, false
+	}
+	return cmd, true
+}
+
+// pageEditKey reports a key WebView2 edits a page with itself, as Edge
+// does. An edit role's item on another key, as Copy on Ctrl+Shift+C in a
+// terminal, still runs from it: the page would do nothing with the key.
+func pageEditKey(key accelKey) bool {
+	const ctrl, shift = accelerator.Ctrl, accelerator.Shift
+	switch key.mods {
+	case ctrl:
+		return key.vk == 'Z' || key.vk == 'Y' || key.vk == 'X' || key.vk == 'C' || key.vk == 'V' || key.vk == 'A'
+	case ctrl | shift:
+		return key.vk == 'Z' || key.vk == 'V'
+	case 0:
+		return key.vk == 0x2E // VK_DELETE
+	}
+	return false
 }
 
 func (w *window) LoadURL(raw string) {
@@ -636,6 +687,9 @@ func (w *window) addUserScripts() {
 	if w.caption != nil {
 		// After the bridge, which it tells.
 		scripts = append(scripts[:len(scripts):len(scripts)], platform.UserScript{Source: w.titleBarScript()})
+	}
+	if w.hidingScript != "" {
+		scripts = append(scripts[:len(scripts):len(scripts)], platform.UserScript{Source: w.hidingScript, AllFrames: true})
 	}
 	gen := w.scriptGen
 	for _, us := range scripts {
@@ -945,6 +999,9 @@ func (w *window) resourceRequested(_, args uintptr) {
 	var resource int32
 	comCall(args, resReqGetResourceContext, uintptr(unsafe.Pointer(&resource)))
 	const document = 1 // COREWEBVIEW2_WEB_RESOURCE_CONTEXT_DOCUMENT
+	if w.contentFilter != nil && w.contentFilter(args, req, uri, resource) {
+		return
+	}
 
 	if html, ok := w.htmlFor[uri]; ok && resource == document {
 		w.respond(args, 0, http.StatusOK, http.Header{"Content-Type": {"text/html; charset=utf-8"}}, []byte(html))

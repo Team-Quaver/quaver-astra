@@ -263,6 +263,129 @@ func TestScrollback(t *testing.T) {
 	}
 }
 
+// The keyboard's modes a Mirror passes on: modifyOtherKeys follows CSI > 4
+// alone, not the pointer shape (OSC 22), and the Kitty keyboard flags
+// their own sequences.
+func TestKeyboardModes(t *testing.T) {
+	loadLib(t)
+	term, _ := NewTerminal(20, 3, Effects{})
+	defer term.Free()
+	if term.ModifyOtherKeys() {
+		t.Error("modifyOtherKeys on in a new terminal")
+	}
+	term.Write([]byte("\x1b]22;pointer\x1b\\"))
+	if term.MouseShape() != 3 || term.ModifyOtherKeys() {
+		t.Errorf("after OSC 22: shape %d, modifyOtherKeys %v", term.MouseShape(), term.ModifyOtherKeys())
+	}
+	term.Write([]byte("text\x1b[>4;2m"))
+	if !term.ModifyOtherKeys() {
+		t.Error("modifyOtherKeys off after CSI > 4 ; 2 m")
+	}
+	term.Write([]byte("\x1b[>4;1m"))
+	if term.ModifyOtherKeys() {
+		t.Error("modifyOtherKeys on after CSI > 4 ; 1 m")
+	}
+	term.Write([]byte("\x1b[>5u"))
+	if f := term.KittyKeyboardFlags(); f != 5 {
+		t.Errorf("kitty keyboard flags %d, want 5", f)
+	}
+}
+
+// A search finds text in the scrollback and on the screen, ignoring the
+// case of ASCII letters; selecting goes from the newest match to older
+// ones, scrolling to them, and the viewport's matches are where it shows.
+func TestSearch(t *testing.T) {
+	loadLib(t)
+	term, _ := NewTerminal(20, 3, Effects{})
+	defer term.Free()
+	for i := range 10 {
+		line := "line"
+		if i%3 == 0 {
+			line = "an Error here"
+		}
+		term.Write([]byte(line + "\r\n"))
+	}
+	s, err := NewSearch(term)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Free()
+	run := func() {
+		for range 1000 {
+			switch s.Tick() {
+			case SearchComplete:
+				return
+			case SearchFeedRequired:
+				s.Feed()
+			}
+		}
+		t.Fatal("the search never completed")
+	}
+	s.SetText("error")
+	run()
+	if n := s.Total(); n != 4 {
+		t.Fatalf("total = %d, want 4", n)
+	}
+	if _, ok := s.Selected(); ok {
+		t.Error("a match is selected before any was")
+	}
+	text := func() string {
+		m, ok := s.SelectedMatch()
+		if !ok {
+			return ""
+		}
+		term.SetSelection(&m)
+		got, _ := term.SelectionText()
+		term.SetSelection(nil)
+		return got
+	}
+	if !s.Select(false) {
+		t.Fatal("nothing to select")
+	}
+	if i, _ := s.Selected(); i != 0 || text() != "Error" {
+		t.Errorf("selected %d %q", i, text())
+	}
+	// The next, row 6, is above the screen: selecting it scrolls nothing,
+	// and its row is where to scroll.
+	s.Select(false)
+	m, _ := s.SelectedMatch()
+	a, _ := m.Ends()
+	row, ok := term.ScreenRow(a)
+	if i, _ := s.Selected(); i != 1 || !term.AtBottom() || !ok || row != 6 {
+		t.Errorf("selected %d at row %d (%v), at the bottom: %v", i, row, ok, term.AtBottom())
+	}
+	if _, _, shown := term.ViewportPoint(a); shown {
+		t.Error("a match above the viewport shows")
+	}
+	term.ScrollToRow(row)
+	s.Feed()
+	var shown int
+	for _, m := range s.ViewportMatches(nil) {
+		a, b := m.Ends()
+		x0, y0, ok0 := term.ViewportPoint(a)
+		x1, y1, ok1 := term.ViewportPoint(b)
+		if ok0 && ok1 && y0 < 3 {
+			shown++
+			if x0 != 3 || x1 != 7 || y0 != y1 {
+				t.Errorf("match at %d,%d–%d,%d", x0, y0, x1, y1)
+			}
+		}
+	}
+	if shown != 1 {
+		t.Errorf("%d matches show, want 1", shown)
+	}
+	s.Select(true)
+	s.Select(true)
+	if i, _ := s.Selected(); i != 3 {
+		t.Errorf("selected %d after wrapping back, want 3", i)
+	}
+	s.SetText("")
+	run()
+	if s.Total() != 0 {
+		t.Errorf("total = %d with no text", s.Total())
+	}
+}
+
 // A paste with mode 5522 set tells the program what the clipboard holds;
 // the program's read with the event's password is granted and served in
 // chunks; a terminal that does not answer a read stays silent.

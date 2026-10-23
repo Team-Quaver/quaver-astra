@@ -5,6 +5,7 @@ package linux
 import (
 	"fmt"
 	"sync"
+	"unsafe"
 
 	"github.com/ebitengine/purego"
 )
@@ -414,3 +415,46 @@ func TestHasRecentItem(path string) bool {
 
 // TestWindowTitle returns the title GTK gives a window.
 func TestWindowTitle(handle uintptr) string { return goStr(gtkWindowGetTitle(handle)) }
+
+// TestPinchSurface pinches a touchpad at (x, y), in DIPs, in a window
+// showing native UI, from 1 to scale: the begin, update and end events of
+// GDK's pinch, which only Wayland makes, go through GTK as its own do.
+func TestPinchSurface(handle uintptr, x, y, scale float64) bool {
+	w := windowByHandle(handle)
+	if w == nil || w.surface == nil {
+		return false
+	}
+	var eventNew func(typ int32) ptr
+	var doEvent func(event ptr)
+	var setDevice func(event, device ptr)
+	var display func() ptr
+	var seat func(display ptr) ptr
+	var pointer func(seat ptr) ptr
+	if !bind(libGDK, &eventNew, "gdk_event_new") || !bind(libGTK, &doEvent, "gtk_main_do_event") ||
+		!bind(libGDK, &setDevice, "gdk_event_set_device") || !bind(libGDK, &display, "gdk_display_get_default") ||
+		!bind(libGDK, &seat, "gdk_display_get_default_seat") || !bind(libGDK, &pointer, "gdk_seat_get_pointer") {
+		return false
+	}
+	device := pointer(seat(display()))
+	win := w.surface.eventWindow()
+	if win == 0 {
+		return false
+	}
+	// GdkEventTouchpadPinch: window 8, send_event 16, phase 17, n_fingers
+	// 18, x 24, y 32, scale 64.
+	for phase, at := range []float64{1, scale, scale} {
+		ev := eventNew(42) // GDK_TOUCHPAD_PINCH
+		base := *(*unsafe.Pointer)(unsafe.Pointer(&ev))
+		*(*ptr)(unsafe.Add(base, 8)) = gObjectRef(win)
+		*(*int8)(unsafe.Add(base, 16)) = 1
+		*(*int8)(unsafe.Add(base, 17)) = int8(phase) // begin, update, end
+		*(*int8)(unsafe.Add(base, 18)) = 2
+		*(*float64)(unsafe.Add(base, 24)) = x
+		*(*float64)(unsafe.Add(base, 32)) = y
+		*(*float64)(unsafe.Add(base, 64)) = at
+		setDevice(ev, device)
+		doEvent(ev)
+		gdkEventFree(ev)
+	}
+	return true
+}

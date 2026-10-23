@@ -366,8 +366,19 @@ func measureIntrinsic(e *node, maxContent bool) float32 {
 		}
 	default:
 		n := 0
+		// A toolbar's overflow button is chrome, not content: it shows only
+		// when controls overflow, so it must not widen the toolbar when
+		// everything fits. Skipping it here (rather than relying on its
+		// collapsed state) also keeps the measured width stable across
+		// frames, as the button collapses and reappears during layout.
+		var more *node
+		if e.overflow != nil {
+			for ch := e.first; ch != nil; ch = ch.next {
+				more = ch
+			}
+		}
 		for ch := e.first; ch != nil; ch = ch.next {
-			if ch.flags&flagAbsolute != 0 {
+			if ch == more || ch.flags&flagAbsolute != 0 {
 				continue
 			}
 			cw := intrinsic(ch, maxContent)

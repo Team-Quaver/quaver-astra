@@ -28,6 +28,8 @@ func drag(*mygo.Window, [][2]float64) bool { return false }
 
 func sideButton(*mygo.Window, bool) bool { return false }
 
+func pinch(*mygo.Window, float64, float64, float64) (float64, bool) { return 0, false }
+
 func webViewAttached(*mygo.Window) (bool, bool) { return false, false }
 
 // Collection behaviors and deactivating the app are macOS's.

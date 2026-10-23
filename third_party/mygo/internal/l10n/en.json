@@ -853,9 +853,9 @@
   "@selectFolder": {
     "description": "The title of the dialog that chooses a folder."
   },
-  "clearScrollback": "Clear Scrollback",
-  "@clearScrollback": {
-    "description": "An item of a terminal's menu, which clears the lines scrolled out of view."
+  "clearTerminal": "Clear",
+  "@clearTerminal": {
+    "description": "An item of a terminal's menu, which clears the lines scrolled out of view and the screen above the prompt, as Command-K does."
   },
   "clipboardRead": "A program wants to read the clipboard",
   "@clipboardRead": {

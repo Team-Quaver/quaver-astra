@@ -469,13 +469,32 @@ func (t *Tester) HasText(s string) bool {
 	return false
 }
 
-// Click clicks the center of the element showing text or labeled s.
-func (t *Tester) Click(s string) error {
+// targetCenter returns the center of the element showing text or labeled s,
+// or an error when no element matches or its center lies outside the window.
+// Find walks the element tree without checking geometry, so it can return an
+// element the window never shows; clicking it would land on nothing while
+// reporting success.
+func (t *Tester) targetCenter(s string) (float32, float32, error) {
 	r, ok := t.Find(s)
 	if !ok {
-		return fmt.Errorf("ui: no element shows %q", s)
+		return 0, 0, fmt.Errorf("ui: no element shows %q", s)
 	}
-	t.ClickAt(r.X+r.W/2, r.Y+r.H/2)
+	x, y := r.X+r.W/2, r.Y+r.H/2
+	if x < 0 || y < 0 || x >= t.h.w || y >= t.h.h {
+		return 0, 0, fmt.Errorf("ui: %q is at (%v, %v), outside the window", s, x, y)
+	}
+	return x, y, nil
+}
+
+// Click clicks the center of the element showing text or labeled s. It
+// returns an error when no element shows s, or when the element's center
+// is outside the window, where the click would land on nothing.
+func (t *Tester) Click(s string) error {
+	x, y, err := t.targetCenter(s)
+	if err != nil {
+		return err
+	}
+	t.ClickAt(x, y)
 	return nil
 }
 
@@ -485,11 +504,11 @@ func (t *Tester) ClickAt(x, y float32) { t.ClickAtWith(0, x, y) }
 // ClickWith clicks the center of the element showing text or labeled s
 // holding the modifier keys mods, as a Shift-click.
 func (t *Tester) ClickWith(mods Modifiers, s string) error {
-	r, ok := t.Find(s)
-	if !ok {
-		return fmt.Errorf("ui: no element shows %q", s)
+	x, y, err := t.targetCenter(s)
+	if err != nil {
+		return err
 	}
-	t.ClickAtWith(mods, r.X+r.W/2, r.Y+r.H/2)
+	t.ClickAtWith(mods, x, y)
 	return nil
 }
 
@@ -505,13 +524,14 @@ func (t *Tester) ClickAtWith(mods Modifiers, x, y float32) {
 }
 
 // RightClick clicks the center of the element showing text or labeled s
-// with the secondary button.
+// with the secondary button. Like Click, it returns an error when no
+// element shows s or its center is outside the window.
 func (t *Tester) RightClick(s string) error {
-	r, ok := t.Find(s)
-	if !ok {
-		return fmt.Errorf("ui: no element shows %q", s)
+	x, y, err := t.targetCenter(s)
+	if err != nil {
+		return err
 	}
-	t.RightClickAt(r.X+r.W/2, r.Y+r.H/2)
+	t.RightClickAt(x, y)
 	return nil
 }
 
@@ -633,11 +653,26 @@ func (t *Tester) Scroll(x, y, dx, dy float32) {
 	t.send(platform.SurfaceEvent{Kind: platform.PointerScroll, X: float64(x), Y: float64(y), DX: float64(dx), DY: float64(dy), Precise: true})
 }
 
+// DropFiles drops files dragged from another app at (x, y), as from
+// Finder, and reports whether an element took them (DroppedFiles).
+func (t *Tester) DropFiles(x, y float32, paths ...string) bool {
+	t.send(platform.SurfaceEvent{Kind: platform.FileDragOver, X: float64(x), Y: float64(y)})
+	taken := t.rt.event(platform.SurfaceEvent{Kind: platform.FileDrop, X: float64(x), Y: float64(y), Files: paths})
+	t.settle()
+	return taken
+}
+
 // Wheel scrolls by dx, dy DIPs with the pointer at (x, y), as a notch of
 // a mouse wheel does: a scroll container glides there over a moment,
 // which advancing the clock (Advance) shows.
 func (t *Tester) Wheel(x, y, dx, dy float32) {
 	t.send(platform.SurfaceEvent{Kind: platform.PointerScroll, X: float64(x), Y: float64(y), DX: float64(dx), DY: float64(dy)})
+}
+
+// Pinch zooms by scale with the pointer at (x, y), as pinching a touchpad
+// does (InputZoom).
+func (t *Tester) Pinch(x, y, scale float32) {
+	t.send(platform.SurfaceEvent{Kind: platform.PointerZoom, X: float64(x), Y: float64(y), Scale: float64(scale)})
 }
 
 // HoldModifiers presses or lets go of modifier keys on their own, as holding

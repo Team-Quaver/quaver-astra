@@ -210,3 +210,112 @@ func drawableID(d id) uintptr {
 	}
 	return send(d, "drawableID")
 }
+
+// TestDroppedPendingFrame checks that a frame waiting for its drawable,
+// dropped as the drawables are trimmed or the renderer let go, wakes what
+// waited for it (Ready): the frame paced by the display waiting draws
+// then, rather than never.
+func TestDroppedPendingFrame(t *testing.T) {
+	if err := load(); err != nil {
+		t.Skip("no Metal:", err)
+	}
+	var layer id
+	pool(func() { layer = send(class("CALayer"), "new") })
+	if layer == 0 {
+		t.Skip("no Core Animation")
+	}
+	defer pool(func() { release(&layer) })
+	r, err := New(uintptr(layer))
+	if err != nil {
+		unavailable(t, err)
+	}
+	defer r.Release()
+	r.SetPost(func(func()) {})
+	gate := make(chan struct{})
+	next := nextDrawable
+	nextDrawable = func(l id) id { <-gate; return next(l) }
+	defer func() { nextDrawable = next }()
+	frame := func(i int) {
+		t.Helper()
+		s := &scene.Scene{}
+		s.Reset(64, 32, scene.Color{A: 255})
+		s.Ops = append(s.Ops, scene.Op{Kind: scene.OpFill, Rect: scene.Rect{X: float32(i), W: 8, H: 8}, Color: scene.Color{R: 255, A: 255}})
+		if err := r.Render(s); err != nil {
+			t.Fatal(err)
+		}
+	}
+	frame(0) // with the transaction: no fetch after
+	frame(1) // takes its drawable, then the presenter fetches the next
+	frame(2) // built, waiting for the fetch
+	if r.pending.cb == 0 {
+		t.Fatal("the frame did not wait for the drawable being fetched")
+	}
+	woke := false
+	if r.Ready(func() { woke = true }) {
+		t.Fatal("ready while a frame waits")
+	}
+	pool(r.dropPending)
+	if r.pending.cb != 0 || !woke {
+		t.Fatalf("dropped: pending %v, woke %v", r.pending.cb != 0, woke)
+	}
+	close(gate)
+	r.pre.drain()
+}
+
+// TestStalePost checks that the post of a fetch whose frame pending a
+// frame not paced drew meanwhile neither blocks the main thread for the
+// next frame's drawable, being fetched, nor draws that frame before it
+// comes: the next fetch posts it.
+func TestStalePost(t *testing.T) {
+	if err := load(); err != nil {
+		t.Skip("no Metal:", err)
+	}
+	var layer id
+	pool(func() { layer = send(class("CALayer"), "new") })
+	if layer == 0 {
+		t.Skip("no Core Animation")
+	}
+	defer pool(func() { release(&layer) })
+	r, err := New(uintptr(layer))
+	if err != nil {
+		unavailable(t, err)
+	}
+	defer r.Release()
+	posted := make(chan func(), 4)
+	r.SetPost(func(fn func()) { posted <- fn })
+	gate := make(chan struct{})
+	next := nextDrawable
+	nextDrawable = func(l id) id { <-gate; return next(l) }
+	defer func() { nextDrawable = next }()
+	defer close(gate)
+	frame := func(i int) {
+		t.Helper()
+		s := &scene.Scene{}
+		s.Reset(64, 32, scene.Color{A: 255})
+		s.Ops = append(s.Ops, scene.Op{Kind: scene.OpFill, Rect: scene.Rect{X: float32(i), W: 8, H: 8}, Color: scene.Color{R: 255, A: 255}})
+		if err := r.Render(s); err != nil {
+			t.Fatal(err)
+		}
+	}
+	frame(0) // with the transaction: no fetch after
+	frame(1) // takes its drawable, then the presenter fetches the next
+	frame(2) // built, waiting for the fetch
+	gate <- struct{}{}
+	stale := wait.For(t, "the post", posted)
+	// A frame not paced draws the one pending, the presenter fetches the
+	// next drawable, and this frame waits for it.
+	frame(3)
+	if r.pending.cb == 0 || !r.pre.fetching {
+		t.Fatalf("pending %v, fetching %v", r.pending.cb != 0, r.pre.fetching)
+	}
+	stale() // would wait for the fetch, the gate closed
+	if r.pending.cb == 0 {
+		t.Fatal("the stale post drew the frame pending")
+	}
+	gate <- struct{}{}
+	finish := wait.For(t, "the post of the next fetch", posted)
+	finish()
+	if r.pending.cb != 0 {
+		t.Fatal("the frame pending was not drawn once its drawable came")
+	}
+}

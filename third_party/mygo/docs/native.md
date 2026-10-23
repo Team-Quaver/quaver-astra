@@ -127,7 +127,8 @@ mygo.NewNotification(mygo.NotificationOptions{
 
 `Sender.ID` identifies the person in the app; it is not inferred to be an
 email address or phone number. `Name` defaults to `Title`. `Avatar` holds
-encoded image bytes, such as PNG or JPEG; the app fetches them and decides
+encoded image bytes, such as PNG, JPEG or SVG; macOS rasterizes them as PNG
+before donation. The app fetches them and decides
 whether the message's sender and content may be shared with the system.
 `NewNotification` copies the sender and image, so the app can reuse its
 buffers. `Group` is the conversation identifier; without one, it uses the

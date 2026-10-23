@@ -59,4 +59,7 @@ type PageOptions struct {
 	// names no browser, older pages: "Version/17.0 Safari/605.1.15" makes the
 	// page look like Safari.
 	UserAgentSuffix string
+	// ContentRules block what the page loads and hide parts of it, as
+	// Page.SetContentRules does, from its first load.
+	ContentRules []*ContentRules
 }

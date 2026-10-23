@@ -207,6 +207,47 @@ if zone.FileDragOver() {
 Values dragged within or between windows, and serialized data exchanged
 with other applications, are [drag and drop](drag-and-drop.md).
 
+## Scrolling and pinching
+
+Scroll containers scroll with the wheel and the touchpad on their own. An
+element that does something else with them, as a chart zooming and
+panning its candles, gets them with `HandleInput`: `ui.InputScroll`
+scrolls by `DX` and `DY` DIPs, positive down and to the right of the
+content, with `X` and `Y` the pointer relative to the element; `Precise`
+tells a touchpad, which scrolls by pixels, from a mouse wheel's notches.
+`ui.InputZoom` is a touchpad's pinch, at `X` and `Y`, zooming by `Scale`:
+2 shows the content twice as large as it was. macOS, Linux on Wayland and
+browsers report pinches; Windows sends them as scrolling with Ctrl held,
+so there a touchpad's scrolling with Ctrl comes as `ui.InputZoom` too,
+while a mouse wheel's notches stay `ui.InputScroll` with `ui.Ctrl` in
+`Mods`. What the element takes no scroll container around it scrolls
+with; what it leaves, by returning false, they do.
+
+```go
+ui.Box(c).Fill().HandleInput(func(ev ui.InputEvent) bool {
+	switch {
+	case ev.Kind == ui.InputZoom:
+		app.chart.zoom(ev.X, ev.Scale)
+	case ev.Kind == ui.InputScroll && !ev.Precise:
+		// A notch, which scrolls further on some platforms than on
+		// others, zooms by a quarter.
+		if ev.DY < 0 {
+			app.chart.zoom(ev.X, 1.25)
+		} else if ev.DY > 0 {
+			app.chart.zoom(ev.X, 0.8)
+		}
+	case ev.Kind == ui.InputScroll:
+		app.chart.pan(ev.DX)
+	default:
+		return false
+	}
+	return true
+})
+```
+
+A `Tester` scrolls with `Scroll` (a touchpad), `Wheel` (a notch) and
+`Pinch`.
+
 ## Every key, as it comes
 
 Widgets that take every key themselves, as the

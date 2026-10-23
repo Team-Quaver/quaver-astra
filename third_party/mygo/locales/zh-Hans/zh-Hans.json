@@ -178,7 +178,7 @@
   "ok": "好",
   "open": "打开",
   "selectFolder": "选择文件夹",
-  "clearScrollback": "清除回滚",
+  "clearTerminal": "清除",
   "clipboardRead": "某程序想要读取剪贴板",
   "clipboardReadAllow": "允许",
   "clipboardReadDeny": "拒绝",

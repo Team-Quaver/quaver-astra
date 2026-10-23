@@ -73,7 +73,7 @@ var (
 	cbSurfaceMotion, cbSurfaceLeave, cbSurfaceScroll, cbSurfaceKey  ptr
 	cbSurfaceFocusIn, cbSurfaceFocusOut, cbSurfaceScale, cbIMCommit ptr
 	cbIMPreedit, cbIMPreeditEnd, cbSurfaceRender, cbAreaContext     ptr
-	cbSurfaceUnrealize, cbSurfaceTick                               ptr
+	cbSurfaceUnrealize, cbSurfaceTick, cbSurfacePinch               ptr
 	surfaceCursors                                                  = map[platform.Cursor]ptr{}
 )
 
@@ -153,6 +153,9 @@ type surface struct {
 	// areaPacked tells that the area went into a GtkBox (packed) rather
 	// than a GtkOverlay (added).
 	areaPacked bool
+	// pinch is the scale of the touchpad's pinch in progress at its last
+	// event, from 1 as it began.
+	pinch float64
 
 	textInput bool
 	caret     platform.RectF
@@ -179,7 +182,7 @@ type surface struct {
 }
 
 // GDK event masks of the drawing area.
-const surfaceEvents = 1<<2 | 1<<8 | 1<<9 | 1<<10 | 1<<11 | 1<<12 | 1<<13 | 1<<14 | 1<<21 | 1<<23
+const surfaceEvents = 1<<2 | 1<<8 | 1<<9 | 1<<10 | 1<<11 | 1<<12 | 1<<13 | 1<<14 | 1<<21 | 1<<23 | 1<<24
 
 func (w *window) createSurface() {
 	loadSurface()
@@ -227,6 +230,7 @@ func (s *surface) newArea(gl bool) {
 	connect(s.area, "motion-notify-event", cbSurfaceMotion, data)
 	connect(s.area, "leave-notify-event", cbSurfaceLeave, data)
 	connect(s.area, "scroll-event", cbSurfaceScroll, data)
+	connect(s.area, "event", cbSurfacePinch, data)
 	connect(s.area, "key-press-event", cbSurfaceKey, data)
 	connect(s.area, "key-release-event", cbSurfaceKey, data)
 	connect(s.area, "focus-in-event", cbSurfaceFocusIn, data)
@@ -843,6 +847,31 @@ func initSurfaceCallbacks() {
 			ev.Precise = dx != float64(int64(dx)) || dy != float64(int64(dy))
 		}
 		s.send(ev)
+		return true
+	})
+	// GdkEventTouchpadPinch (GDK_TOUCHPAD_PINCH, 42): type 0, phase 17,
+	// x 24, y 32, scale 64 (from 1 as the pinch began), state 88. GDK
+	// reports pinches on Wayland; X11 has none.
+	cbSurfacePinch = purego.NewCallback(func(widget, event, data ptr) bool {
+		if field[int32](event, 0) != 42 {
+			return false
+		}
+		s := b().surfaceOf(data)
+		if s == nil {
+			return false
+		}
+		scale := field[float64](event, 64)
+		switch field[int8](event, 17) {
+		case 0: // begin
+			s.pinch = 1
+		case 1: // update
+			if s.pinch > 0 && scale > 0 {
+				s.send(platform.SurfaceEvent{Kind: platform.PointerZoom, X: field[float64](event, 24), Y: field[float64](event, 32), Scale: scale / s.pinch, Mods: gdkMods(field[uint32](event, 88))})
+			}
+			s.pinch = scale
+		default: // end, cancel
+			s.pinch = 0
+		}
 		return true
 	})
 	// GdkEventKey: type 0, state 24, keyval 28, hardware_keycode 48.

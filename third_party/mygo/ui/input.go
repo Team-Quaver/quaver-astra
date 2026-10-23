@@ -30,7 +30,7 @@ func (rt *engine) event(ev platform.SurfaceEvent) (taken bool) {
 		return true
 	}
 	switch ev.Kind {
-	case platform.PointerMove, platform.PointerDown, platform.PointerUp, platform.PointerScroll:
+	case platform.PointerMove, platform.PointerDown, platform.PointerUp, platform.PointerScroll, platform.PointerZoom:
 		rt.mods = Modifiers(ev.Mods)
 	}
 	switch ev.Kind {
@@ -65,6 +65,9 @@ func (rt *engine) event(ev platform.SurfaceEvent) (taken bool) {
 	case platform.PointerScroll:
 		rt.pointerMove(x, y)
 		rt.scroll(float32(ev.DX), float32(ev.DY), Modifiers(ev.Mods), ev.Precise)
+	case platform.PointerZoom:
+		rt.pointerMove(x, y)
+		rt.zoom(float32(ev.Scale), Modifiers(ev.Mods))
 	case platform.KeyPressed:
 		rt.modsChanged(Modifiers(ev.Mods))
 		taken = rt.keyDownPhysical(Modifiers(ev.Mods), Key(ev.Key), Key(ev.PhysicalKey), ev.Repeat)
@@ -171,20 +174,49 @@ func (rt *engine) setHover(chain []uint64) bool {
 		return false
 	}
 	// Only elements that look at their hover need a frame.
-	need := false
-	for _, list := range [][]uint64{chain, rt.hover} {
-		for _, id := range list {
-			if s := rt.states[id]; s != nil && s.flags&(flagHover|flagTrackPointer) != 0 {
-				need = true
-			}
-		}
-	}
+	need := rt.watchHover(chain) || rt.watchHover(rt.hover)
 	rt.hover = chain
 	if need {
 		rt.requestFrame()
 	}
 	rt.updateCursor()
 	return true
+}
+
+// watchHover reports whether an element of chain looks at its hover.
+func (rt *engine) watchHover(chain []uint64) bool {
+	for _, id := range chain {
+		if s := rt.states[id]; s != nil && s.flags&(flagHover|flagTrackPointer) != 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// rehover makes the elements under the pointer hover after a frame built
+// and laid them out anew, as the row taking the place of one removed: a
+// pointer standing still sends no event that would. It asks for the frame
+// that shows them hovering, which a frame being built cannot.
+func (rt *engine) rehover() {
+	if rt.pressed != nil || rt.scrollDrag.st != nil {
+		// The hover holds the elements under the pointer as the press
+		// began (Hovered).
+		return
+	}
+	chain := rt.chain[:0]
+	if rt.pointerIn {
+		chain = rt.appendHitChain(chain, rt.pointerX, rt.pointerY)
+	}
+	old := rt.hover
+	if !rt.setHover(chain) {
+		rt.chain = chain[:0]
+		return
+	}
+	rt.chain = old[:0]
+	if rt.watchHover(chain) {
+		rt.redraw, rt.repaintDue = false, time.Time{}
+		rt.host.requestFrame()
+	}
 }
 
 func (rt *engine) pointerMove(x, y float32) {
@@ -235,6 +267,8 @@ func (rt *engine) pointerMove(x, y float32) {
 			rt.chain = old[:0]
 		} else {
 			rt.chain = chain[:0]
+			// The pointer may have gone onto a scroll bar, or off it.
+			rt.updateCursor()
 		}
 	}
 	if moved {
@@ -376,6 +410,9 @@ func (rt *engine) pointerUp(button, clicks int) {
 	}
 	if rt.scrollDrag.st != nil {
 		rt.scrollDrag.st = nil
+		// The pointer may have left the bar, over what the hover missed.
+		rt.setHover(rt.hitChain(rt.pointerX, rt.pointerY))
+		rt.updateCursor()
 		rt.requestFrame()
 		return
 	}
@@ -463,6 +500,17 @@ func (rt *engine) scroll(dx, dy float32, mods Modifiers, precise bool) {
 			return
 		}
 	}
+}
+
+// zoom gives a pinch to the element under the pointer that handles its
+// input; no element zooms of its own.
+func (rt *engine) zoom(scale float32, mods Modifiers) {
+	if scale <= 0 || scale == 1 {
+		return
+	}
+	chain := rt.appendHitChain(rt.chain[:0], rt.pointerX, rt.pointerY)
+	rt.chain = chain[:0]
+	rt.deliver(rt.handler(chain), InputEvent{Kind: InputZoom, Scale: scale, Mods: mods})
 }
 
 // dragTo returns the offset of content whose thumb moved by moved DIPs
@@ -651,7 +699,9 @@ func (rt *engine) keyDownPhysical(mods Modifiers, key, physical Key, repeat bool
 		s.editor.queue = append(s.editor.queue, editEvent{kind: editKey, mods: mods, key: key})
 		rt.blinkStart = rt.now()
 		rt.requestFrame()
-		return false
+		// Taken: the menu item of the key, as Edit › Paste's Ctrl+V on
+		// Windows, leaves it rather than pasting a second time.
+		return true
 	}
 	if s := rt.states[rt.focused]; s != nil && s.flags&flagTypeSelect != 0 && !rt.claimed(k) {
 		// The first letters of a row of a list: they add up while typed
@@ -1360,11 +1410,15 @@ func (e *node) Dismissed() bool { return e.dismissed }
 
 // scrollbarPress starts dragging the thumb of the scroll container under
 // the pointer when the press is on its scroll bar, or pages toward the
-// press on the bar's track.
+// press on the bar's track. Hidden bars take no press, as AppKit's
+// overlay scrollers: it goes through to the content under them, as a
+// click on a table's last row under its horizontal bar. The hover this
+// press set does not show them yet, so they are those the last frame
+// painted (barsShown).
 func (rt *engine) scrollbarPress(chain []uint64, x, y float32) bool {
 	for _, id := range chain {
 		s := rt.states[id]
-		if s == nil || s.flags&(flagScrollX|flagScrollY) == 0 {
+		if s == nil || s.flags&(flagScrollX|flagScrollY) == 0 || !s.barsShown {
 			continue
 		}
 		lx, ly := s.local(x, y)

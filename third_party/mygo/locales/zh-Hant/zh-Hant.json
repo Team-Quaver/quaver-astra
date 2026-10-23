@@ -178,7 +178,7 @@
   "ok": "好",
   "open": "開啟",
   "selectFolder": "選擇檔案夾",
-  "clearScrollback": "清除捲動緩衝區",
+  "clearTerminal": "清除",
   "clipboardRead": "某個程式想要讀取剪貼簿",
   "clipboardReadAllow": "允許",
   "clipboardReadDeny": "拒絕",

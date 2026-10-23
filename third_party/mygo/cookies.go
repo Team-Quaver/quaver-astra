@@ -99,7 +99,7 @@ func (CookiesModule) List(f CookieFilter) ([]Cookie, error) {
 		f.URL = u.String()
 	}
 	domain := strings.ToLower(strings.TrimPrefix(f.Domain, "."))
-	result := cookieCall(func(done func(cookieResult)) {
+	result := nativeCall(func(done func(nativeResult)) {
 		backend().App().ListCookies(f.URL, func(values []platform.Cookie, err error) {
 			out := make([]Cookie, 0, len(values))
 			for _, c := range values {
@@ -120,7 +120,7 @@ func (CookiesModule) List(f CookieFilter) ([]Cookie, error) {
 				}
 				return strings.Compare(a.Name, b.Name)
 			})
-			done(cookieResult{out, err})
+			done(nativeResult{cookies: out, err: err})
 		})
 	})
 	return result.cookies, result.err
@@ -143,8 +143,8 @@ func (CookiesModule) Set(c Cookie) error {
 		return Cookies.Delete(c)
 	}
 	p := platform.Cookie{Name: c.Name, Value: c.Value, Domain: c.Domain, Path: c.Path, Expires: c.Expires, Secure: c.Secure, HTTPOnly: c.HTTPOnly, SameSite: string(c.SameSite)}
-	return cookieCall(func(done func(cookieResult)) {
-		backend().App().SetCookie(p, func(err error) { done(cookieResult{err: err}) })
+	return nativeCall(func(done func(nativeResult)) {
+		backend().App().SetCookie(p, func(err error) { done(nativeResult{err: err}) })
 	}).err
 }
 
@@ -159,8 +159,8 @@ func (CookiesModule) Delete(c Cookie) error {
 	if err != nil {
 		return err
 	}
-	return cookieCall(func(done func(cookieResult)) {
-		backend().App().DeleteCookie(key, func(err error) { done(cookieResult{err: err}) })
+	return nativeCall(func(done func(nativeResult)) {
+		backend().App().DeleteCookie(key, func(err error) { done(nativeResult{err: err}) })
 	}).err
 }
 
@@ -168,53 +168,56 @@ func (CookiesModule) Delete(c Cookie) error {
 // App.ClearBrowsingData. Pages may set new ones meanwhile.
 func (CookiesModule) Clear() error {
 	needsApp("Cookies.Clear")
-	return cookieCall(func(done func(cookieResult)) {
-		backend().App().ClearCookies(func(err error) { done(cookieResult{err: err}) })
+	return nativeCall(func(done func(nativeResult)) {
+		backend().App().ClearCookies(func(err error) { done(nativeResult{err: err}) })
 	}).err
 }
 
-type cookieResult struct {
+// nativeResult is what an asynchronous call of the backend gives: the
+// cookies of Cookies.List, or the list CompileContentRules made.
+type nativeResult struct {
 	cookies []Cookie
+	list    any
 	err     error
 }
 
-// cookieCalls are the calls waiting for the backend, which may never
-// complete them once the app quits: stopCookieCalls fails them. It is
-// used on the main thread only.
-var cookieCalls = struct {
+// nativeCalls are the calls waiting for the backend, of Cookies and
+// CompileContentRules, which it may never complete once the app quits:
+// stopNativeCalls fails them. It is used on the main thread only.
+var nativeCalls = struct {
 	stopped bool
 	next    uint64
-	pending map[uint64]func(cookieResult)
-}{pending: make(map[uint64]func(cookieResult))}
+	pending map[uint64]func(nativeResult)
+}{pending: make(map[uint64]func(nativeResult))}
 
-func cookieCall(start func(func(cookieResult))) cookieResult {
-	ch := make(chan cookieResult, 1)
+func nativeCall(start func(func(nativeResult))) nativeResult {
+	ch := make(chan nativeResult, 1)
 	if !postMain(func() {
-		if cookieCalls.stopped {
-			deliver(ch, cookieResult{err: errLoopStopped})
+		if nativeCalls.stopped {
+			deliver(ch, nativeResult{err: errLoopStopped})
 			return
 		}
-		cookieCalls.next++
-		id := cookieCalls.next
-		done := func(r cookieResult) {
-			if _, ok := cookieCalls.pending[id]; !ok {
+		nativeCalls.next++
+		id := nativeCalls.next
+		done := func(r nativeResult) {
+			if _, ok := nativeCalls.pending[id]; !ok {
 				return
 			}
-			delete(cookieCalls.pending, id)
+			delete(nativeCalls.pending, id)
 			deliver(ch, r)
 		}
-		cookieCalls.pending[id] = done
+		nativeCalls.pending[id] = done
 		start(done)
 	}) {
-		return cookieResult{err: errLoopStopped}
+		return nativeResult{err: errLoopStopped}
 	}
 	return await(ch)
 }
 
-func stopCookieCalls() {
-	cookieCalls.stopped = true
-	for _, done := range cookieCalls.pending {
-		done(cookieResult{err: errLoopStopped})
+func stopNativeCalls() {
+	nativeCalls.stopped = true
+	for _, done := range nativeCalls.pending {
+		done(nativeResult{err: errLoopStopped})
 	}
 }
 

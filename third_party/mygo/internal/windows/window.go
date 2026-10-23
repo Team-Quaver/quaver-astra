@@ -40,6 +40,17 @@ type window struct {
 	closed     bool
 	destroying bool
 
+	// contentFilter applies the content rules of SetContentRules to a
+	// request (content_rules.go), and reports whether it answered it; nil
+	// without any. filtersAll tells that WebView2 asks about every
+	// request, and hidingScript hides what the rules hide in every
+	// document. navigating is the page loading, the top-level URL of its
+	// own request.
+	contentFilter func(args, req uintptr, uri string, resource int32) bool
+	filtersAll    bool
+	hidingScript  string
+	navigating    string
+
 	minW, minH, maxW, maxH int // DIPs
 	movable, closable      bool
 	frameless              bool
@@ -81,6 +92,7 @@ type window struct {
 	bgBrush     uintptr
 	bg          *platform.Color
 	vibrancy    string
+	glass       margins // the frame's extension under the material
 	shadow      bool
 	ignoreMouse bool
 
@@ -261,7 +273,7 @@ func (w *window) placeInitially() {
 	}
 	dpi := monitorDPI(mon)
 	width, height := toPx(o.Width, dpi), toPx(o.Height, dpi)
-	if o.UseContentSize && !w.captionless() {
+	if o.UseContentSize {
 		width, height = w.outerSize(width, height, dpi)
 	}
 	x, y := toPx(o.X, dpi), toPx(o.Y, dpi)
@@ -271,6 +283,31 @@ func (w *window) placeInitially() {
 		y = work.Top + (work.Bottom-work.Top-height)/2
 	}
 	procSetWindowPos.Call(w.hwnd, 0, uintptr(x), uintptr(y), uintptr(width), uintptr(height), swpNoZOrder|swpNoActivate)
+	if o.UseContentSize && !w.captionless() {
+		w.fitContent(width, height, toPx(o.Width, dpi), toPx(o.Height, dpi), false, 0, 0)
+	}
+}
+
+// fitContent grows the window, outerW by outerH, whose content was to be
+// wantW by wantH pixels, by what its content lacks, and with at moves the
+// content to (atX, atY) on the screen: AdjustWindowRectEx counts a menu
+// bar of one line as the system draws it, and MyGo draws Windows 11's
+// taller (measureMenuBarItem), as a bar too wide for its window wraps.
+func (w *window) fitContent(outerW, outerH, wantW, wantH int32, at bool, atX, atY int32) {
+	var c, wr rect
+	procGetClientRect.Call(w.hwnd, uintptr(unsafe.Pointer(&c)))
+	procGetWindowRect.Call(w.hwnd, uintptr(unsafe.Pointer(&wr)))
+	var origin point
+	procClientToScreen.Call(w.hwnd, uintptr(unsafe.Pointer(&origin)))
+	dw, dh := wantW-c.Right, wantH-c.Bottom
+	dx, dy := int32(0), int32(0)
+	if at {
+		dx, dy = atX-origin.X, atY-origin.Y
+	}
+	if dw == 0 && dh == 0 && dx == 0 && dy == 0 {
+		return
+	}
+	procSetWindowPos.Call(w.hwnd, 0, uintptr(wr.Left+dx), uintptr(wr.Top+dy), uintptr(outerW+dw), uintptr(outerH+dh), swpNoZOrder|swpNoActivate)
 }
 
 // outerSize returns the window size for a content size, in pixels.
@@ -280,11 +317,31 @@ func (w *window) outerSize(width, height int32, dpi int) (int32, int32) {
 	if !w.autoHideMenu && !w.noRedirect && (w.hmenu != 0 || w.b.appMenu != nil && w.hasAppMenu()) {
 		menu = 1
 	}
-	style, ex := windowLong(w.hwnd, gwlStyle), windowLong(w.hwnd, gwlExStyle)
-	if has(procAdjustWindowRectExForDpi) {
-		procAdjustWindowRectExForDpi.Call(uintptr(unsafe.Pointer(&r)), style, menu, ex, uintptr(dpi))
-	}
+	w.addFrame(&r, menu, dpi)
 	return r.Right - r.Left, r.Bottom - r.Top
+}
+
+// addFrame grows r, a page area in pixels, to the window around it. A window
+// without a caption has no title bar or menu bar, and keeps what
+// frameCalcSize leaves it: the borders of a resizable one, and the pixel at
+// the top of a hidden title bar on Windows 11.
+func (w *window) addFrame(r *rect, menu uintptr, dpi int) {
+	style, ex := windowLong(w.hwnd, gwlStyle), windowLong(w.hwnd, gwlExStyle)
+	captionless := w.captionless()
+	if captionless && style&wsThickFrame == 0 || !has(procAdjustWindowRectExForDpi) {
+		return
+	}
+	top := r.Top
+	if captionless {
+		menu = 0
+	}
+	procAdjustWindowRectExForDpi.Call(uintptr(unsafe.Pointer(r)), style, menu, ex, uintptr(dpi))
+	if captionless {
+		r.Top = top
+		if w.hiddenTitleBar && windows11() {
+			r.Top--
+		}
+	}
 }
 
 func monitorAt(x, y int) uintptr {
@@ -462,6 +519,9 @@ func (w *window) sized(kind uintptr) {
 	if w.caption != nil && kind != sizeMinimized {
 		w.caption.layout()
 	}
+	if w.vibrancy != "" && kind != sizeMinimized {
+		w.extendGlass(false)
+	}
 	switch kind {
 	case sizeMinimized:
 		if w.state != sizeMinimized {
@@ -635,14 +695,16 @@ func (w *window) Bounds() platform.Rect {
 func (w *window) SetContentBounds(r platform.Rect) {
 	dpi := dpiOf(w.hwnd)
 	outer := rect{toPx(r.X, dpi), toPx(r.Y, dpi), toPx(r.X+r.Width, dpi), toPx(r.Y+r.Height, dpi)}
-	if !w.captionless() && has(procAdjustWindowRectExForDpi) {
-		menu := uintptr(0)
-		if w.menuShown() {
-			menu = 1
-		}
-		procAdjustWindowRectExForDpi.Call(uintptr(unsafe.Pointer(&outer)), windowLong(w.hwnd, gwlStyle), menu, windowLong(w.hwnd, gwlExStyle), uintptr(dpi))
+	menu := uintptr(0)
+	if w.menuShown() {
+		menu = 1
 	}
+	w.addFrame(&outer, menu, dpi)
 	procSetWindowPos.Call(w.hwnd, 0, uintptr(outer.Left), uintptr(outer.Top), uintptr(outer.Right-outer.Left), uintptr(outer.Bottom-outer.Top), swpNoZOrder|swpNoActivate)
+	if !w.captionless() {
+		x, y := toPx(r.X, dpi), toPx(r.Y, dpi)
+		w.fitContent(outer.Right-outer.Left, outer.Bottom-outer.Top, toPx(r.X+r.Width, dpi)-x, toPx(r.Y+r.Height, dpi)-y, true, x, y)
+	}
 }
 
 func (w *window) ContentBounds() platform.Rect {
@@ -1000,18 +1062,44 @@ func backdropFor(material string) int32 {
 func (w *window) SetVibrancy(material string) {
 	w.vibrancy = material
 	backdrop := backdropFor(material)
-	m := margins{}
-	if material != "" {
-		// The material shows where the frame extends, behind the page.
-		m = margins{-1, -1, -1, -1}
-	}
-	procDwmExtendFrameIntoClientArea.Call(w.hwnd, uintptr(unsafe.Pointer(&m)))
+	w.extendGlass(true)
 	procDwmSetWindowAttribute.Call(w.hwnd, dwmwaSystemBackdropType, uintptr(unsafe.Pointer(&backdrop)), 4)
 	if material == "" && w.captionless() && w.shadow {
 		w.SetHasShadow(true)
 	}
 	w.withWebView(w.applyWebViewBackground)
 	procInvalidateRect(w.hwnd)
+}
+
+// extendGlass extends the frame where the material shows, behind the
+// page: over the whole client area, or nowhere without a material. With
+// always it extends the frame even when its extension has not changed.
+func (w *window) extendGlass(always bool) {
+	m := margins{}
+	if w.vibrancy != "" {
+		var r rect
+		procGetClientRect.Call(w.hwnd, uintptr(unsafe.Pointer(&r)))
+		m = glassMargins(w.hiddenTitleBar && !w.fullScreen && w.IsMaximized(), r.Bottom-r.Top)
+	}
+	if m == w.glass && !always {
+		return
+	}
+	w.glass = m
+	procDwmExtendFrameIntoClientArea.Call(w.hwnd, uintptr(unsafe.Pointer(&m)))
+}
+
+// glassMargins returns the frame's extension that shows the material over
+// a client area height pixels high. DWM draws its caption buttons in the
+// frame at the top, under the hidden title bar's own while the window is
+// restored. Maximized, the client area starts below the top of the window
+// (frameCalcSize) and DWM's buttons show above the title bar's: the frame
+// extends from the bottom over the whole client area instead, and its top
+// is only the strip off screen, too short for buttons.
+func glassMargins(maximizedHiddenTitleBar bool, height int32) margins {
+	if maximizedHiddenTitleBar {
+		return margins{Bottom: max(height, 1)}
+	}
+	return margins{-1, -1, -1, -1} // a sheet over the whole window
 }
 
 // hasAppMenu tells whether the window shows the application menu in its

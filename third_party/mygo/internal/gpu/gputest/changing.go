@@ -9,8 +9,9 @@ import (
 // Changing makes random scenes and changes them a little at a time, as the
 // frames of an app do, for the tests of renderers drawing only what
 // changed: fills (with continuous corners too), shadows, glyphs, images,
-// gradients, effects reading their backdrops, clips, transforms, and
-// colors outside the sRGB gamut.
+// gradients, effects reading their backdrops, clips (one nested in
+// another, transformed, now and then), transforms, and colors outside the
+// sRGB gamut.
 type Changing struct {
 	rnd   *rand.Rand
 	atlas *scene.Atlas
@@ -198,7 +199,44 @@ func (m *Changing) Change(s *scene.Scene) string {
 			return "effect"
 		}
 		return "nothing"
+	case 9:
+		return m.nest(s)
 	default:
 		return "nothing"
 	}
+}
+
+// nest takes the clip nested in the scene's, moved by a translation, out
+// of s, or puts one in, with a fill: the renderers then cut what the
+// outer clip holds with a mask, as it holds a transformed clip, rather
+// than in the shader, which draws its edge a unit in the last place
+// apart, so all it holds changes.
+func (m *Changing) nest(s *scene.Scene) string {
+	for k := range s.Ops {
+		if s.Ops[k].Kind != scene.OpPushClip || !s.Ops[k].Transform.Set {
+			continue
+		}
+		end := k + 1
+		for end < len(s.Ops) && s.Ops[end].Kind != scene.OpPopClip {
+			end++
+		}
+		s.Ops = append(s.Ops[:k], s.Ops[min(end+1, len(s.Ops)):]...)
+		return "nested clip out"
+	}
+	// Before the outer clip's end.
+	at := -1
+	for k, op := range s.Ops {
+		if op.Kind == scene.OpPopClip {
+			at = k
+			break
+		}
+	}
+	if at < 0 {
+		return "nothing"
+	}
+	inner := scene.Op{Kind: scene.OpPushClip, Rect: scene.Rect{W: 60, H: 40}, Radii: scene.Uniform(4),
+		Transform: scene.Translation(m.rnd.Float32()*240, m.rnd.Float32()*180)}
+	fill := scene.Op{Kind: scene.OpFill, Rect: m.rect(), Color: m.color()}
+	s.Ops = append(s.Ops[:at], append([]scene.Op{inner, fill, {Kind: scene.OpPopClip}}, s.Ops[at:]...)...)
+	return "nested clip in"
 }

@@ -217,6 +217,69 @@ func TestDocumentSave(t *testing.T) {
 	}
 }
 
+// A system that removes the file and can't put the new one in its place
+// (ReplaceFileW's ERROR_UNABLE_TO_MOVE_REPLACEMENT) leaves the new contents
+// only in the sibling: the save keeps it and names it in its error. When the
+// file is still there, the sibling goes as before.
+func TestDocumentSaveKeepsTheNewContentsWhenReplacingFails(t *testing.T) {
+	for _, removed := range []bool{true, false} {
+		t.Run(fmt.Sprintf("removed=%v", removed), func(t *testing.T) {
+			ds := testDocs(t, DocumentsOptions[string]{Autosave: AutosaveOff})
+			path := writeTemp(t, "a.txt", "one")
+			d, _ := ds.Open(path)
+			d.Set("two")
+			onMain(func() {
+				fb.ReplaceFileHook = func(target, replacement string) error {
+					if removed {
+						if err := os.Remove(target); err != nil {
+							return err
+						}
+					}
+					return errors.New("cannot move the replacement")
+				}
+			})
+			err := d.Save()
+			onMain(func() { fb.ReplaceFileHook = nil })
+			entries, _ := os.ReadDir(filepath.Dir(path))
+			if err == nil || len(entries) != 1 {
+				t.Fatalf("save error %v, files %v", err, entries)
+			}
+			left := filepath.Join(filepath.Dir(path), entries[0].Name())
+			// The error names the sibling by the file's real path, which on
+			// Windows may spell a temporary directory's 8.3 name in full.
+			if removed && (readString(t, left) != "two" || !strings.Contains(err.Error(), entries[0].Name())) {
+				t.Errorf("kept %s with %q; error %v", left, readString(t, left), err)
+			}
+			if !removed && (left != path || readString(t, path) != "one") {
+				t.Errorf("left %s with %q; error %v", left, readString(t, left), err)
+			}
+		})
+	}
+}
+
+// A sibling that could not be written goes, even when the file went
+// meanwhile: it holds no new contents to keep.
+func TestDocumentSaveDropsASiblingNotWritten(t *testing.T) {
+	var path string
+	ds := testDocs(t, DocumentsOptions[string]{
+		Autosave: AutosaveOff,
+		Write: func(w io.Writer, s string) error {
+			if err := os.Remove(path); err != nil {
+				return err
+			}
+			return errors.New("cannot write")
+		},
+	})
+	path = writeTemp(t, "a.txt", "one")
+	d, _ := ds.Open(path)
+	d.Set("two")
+	err := d.Save()
+	entries, _ := os.ReadDir(filepath.Dir(path))
+	if err == nil || len(entries) != 0 {
+		t.Fatalf("save error %v, files %v", err, entries)
+	}
+}
+
 func TestDocumentSaveKeepsLinks(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("hard links and symlinks need privileges")

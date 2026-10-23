@@ -415,3 +415,37 @@ func lenientTester(view func(c *context), width, height int) *Tester {
 	t.settle()
 	return t
 }
+
+// A copy of a rich text going with its exit transition keeps the styles
+// of its own spans, where another rich text takes its place, and its
+// state, in the same frame: the copy painting with the other's styles,
+// one span more than its own, went out of their range.
+func TestTransitionExitKeepsItsSpans(t *testing.T) {
+	red := RGB(200, 0, 0)
+	first := true
+	tt, now := clockTester(func(c *context) {
+		coreColumn(c).Children(func() {
+			if first {
+				coreRichText(c, Span{Text: "one "}, Span{Text: "two", Color: red, Background: red}).
+					Transition(ElementTransition{Exit: &Motion{Opacity: 0}})
+			} else {
+				coreRichText(c, Span{Text: "a "}, Span{Text: "b "}, Span{Text: "c", Color: red, Background: red})
+			}
+		})
+	}, 200, 100)
+	first = false
+	*now = now.Add(10 * time.Millisecond)
+	tt.Frame()
+	var ghost *node
+	for e := tt.rt.c.root.first.first; e != nil; e = e.next {
+		if e.leaving != 0 {
+			ghost = e
+		}
+	}
+	if ghost == nil {
+		t.Fatal("the rich text gone has no copy going")
+	}
+	if sc := ghost.st.spans; sc == nil || len(sc.styles) != len(ghost.spans) {
+		t.Errorf("the copy paints %d spans with the styles of another's", len(ghost.spans))
+	}
+}

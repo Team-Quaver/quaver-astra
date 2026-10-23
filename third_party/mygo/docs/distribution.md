@@ -438,6 +438,10 @@ export default defineConfig({
 ```
 
 The package depends on GTK 3 and WebKitGTK; `depends` adds more packages.
+An app that shows no web page, in a window or a `ui.WebView`, as an app of
+[native UI](native.md), needs GTK alone: `webview: false` leaves WebKitGTK
+out of its package, and out of what `install.sh` and `mygo doctor` (in the
+project) check, as the app never loads it.
 `maintainer` defaults to the `author` of package.json, else the name of
 the app.
 `comment` describes the app in its desktop entry and package, and
@@ -480,7 +484,8 @@ sh install.sh --uninstall   # keeps the settings and data of the app
 Running it again installs the version it finds over the installed one.
 The app needs WebKitGTK, which `install.sh` does not install: when the
 system's library cache has none, it says so after installing, with the
-command that installs it on Debian, Ubuntu, Fedora, Arch and openSUSE.
+command that installs it on Debian, Ubuntu, Fedora, Arch and openSUSE,
+unless `linux.webview` is `false`.
 When the app updates itself, it registers the desktop entry and file types
 of the new version, so a version that adds URL schemes or file types gets
 them. The Debian package suits people who want the system's package manager to

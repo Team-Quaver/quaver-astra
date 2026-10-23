@@ -231,6 +231,34 @@ func TestHeldWhileOccluded(t *testing.T) {
 // TestFocusChangeFrames checks that the window gaining or losing the
 // keyboard focus draws a frame only when the last frame read it, as a
 // focused text input does for its caret.
+// TestHeldFrameKeepsNoDisplayTime checks that a frame the display asked
+// for, drawn late as the GPU renderer could take it (windowHost.
+// waitDisplay), which then waited for the window to show, is built at the
+// time it draws rather than at the time the display asked for it.
+func TestHeldFrameKeepsNoDisplayTime(t *testing.T) {
+	var built time.Time
+	tt := newRepaintTester(func(c *context) {
+		built = c.now
+		coreText(c, "hello")
+	})
+	tt.h.hidden = true
+	asked := tt.clock
+	tt.rt.frameAt = asked
+	tt.rt.changed()
+	if b, _ := tt.frame(8 * time.Millisecond); b || !tt.rt.held {
+		t.Fatalf("out of sight: built %v, held %v", b, tt.rt.held)
+	}
+	tt.clock = tt.clock.Add(10 * time.Minute)
+	tt.h.hidden = false
+	tt.rt.event(platform.SurfaceEvent{Kind: platform.SurfaceShown})
+	if b, _ := tt.frame(8 * time.Millisecond); !b {
+		t.Fatal("shown again, the frame did not build")
+	}
+	if !built.Equal(tt.clock) {
+		t.Errorf("the frame after showing was built at %v, %v after the time it drew at", built, tt.clock.Sub(built))
+	}
+}
+
 func TestFocusChangeFrames(t *testing.T) {
 	text, input := "", false
 	tt := newRepaintTester(func(c *context) {

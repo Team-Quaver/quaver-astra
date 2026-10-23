@@ -911,6 +911,36 @@ func TestRestoreMaximizedCaptionless(t *testing.T) {
 	}
 }
 
+// The page of a window without a caption has the size the app asks for, in
+// UseContentSize, SetContentBounds and SetContentSize. A resizable one keeps
+// invisible borders on Windows, which its bounds count and its page does not.
+func TestCaptionlessContentSize(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("only Windows keeps borders around the page of a window without a caption")
+	}
+	for name, opts := range map[string]mygo.WindowOptions{
+		"frameless":          {Frameless: true},
+		"fixed frameless":    {Frameless: true, DisableResize: true},
+		"hidden title bar":   {TitleBarStyle: mygo.TitleBarHidden},
+		"fixed hidden title": {TitleBarStyle: mygo.TitleBarHidden, DisableResize: true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			opts.Width, opts.Height, opts.UseContentSize = 400, 300, true
+			w := newWindow(t, opts)
+			if width, height := w.ContentSize(); width != 400 || height != 300 {
+				t.Errorf("new window: content size = %dx%d, want 400x300", width, height)
+			}
+			want := mygo.Rectangle{X: 200, Y: 180, Width: 360, Height: 240}
+			w.SetContentBounds(want)
+			eventually(t, "the content where it was put", func() bool { return w.ContentBounds() == want })
+			w.SetContentSize(420, 280)
+			if width, height := w.ContentSize(); width != 420 || height != 280 {
+				t.Errorf("SetContentSize: content size = %dx%d, want 420x280", width, height)
+			}
+		})
+	}
+}
+
 func TestDockedDevTools(t *testing.T) {
 	w := newWindow(t, mygo.WindowOptions{Title: "DevTools", Width: 800, Height: 600, Page: mygo.PageOptions{DevTools: mygo.DevToolsEnabled}})
 	w.Page().LoadHTML("<p>inspect me</p>", "")

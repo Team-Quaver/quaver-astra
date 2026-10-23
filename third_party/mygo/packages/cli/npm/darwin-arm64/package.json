@@ -1,6 +1,6 @@
 {
   "name": "@egoist/mygo-cli-darwin-arm64",
-  "version": "0.5.5",
+  "version": "0.6.3",
   "description": "The macOS arm64 binary of mygo-cli",
   "repository": {
     "type": "git",

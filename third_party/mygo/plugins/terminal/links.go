@@ -15,17 +15,17 @@ var urlPattern = regexp.MustCompile(`(?:https?|ftp|file)://[^\s"'<>` + "`" + `\x
 var pathPattern = regexp.MustCompile(`(?:(?:~|\.{1,2})?/[^\s"'<>` + "`" + `\x00-\x1f:]+|[\w.@+-]+(?:/[\w.@+-]+)+/?)(?::\d+(?::\d+)?)?|[\w@+-][\w.@+-]*\.\w+:\d+(?::\d+)?`)
 
 // urlAt returns the URL of text, a row whose runes are in columns cols, at
-// column col, or "".
-func urlAt(text []rune, cols []int, col int) string {
+// column col, and the columns it spans, x0 up to x1, or "".
+func urlAt(text []rune, cols []int, col int) (url string, x0, x1 int) {
 	return matchAt(urlPattern, text, cols, col)
 }
 
 // pathAt returns the file path of text at column col, as urlAt, or "".
-func pathAt(text []rune, cols []int, col int) string {
+func pathAt(text []rune, cols []int, col int) (path string, x0, x1 int) {
 	return matchAt(pathPattern, text, cols, col)
 }
 
-func matchAt(re *regexp.Regexp, text []rune, cols []int, col int) string {
+func matchAt(re *regexp.Regexp, text []rune, cols []int, col int) (string, int, int) {
 	s := string(text)
 	for _, m := range re.FindAllStringIndex(s, -1) {
 		u := trimURL(s[m[0]:m[1]])
@@ -35,10 +35,10 @@ func matchAt(re *regexp.Regexp, text []rune, cols []int, col int) string {
 		start := len([]rune(s[:m[0]]))
 		end := start + len([]rune(u))
 		if start < len(cols) && cols[start] <= col && col <= cols[end-1] {
-			return u
+			return u, cols[start], cols[end-1] + 1
 		}
 	}
-	return ""
+	return "", 0, 0
 }
 
 // trimURL trims what likely ends the sentence around a URL rather than the

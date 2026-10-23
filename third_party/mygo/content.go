@@ -47,11 +47,6 @@ func (w *Window) attachContent() {
 				w.native.TitleBarDoubleClicked()
 			}
 		},
-		SetMaximizeButton: func(r platform.RectF) {
-			if w.native != nil {
-				w.native.SetMaximizeButton(r)
-			}
-		},
 		Escape:        w.escape,
 		IsDark:        func() bool { return backend().Theme().IsDark() },
 		Preferences:   func() platform.Preferences { return backend().Theme().Preferences() },

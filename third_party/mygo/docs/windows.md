@@ -480,10 +480,11 @@ mygo.NewWindow(mygo.WindowOptions{
 |---|---|
 | `PreloadScript` | JavaScript run before every page's own scripts |
 | `TrustedOrigins` | other origins whose pages may call Go, see [who may call](bindings.md#who-may-call) |
-| `DevTools` | `DevToolsAuto` (the inspector in development builds), `DevToolsEnabled` or `DevToolsDisabled`; for a window of native UI, its [inspector](ui/inspector.md) |
+| `DevTools` | `DevToolsAuto` (the inspector in development builds), `DevToolsEnabled` or `DevToolsDisabled`, which also turns WebView2's own keys, as F5 reloading, on or off (Windows); for a window of native UI, its [inspector](ui/inspector.md) |
 | `ZoomFactor`, `UserAgent` | the page's zoom (1 is 100%) and user agent |
 | `SafariTabFocus` | leaves Tab to text fields and elements with a tabindex, as Safari does unless the system's keyboard navigation is on; by default Tab reaches links, buttons, checkboxes and selects too (macOS) |
 | `UserAgentSuffix` | appended to the user agent instead of replacing it, which `UserAgent` does, such as `"MyApp/1.2"`; it appends to `UserAgent` too, and `SetUserAgent` keeps it, and leading and trailing spaces are trimmed |
+| `ContentRules` | rules that block what the page loads and hide parts of it, see [blocking content](#blocking-content) |
 
 `UserAgentSuffix` is for the sites that want to see the app, and for the ones
 that serve a bare web view older pages because its user agent names no browser:
@@ -549,6 +550,14 @@ png, err := win.CapturePage() // what the window shows, as a PNG
 apply. The zero `PDFOptions` prints Letter pages in portrait with margins of
 0.4 inch and no backgrounds, like a browser's print dialog.
 
+The PDF's text copies and searches as the page's. On macOS, the PDFs that
+WebKit prints name radicals for many Chinese characters, such as ⼈
+(U+2F08) for 人, which the system's fonts draw with the same glyph.
+`PrintToPDF` asks the installed fonts which characters their glyphs are
+and appends corrected text maps to the PDF, which leaves its pages as they
+were. Text in a font that is not installed, such as a web font, keeps the
+radicals.
+
 ### Downloads
 
 A page downloads a file when it follows a link with the `download`
@@ -602,6 +611,63 @@ export default defineConfig({
   },
 });
 ```
+
+### Blocking content
+
+Content rules block what pages load and hide parts of them, as ad and
+tracker blockers do. They are written in WebKit's
+[content blocker format](https://developer.apple.com/documentation/safariservices/creating-a-content-blocker):
+a JSON array of rules, each a trigger that matches loads by a regular
+expression of their URL, and an action. `mygo.CompileContentRules`
+compiles them, and a page applies them through `PageOptions.ContentRules`
+or `Page.SetContentRules`:
+
+```go
+rules, err := mygo.CompileContentRules("ads", `[
+	{"trigger": {"url-filter": "^[^:]+://+([^:/]+\\.)?ads\\.example\\.com[:/]"}, "action": {"type": "block"}},
+	{"trigger": {"url-filter": ".*", "if-domain": ["*news.example"]},
+	 "action": {"type": "css-display-none", "selector": ".sponsored"}}]`)
+if err != nil {
+	return err
+}
+win := mygo.NewWindow(mygo.WindowOptions{URL: "https://news.example/",
+	Page: mygo.PageOptions{ContentRules: []*mygo.ContentRules{rules}}})
+```
+
+Triggers take `url-filter`, `url-filter-is-case-sensitive`, one of
+`if-domain`, `unless-domain`, `if-top-url` and `unless-top-url`,
+`resource-type` and `load-type` (`first-party` or `third-party`).
+Actions are `block`, `block-cookies`, `make-https`, `css-display-none` with
+a `selector`, and `ignore-previous-rules`, which undoes what the rules
+before it did to a load. Regular expressions are WebKit's: no alternatives
+(`|`), counted repetitions or classes such as `\d`, and ASCII only.
+Domains are lowercase, in punycode. A rule whose selector the engine cannot
+parse is skipped; any other mistake fails the whole list.
+
+`CompileContentRules` takes a while for long lists, so call it off the
+main thread. The engine keeps what it compiled under the id: the same
+rules load right away on later launches, and other rules compiled under
+the id replace the earlier ones. WebKit limits the rules of a list (to
+150,000, or 50,000 in older versions), so split a long list into several
+and apply them together; a page applies its lists in order, each list's
+`ignore-previous-rules` undoing only its own rules. `SetContentRules`
+replaces a page's lists, and with none removes them: the loads from then
+on go through them, and the page shows what it loaded until it reloads.
+
+macOS and Linux (WebKitGTK 2.24 or newer) apply the rules with WebKit's
+content blockers. WebView2 has none, so on Windows MyGo sees every request
+of a page applying rules and fails the blocked ones: a blocked `fetch`
+rejects and an `XMLHttpRequest` errs, as in WebKit, while a blocked page
+shows WebView2's error page for a 403 response. It redirects what
+`make-https` matches, and hides elements with a style sheet each document
+adopts. There:
+
+- WebSockets are not blocked: WebView2 does not show MyGo their requests.
+- Popups (`resource-type` `popup`) are not matched.
+- `block-cookies` removes the cookies of the request, not those of the
+  response.
+- An element whose own `style` says `display: ... !important` stays: the
+  style sheet is the page's, where WebKit's is the user's, which wins.
 
 ### The web inspector
 

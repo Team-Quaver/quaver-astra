@@ -184,6 +184,10 @@ type AppController interface {
 	// AllowForeground lets the next process to ask bring its windows to
 	// the front, which Windows only lets the process in front do.
 	AllowForeground()
+	// WithActivationToken runs fn with the startup notification or XDG
+	// activation token of the launch that caused it, which the window fn
+	// shows or focuses first may need to take the focus (Wayland).
+	WithActivationToken(token string, fn func())
 	Hide()
 	Unhide()
 	IsHidden() bool
@@ -206,6 +210,14 @@ type AppController interface {
 	SetCookie(cookie Cookie, done func(error))
 	DeleteCookie(key CookieKey, done func(error))
 	ClearCookies(done func(error))
+	// CompileContentRules makes a content rule list of rules, in WebKit's
+	// content blocker JSON format: it loads the list kept as identifier
+	// (ContentRulesIdentifier) where the engine keeps compiled lists,
+	// else compiles rules, keeps the list as identifier and removes the
+	// lists kept for id under other identifiers (StaleContentRules).
+	// done runs on the main thread exactly once, with a handle
+	// Page.SetContentRules takes.
+	CompileContentRules(id, identifier, rules string, done func(list any, err error))
 	ShowAboutPanel(opts AboutPanelOptions)
 	// PreferredLanguages returns the languages the user reads, most
 	// preferred first, as the system's settings list them, in the forms
@@ -479,11 +491,6 @@ type Window interface {
 	// TitleBarDoubleClicked performs the platform action for a double click
 	// on a custom title bar (zoom/minimize on macOS).
 	TitleBarDoubleClicked()
-	// SetMaximizeButton tells where the content shows the window's maximize
-	// button, in DIPs from the top-left corner of the content, which the
-	// backend makes the system's maximize button for the pointer: Windows
-	// shows the snap layouts over it. The zero RectF is nowhere.
-	SetMaximizeButton(r RectF)
 	// PlaceFlyout places a flyout (WindowOptions.Flyout) of the given
 	// size next to its anchor again, as Flyout.Place resolves it in the
 	// work area of a display, after the anchor, the size or the parent
@@ -518,6 +525,10 @@ type Page interface {
 	// the current document keeps what it ran. Scripts a backend injects
 	// itself, as the title bar's, stay.
 	SetUserScripts(scripts []UserScript)
+	// SetContentRules replaces the content rule lists the page's loads
+	// go through from then on with lists, handles of
+	// AppController.CompileContentRules; none removes them.
+	SetContentRules(lists []any)
 	// CallAsyncFunction runs body as the body of an async function in the
 	// main frame, awaits it and reports the returned value, which the
 	// caller arranges to be a string. err is non-nil when the body fails to

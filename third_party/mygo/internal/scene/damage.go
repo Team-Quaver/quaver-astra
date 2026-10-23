@@ -396,9 +396,16 @@ func (d *Differ) opBounds(s *Scene, out []image.Rectangle) []image.Rectangle {
 		// The GPU's renderers cut what a clip holds with a mask once an op
 		// in it is drawn under a transform, and in the shader otherwise,
 		// which differ at its edge by a unit in the last place: a clip
-		// that starts or stops holding one changes all it cuts.
+		// that starts or stops holding one changes all it cuts. A clip
+		// pushed under a transform is one for the clips around it, not
+		// for itself, which it was pushed onto already (as
+		// gpu.Builder.markEnclosing has it).
 		if op.Kind != OpPopClip && d.moved(s, op) {
-			for j := len(d.pushes) - 1; j >= 0 && d.pushes[j] != i && !d.encloses2[d.pushes[j]]; j-- {
+			j := len(d.pushes) - 1
+			if op.Kind == OpPushClip {
+				j--
+			}
+			for ; j >= 0 && !d.encloses2[d.pushes[j]]; j-- {
 				d.encloses2[d.pushes[j]] = true
 			}
 		}
@@ -430,7 +437,7 @@ func (d *Differ) moved(s *Scene, op *Op) bool {
 			}
 		}
 	}
-	return op.Transform.Set && (fold == nil || !folds(s, op))
+	return op.Transform.Set && (!folding() || !folds(s, op))
 }
 
 // Remember keeps what Diff needs of s, which Diff was given last, to

@@ -339,7 +339,9 @@ func (w *schemeWriter) finish() {
 
 // FileServer serves files from fsys and falls back to index.html for
 // unknown paths without an extension, so client side routers work. Files
-// are served with their content type and support range requests.
+// are served with their content type and support range requests. Pages
+// cannot play audio and video from a custom scheme on Linux: serve them
+// over loopback HTTP, with net/http and this handler (docs/frontend.md).
 func FileServer(fsys fs.FS) http.Handler {
 	files := http.FileServerFS(fsys)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

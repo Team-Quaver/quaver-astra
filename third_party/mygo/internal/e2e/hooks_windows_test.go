@@ -58,6 +58,13 @@ func sideButton(w *mygo.Window, back bool) (ok bool) {
 	return ok
 }
 
+// pinch pinches the touchpad at (x, y) as Windows sends it, scrolling
+// with Ctrl held, which rounds scale.
+func pinch(w *mygo.Window, x, y, scale float64) (got float64, ok bool) {
+	mygo.RunOnMain(func() { got, ok = win.TestPinchSurface(w.NativeHandle(), x, y, scale) })
+	return got, ok
+}
+
 func drag(w *mygo.Window, points [][2]float64) (ok bool) {
 	mygo.RunOnMain(func() { ok = win.TestDragSurface(w.NativeHandle(), points) })
 	return ok

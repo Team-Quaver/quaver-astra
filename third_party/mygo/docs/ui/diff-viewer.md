@@ -166,12 +166,13 @@ app.diff.RenderHunkActions = func(c *ui.Context, bar ui.Element, a *editor.DiffH
 }
 ```
 
-- A `DiffSeparator` spans the viewer, both sides of a split one, 32 DIPs
-  high. It collapses `Lines` unchanged lines, which `ExpandUp`,
-  `ExpandDown` and `ExpandAll` show, `Step` lines at a time; `First` and
-  `Last` mark those before the first change and after the last, which
-  expand one way. A patch's hunk has a separator of no lines, with its
-  `Header`.
+- A `DiffSeparator` spans the viewer, both sides of a split one, less the
+  room of the scroll bar's track while the viewer scrolls (none with
+  `FitContent`), 32 DIPs high. It collapses `Lines` unchanged lines,
+  which `ExpandUp`, `ExpandDown` and `ExpandAll` show, `Step` lines at a
+  time; `First` and `Last` mark those before the first change and after
+  the last, which expand one way. A patch's hunk has a separator of no
+  lines, with its `Header`.
 - `DiffHunkActions` sit at the top right of the change under the pointer,
   or the caret's: `Index` and `Hunk` say which, and `Revert` and `Keep`
   act.

@@ -32,7 +32,11 @@ func TestRichTextEditor(t *testing.T) {
 	}
 	w := newWindow(t, mygo.WindowOptions{Title: "Rich text", Width: 420, Height: 220, Content: ui.View(view)})
 	eventually(t, "a frame", func() bool { return frames.Load() > 0 })
-	if !click(w, 300, 160) {
+	// In the middle of the content, whatever the frame takes of the
+	// window: Windows 11's menu bar, which MyGo draws taller, left the
+	// content short of where a fixed point was.
+	b := w.ContentBounds()
+	if !click(w, float64(b.Width)/2, float64(b.Height)/2) {
 		t.Skip("native click automation unavailable")
 	}
 	runs := func() string {

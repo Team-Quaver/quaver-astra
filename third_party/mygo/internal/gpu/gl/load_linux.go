@@ -213,6 +213,11 @@ func contextVersion() (version int32, es bool) { return epoxyGLVersion(), !epoxy
 // hasExtension reports whether the current context has an extension.
 func hasExtension(name string) bool { return epoxyHasExtension(name) }
 
+// hasContext reports whether a context is current, which GDK may think one
+// is when OpenGL does not: libepoxy aborts the first call of most GL
+// functions without one. glGetString it finds without.
+func hasContext() bool { return glGetString(glVersion) != 0 }
+
 // versionString describes the current context's version, for errors.
 func versionString() string { return goString(glGetString(glVersion)) }
 

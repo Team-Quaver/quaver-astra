@@ -166,6 +166,55 @@ func TestTableReorderFar(t *testing.T) {
 	}
 }
 
+// The last column sharing the room left ends at the table's end: its
+// header has no edge, as AppKit's. A last column with a width keeps its.
+func TestTableLastColumnEdge(t *testing.T) {
+	// edge reports whether the end of a column's header resizes it, its
+	// pointer moving there and dragging it 30 DIPs out.
+	edge := func(tt *Tester, s *ListState, title string, rtl bool) bool {
+		h := header(t, tt, title)
+		x, y, dx := float32(h.X+h.W)-2, float32(h.Y+h.H/2), float32(-30)
+		if rtl {
+			x, dx = float32(h.X)+2, 30
+		}
+		tt.Move(x, y)
+		cursor := tt.Cursor() == CursorResizeEW
+		before := header(t, tt, title).W
+		tt.Press(x, y)
+		tt.Move(x+dx, y)
+		tt.Release(x+dx, y)
+		after := header(t, tt, title).W
+		if cursor != (after != before) {
+			t.Errorf("%s: the resize pointer %v, but dragged from %v to %v", title, cursor, before, after)
+		}
+		return cursor
+	}
+	for _, rtl := range []bool{false, true} {
+		s := ListState{}
+		cols := []TableColumn{{Title: "Name", Width: 150}, {Title: "Kind", Width: 100}, {Title: "Size"}}
+		tt := coreNewTester(tableView(&s, cols, []string{"a.txt"}), 500, 300)
+		if rtl {
+			tt.SetDirection(RightToLeft)
+		}
+		if edge(tt, &s, "Size", rtl) {
+			t.Errorf("rtl %v: the last column, sharing the room left, has an edge", rtl)
+		}
+		if _, ok := s.Columns.Widths["Size"]; ok {
+			t.Errorf("rtl %v: the last column took a width: %v", rtl, s.Columns.Widths)
+		}
+		if !edge(tt, &s, "Kind", rtl) {
+			t.Errorf("rtl %v: a column with a width before it has no edge", rtl)
+		}
+		// Moved before the others, it has its edge back, and the last one,
+		// with a width, keeps its own.
+		s.Columns.Order = []string{"Size", "Name", "Kind"}
+		tt.Frame()
+		if !edge(tt, &s, "Size", rtl) || !edge(tt, &s, "Kind", rtl) {
+			t.Errorf("rtl %v: moved first, Size or the last column, Kind, has no edge", rtl)
+		}
+	}
+}
+
 func TestTableScrollsSideways(t *testing.T) {
 	s := ListState{}
 	cols := []TableColumn{{Title: "Name", Width: 200}, {Title: "Kind", Width: 200}, {Title: "Size", Width: 200}}

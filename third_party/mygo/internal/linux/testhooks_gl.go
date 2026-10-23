@@ -61,3 +61,27 @@ func TestSurfaceOnScreen(handle uintptr) []byte {
 	defer gObjectUnref(pix)
 	return pngFromPixbuf(pix)
 }
+
+// TestProbeGL probes OpenGL as the first window of native UI does, and
+// returns what it found and a function that reports whether GDK freed the
+// probe's window; nil where GDK keeps it: GTK 3 on Wayland never drops a
+// reference of its own.
+func TestProbeGL() (renderer, failure string, freed func() bool) {
+	var malloc0 func(n uintptr) ptr
+	var addWeakPointer func(obj, location ptr)
+	if !theBackend.onX11 || !bind(libGLib, &malloc0, "g_malloc0") || !bind(libGObject, &addWeakPointer, "g_object_add_weak_pointer") {
+		return "", "", nil
+	}
+	// GObject clears the location as it finalizes the window. It stays
+	// allocated: a window GDK still had when the test ended may go later.
+	var location ptr
+	renderer, failure = probeGLWith(func(win ptr) {
+		location = malloc0(8)
+		*slot(location, 0) = win
+		addWeakPointer(win, location)
+	})
+	if location == 0 {
+		return renderer, failure, nil
+	}
+	return renderer, failure, func() bool { return *slot(location, 0) == 0 }
+}

@@ -226,7 +226,7 @@ Section "Uninstall"
 SectionEnd
 `
 	nsi := filepath.Join(work, "installer.nsi")
-	if err := os.WriteFile(nsi, []byte(script), 0o644); err != nil {
+	if err := writeNSIS(nsi, script); err != nil {
 		return "", err
 	}
 	t := con.start("Creating " + filepath.Base(out))
@@ -325,6 +325,16 @@ func nsisAssociations(c *Config, exe string) (register, unregister string) {
 		u.WriteString(notify)
 	}
 	return r.String(), u.String()
+}
+
+// writeNSIS writes the installer's script to path as UTF-8 with a byte order
+// mark. The script starts with `Unicode true`, and NSIS reads a script
+// without a BOM as ANSI, in the machine's code page, so a name or a path with
+// a non-ASCII character, such as 望言字幕导出 or a folder named 中文, would
+// not match the files it installs: makensis reports "no files found".
+func writeNSIS(path, script string) error {
+	b := append([]byte{0xEF, 0xBB, 0xBF}, script...)
+	return os.WriteFile(path, b, 0o644)
 }
 
 // nsisEscape escapes text for an NSIS string in double quotes.

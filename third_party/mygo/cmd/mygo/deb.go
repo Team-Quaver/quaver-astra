@@ -31,11 +31,29 @@ type Linux struct {
 	// Depends lists Debian packages the app needs besides GTK and
 	// WebKitGTK.
 	Depends []string `json:"depends"`
+	// WebView false says that the app shows no web page, in a window or a
+	// ui.WebView, as an app of native UI: its package depends on GTK
+	// alone, and install.sh does not ask for WebKitGTK, which the app then
+	// never loads (default true).
+	WebView *bool `json:"webview"`
 	// Command is the name of a command that runs the app: a link in
 	// /usr/bin from the Debian package, and in ~/.local/bin from
 	// install.sh. Empty means none, and the app opens from the applications
 	// menu.
 	Command string `json:"command"`
+}
+
+// webView reports whether the app may show web pages, which need
+// WebKitGTK.
+func (l *Linux) webView() bool { return l.WebView == nil || *l.WebView }
+
+// debDepends returns the Debian packages the app depends on.
+func (l *Linux) debDepends() []string {
+	depends := []string{"libgtk-3-0 | libgtk-3-0t64"}
+	if l.webView() {
+		depends = append(depends, "libwebkit2gtk-4.1-0")
+	}
+	return append(depends, l.Depends...)
 }
 
 // commandRe matches the names linux.command may take.
@@ -151,7 +169,7 @@ func writeDeb(c *Config, stage, name, goarch string, app []string) (string, erro
 		}
 	}
 
-	depends := append([]string{"libgtk-3-0 | libgtk-3-0t64", "libwebkit2gtk-4.1-0"}, c.Linux.Depends...)
+	depends := c.Linux.debDepends()
 	description := c.Linux.Comment
 	if description == "" {
 		description = c.Name

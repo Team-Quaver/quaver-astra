@@ -1,6 +1,9 @@
 package scene
 
-import "math"
+import (
+	"math"
+	"sync/atomic"
+)
 
 // Translation returns how far m moves, when it only translates.
 func (m Affine) Translation() (x, y float32, ok bool) {
@@ -27,18 +30,28 @@ type TranslationFolder struct {
 	glyphs []Glyph
 }
 
-// fold is TranslationFolder.fold once FoldTranslations was called.
-var fold func(f *TranslationFolder, s *Scene) *Scene
+// foldFunc is TranslationFolder.fold.
+type foldFunc func(f *TranslationFolder, s *Scene) *Scene
+
+// fold is TranslationFolder.fold once FoldTranslations was called. It is
+// atomic, as ui.Translation calls FoldTranslations on any goroutine while
+// renderers read it on theirs.
+var fold atomic.Pointer[foldFunc]
 
 // FoldTranslations makes renderers fold the ops that only translate
 // (TranslationFolder), from the next scene they draw. Package ui calls it
-// as it builds a view, before drawing it, each frame: it sets fold only
-// the first time.
+// as it builds a view, before drawing it, each frame, and wherever it makes
+// a translation, on any goroutine: it sets fold only the first time, and
+// costs a load after.
 func FoldTranslations() {
-	if fold == nil {
-		fold = (*TranslationFolder).fold
+	if fold.Load() == nil {
+		f := foldFunc((*TranslationFolder).fold)
+		fold.CompareAndSwap(nil, &f)
 	}
 }
+
+// folding reports whether renderers fold translations (FoldTranslations).
+func folding() bool { return fold.Load() != nil }
 
 // Fold returns s, or, when any of its ops only translates, a copy of it
 // with those folded: fills and shadows, and images and glyphs moved by
@@ -47,10 +60,11 @@ func FoldTranslations() {
 // transform). Clips, effects and holes keep their transforms. The copy
 // holds until the next Fold. Before FoldTranslations, it returns s.
 func (f *TranslationFolder) Fold(s *Scene) *Scene {
-	if fold == nil {
+	fn := fold.Load()
+	if fn == nil {
 		return s
 	}
-	return fold(f, s)
+	return (*fn)(f, s)
 }
 
 func (f *TranslationFolder) fold(s *Scene) *Scene {

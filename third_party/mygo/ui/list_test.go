@@ -514,6 +514,52 @@ func TestListKeysAppChoiceAtTheSameIndex(t *testing.T) {
 	}
 }
 
+// Without Selected, the cursor is the list's own, which the user moves:
+// it follows its item as rows come above it, though the item is not
+// chosen, and is gone with it.
+func TestListCursorFollowsItsItemNotChosen(t *testing.T) {
+	ids := []string{"a", "b", "c", "d", "e"}
+	var chosen Selection[string]
+	s := ListState{Selection: &chosen, Key: func(i int) any { return ids[i] }}
+	tt := coreNewTester(func(c *context) {
+		coreList(c, &s, len(ids), func(i int) { coreText(c, "Row "+ids[i]).Height(20) }).Grow(1)
+	}, 300, 400)
+	// The cursor on "c", which a Cmd-click took out of the choice.
+	if err := tt.Click("Row c"); err != nil {
+		t.Fatal(err)
+	}
+	if err := tt.ClickWith(Cmd, "Row c"); err != nil {
+		t.Fatal(err)
+	}
+	if chosen.Len() != 0 || s.lead != 2 {
+		t.Fatalf("Cmd-click on chosen Row c: cursor %d, chosen %v", s.lead, slices.Collect(chosen.All()))
+	}
+	ids = []string{"x", "y", "a", "b", "c", "d", "e"}
+	tt.Frame()
+	if s.lead != 4 {
+		t.Errorf("two rows added above: cursor %d, want 4 (c)", s.lead)
+	}
+	tt.Key(0, KeyDown)
+	if got := slices.Collect(chosen.All()); !slices.Equal(got, []string{"d"}) {
+		t.Errorf("Down from c chose %v", got)
+	}
+	// The app deletes the rows chosen at the end, and the choice: the
+	// cursor goes with them, and Down starts from the first row again.
+	if err := tt.Click("Row e"); err != nil {
+		t.Fatal(err)
+	}
+	ids = ids[:3]
+	chosen.Clear()
+	tt.Frame()
+	if s.lead != -1 {
+		t.Errorf("its row deleted: cursor %d, want -1", s.lead)
+	}
+	tt.Key(0, KeyDown)
+	if got := slices.Collect(chosen.All()); !slices.Equal(got, []string{"x"}) {
+		t.Errorf("Down after the rows were deleted chose %v, want [x]", got)
+	}
+}
+
 func TestListKeepsTheFocusedRow(t *testing.T) {
 	texts := make([]string, 300)
 	var s ListState
@@ -1412,6 +1458,45 @@ func TestPivotKeptAcrossRebuilds(t *testing.T) {
 	if got := chosenRows(&sel); !slices.Equal(got, []int{0, 1}) {
 		t.Fatalf("click Row 1, Down, click Row 0, Shift+Down: chose %v (rebuilt %d times)", got, rebuilt)
 	}
+}
+
+// A right-click between frames chooses its row in the next frame's
+// build, by the rows the app has then: rows gone since the last frame are
+// not asked for their keys, and a row whose item moved is chosen where it
+// went, with its menu.
+func TestRightClickAfterRowsChanged(t *testing.T) {
+	ids := []string{"a", "b", "c", "d", "e"}
+	var chosen Selection[string]
+	s := ListState{Selection: &chosen, Key: func(i int) any { return ids[i] }}
+	menuRow := ""
+	tt := coreNewTester(func(c *context) {
+		coreList(c, &s, len(ids), func(i int) {
+			id := ids[i]
+			coreText(c, "Row "+id).Height(20).ContextMenu(func(m *Menu) {
+				menuRow = id
+				m.Item("Delete")
+			})
+		}).Grow(1)
+	}, 300, 400)
+	e, _ := tt.Find("Row e")
+	// The app removes the last rows before the next frame.
+	ids = ids[:2]
+	tt.RightClickAt(e.X+5, e.Y+5)
+	if chosen.Len() != 0 || tt.Menu() != nil {
+		t.Errorf("right-click on a row gone: chose %v, menu %v", slices.Collect(chosen.All()), tt.Menu())
+	}
+	tt.CloseMenu()
+	// Rows come above "b" before the next frame: the right-click where
+	// "b" showed chooses it at its new row.
+	ids = []string{"a", "b", "c", "d"}
+	tt.Frame()
+	b, _ := tt.Find("Row b")
+	ids = []string{"x", "y", "a", "b", "c", "d"}
+	tt.RightClickAt(b.X+5, b.Y+5)
+	if got := slices.Collect(chosen.All()); !slices.Equal(got, []string{"b"}) || menuRow != "b" {
+		t.Errorf("right-click on b with rows added above: chose %v, menu of %q", got, menuRow)
+	}
+	tt.CloseMenu()
 }
 
 // A right-click that chooses a row reports the new choice through the

@@ -1,8 +1,12 @@
 package fake
 
 import (
+	"errors"
 	"os"
+	"runtime"
 	"sync"
+	"syscall"
+	"time"
 
 	"github.com/egoist/mygo/internal/platform"
 )
@@ -93,12 +97,25 @@ func (w *FileWatch) Notify(n platform.FileWatchNotice) {
 }
 
 // ReplaceFile renames replacement over target, with the target's
-// permissions.
+// permissions. On Windows it gives a reader holding the target open
+// without sharing deletes a moment to let go, as the Windows backend does:
+// a test reading the file while the app saves it is such a reader.
 func (b *Backend) ReplaceFile(target, replacement string) error {
+	if b.ReplaceFileHook != nil {
+		return b.ReplaceFileHook(target, replacement)
+	}
 	if info, err := os.Stat(target); err == nil {
 		if err := os.Chmod(replacement, info.Mode().Perm()); err != nil {
 			return err
 		}
 	}
-	return os.Rename(replacement, target)
+	for attempt := 0; ; attempt++ {
+		err := os.Rename(replacement, target)
+		// ERROR_ACCESS_DENIED, ERROR_SHARING_VIOLATION, ERROR_LOCK_VIOLATION.
+		inUse := errors.Is(err, syscall.Errno(5)) || errors.Is(err, syscall.Errno(32)) || errors.Is(err, syscall.Errno(33))
+		if err == nil || runtime.GOOS != "windows" || !inUse || attempt == 9 {
+			return err
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
 }

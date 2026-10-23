@@ -710,9 +710,11 @@ func (p *Painter) textBackgrounds(l *text.Layout, x, y float32, ts textStyle, sp
 	if l == nil || ts.background.A == 0 && sp == nil {
 		return
 	}
+	// Inline transforms do not change while the text paints; look for them once.
+	clips := !p.transform.Set && !p.inlineTransforms()
 	for li := range l.Lines {
 		line := &l.Lines[li]
-		if !p.transform.Set && !p.inlineTransforms() && (y+line.Y > p.clip.Y+p.clip.H || y+line.Y+line.Height < p.clip.Y) {
+		if clips && (y+line.Y > p.clip.Y+p.clip.H || y+line.Y+line.Height < p.clip.Y) {
 			continue
 		}
 		if ts.background.A > 0 && line.Width > 0 {
@@ -734,21 +736,24 @@ func (p *Painter) textForeground(l *text.Layout, x, y float32, color Color, ts t
 	deco := decoration{underline: ts.underline, wavy: ts.wavy, strike: ts.strike, color: ts.decoColor, thick: ts.decoThick}
 	shade := text.ShadeOf(color.R, color.G, color.B)
 	start := int32(len(p.s.Glyphs))
+	// Inline transforms do not change while the text paints; look for them once.
+	moves := p.inlineTransforms()
+	clips := !p.transform.Set && !moves
 	var run *glyphRun
-	if sys.JoinsGlyphs() && !p.inlineTransforms() {
+	if sys.JoinsGlyphs() && !moves {
 		// The engine's, whose buffers each text reuses.
 		run = &p.rt.glyphRun
 		run.ids, run.pens, run.glyphs = run.ids[:0], run.pens[:0], run.glyphs[:0]
 	}
 	for li := range l.Lines {
 		line := &l.Lines[li]
-		if !p.transform.Set && !p.inlineTransforms() && (y+line.Y > p.clip.Y+p.clip.H || y+line.Y+line.Height < p.clip.Y) {
+		if clips && (y+line.Y > p.clip.Y+p.clip.H || y+line.Y+line.Height < p.clip.Y) {
 			continue
 		}
 		baseline := sys.Baseline((y + line.Baseline) * s)
 		for _, g := range line.Glyphs {
 			pen := (x + g.X) * s
-			if g.Object || !p.transform.Set && !p.inlineTransforms() && (pen > (p.clip.X+p.clip.W)*s || pen+(g.Advance+g.Size)*s < p.clip.X*s) {
+			if g.Object || clips && (pen > (p.clip.X+p.clip.W)*s || pen+(g.Advance+g.Size)*s < p.clip.X*s) {
 				continue
 			}
 			ix := float32(math.Floor(float64(pen)))
@@ -758,7 +763,7 @@ func (p *Painter) textForeground(l *text.Layout, x, y float32, color Color, ts t
 					glyphShade = text.ShadeOf(glyphColor.R, glyphColor.G, glyphColor.B)
 				}
 			}
-			gi := sys.Glyph(g.Font, g.ID, s, pen, glyphShade, p.opaque && !p.inlineTransforms())
+			gi := sys.Glyph(g.Font, g.ID, s, pen, glyphShade, p.opaque && !moves)
 			if !gi.OK {
 				continue
 			}
@@ -981,7 +986,10 @@ func (p *Painter) scrollbars(e *node) {
 		}
 	}
 	dragging := rt.scrollDrag.st == st
-	if !hovered && !dragging {
+	// A press takes the bars only where the window shows them
+	// (scrollbarPress).
+	st.barsShown = hovered || dragging
+	if !st.barsShown {
 		return
 	}
 	color := theme.Scrollbar

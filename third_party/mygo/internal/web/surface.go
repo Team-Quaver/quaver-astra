@@ -201,8 +201,33 @@ func (s *surface) listen() {
 				precise = false
 			}
 		}
+		if precise && e.Get("ctrlKey").Bool() {
+			// A touchpad's pinch, which Chrome and Firefox send as
+			// scrolling with Control held, as they do Control and two
+			// fingers: Chrome scrolls 100 pixels by the natural log of
+			// the scale.
+			s.send(platform.SurfaceEvent{Kind: platform.PointerZoom, X: x, Y: y, Scale: math.Exp(-dy / 100), Mods: s.mods(e)})
+			return
+		}
 		s.send(platform.SurfaceEvent{Kind: platform.PointerScroll, X: x, Y: y, DX: dx, DY: dy, Precise: precise, Mods: s.mods(e)})
 	})
+	// Safari sends pinches as gesture events instead, whose scale is from
+	// 1 as the pinch began; without preventDefault it zooms the page.
+	pinch := 1.0
+	gesture := func(e js.Value) {
+		e.Call("preventDefault")
+		scale := e.Get("scale").Float()
+		if e.Get("type").String() == "gesturestart" {
+			pinch = 1
+		}
+		if scale > 0 && pinch > 0 && scale != pinch {
+			x, y := s.point(e)
+			s.send(platform.SurfaceEvent{Kind: platform.PointerZoom, X: x, Y: y, Scale: scale / pinch, Mods: s.mods(e)})
+		}
+		pinch = scale
+	}
+	s.on(c, "gesturestart", false, gesture)
+	s.on(c, "gesturechange", false, gesture)
 
 	// Files dragged over the canvas, and dropped: their bytes are read, as
 	// browsers give them, before the drop goes to the content (files.go).

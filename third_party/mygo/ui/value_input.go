@@ -378,8 +378,8 @@ func (s *state) notice() {
 }
 func (s *state) markChanged() {
 	if s.rt != nil && !s.rt.inFrame {
-		// As a right-click choosing a row, between frames: the next
-		// frame's build reports it.
+		// A change made between frames: the next frame's build reports
+		// it.
 		s.pendingChange = true
 		return
 	}

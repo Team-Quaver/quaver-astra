@@ -166,7 +166,9 @@ security descriptor, attributes, alternate data streams and creation time,
 and waits a moment for another program holding it open; on Linux with its
 permissions, owner and group. A symbolic link's target is replaced, and a
 file with other hard links, or in a folder the user can't create files in,
-is written in place.
+is written in place. When `ReplaceFileW` stops halfway, having removed the
+file, the new one is moved into its place; if even that fails, the new file
+stays next to where the document was, and the save's error names it.
 
 Before writing, the file is compared with what the document last read or
 wrote (its modification time and size): when another app changed it,

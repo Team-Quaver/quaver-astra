@@ -131,6 +131,7 @@ var (
 	gObjectRefSink                 func(obj ptr) ptr
 	gObjectUnref                   func(obj ptr)
 	gObjectSetBool                 func(obj ptr, name *byte, v bool, end ptr)
+	gObjectSetStr                  func(obj ptr, name *byte, v *byte, end ptr)
 	gObjectGetPtr                  func(obj ptr, name *byte, out unsafe.Pointer, end ptr)
 	gSlistFree                     func(list ptr)
 	gListFree                      func(list ptr)
@@ -363,6 +364,7 @@ var (
 	gtkSelectionDataFree                func(sd ptr)
 	gtkSelectionDataGetUris             func(sd ptr) ptr
 	gtkSettingsGetDefault               func() ptr
+	gtkSettingsResetProperty            func(settings ptr, name *byte)
 	gtkOverlayNew                       func() ptr
 	gtkOverlayAddOverlay                func(o, w ptr)
 	gtkHeaderBarNew                     func() ptr
@@ -420,7 +422,6 @@ var (
 	webkitSettingsSetEnableDeveloperExtras            func(s ptr, v bool)
 	webkitSettingsSetUserAgent                        func(s ptr, ua *byte)
 	webkitSettingsGetUserAgent                        func(s ptr) ptr
-	webkitSettingsSetUserAgentWithApplicationDetails  func(s ptr, applicationName, applicationVersion *byte)
 	webkitSettingsSetAllowFileAccessFromFileURLs      func(s ptr, v bool)
 	webkitSettingsSetJavascriptCanAccessClipboard     func(s ptr, v bool)
 	webkitWebViewLoadURI                              func(wv ptr, uri *byte)
@@ -602,6 +603,7 @@ func load() error {
 	mustBind(o, &gObjectRefSink, "g_object_ref_sink")
 	mustBind(o, &gObjectUnref, "g_object_unref")
 	mustBind(o, &gObjectSetBool, "g_object_set")
+	mustBind(o, &gObjectSetStr, "g_object_set")
 	mustBind(o, &gObjectGetPtr, "g_object_get")
 
 	i := libGIO
@@ -793,6 +795,7 @@ func load() error {
 	mustBind(t, &gtkSelectionDataGetLength, "gtk_selection_data_get_length")
 	mustBind(t, &gtkSelectionDataFree, "gtk_selection_data_free")
 	mustBind(t, &gtkSettingsGetDefault, "gtk_settings_get_default")
+	mustBind(t, &gtkSettingsResetProperty, "gtk_settings_reset_property")
 	mustBind(t, &gtkOverlayNew, "gtk_overlay_new")
 	mustBind(t, &gtkOverlayAddOverlay, "gtk_overlay_add_overlay")
 	mustBind(t, &gtkHeaderBarNew, "gtk_header_bar_new")
@@ -922,7 +925,6 @@ func loadWebKit() error {
 	mustBind(w, &webkitSettingsSetEnableDeveloperExtras, "webkit_settings_set_enable_developer_extras")
 	mustBind(w, &webkitSettingsSetUserAgent, "webkit_settings_set_user_agent")
 	mustBind(w, &webkitSettingsGetUserAgent, "webkit_settings_get_user_agent")
-	mustBind(w, &webkitSettingsSetUserAgentWithApplicationDetails, "webkit_settings_set_user_agent_with_application_details")
 	mustBind(w, &webkitSettingsSetAllowFileAccessFromFileURLs, "webkit_settings_set_allow_file_access_from_file_urls")
 	mustBind(w, &webkitSettingsSetJavascriptCanAccessClipboard, "webkit_settings_set_javascript_can_access_clipboard")
 	mustBind(w, &webkitWebViewLoadURI, "webkit_web_view_load_uri")

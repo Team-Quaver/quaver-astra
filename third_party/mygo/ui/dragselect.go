@@ -1,5 +1,7 @@
 package ui
 
+import "runtime"
+
 // dragSelect chooses the rows a press on one of them drags over
 // (ListState.DragSelect), in a Table choosing cells the columns too; the
 // engine scrolls the list as the pointer nears its edges
@@ -47,7 +49,11 @@ func (f *listFrame) dragSelect() {
 		return
 	}
 	if to := f.rowAtPointer(); to >= 0 && !f.isHeader(to) {
-		f.extend(to, d.add)
+		// Adding to the choice, the rows from the one pressed to the one
+		// under the pointer take the place of those the drag chose before
+		// on every platform, as on macOS: rows it leaves are no longer
+		// chosen.
+		f.extendBy(to, d.add, d.add || runtime.GOOS == "darwin")
 	}
 	if f.choosesCells() {
 		f.dragCells()
@@ -131,11 +137,13 @@ func (rt *engine) scrollDragSelect() {
 	st := f.e.st
 	x, y := st.local(rt.pointerX, rt.pointerY)
 	speed := func(at, size float32) float32 {
+		// In a list shorter than both edges, each takes its half.
+		edge := min(dragScrollEdge, size/2)
 		switch {
-		case at < dragScrollEdge:
-			return -min(dragScrollEdge-at, 2*dragScrollEdge) / 2
-		case at > size-dragScrollEdge:
-			return min(at-(size-dragScrollEdge), 2*dragScrollEdge) / 2
+		case at < edge:
+			return -min(edge-at, 2*dragScrollEdge) / 2
+		case at > size-edge:
+			return min(at-(size-edge), 2*dragScrollEdge) / 2
 		}
 		return 0
 	}

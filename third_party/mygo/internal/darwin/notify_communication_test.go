@@ -92,3 +92,26 @@ func TestCommunicationNotificationCancellation(t *testing.T) {
 		t.Fatal("Clear left a pending communication or completed it twice")
 	}
 }
+
+func TestCommunicationAvatarPNG(t *testing.T) {
+	load()
+	withPool(func() {
+		svg := []byte(`<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16"><rect width="16" height="16" fill="#2563eb"/></svg>`)
+		var bitmap bytes.Buffer
+		if err := png.Encode(&bitmap, image.NewRGBA(image.Rect(0, 0, 8, 8))); err != nil {
+			t.Fatal(err)
+		}
+		for _, input := range [][]byte{svg, bitmap.Bytes()} {
+			data := communicationAvatar(input)
+			img, err := png.Decode(bytes.NewReader(goBytes(data)))
+			if err != nil || img.Bounds().Empty() {
+				t.Fatalf("notification avatar is not a raster PNG: %v", err)
+			}
+		}
+		for _, input := range [][]byte{nil, []byte("not an image")} {
+			if communicationAvatar(input) != 0 {
+				t.Fatal("invalid avatar must keep the ordinary notification")
+			}
+		}
+	})
+}

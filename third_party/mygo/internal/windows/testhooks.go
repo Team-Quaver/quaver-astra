@@ -5,6 +5,7 @@ package windows
 import (
 	"errors"
 	"fmt"
+	"math"
 	"strings"
 	"syscall"
 	"time"
@@ -104,7 +105,7 @@ func TestActivateAccelerator(hwnd uintptr, acc string) bool {
 	if !ok {
 		return false
 	}
-	cmd, ok := w.accels[accelKey{vk: vk, mods: a.Modifiers}]
+	cmd, ok := w.pageAccelerator(accelKey{vk: vk, mods: a.Modifiers})
 	if ok {
 		theBackend.menuCommand(cmd, w)
 	}
@@ -300,9 +301,9 @@ func TestInputClick(hwnd uintptr, x, y float64) (ok bool, missed string) {
 	if w == nil || w.surface == nil {
 		return false, ""
 	}
-	var r rect
-	procGetWindowRect.Call(w.caption.snap, uintptr(unsafe.Pointer(&r)))
-	pt := point{(r.Left + r.Right) / 2, (r.Top + r.Bottom) / 2}
+	scale := float64(w.surface.dpi()) / 96
+	pt := point{int32(x * scale), int32(y * scale)}
+	procClientToScreen.Call(w.surface.hwnd, uintptr(unsafe.Pointer(&pt)))
 	user32.NewProc("SetCursorPos").Call(uintptr(pt.X), uintptr(pt.Y))
 	mouse := user32.NewProc("mouse_event")
 	const leftDown, leftUp = 0x0002, 0x0004
@@ -626,4 +627,45 @@ func TestSurfaceKey(hwnd uintptr, vk byte, mods ...byte) bool {
 	procSendMessageW.Call(w.surface.hwnd, uintptr(down), uintptr(vk), 1)
 	procSendMessageW.Call(w.surface.hwnd, uintptr(up), uintptr(vk), 1|3<<30)
 	return true
+}
+
+// TestBrowserAcceleratorKeys reports whether WebView2's own keys (F5 and
+// Ctrl+R reloading, Ctrl+P printing, ...) work in a window's page; ok is
+// false without a web view or a runtime with ICoreWebView2Settings3.
+func TestBrowserAcceleratorKeys(hwnd uintptr) (on, ok bool) {
+	w := theBackend.windows[hwnd]
+	if w == nil || w.settings == 0 {
+		return false, false
+	}
+	s3 := queryInterface(w.settings, &iidICoreWebView2Settings3)
+	if s3 == 0 {
+		return false, false
+	}
+	defer release(s3)
+	var v int32
+	comCall(s3, set3GetAreBrowserAcceleratorKeysEnabled, uintptr(unsafe.Pointer(&v)))
+	return v != 0, true
+}
+
+// TestPinchSurface pinches a touchpad at (x, y), in DIPs, in a window
+// showing native UI, by scale, with the message Windows sends for it: the
+// wheel with Ctrl held, by less than a notch at a time. It reports the
+// scale the message makes, which rounds scale to a 360th of a doubling.
+func TestPinchSurface(hwnd uintptr, x, y, scale float64) (float64, bool) {
+	w := theBackend.windows[hwnd]
+	if w == nil || w.surface == nil {
+		return 0, false
+	}
+	delta := int(math.Round(360 * math.Log2(scale)))
+	if delta%120 == 0 {
+		delta++ // a notch is a mouse wheel's
+	}
+	dpi := float64(w.surface.dpi()) / 96
+	pt := point{int32(x * dpi), int32(y * dpi)}
+	procClientToScreen.Call(w.surface.hwnd, uintptr(unsafe.Pointer(&pt)))
+	const mkControl = 0x0008
+	wp := uintptr(uint16(int16(delta)))<<16 | mkControl
+	lp := uintptr(uint16(int16(pt.Y)))<<16 | uintptr(uint16(int16(pt.X)))
+	procSendMessageW.Call(w.surface.hwnd, wmMouseWheel, wp, lp)
+	return math.Exp(float64(delta) / 120 * math.Ln2 / 3), true
 }

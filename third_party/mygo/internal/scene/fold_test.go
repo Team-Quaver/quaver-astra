@@ -1,6 +1,9 @@
 package scene
 
-import "testing"
+import (
+	"sync"
+	"testing"
+)
 
 func TestFoldTranslations(t *testing.T) {
 	m, between := Translation(10, 20), Translation(0.5, 1)
@@ -46,5 +49,28 @@ func TestFoldTranslations(t *testing.T) {
 	plain := &Scene{Ops: []Op{s.Ops[7], s.Ops[8]}}
 	if f.Fold(plain) != plain {
 		t.Error("a scene without translations was copied")
+	}
+}
+
+// Package ui calls FoldTranslations wherever it makes a translation, on
+// any goroutine, while renderers fold on theirs: with -race, this checks
+// that they share what FoldTranslations sets safely.
+func TestFoldTranslationsConcurrently(t *testing.T) {
+	s := &Scene{Width: 10, Height: 10, Ops: []Op{{Kind: OpFill, Rect: Rect{W: 1, H: 1}, Transform: Translation(1, 0)}}}
+	var wg sync.WaitGroup
+	for range 4 {
+		wg.Go(func() {
+			for range 100 {
+				FoldTranslations()
+			}
+		})
+	}
+	var f TranslationFolder
+	for range 100 {
+		f.Fold(s)
+	}
+	wg.Wait()
+	if f.Fold(s) == s {
+		t.Error("a translated fill not folded after FoldTranslations")
 	}
 }

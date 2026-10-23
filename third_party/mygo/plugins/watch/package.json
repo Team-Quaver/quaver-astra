@@ -1,6 +1,6 @@
 {
   "name": "@mygo-plugins/watch",
-  "version": "0.5.5",
+  "version": "0.6.3",
   "description": "Watches for changes to files in the directories a MyGo desktop app lets its pages watch",
   "keywords": [
     "mygo",
@@ -34,9 +34,9 @@
     "test": "bun test"
   },
   "peerDependencies": {
-    "mygo-runtime": "^0.5.5"
+    "mygo-runtime": "^0.6.3"
   },
   "devDependencies": {
-    "mygo-runtime": "^0.5.5"
+    "mygo-runtime": "^0.6.3"
   }
 }

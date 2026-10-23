@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"image/png"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"runtime"
@@ -14,6 +15,7 @@ import (
 	"sync"
 	"testing"
 	"time"
+	"unicode"
 
 	"github.com/egoist/mygo/plugins/terminal/internal/vt"
 	"github.com/egoist/mygo/transfer"
@@ -232,6 +234,145 @@ func TestScrollback(t *testing.T) {
 	}
 }
 
+// A match that wraps from a row above the viewport shows on the rows of it
+// that the viewport shows.
+func TestSearchWrappedMatch(t *testing.T) {
+	loadLib(t)
+	term, err := New(Options{Conn: newPipe()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer term.Close()
+	tt := ui.NewTester(func(c *ui.Context) { View(c, term).Fill() }, 400, 200)
+	tt.Frame()
+	cols, _ := term.Size()
+	term.Feed([]byte(lines(0, 50, "line ") + strings.Repeat("x", cols-3) + "needle\r\n" + lines(0, 50, "after ")))
+	term.Search("needle")
+	for range 100 {
+		if s := term.SearchStatus(); !s.Searching && s.Selected > 0 {
+			break
+		}
+		tt.Frame()
+	}
+	// The match starts on row 50, from the top of the scrollback, and ends
+	// on row 51: the viewport from row 51 shows its end alone.
+	term.mu.Lock()
+	term.term.ScrollToRow(51)
+	term.mu.Unlock()
+	tt.Frame()
+	want := matchSpan{y: 0, x0: 0, x1: 2, selected: true}
+	if len(term.v.matches) != 1 || term.v.matches[0] != want {
+		t.Errorf("matches show at %+v, want %+v", term.v.matches, want)
+	}
+}
+
+// A search finds the matches in the scrollback and on the screen, selects
+// the newest, highlights those that show, and goes to the older ones,
+// scrolling; OnSearch follows it, and ending it clears the highlights.
+func TestSearch(t *testing.T) {
+	loadLib(t)
+	var got []SearchStatus
+	term, err := New(Options{Conn: newPipe(), OnSearch: func(s SearchStatus) { got = append(got, s) }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer term.Close()
+	tt := ui.NewTester(func(c *ui.Context) { View(c, term).Fill().AutoFocus() }, 400, 200)
+	var b strings.Builder
+	for i := range 100 {
+		if i%10 == 5 {
+			b.WriteString("a NEEDLE " + itoa(i) + "\r\n")
+		} else {
+			b.WriteString("line " + itoa(i) + "\r\n")
+		}
+	}
+	b.WriteString("needle at the prompt")
+	term.Feed([]byte(b.String()))
+	tt.Frame()
+	term.Search("needle")
+	for range 100 {
+		if s := term.SearchStatus(); !s.Searching && s.Selected > 0 {
+			break
+		}
+		tt.Frame()
+	}
+	tt.Frame()
+	want := SearchStatus{Text: "needle", Total: 11, Selected: 1}
+	if s := term.SearchStatus(); s != want {
+		t.Fatalf("status = %+v, want %+v", s, want)
+	}
+	if len(got) == 0 || got[len(got)-1] != want {
+		t.Errorf("OnSearch was told %+v", got)
+	}
+	selected := func() (matchSpan, bool) {
+		for _, m := range term.v.matches {
+			if m.selected {
+				return m, true
+			}
+		}
+		return matchSpan{}, false
+	}
+	if m, ok := selected(); !ok || m.x0 != 0 || m.x1 != 5 {
+		t.Errorf("selected match shows at %+v, %v", m, ok)
+	}
+	// The selected match's color shows.
+	img := tt.Image()
+	peach := false
+	for y := img.Bounds().Min.Y; y < img.Bounds().Max.Y && !peach; y++ {
+		for x := img.Bounds().Min.X; x < img.Bounds().Max.X; x++ {
+			if r, g, bl, _ := img.At(x, y).RGBA(); r>>8 == 0xf2 && g>>8 == 0xa5 && bl>>8 == 0x7e {
+				peach = true
+				break
+			}
+		}
+	}
+	if !peach {
+		t.Error("the selected match is not highlighted")
+	}
+	save(t, tt, "search")
+	// Going to older matches scrolls up into the scrollback, wrapping
+	// around past the oldest.
+	term.mu.Lock()
+	bottom := term.term.Scrollbar().Offset
+	term.mu.Unlock()
+	for range 3 {
+		term.SearchNext()
+	}
+	tt.Frame()
+	term.mu.Lock()
+	offset := term.term.Scrollbar().Offset
+	term.mu.Unlock()
+	if s := term.SearchStatus(); s.Selected != 4 || offset >= bottom {
+		t.Errorf("after 3 next: %+v, offset %d of %d", s, offset, bottom)
+	}
+	_, rows := term.Size()
+	if m, ok := selected(); !ok || m.y != rows/2 {
+		t.Errorf("the selected match shows at %+v (%v), not in the middle of %d rows", m, ok, rows)
+	}
+	term.SearchPrevious()
+	tt.Frame()
+	if s := term.SearchStatus(); s.Selected != 3 {
+		t.Errorf("after previous: %+v", s)
+	}
+	for range 8 {
+		term.SearchNext()
+	}
+	tt.Frame()
+	if s := term.SearchStatus(); s.Selected != 11 {
+		t.Errorf("at the oldest: %+v", s)
+	}
+	term.SearchNext()
+	tt.Frame()
+	if s := term.SearchStatus(); s.Selected != 1 {
+		t.Errorf("after wrapping around: %+v", s)
+	}
+	term.EndSearch()
+	tt.Frame()
+	if len(term.v.matches) != 0 || got[len(got)-1] != (SearchStatus{}) {
+		t.Errorf("after ending: %d matches, told %+v", len(term.v.matches), got[len(got)-1])
+	}
+}
+
 // A snapshot of a terminal no view shows restores what it shows in
 // another, as a server keeping sessions sends it to a window attaching.
 func TestSnapshot(t *testing.T) {
@@ -264,6 +405,33 @@ func TestSnapshot(t *testing.T) {
 	b.mu.Unlock()
 	if !paste {
 		t.Error("bracketed paste was not restored")
+	}
+	// The blank rows at the end of the screen come too: the cursor on one
+	// under the last line, as while a program prints lines, keeps the line
+	// above from what is written next, and a screen cleared shows blank,
+	// what it showed in the scrollback.
+	for _, last := range []string{"", "\x1b[H\x1b[2J"} {
+		d := newTerm()
+		for i := range 10 {
+			d.Feed([]byte("row " + itoa(i) + "\r\n"))
+		}
+		d.Feed([]byte(last))
+		e := newTerm()
+		e.Feed(d.Snapshot())
+		d.Feed([]byte("next"))
+		e.Feed([]byte("next"))
+		if d.Text() != e.Text() {
+			t.Errorf("after %q, restored text\n%q, want\n%q", last, e.Text(), d.Text())
+		}
+		d.mu.Lock()
+		want := d.term.Scrollbar()
+		d.mu.Unlock()
+		e.mu.Lock()
+		got := e.term.Scrollbar()
+		e.mu.Unlock()
+		if got != want {
+			t.Errorf("after %q, restored scrollbar %+v, want %+v", last, got, want)
+		}
 	}
 	// A full-screen program's screen, at a new size.
 	a.Feed([]byte("\x1b[?1049h\x1b[H\x1b[2Jfull screen\x1b[3;5Hhere"))
@@ -505,7 +673,7 @@ func TestMenus(t *testing.T) {
 	// The context menu.
 	x, y := cellCenter(term, 1, 0)
 	tt.RightClickAt(x, y)
-	if got := strings.Join(tt.Menu(), ","); !strings.Contains(got, "Copy") || !strings.Contains(got, "Clear Scrollback") {
+	if got := strings.Join(tt.Menu(), ","); !strings.Contains(got, "Copy") || !strings.HasSuffix(got, ",-,Clear") {
 		t.Errorf("context menu = %q", got)
 	}
 	tt.SetClipboard("again")
@@ -518,7 +686,7 @@ func TestMenus(t *testing.T) {
 	// In the window's language.
 	tt.SetLocale("zh-Hant")
 	tt.RightClickAt(x, y)
-	if got := strings.Join(tt.Menu(), ","); !strings.Contains(got, "複製") || !strings.Contains(got, "清除捲動緩衝區") {
+	if got := strings.Join(tt.Menu(), ","); !strings.Contains(got, "複製") || !strings.HasSuffix(got, ",-,清除") {
 		t.Errorf("context menu in Traditional Chinese = %q", got)
 	}
 }
@@ -885,14 +1053,14 @@ func TestOnClear(t *testing.T) {
 	}
 	x, y := cellCenter(term, 1, 0)
 	tt.RightClickAt(x, y)
-	if err := tt.ChooseMenuItem("Clear Scrollback"); err != nil {
+	if err := tt.ChooseMenuItem("Clear"); err != nil {
 		t.Fatal(err)
 	}
-	if len(asked) != 2 || asked[1] != ClearScrollback {
-		t.Fatalf("Clear Scrollback asked %v", asked)
+	if len(asked) != 2 || asked[1] != ClearScreen {
+		t.Fatalf("the menu's Clear asked %v", asked)
 	}
 	if term.Text() != full {
-		t.Error("a Clear Scrollback taken cleared")
+		t.Error("the menu's Clear taken cleared")
 	}
 	take = false
 	tt.Key(ui.Alt, ui.KeyK)
@@ -900,12 +1068,28 @@ func TestOnClear(t *testing.T) {
 	if got := strings.TrimSpace(term.Text()); got != "$ ls" {
 		t.Errorf("a clear left to the terminal left %q", got)
 	}
+	// The menu's Clear clears as the keys do.
+	term.Feed([]byte("\r\n" + b.String()))
+	tt.Frame()
+	tt.RightClickAt(x, y)
+	if err := tt.ChooseMenuItem("Clear"); err != nil {
+		t.Fatal(err)
+	}
+	tt.Frame()
+	if got := strings.TrimSpace(term.Text()); got != "$ ls" {
+		t.Errorf("the menu's Clear left to the terminal left %q", got)
+	}
 	term.Feed([]byte("\x1b[?1049h"))
 	tt.Frame()
 	tt.Key(ui.Alt, ui.KeyK)
-	if len(asked) != 3 {
-		t.Errorf("the alternate screen asked %v", asked[3:])
+	if len(asked) != 4 {
+		t.Errorf("the alternate screen asked %v", asked[4:])
 	}
+	tt.RightClickAt(x, y)
+	if err := tt.ChooseMenuItem("Clear"); err == nil {
+		t.Error("the menu's Clear is enabled on the alternate screen")
+	}
+	tt.CloseMenu()
 	if got := conn.take(term); got == "" {
 		t.Error("a performable clear took the key on the alternate screen")
 	}
@@ -1193,9 +1377,24 @@ func TestCommandClickLinkWithoutOpenLink(t *testing.T) {
 	if c := tt.Cursor(); c != ui.CursorPointer {
 		t.Errorf("the cursor is %v over a link with Command", c)
 	}
+	// The link under it shows underlined, all its cells.
+	if h := term.v.hover; h != (linkSpan{0, 0, 4}) {
+		t.Errorf("hovered %+v, want the hyperlink's cells 0..4", h)
+	}
+	x0, y0 := cellCenter(term, 0, 0)
+	x4, _ := cellCenter(term, 4, 0)
+	if link, path, at := term.HoveredLink(); link != "vscode://file/a.go" || path || !at.Contains(x0, y0) || at.Contains(x4, y0) {
+		t.Errorf("HoveredLink is %q, %v, %+v, want the hyperlink over cells 0..4", link, path, at)
+	}
 	tt.HoldModifiers(0)
 	if c := tt.Cursor(); c != ui.CursorText {
 		t.Errorf("the cursor is %v once Command is let go of", c)
+	}
+	if h := term.v.hover; h.on() {
+		t.Errorf("hovered %+v once Command is let go of", h)
+	}
+	if link, _, _ := term.HoveredLink(); link != "" {
+		t.Errorf("HoveredLink is %q once Command is let go of", link)
 	}
 	term.Feed([]byte("\x1b[?1002h\x1b[?1006h"))
 	tt.Frame()
@@ -2035,5 +2234,339 @@ func TestResizeByConn(t *testing.T) {
 	case s := <-conn.sizes:
 		t.Errorf("Conn told %v again: by the view twice, or by Resize", s)
 	case <-time.After(200 * time.Millisecond):
+	}
+}
+
+// pixelPipe is a pipe told the size with the size of a cell in pixels.
+type pixelPipe struct {
+	*pipe
+	sizes chan [4]int
+}
+
+func (p pixelPipe) ResizePixels(cols, rows, cellWidth, cellHeight int) error {
+	p.sizes <- [4]int{cols, rows, cellWidth, cellHeight}
+	return nil
+}
+
+// A terminal standing for another, as a server's for a window, takes the
+// size of the window's cells, which programs get from size queries and
+// count pointer reports in pixels (mode 1016) in; the window's terminal
+// tells its Conn that size.
+func TestResizePixels(t *testing.T) {
+	loadLib(t)
+	conn := newPipe()
+	server, err := New(Options{Conn: conn})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer server.Close()
+	server.ResizePixels(40, 6, 18, 36)
+	server.Feed([]byte("\x1b[16t\x1b[14t"))
+	if got, want := conn.take(server), "\x1b[6;36;18t\x1b[4;216;720t"; got != want {
+		t.Errorf("size queries answered %q, want %q", got, want)
+	}
+	server.ResizePixels(30, 5, 0, 0)
+	server.Feed([]byte("\x1b[16t"))
+	if got, want := conn.take(server), "\x1b[6;36;18t"; got != want {
+		t.Errorf("a zero cell size answered %q, want %q", got, want)
+	}
+
+	client := pixelPipe{newPipe(), make(chan [4]int, 8)}
+	term, err := New(Options{Conn: client, ResizeByConn: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer term.Close()
+	tt := ui.NewTester(func(c *ui.Context) { View(c, term).Fill().AutoFocus() }, 400, 200)
+	tt.Frame()
+	select {
+	case s := <-client.sizes:
+		term.mu.Lock()
+		want := [4]int{term.asked.cols, term.asked.rows, term.size.cellW, term.size.cellH}
+		term.mu.Unlock()
+		if s != want {
+			t.Errorf("Conn told %v, not the view's %v", s, want)
+		}
+	case <-time.After(10 * time.Second): // a hang guard
+		t.Fatal("Conn not told the size")
+	}
+}
+
+// themePipe is a pipe told the view's theme.
+type themePipe struct {
+	*pipe
+	themes chan *Theme
+}
+
+func (p themePipe) UseTheme(theme *Theme) error {
+	p.themes <- theme
+	return nil
+}
+
+// A terminal standing for another, as a server's for a window, answers
+// programs' questions about the colors with the window's, which its view
+// tells its Conn: Copilot CLI, asking the background, drew its input box
+// dark on a light one.
+func TestUseTheme(t *testing.T) {
+	loadLib(t)
+	conn := newPipe()
+	server, err := New(Options{Conn: conn})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer server.Close()
+	light := &Theme{Foreground: ui.Hex("#202020"), Background: ui.Hex("#fafafa"), Cursor: ui.Hex("#ff0000")}
+	light.Palette[1] = ui.Hex("#cd3131")
+	server.UseTheme(light)
+	server.Feed([]byte("\x1b]10;?\x1b\\\x1b]11;?\x1b\\\x1b]12;?\x1b\\\x1b]4;1;?\x1b\\\x1b[?996n"))
+	want := "\x1b]10;rgb:2020/2020/2020\x1b\\\x1b]11;rgb:fafa/fafa/fafa\x1b\\\x1b]12;rgb:ffff/0000/0000\x1b\\\x1b]4;1;rgb:cdcd/3131/3131\x1b\\\x1b[?997;2n"
+	if got := conn.take(server); got != want {
+		t.Errorf("color queries answered %q, want %q", got, want)
+	}
+
+	client := themePipe{newPipe(), make(chan *Theme, 8)}
+	term, err := New(Options{Conn: client, Theme: light})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer term.Close()
+	tt := ui.NewTester(func(c *ui.Context) { View(c, term).Fill() }, 400, 200)
+	tt.Frame()
+	select {
+	case th := <-client.themes:
+		if th != light {
+			t.Errorf("Conn told %+v, not the view's theme", th)
+		}
+	case <-time.After(10 * time.Second): // a hang guard
+		t.Fatal("Conn not told the theme")
+	}
+	tt.Frame()
+	select {
+	case th := <-client.themes:
+		t.Errorf("Conn told the same theme again: %+v", th)
+	case <-time.After(100 * time.Millisecond):
+	}
+}
+
+// A full-screen program's rows with cells of the default background keep
+// their colors in their cells, as in Ghostty: Copilot CLI's tabs on its
+// top row grew up into the padding, and the row of its input box, which
+// starts with a border on the default background, stuck out past the box.
+func TestPaddingPartialRows(t *testing.T) {
+	loadLib(t)
+	th := LightTheme()
+	term, err := New(Options{Conn: newPipe(), Theme: th, NoBlink: true, Padding: Padding{X: 20, Y: 12}, PaddingColor: PaddingExtend})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer term.Close()
+	tt := ui.NewTester(func(c *ui.Context) { View(c, term).Fill() }, 400, 200)
+	tt.Frame()
+	pad := strings.Repeat(" ", term.v.cols)
+	term.Feed([]byte("\x1b[?1049h\x1b[H \x1b[44m Current \x1b[0m \x1b[47m Gists \x1b[0m\x1b[3;1H┃\x1b[47m" + pad[1:] + "\x1b[0m"))
+	tt.Frame()
+	at := func(x, y float32) ui.Color {
+		s := term.v.scale
+		c := tt.Image().RGBAAt(int(x*s), int(y*s))
+		return ui.RGB(c.R, c.G, c.B)
+	}
+	x, _ := cellCenter(term, 3, 0)
+	_, y2 := cellCenter(term, 0, 2)
+	for _, c := range []struct {
+		name string
+		x, y float32
+	}{
+		{"above a tab", x, 3},
+		{"past the end of a box's row", 397, y2},
+	} {
+		if got := at(c.x, c.y); got != th.Background {
+			t.Errorf("the padding %s is %v, want the background %v", c.name, got, th.Background)
+		}
+	}
+}
+
+// A program that asked (mode 2031) is told when the colors go from light
+// to dark or back, as Ghostty tells it: a server's terminal as its window
+// tells it the theme, and a terminal a view shows as the window's
+// appearance changes. Claude Code and Copilot CLI ask, to recolor.
+func TestColorSchemeChanges(t *testing.T) {
+	loadLib(t)
+	conn := newPipe()
+	server, err := New(Options{Conn: conn})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer server.Close()
+	server.UseTheme(LightTheme())
+	server.UseTheme(DarkTheme())
+	if got := conn.take(server); got != "" {
+		t.Errorf("told %q without asking", got)
+	}
+	server.Feed([]byte("\x1b[?2031h"))
+	server.UseTheme(LightTheme())
+	server.UseTheme(LightTheme())
+	if got, want := conn.take(server), "\x1b[?997;2n"; got != want {
+		t.Errorf("going light told %q, want %q", got, want)
+	}
+
+	conn = newPipe()
+	term, err := New(Options{Conn: conn})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer term.Close()
+	tt := ui.NewTester(func(c *ui.Context) { View(c, term).Fill() }, 400, 200)
+	term.Feed([]byte("\x1b[?2031h"))
+	tt.Frame()
+	tt.SetDark(true)
+	tt.Frame()
+	if got, want := conn.take(term), "\x1b[?997;1n"; got != want {
+		t.Errorf("a dark window told %q, want %q", got, want)
+	}
+}
+
+// A transparent terminal draws a background a program set (OSC 11), as
+// Ghostty shows it, and none again once the program resets it.
+func TestTransparentProgramBackground(t *testing.T) {
+	loadLib(t)
+	term, err := New(Options{Conn: newPipe(), Theme: LightTheme(), Transparent: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer term.Close()
+	tt := ui.NewTester(func(c *ui.Context) {
+		ui.Box(c).Fill().Background(ui.RGB(0, 0, 255)).Children(func() { View(c, term).Fill() })
+	}, 400, 200)
+	at := func() ui.Color {
+		c := tt.Image().RGBAAt(int(300*term.v.scale), int(150*term.v.scale))
+		return ui.RGB(c.R, c.G, c.B)
+	}
+	red, blue := ui.RGB(255, 0, 0), ui.RGB(0, 0, 255)
+	for _, c := range []struct {
+		label, out string
+		want       ui.Color
+	}{
+		{"at the start", "", blue},
+		{"set", "\x1b]11;#ff0000\x07", red},
+		{"reset", "\x1b]111\x07", blue},
+	} {
+		term.Feed([]byte(c.out))
+		tt.Frame()
+		if got := at(); got != c.want {
+			t.Errorf("%s: the background is %v, want %v", c.label, got, c.want)
+		}
+	}
+}
+
+// Dropped files' paths are quoted for the program's shell, so that each
+// is one argument, whatever it holds: a newline does not end the command,
+// nor do PowerShell's $(…) or $var expand. Where the shells are installed,
+// they read each quoted path back as it was.
+func TestQuotePaths(t *testing.T) {
+	cases := []struct {
+		q          quoting
+		path, want string
+	}{
+		{quotePOSIX, "/Users/me/My Shots/shot (1).png", `/Users/me/My\ Shots/shot\ \(1\).png`},
+		{quotePOSIX, "/tmp/a&b.txt", `/tmp/a\&b.txt`},
+		{quotePOSIX, "/tmp/$(id)`id`;x|y*", "/tmp/\\$\\(id\\)\\`id\\`\\;x\\|y\\*"},
+		{quotePOSIX, "/tmp/日本 語", `/tmp/日本\ 語`},
+		{quotePOSIX, "/tmp/x\ntouch pwned", `$'/tmp/x\x0atouch pwned'`},
+		{quotePOSIX, "/tmp/it's\tthere\\", `$'/tmp/it\'s\x09there\\'`},
+		{quotePOSIX, "/tmp/a\rb\x1b[201~c", `$'/tmp/a\x0db\x1b[201~c'`},
+		{quotePOSIX, "/tmp/\xff.bin", `$'/tmp/\xff.bin'`},
+		{quotePowerShell, `C:\tmp\ab.txt`, `C:\tmp\ab.txt`},
+		{quotePowerShell, `C:\Users\me\My Shots\shot (1).png`, `'C:\Users\me\My Shots\shot (1).png'`},
+		{quotePowerShell, `C:\dl\$(Start-Process calc) x.txt`, `'C:\dl\$(Start-Process calc) x.txt'`},
+		{quotePowerShell, `C:\dl\$env:USERNAME.txt`, `'C:\dl\$env:USERNAME.txt'`},
+		{quotePowerShell, "C:\\dl\\a`b;c.txt", "'C:\\dl\\a`b;c.txt'"},
+		{quotePowerShell, `C:\dl\it's ‘q’.txt`, `'C:\dl\it''s ‘‘q’’.txt'`},
+		{quoteCmd, `C:\tmp\ab.txt`, `C:\tmp\ab.txt`},
+		{quoteCmd, `C:\a b\c&d.txt`, `"C:\a b\c&d.txt"`},
+	}
+	for _, c := range cases {
+		if got := c.q.quote(c.path); got != c.want {
+			t.Errorf("quoting %d of %q = %s, want %s", c.q, c.path, got, c.want)
+		}
+	}
+	for _, c := range []struct {
+		goos, program string
+		want          quoting
+	}{
+		{"linux", "/bin/zsh", quotePOSIX},
+		{"darwin", "/usr/local/bin/pwsh", quotePowerShell},
+		{"windows", `C:\Program Files\PowerShell\7\pwsh.exe`, quotePowerShell},
+		{"windows", `C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe`, quotePowerShell},
+		{"windows", `C:\Windows\System32\cmd.exe`, quoteCmd},
+		{"windows", `C:\Program Files\Git\bin\bash.exe`, quotePOSIX},
+		{"windows", `C:\tools\nu.exe`, quotePowerShell},
+	} {
+		if got := quotingFor(c.goos, c.program); got != c.want {
+			t.Errorf("quotingFor(%s, %s) = %d, want %d", c.goos, c.program, got, c.want)
+		}
+	}
+	// The shells read the paths back.
+	type shell struct {
+		names []string
+		q     quoting
+		args  func(quoted string) []string
+	}
+	shells := []shell{
+		{[]string{"bash", "zsh"}, quotePOSIX, func(q string) []string { return []string{"-c", "printf %s " + q} }},
+		{[]string{"pwsh", "powershell"}, quotePowerShell, func(q string) []string {
+			return []string{"-NoProfile", "-NonInteractive", "-Command", "& { [Console]::Out.Write($args[0]) } " + q}
+		}},
+	}
+	for _, sh := range shells {
+		for _, name := range sh.names {
+			bin, err := exec.LookPath(name)
+			if err != nil {
+				continue
+			}
+			for _, c := range cases {
+				if c.q != sh.q || (runtime.GOOS == "windows" && strings.ContainsFunc(c.path, unicode.IsControl)) {
+					continue
+				}
+				out, err := exec.Command(bin, sh.args(c.want)...).Output()
+				if err != nil || string(out) != c.path {
+					t.Errorf("%s read %s as %q (%v), want %q", name, c.want, out, err, c.path)
+				}
+			}
+		}
+	}
+}
+
+// Files dropped on a terminal paste their paths, escaped for a shell and
+// between spaces, as Ghostty does: bracketed for a program that asks, so
+// that an agent takes them as files it attaches.
+func TestDropFiles(t *testing.T) {
+	loadLib(t)
+	conn := newPipe()
+	term, err := New(Options{Conn: conn})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer term.Close()
+	tt := ui.NewTester(func(c *ui.Context) { View(c, term).Fill() }, 400, 200)
+	tt.Frame()
+	paths := []string{"/Users/me/My Shots/shot (1).png", "/tmp/a&b.txt"}
+	want := []string{`/Users/me/My\ Shots/shot\ \(1\).png /tmp/a\&b.txt`, `/tmp/a\&b.txt`}
+	if runtime.GOOS == "windows" {
+		paths = []string{`C:\Users\me\My Shots\shot (1).png`, `C:\tmp\ab.txt`}
+		want = []string{`'C:\Users\me\My Shots\shot (1).png' C:\tmp\ab.txt`, `C:\tmp\ab.txt`}
+	}
+	if !tt.DropFiles(100, 100, paths...) {
+		t.Fatal("the terminal did not take the files")
+	}
+	tt.Frame()
+	if got := conn.take(term); got != want[0] {
+		t.Errorf("dropping pasted %q, want %q", got, want[0])
+	}
+	term.Feed([]byte("\x1b[?2004h"))
+	tt.Frame()
+	tt.DropFiles(100, 100, paths[1])
+	tt.Frame()
+	if got, want := conn.take(term), "\x1b[200~"+want[1]+"\x1b[201~"; got != want {
+		t.Errorf("dropping in bracketed paste pasted %q, want %q", got, want)
 	}
 }

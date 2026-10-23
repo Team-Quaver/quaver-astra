@@ -289,7 +289,7 @@ func (b *Backend) messageBox(owner uintptr, o *platform.MessageBoxOptions) platf
 
 	var pressed, radio int32
 	var checked int32
-	r, _, _ := syscall.SyscallN(taskDialogProc, uintptr(unsafe.Pointer(&cfg[0])), uintptr(unsafe.Pointer(&pressed)), uintptr(unsafe.Pointer(&radio)), uintptr(unsafe.Pointer(&checked)))
+	r := taskDialogIndirect(uintptr(unsafe.Pointer(&cfg[0])), uintptr(unsafe.Pointer(&pressed)), uintptr(unsafe.Pointer(&radio)), uintptr(unsafe.Pointer(&checked)))
 	runtime.KeepAlive(strs)
 	runtime.KeepAlive(btns)
 	runtime.KeepAlive(verification)
@@ -298,6 +298,17 @@ func (b *Backend) messageBox(owner uintptr, o *platform.MessageBoxOptions) platf
 		res.Response = int(pressed - firstButtonID)
 	}
 	return res
+}
+
+// taskDialogIndirect calls TaskDialogIndirect. The dialog runs a modal loop
+// that dispatches messages to Go, which can grow and move the goroutine's
+// stack, so the config and the results it writes at the end must live on
+// the heap (go:uintptrescapes).
+//
+//go:uintptrescapes
+func taskDialogIndirect(cfg, pressed, radio, checked uintptr) uintptr {
+	r, _, _ := syscall.SyscallN(taskDialogProc, cfg, pressed, radio, checked)
+	return r
 }
 
 func legacyMessageBox(owner uintptr, o *platform.MessageBoxOptions, buttons []string) platform.MessageBoxResult {

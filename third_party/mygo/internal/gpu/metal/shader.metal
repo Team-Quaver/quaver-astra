@@ -362,7 +362,10 @@ float4 sampleLocal(texture2d<float> t, sampler samp, float2 uv, float4 src, floa
 		float2 halfPixel = 0.5f / float2(t.get_width(), t.get_height());
 		uv = clamp(uv, src.xy + halfPixel, src.zw - halfPixel);
 	}
-	return t.sample(samp, uv);
+	// The atlases have one mip level, so level 0 is what implicit sampling
+	// picks; saying so keeps the Radeon Pro 560 from dropping glyph pixels
+	// in batches that join continuous corners with glyphs (#649).
+	return t.sample(samp, uv, level(0.0f));
 }
 
 // sampleImage samples an image held inside src, which is reversed along

@@ -66,6 +66,9 @@ func (rt *engine) wheelScroll(s *state, dx, dy float32) {
 	if s.track != nil {
 		s.track.glide = nil // the user takes over from ScrollTo
 	}
+	if l := s.list; l != nil {
+		l.scrolled = false // and from the list's
+	}
 	g.x.advance(now)
 	g.y.advance(now)
 	if dx != 0 {
@@ -86,8 +89,10 @@ func (rt *engine) glideWheels(now time.Time) {
 		if s == nil || s.wheel == nil {
 			continue
 		}
-		if t := s.track; t != nil && (t.X != float32(s.scrollX) || t.Y != float32(s.scrollY) || t.glide != nil) {
-			// The app set the offset, or a ScrollTo: it takes over.
+		if t := s.track; t != nil && (t.X != float32(s.scrollX) || t.Y != float32(s.scrollY) || t.glide != nil) ||
+			s.list != nil && s.list.scrolled {
+			// The app set the offset, or a ScrollTo, of its ScrollState
+			// or its ListState: it takes over.
 			s.wheel = nil
 			continue
 		}

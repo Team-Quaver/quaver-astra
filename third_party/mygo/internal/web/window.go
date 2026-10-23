@@ -131,7 +131,6 @@ func (w *window) SetMenu(*platform.Menu)                     {}
 func (w *window) SetAutoHideMenu(bool)                       {}
 func (w *window) TitleBar() platform.TitleBar                { return platform.TitleBar{} }
 func (w *window) StartDrag()                                 {}
-func (w *window) SetMaximizeButton(platform.RectF)           {}
 func (w *window) TitleBarDoubleClicked()                     {}
 func (w *window) PlaceFlyout(platform.Flyout, platform.Size) {}
 
@@ -221,6 +220,7 @@ func (w *window) URL() string                                              { ret
 func (w *window) IsLoading() bool                                          { return false }
 func (w *window) Eval(string)                                              {}
 func (w *window) SetUserScripts([]platform.UserScript)                     {}
+func (w *window) SetContentRules([]any)                                    {}
 func (w *window) SetZoom(float64)                                          {}
 func (w *window) Zoom() float64                                            { return 1 }
 func (w *window) SetUserAgent(string)                                      {}

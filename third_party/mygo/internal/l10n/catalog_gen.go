@@ -2602,20 +2602,20 @@ func (msgs Messages) SelectFolder() string {
 	return Catalog.Format(msgs.locale, "selectFolder", nil)
 }
 
-// ClearScrollback says "Clear Scrollback"
+// ClearTerminal says "Clear"
 // in the language the app shows.
 //
-// An item of a terminal's menu, which clears the lines scrolled out of
-// view.
-func ClearScrollback() string { return In(i18n.Locale()).ClearScrollback() }
+// An item of a terminal's menu, which clears the lines scrolled out of view
+// and the screen above the prompt, as Command-K does.
+func ClearTerminal() string { return In(i18n.Locale()).ClearTerminal() }
 
-// ClearScrollback says "Clear Scrollback"
+// ClearTerminal says "Clear"
 // in the language of msgs.
 //
-// An item of a terminal's menu, which clears the lines scrolled out of
-// view.
-func (msgs Messages) ClearScrollback() string {
-	return Catalog.Format(msgs.locale, "clearScrollback", nil)
+// An item of a terminal's menu, which clears the lines scrolled out of view
+// and the screen above the prompt, as Command-K does.
+func (msgs Messages) ClearTerminal() string {
+	return Catalog.Format(msgs.locale, "clearTerminal", nil)
 }
 
 // ClipboardRead says "A program wants to read the clipboard"

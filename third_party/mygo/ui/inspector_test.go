@@ -350,3 +350,21 @@ func TestInspectorInsetShadow(t *testing.T) {
 		t.Errorf("box-shadow: %q", got)
 	}
 }
+
+func TestInspectorColorText(t *testing.T) {
+	for _, tc := range []struct {
+		c    Color
+		want string
+	}{
+		{RGB(0xfa, 0xfa, 0xfa), "#fafafa"},
+		{RGBA(0x11, 0x22, 0x33, 0.5), "#11223380"},
+		{Oklch(0.985, 0, 0), "#fafafa"},
+		{Oklch(0.7, 0.25, 145), "oklch(0.7 0.25 145)"},
+		{Oklch(0.623, 0.214, 259.815), "oklch(0.623 0.214 259.8)"},
+		{Oklch(0.7, 0.25, 145).Alpha(0.5), "oklch(0.7 0.25 145 / 0.5)"},
+	} {
+		if got := colorText(tc.c); got != tc.want {
+			t.Errorf("colorText(%+v) = %q, want %q", tc.c, got, tc.want)
+		}
+	}
+}

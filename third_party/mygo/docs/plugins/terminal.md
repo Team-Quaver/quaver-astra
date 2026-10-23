@@ -155,6 +155,11 @@ term, err := terminal.New(terminal.Options{
 - `Cursor` and `NoBlink` set the cursor, which programs may change.
 - `Scrollback` is about how many bytes of output to keep above the
   screen: 10 MB by default, none when negative.
+- `MinimumContrast` is the least contrast text has with its background,
+  as Ghostty's `minimum-contrast`: a WCAG ratio from 1 (none, the
+  default) to 21. Text with less, as a program's light gray on a light
+  theme, darkens or lightens as little as reaches it, keeping its hue.
+  `SetMinimumContrast` changes it in a running terminal.
 - `Transparent` leaves the background undrawn, as Ghostty's
   `background-opacity`, so that what is under the view shows through: the
   window's material, or an element's translucent background. Cells with a
@@ -165,11 +170,10 @@ term, err := terminal.New(terminal.Options{
   shows, as Ghostty's `window-padding-color`: the background by default,
   or with `terminal.PaddingExtend` the backgrounds of the cells nearest to
   it, so that a full-screen program's colors reach the edges of the view
-  rather than stopping at the grid's. It extends every row's while a
-  full-screen program shows, and on the main screen only those of rows
-  whose every cell has a background of its own, so that a prompt's
-  highlights stay in their cells; `terminal.PaddingExtendAlways` extends
-  every row's. Either way, a lone character in inverse video, as a program
+  rather than stopping at the grid's. As Ghostty's `extend`, it extends
+  only rows whose every cell has a background of its own, so that a
+  prompt's highlights, or a program's tabs and boxes, keep to their cells;
+  `terminal.PaddingExtendAlways` extends every row's. Either way, a lone character in inverse video, as a program
   draws its own cursor, keeps its background in its cell.
 
   ```go
@@ -247,8 +251,8 @@ term, err := terminal.New(terminal.Options{
   },
   ```
 - `OnClear` sees the user's clear on the main thread, before the terminal
-  clears: `ClearScreen` for `ActionClearScreen`'s keys, `ClearScrollback`
-  for the context menu's Clear Scrollback. It reports whether it took the
+  clears: `ClearScreen`, for `ActionClearScreen`'s keys and the context
+  menu's Clear. It reports whether it took the
   clear, which then clears nothing here. A window showing a server's
   terminal takes it, for the server's terminal to clear (see
   [A server's terminal, shown elsewhere](#a-servers-terminal-shown-elsewhere)).
@@ -361,8 +365,9 @@ on to the program, as if unbound: Control+C interrupts when nothing is
 selected. A performable copy also lets go of the selection, so that the
 key's next press interrupts. `ActionClearScreen` clears the scrollback and
 the screen above the cursor's line, which moves to the top with the
-shell's prompt, as Kitty's `clear_terminal to_cursor`; `Terminal.ClearScreen` does the same from code, and
-`Terminal.ClearScrollback` what the context menu's Clear Scrollback does.
+shell's prompt, as Kitty's `clear_terminal to_cursor`, and the context
+menu's Clear does it too; `Terminal.ClearScreen` does the same from code,
+and `Terminal.ClearScrollback` clears the scrollback alone.
 `ActionIgnore` takes the key and does nothing.
 
 A key goes first to the app's shortcuts, then to `OnKey`, then to the
@@ -453,6 +458,37 @@ selection-foreground = #1e1e2e
 
 `SetTheme(theme, dark)` changes the themes of a running terminal.
 
+## Search
+
+`Search` searches the screen and the scrollback for text, as Ghostty's find
+does, with libghostty-vt's search: the matches are highlighted as they are
+found, a frame's share of the scrollback at a time, and follow the output
+that comes; the newest is selected, and shown. Matching is exact but for the
+case of ASCII letters. `SearchNext` selects the next match toward older
+output, up into the scrollback, and `SearchPrevious` toward newer output,
+both wrapping around and, unless the match shows, scrolling it to the
+middle of the view, clear of a find bar over an edge; `EndSearch`
+(or `Search("")`) ends the search. The terminal draws no find bar: the app
+draws one, and binds Ghostty's keys to these methods, Cmd+F, Cmd+G,
+Cmd+Shift+G and Escape on macOS. `OnSearch` tells it, on the main thread,
+how the search goes, for its "1 of 3":
+
+```go
+term, err := terminal.New(terminal.Options{
+	OnSearch: func(s terminal.SearchStatus) {
+		// s.Selected of s.Total matches of s.Text; s.Searching while more
+		// of the scrollback is to go through.
+		bar.status = fmt.Sprintf("%d of %d", s.Selected, s.Total)
+	},
+})
+```
+
+The theme's `Search` and `SearchText` color the matches and their text, and
+`SearchSelected` and `SearchSelectedText` the selected one, as Ghostty's
+`search-background`, `search-foreground`, `search-selected-background` and
+`search-selected-foreground`, which a theme file sets too: Ghostty's light
+amber and light orange under black text when zero.
+
 ## Methods
 
 The terminal's methods are safe from any goroutine:
@@ -468,6 +504,10 @@ The terminal's methods are safe from any goroutine:
   sequences.
 - `Title`, `Dir` (the directory the shell reported), `Size` (in cells) and
   `Text` (the screen and its scrollback) read the terminal.
+- `HoveredLink` returns the link Command (Control elsewhere) is held over
+  in the view, as `OpenLink` takes it, whether it is a file path, and the
+  rectangle of its cells relative to the view: read it after `View` to
+  show a preview of the link over the view.
 - `SetFont` and `SetTheme` change the font and the colors; `SetFont` also
   sets the size a zoom resets to, and drops the zoom.
 - `Resize` sets the size of a terminal no view shows, and `Snapshot`
@@ -501,7 +541,7 @@ before to what the server's shows now. The window's terminal reads them from
 its `Conn` as if a program wrote them, and shows the server's screen and
 scrollback cell for cell, with its cursor and the modes that change what it
 sends (the cursor keys', the keyboard protocols', the mouse's, bracketed
-paste), while it still selects, copies, opens links and composes as any
+paste) and the colors programs set (OSC 4, 10, 11, 12), while it still selects, copies, opens links and composes as any
 terminal does. It never lays out a program's output itself, so it cannot
 come to show something else: a window fed the program's output from a
 snapshot of the server's screen can, as programs that redraw by moving the
@@ -519,7 +559,9 @@ stay soft. Each cell is drawn in its own style, so an empty cell stays empty
 after a colored one. A frame reads the terminal as a view does, taking its
 record of what changed: mirror a terminal no view shows, as a server's, with
 as many Mirrors as it has windows. A frame does not come while a program holds a synchronized update
-(mode 2026), up to a second: `Frame` then reports that one is due.
+(mode 2026), up to a second: `Frame` then reports that one is due. The
+window's cursor takes its own `Cursor` and `NoBlink` while the program
+leaves the cursor's shape alone, and the program's when it sets one.
 
 The window's terminal sets `ResizeByConn`: its view only asks `Conn` for the
 size it fits, and the screen keeps its size until the window calls `Resize`,
@@ -530,6 +572,23 @@ new size.
 term, err := terminal.New(terminal.Options{Conn: stream, ResizeByConn: true})
 // Where the server's stream says it resized to cols×rows:
 term.Resize(cols, rows)
+```
+
+The server's terminal answers the program's questions, so it needs what
+only the window knows. A `Conn` with `ResizePixels(cols, rows, cellWidth,
+cellHeight int) error` is told the size of the window's cells in pixels,
+and one with `UseTheme(theme *terminal.Theme) error` the window's colors;
+the server gives them to its terminal with `ResizePixels` and `UseTheme`.
+Programs asking the size in pixels, or taking the mouse in pixels (mode
+1016), then count in the window's cells, and those asking the colors (OSC
+4, 10, 11, 12) or whether they are dark get the window's. A program that
+asked (mode 2031) is told when they go from light to dark or back, as a
+terminal a view shows tells it when the window's appearance changes.
+
+```go
+// The server, where a window's stream says so:
+term.ResizePixels(cols, rows, cellWidth, cellHeight)
+term.UseTheme(theme)
 ```
 
 The user's clears are the server's to make: cleared in the window alone,
@@ -544,12 +603,7 @@ OnClear: func(c terminal.Clear) bool {
 	return true
 },
 // The server, asked:
-switch c {
-case terminal.ClearScreen:
-	term.ClearScreen()
-case terminal.ClearScrollback:
-	term.ClearScrollback()
-}
+term.ClearScreen()
 ```
 
 Programs' writes to the clipboard (OSC 52) go on with the frames, for the

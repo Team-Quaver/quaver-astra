@@ -138,7 +138,10 @@ func (s *Notes) Save(ctx context.Context, text string) error {
 }
 ```
 
-The page's `window.close()` leaves the window open.
+The page's `window.close()` leaves the window open. Content rules block
+what a web view's page loads, as they do a window's
+([blocking content](../windows.md#blocking-content)), from
+`WebViewOptions.Page.ContentRules` or `Page.SetContentRules`.
 
 ### The typed client
 

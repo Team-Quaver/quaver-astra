@@ -12,6 +12,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/egoist/mygo/internal/gamut"
 	"github.com/egoist/mygo/internal/platform"
 )
 
@@ -587,9 +588,30 @@ func pxText(v float32) string {
 	return num(v) + "px"
 }
 
+// dec formats v with at most n decimals, without trailing zeros.
+func dec(v float64, n int) string {
+	s := strconv.FormatFloat(v, 'f', n, 64)
+	if strings.Contains(s, ".") {
+		s = strings.TrimRight(strings.TrimRight(s, "0"), ".")
+	}
+	return s
+}
+
 func ms(d time.Duration) string { return strconv.FormatFloat(float64(d)/1e6, 'f', 1, 64) }
 
+// colorText formats a color as CSS writes it: hex, or oklch() for one
+// outside the sRGB gamut, whose hex would be its nearest sRGB color and not
+// the wide color a window drawing a wide gamut shows.
 func colorText(c Color) string {
+	if c.wide.ok() {
+		r, g, b := c.wide.rgb()
+		l, ch, h := gamut.Oklch(gamut.Oklab(gamut.Decode(float64(r)), gamut.Decode(float64(g)), gamut.Decode(float64(b))))
+		s := "oklch(" + dec(l, 3) + " " + dec(ch, 3) + " " + dec(h, 1)
+		if c.A != 255 {
+			s += " / " + dec(float64(c.A)/255, 2)
+		}
+		return s + ")"
+	}
 	if c.A == 255 {
 		return fmt.Sprintf("#%02x%02x%02x", c.R, c.G, c.B)
 	}

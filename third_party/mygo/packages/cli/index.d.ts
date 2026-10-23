@@ -245,6 +245,12 @@ export interface LinuxConfig {
   /** Debian packages the app needs besides GTK and WebKitGTK. */
   depends?: string[];
   /**
+   * `false` for an app that shows no web page, in a window or a `ui.WebView`,
+   * as an app of native UI: its Debian package depends on GTK alone, and
+   * install.sh and `mygo doctor` do not ask for WebKitGTK (default: `true`).
+   */
+  webview?: boolean;
+  /**
    * A command that runs the app, such as `my-app`: a link in `/usr/bin` from
    * the Debian package, and in `~/.local/bin` from install.sh (default: none;
    * the app opens from the applications menu).

@@ -140,6 +140,7 @@ See [Windows](distribution.md#windows).
 | `comment` | | a short description, for the desktop entry and the package |
 | `categories` | `["Utility"]` | the categories of the desktop entry, which place it in application menus |
 | `depends` | | Debian packages the app needs besides GTK and WebKitGTK |
+| `webview` | `true` | `false` for an app that shows no web page, as one of native UI: the Debian package depends on GTK alone, and install.sh and `mygo doctor` do not ask for WebKitGTK |
 | `command` | none | a command that runs the app: `/usr/bin/<command>` from the Debian package, `~/.local/bin/<command>` from install.sh |
 
 See [Linux](distribution.md#linux).

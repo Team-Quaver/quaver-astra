@@ -177,7 +177,7 @@
   "ok": "OK",
   "open": "Open",
   "selectFolder": "Select Folder",
-  "clearScrollback": "Clear Scrollback",
+  "clearTerminal": "Clear",
   "clipboardRead": "A program wants to read the clipboard",
   "clipboardReadAllow": "Allow",
   "clipboardReadDeny": "Deny",

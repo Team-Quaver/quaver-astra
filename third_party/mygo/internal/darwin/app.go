@@ -367,11 +367,12 @@ func (a appController) SetActivationPolicy(p string) {
 	}
 }
 
-func (a appController) Activate()        { send(a.b.app, "activateIgnoringOtherApps:", 1) }
-func (a appController) AllowForeground() {}
-func (a appController) Hide()            { send(a.b.app, "hide:", 0) }
-func (a appController) Unhide()          { send(a.b.app, "unhide:", 0) }
-func (a appController) IsHidden() bool   { return sendBool(a.b.app, "isHidden") }
+func (a appController) Activate()                               { send(a.b.app, "activateIgnoringOtherApps:", 1) }
+func (a appController) AllowForeground()                        {}
+func (a appController) WithActivationToken(_ string, fn func()) { fn() }
+func (a appController) Hide()                                   { send(a.b.app, "hide:", 0) }
+func (a appController) Unhide()                                 { send(a.b.app, "unhide:", 0) }
+func (a appController) IsHidden() bool                          { return sendBool(a.b.app, "isHidden") }
 
 func (a appController) SetBadge(label string) {
 	tile := send(a.b.app, "dockTile")

@@ -289,6 +289,8 @@ func (a appController) SetActivationPolicy(string) {}
 
 func (a appController) AllowForeground() {}
 
+func (a appController) WithActivationToken(token string, fn func()) { withActivationToken(token, fn) }
+
 func (a appController) Activate() {
 	for _, w := range a.b.windows {
 		if gtkWidgetGetVisible(w.win) {

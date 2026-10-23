@@ -182,8 +182,10 @@ func (w *window) setUpEmbedded(comp uintptr) uintptr {
 	w.comp = comp
 	controller := queryInterface(comp, &iidICoreWebView2Controller)
 	comCall(comp, compPutRootVisualTarget, w.webVis)
-	var token int64
-	tok := uintptr(unsafe.Pointer(&token))
+	// The add methods write a registration token. Its address is taken in
+	// each call (go:uintptrescapes), as a uintptr saved earlier goes stale
+	// when the goroutine stack moves.
+	var tok int64
 	withHandler(func(_, _ uintptr) {
 		var c uintptr
 		comCall(w.comp, compGetCursor, uintptr(unsafe.Pointer(&c)))
@@ -191,9 +193,9 @@ func (w *window) setUpEmbedded(comp uintptr) uintptr {
 		if s := w.host.surface; s != nil && s.webHover == w {
 			procSetCursor.Call(c)
 		}
-	}, func(h uintptr) uintptr { return comCall(comp, compAddCursorChanged, h, tok) })
-	withHandler(func(_, _ uintptr) { w.focused = true }, func(h uintptr) uintptr { return comCall(controller, ctlAddGotFocus, h, tok) })
-	withHandler(func(_, _ uintptr) { w.focused = false }, func(h uintptr) uintptr { return comCall(controller, ctlAddLostFocus, h, tok) })
+	}, func(h uintptr) uintptr { return comCall(comp, compAddCursorChanged, h, uintptr(unsafe.Pointer(&tok))) })
+	withHandler(func(_, _ uintptr) { w.focused = true }, func(h uintptr) uintptr { return comCall(controller, ctlAddGotFocus, h, uintptr(unsafe.Pointer(&tok))) })
+	withHandler(func(_, _ uintptr) { w.focused = false }, func(h uintptr) uintptr { return comCall(controller, ctlAddLostFocus, h, uintptr(unsafe.Pointer(&tok))) })
 	// Tab past the page's ends gives the content the keyboard, not the
 	// next window WebView2 would find.
 	withHandler(func(_, args uintptr) {
@@ -201,7 +203,7 @@ func (w *window) setUpEmbedded(comp uintptr) uintptr {
 		comCall(args, moveFocusGetReason, uintptr(unsafe.Pointer(&reason)))
 		comCall(args, moveFocusPutHandled, 1)
 		w.tabOut(reason == moveFocusPrevious)
-	}, func(h uintptr) uintptr { return comCall(controller, ctlAddMoveFocusRequested, h, tok) })
+	}, func(h uintptr) uintptr { return comCall(controller, ctlAddMoveFocusRequested, h, uintptr(unsafe.Pointer(&tok))) })
 	w.comp3 = queryInterface(comp, &iidICoreWebView2CompositionController3)
 	return controller
 }

@@ -80,6 +80,13 @@ func sideButton(w *mygo.Window, back bool) (ok bool) {
 	return ok
 }
 
+// pinch pinches the touchpad at (x, y) by scale, and returns the scale
+// the platform reports.
+func pinch(w *mygo.Window, x, y, scale float64) (got float64, ok bool) {
+	mygo.RunOnMain(func() { ok = darwin.TestPinch(w.NativeHandle(), x, y, scale-1) })
+	return scale, ok
+}
+
 func drag(w *mygo.Window, points [][2]float64) bool {
 	mygo.RunOnMain(func() { darwin.TestDrag(w.NativeHandle(), points) })
 	return true

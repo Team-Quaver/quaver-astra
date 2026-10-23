@@ -62,12 +62,10 @@ func communicationIntent(n *platform.Notification) id {
 	if s == nil || s.ID == "" || len(s.Avatar) == 0 {
 		return 0
 	}
-	data := nsData(s.Avatar)
-	decoded := send(send(class("NSImage"), "alloc"), "initWithData:", uintptr(data))
-	if decoded == 0 {
+	data := communicationAvatar(s.Avatar)
+	if data == 0 {
 		return 0
 	}
-	send(decoded, "release")
 	// IDs are app-defined, so they are not inferred to be contact details.
 	handle := send(send(class("INPersonHandle"), "alloc"), "initWithValue:type:", uintptr(nsString(s.ID)), 0)
 	defer send(handle, "release")
@@ -151,4 +149,20 @@ func (b *Backend) addCommunicationNotification(n *platform.Notification, content
 	send(interaction, "donateInteractionWithCompletion:", uintptr(blk))
 	blk.Release()
 	return true
+}
+
+// communicationAvatar returns image bytes accepted by the notification image service.
+func communicationAvatar(avatar []byte) id {
+	data := nsData(avatar)
+	decoded := send(send(class("NSImage"), "alloc"), "initWithData:", uintptr(data))
+	if decoded == 0 {
+		return 0
+	}
+	defer send(decoded, "release")
+	// NSImage accepts SVG, but the Intents image service requires a raster image.
+	png := pngFromImage(decoded)
+	if len(png) == 0 {
+		return 0
+	}
+	return nsData(png)
 }

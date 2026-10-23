@@ -2,6 +2,7 @@ package mygo
 
 import (
 	"errors"
+	"fmt"
 	"io"
 	"io/fs"
 	"os"
@@ -88,7 +89,7 @@ func (b *docBase) write(target string, op writeOp) (bool, error) {
 		return false, err
 	}
 	b.mu.Lock()
-	b.ops.markSaved(snap)
+	settle := b.ops.markSaved(snap)
 	b.savedAt = snap.at
 	b.stamp = stamp
 	b.conflict, b.deleted = false, false
@@ -104,6 +105,11 @@ func (b *docBase) write(target string, op writeOp) (bool, error) {
 	b.scheduleLocked()
 	drop := !b.edited && b.backedUp != 0
 	b.mu.Unlock()
+	// Equal is the app's and may read the document, so it runs with the
+	// lock down — the same rule ImageCache.ask follows (0487c37b).
+	if settle != nil && settle() {
+		drop = true
+	}
 	if drop {
 		b.kind.recovery.remove(b)
 	}
@@ -173,10 +179,18 @@ func writeFileSafely(path string, write func(io.Writer) error) (fileStamp, error
 	if cerr := tmp.Close(); err == nil {
 		err = cerr
 	}
-	if err == nil {
+	replacing := err == nil
+	if replacing {
 		err = backend().ReplaceFile(path, name)
 	}
 	if err != nil {
+		if _, serr := os.Lstat(path); replacing && exists && errors.Is(serr, fs.ErrNotExist) {
+			// The system removed the file and could not put the new one in
+			// its place (ReplaceFileW's ERROR_UNABLE_TO_MOVE_REPLACEMENT):
+			// the sibling is the only copy left, so it stays. One that
+			// could not be written holds no contents to keep.
+			return fileStamp{}, fmt.Errorf("%w; the new contents are in %s", err, name)
+		}
 		os.Remove(name)
 		return fileStamp{}, err
 	}

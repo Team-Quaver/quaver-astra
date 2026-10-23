@@ -17,7 +17,7 @@ func TestURLAt(t *testing.T) {
 		40: "http://x.org/y",
 		58: "mailto:me@x.org",
 	} {
-		if got := urlAt(text, cols, col); got != want {
+		if got, _, _ := urlAt(text, cols, col); got != want {
 			t.Errorf("urlAt(%d) = %q, want %q", col, got, want)
 		}
 	}
@@ -43,8 +43,19 @@ func TestPathAt(t *testing.T) {
 		for i := range cols {
 			cols[i] = i
 		}
-		if got := pathAt(text, cols, c.col); got != c.want {
+		if got, _, _ := pathAt(text, cols, c.col); got != c.want {
 			t.Errorf("pathAt(%q, %d) = %q, want %q", c.row, c.col, got, c.want)
 		}
+	}
+}
+
+func TestURLAtSpan(t *testing.T) {
+	text := []rune("go to https://x.org/a. now")
+	cols := make([]int, len(text))
+	for i := range cols {
+		cols[i] = i
+	}
+	if url, x0, x1 := urlAt(text, cols, 10); url != "https://x.org/a" || x0 != 6 || x1 != 21 {
+		t.Errorf("urlAt = %q %d..%d, want https://x.org/a 6..21", url, x0, x1)
 	}
 }

@@ -75,6 +75,10 @@ const (
 	set2GetUserAgent                     = 21
 	set2PutUserAgent                     = 22
 
+	// ICoreWebView2Settings3
+	set3GetAreBrowserAcceleratorKeysEnabled = 23
+	set3PutAreBrowserAcceleratorKeysEnabled = 24
+
 	// Event arguments and helpers.
 	navStartingGetURI             = 3
 	navStartingGetIsUserInitiated = 4
@@ -104,6 +108,7 @@ const (
 	reqGetMethod                  = 5
 	reqGetContent                 = 7
 	reqGetHeaders                 = 9
+	headersRemoveHeader           = 7
 	headersGetIterator            = 8
 	iterGetCurrentHeader          = 3
 	iterGetHasCurrentHeader       = 4
@@ -133,6 +138,7 @@ const (
 var (
 	iidICoreWebView2Controller2                  = guid("c979903e-d4ca-4228-92eb-47ee3fa96eab")
 	iidICoreWebView2Settings2                    = guid("ee9a0f68-f46c-4e32-ac23-ef8cac224d2a")
+	iidICoreWebView2Settings3                    = guid("fdb5ab74-af33-4854-84f0-0a631deb5eba")
 	iidICoreWebView2WebMessageReceivedEventArgs2 = guid("06fc7ab7-c90c-4297-9389-33ca01cf6d5e")
 	iidICoreWebView2NavigationStartingEventArgs3 = guid("ddffe494-4942-4bd2-ab73-35b8ff40e19f")
 	iidICoreWebView2File                         = guid("f2c19559-6bc1-4583-a757-90021be9afec")

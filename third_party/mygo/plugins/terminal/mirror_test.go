@@ -1,6 +1,7 @@
 package terminal
 
 import (
+	"encoding/base64"
 	"fmt"
 	"math/rand/v2"
 	"os"
@@ -8,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/egoist/mygo/plugins/terminal/internal/vt"
+	"github.com/egoist/mygo/ui"
 )
 
 // mirrored is a terminal and another showing its Mirror's frames.
@@ -17,6 +19,9 @@ type mirrored struct {
 	dst    *Terminal
 	m      *Mirror
 	frames int
+	// pruned lets the other terminal keep rows the source's scrollback,
+	// at its limit, let go of: its rows end with the source's.
+	pruned bool
 }
 
 func newMirrored(t *testing.T, cols, rows int, o Options) *mirrored {
@@ -89,10 +94,13 @@ func (x *mirrored) same(label string) {
 	if cb, rb := tb.Size(); ca != cb || ra != rb {
 		fail("size %dx%d, mirrored %dx%d", ca, ra, cb, rb)
 	}
-	if !ta.AltScreen() && ta.ScrollbackRows() != tb.ScrollbackRows() {
-		fail("scrollback %d rows, mirrored %d", ta.ScrollbackRows(), tb.ScrollbackRows())
+	if sa, sb := ta.ScrollbackRows(), tb.ScrollbackRows(); !ta.AltScreen() && sa != sb && !(x.pruned && sb > sa) {
+		fail("scrollback %d rows, mirrored %d", sa, sb)
 	}
 	rowsA, rowsB := cellRows(ta), cellRows(tb)
+	if x.pruned && len(rowsB) > len(rowsA) {
+		rowsB = rowsB[len(rowsB)-len(rowsA):]
+	}
 	if len(rowsA) != len(rowsB) {
 		fail("%d rows, mirrored %d", len(rowsA), len(rowsB))
 	}
@@ -118,6 +126,12 @@ func (x *mirrored) same(label string) {
 	}
 	if ta.KittyKeyboardFlags() != tb.KittyKeyboardFlags() {
 		fail("kitty keyboard flags %d, mirrored %d", ta.KittyKeyboardFlags(), tb.KittyKeyboardFlags())
+	}
+	if ta.ModifyOtherKeys() != tb.ModifyOtherKeys() {
+		fail("modifyOtherKeys %v, mirrored %v", ta.ModifyOtherKeys(), tb.ModifyOtherKeys())
+	}
+	if ta.MouseShape() != tb.MouseShape() {
+		fail("pointer shape %d, mirrored %d", ta.MouseShape(), tb.MouseShape())
 	}
 }
 
@@ -238,6 +252,54 @@ func TestMirrorScrolling(t *testing.T) {
 	x.feed("a prompt without a newline", "$ ")
 }
 
+// The terminal showing the frames keeps the cursor its options make
+// while programs leave the cursor alone, and takes one a program asks
+// for, until the program resets it.
+// The keyboard's modes go to the other terminal as the program sets them,
+// and a pointer shape (OSC 22) does not turn modifyOtherKeys on there.
+func TestMirrorKeyboardModes(t *testing.T) {
+	loadLib(t)
+	x := newMirrored(t, 20, 6, Options{})
+	x.feed("a pointer shape", "\x1b]22;pointer\x1b\\")
+	x.feed("modifyOtherKeys", "\x1b[>4;2m")
+	x.feed("kitty keyboard flags", "\x1b[>1u")
+	x.feed("modifyOtherKeys off", "\x1b[>4;1m\x1b[<u")
+}
+
+func TestMirrorCursorStyle(t *testing.T) {
+	loadLib(t)
+	src, err := New(Options{Conn: newPipe()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	dst, err := New(Options{Conn: newPipe(), Cursor: CursorBar, NoBlink: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	m, err := src.NewMirror()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { m.Close(); src.Close(); dst.Close() })
+	step := func(label, out string, style vt.CursorStyle, blink bool) {
+		t.Helper()
+		src.Feed([]byte(out))
+		f, _ := m.Frame()
+		dst.Feed(f)
+		dst.mu.Lock()
+		dst.rs.Update(dst.term)
+		c := dst.rs.Cursor()
+		dst.mu.Unlock()
+		if c.Style != style || c.Blinking != blink {
+			t.Errorf("%s: the cursor is style %d, blinking %v; want %d, %v", label, c.Style, c.Blinking, style, blink)
+		}
+	}
+	step("at the start", "$ ", vt.CursorBar, false)
+	step("a program's underline", "\x1b[3 q", vt.CursorUnderline, true)
+	step("a program's block", "\x1b[2 q", vt.CursorBlock, false)
+	step("reset", "\x1b[0 q", vt.CursorBar, false)
+}
+
 // Empty cells after a styled run stay empty: Claude Code's mascot, whose
 // eyes are a black background, showed a black square where the cells
 // after it took the background (libghostty's formatter wrote them as
@@ -275,6 +337,25 @@ func TestMirrorAltScreen(t *testing.T) {
 	x.feed("draw on it", "\x1b[5;1H"+strings.Repeat("-", 20))
 	x.feed("leave it", "\x1b[?1049l")
 	x.feed("after", "$ ls\r\n")
+}
+
+// A terminal that takes a Mirror's frames from while a full-screen program
+// shows gets the main screen and its scrollback once the program ends.
+func TestMirrorResetInAltScreen(t *testing.T) {
+	loadLib(t)
+	x := newMirrored(t, 20, 5, Options{})
+	x.feed("history", lines(0, 50, "x"))
+	x.feed("a full-screen program", "\x1b[?1049hfull screen")
+	x.m.Reset()
+	other, err := New(Options{Conn: newPipe()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { other.Close() })
+	other.Resize(20, 5)
+	x.dst = other
+	x.frame("another terminal")
+	x.feed("the program ends", "\x1b[?1049l")
 }
 
 func TestMirrorResize(t *testing.T) {
@@ -320,6 +401,53 @@ func TestMirrorScrollbackLimit(t *testing.T) {
 	for i := range 40 {
 		x.feed(fmt.Sprintf("burst %d", i), lines(i*100, i*100+60, "x"))
 	}
+}
+
+// A scrollback at its limit lets go of its oldest rows as it takes new
+// ones: the other terminal keeps its own, without starting over, whether
+// a frame scrolls a row or more than a screen.
+func TestMirrorScrollbackPruned(t *testing.T) {
+	loadLib(t)
+	x := newMirrored(t, 40, 5, Options{Scrollback: 64 << 10})
+	x.pruned = true
+	drops, n := 0, 0
+	prev := 0
+	for i := range 400 {
+		count := 1
+		if i%2 == 1 {
+			count = 23 // more than a screen
+		}
+		x.src.Feed([]byte(lines(n, n+count, "line abcdefghijklmnopqrstuvwxyz ")))
+		n += count
+		f, due := x.m.Frame()
+		if due {
+			t.Fatal("no frame")
+		}
+		if strings.Contains(string(f), "\x1b[3J") {
+			t.Fatalf("frame %d clears the other terminal's scrollback: %q", i, f[:min(len(f), 80)])
+		}
+		x.dst.Feed(f)
+		x.frames++
+		x.src.mu.Lock()
+		sb := x.src.term.ScrollbackRows()
+		x.src.mu.Unlock()
+		if sb < prev {
+			drops++
+		}
+		if sb < prev || i%25 == 0 {
+			// Reading every row of both terminals takes long: at the
+			// frames that let go of rows, and now and then.
+			x.same(fmt.Sprintf("frame %d", i))
+		}
+		prev = sb
+	}
+	if drops < 2 {
+		t.Fatalf("the scrollback let go of rows %d times, want at least 2", drops)
+	}
+	// A clear still clears the other terminal's scrollback.
+	x.pruned = false
+	x.feed("clear", "\x1b[3J")
+	x.feed("after the clear", lines(0, 12, "after "))
 }
 
 // Claude Code's output under a screen of history, fed in uneven pieces, as
@@ -402,6 +530,51 @@ func TestMirrorTwoWindows(t *testing.T) {
 	}
 }
 
+// Programs' writes to the clipboard go to every Mirror's frames, their
+// reads with ClipboardForward to one, and what no frame takes stays
+// bounded.
+func TestMirrorClipboard(t *testing.T) {
+	loadLib(t)
+	src, err := New(Options{Conn: newPipe(), ClipboardRead: ClipboardForward})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer src.Close()
+	src.Resize(20, 4)
+	m1, _ := src.NewMirror()
+	defer m1.Close()
+	m2, _ := src.NewMirror()
+	m1.Frame()
+	m2.Frame()
+	write := func(s string) string { return "\x1b]52;c;" + base64.StdEncoding.EncodeToString([]byte(s)) + "\x1b\\" }
+	src.Feed([]byte(write("copied") + "\x1b]52;c;?\x1b\\"))
+	f1, _ := m1.Frame()
+	f2, _ := m2.Frame()
+	for i, f := range []string{string(f1), string(f2)} {
+		if strings.Count(f, write("copied")) != 1 {
+			t.Errorf("frame of mirror %d has the write %d times: %q", i+1, strings.Count(f, write("copied")), f)
+		}
+	}
+	if n := strings.Count(string(f1)+string(f2), "\x1b]52;c;?\x1b\\"); n != 1 {
+		t.Errorf("the read went %d times, want once", n)
+	}
+	// A closed Mirror takes nothing, and what no frame takes is bounded.
+	m2.Close()
+	for i := range 100 {
+		src.Feed([]byte(write(fmt.Sprint(i)) + "\x1b]52;c;?\x1b\\"))
+	}
+	src.mu.Lock()
+	queued, forward, mirrors := len(src.clipOut), len(src.clipForward), len(src.mirrors)
+	src.mu.Unlock()
+	if queued > maxQueued || forward > maxQueued || mirrors != 1 {
+		t.Errorf("%d writes and %d reads queued, %d mirrors", queued, forward, mirrors)
+	}
+	f1, _ = m1.Frame()
+	if f := string(f1); strings.Count(f, "\x1b]52;c;") != 2*maxQueued || !strings.Contains(f, write("99")) {
+		t.Errorf("the frame passes on %d uses of the clipboard, want the last %d writes and reads", strings.Count(f, "\x1b]52;c;"), maxQueued)
+	}
+}
+
 // History is what shows, down to the cursor, with the cursor under it: a
 // program's interface below the cursor, as an agent's status bar, goes.
 func TestHistory(t *testing.T) {
@@ -440,5 +613,172 @@ func TestHistory(t *testing.T) {
 	alt.Feed([]byte("\x1b[?1049hfull screen"))
 	if h := alt.History(); len(h) != 0 {
 		t.Errorf("history of a full-screen program: %q", h)
+	}
+}
+
+// The other terminal reports the mouse as the program asked the source
+// to: setting a mouse mode picks the events or the format, and resetting
+// one goes back to none or X10's whatever is set, so that the modes off
+// come before those on.
+func TestMirrorMouse(t *testing.T) {
+	loadLib(t)
+	for _, c := range []struct{ modes, press, drag string }{
+		{"\x1b[?1002h\x1b[?1006h", "\x1b[<0;3;4M", "\x1b[<32;6;4M"},
+		{"\x1b[?1000h\x1b[?1002h\x1b[?1003h\x1b[?1006h", "\x1b[<35;3;4M\x1b[<0;3;4M", "\x1b[<32;6;4M"},
+		{"\x1b[?1000h", "\x1b[M #$", ""},
+	} {
+		src, err := New(Options{Conn: newPipe()})
+		if err != nil {
+			t.Fatal(err)
+		}
+		conn := newPipe()
+		dst, err := New(Options{Conn: conn})
+		if err != nil {
+			t.Fatal(err)
+		}
+		m, err := src.NewMirror()
+		if err != nil {
+			t.Fatal(err)
+		}
+		tt := ui.NewTester(func(c *ui.Context) { View(c, dst).Fill().AutoFocus() }, 400, 200)
+		src.Feed([]byte(c.modes))
+		f, _ := m.Frame()
+		dst.Feed(f)
+		tt.Frame()
+		x, y := cellCenter(dst, 2, 3)
+		tt.Press(x, y)
+		if got := conn.take(dst); got != c.press {
+			t.Errorf("%q: press sent %q, want %q", c.modes, got, c.press)
+		}
+		x2, y2 := cellCenter(dst, 5, 3)
+		tt.Move(x2, y2)
+		if got := conn.take(dst); got != c.drag {
+			t.Errorf("%q: drag sent %q, want %q", c.modes, got, c.drag)
+		}
+		tt.Release(x2, y2)
+		m.Close()
+		src.Close()
+		dst.Close()
+	}
+}
+
+// The colors programs set (OSC 4, 10, 11, 12) show in the other terminal,
+// as on the source's, and their reset gives back the other terminal's
+// own: a TUI that sets the terminal's background, or a shell script its
+// palette, showed none of it.
+func TestMirrorColors(t *testing.T) {
+	loadLib(t)
+	src, err := New(Options{Conn: newPipe()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	dark := DarkTheme()
+	dst, err := New(Options{Conn: newPipe()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	m, err := src.NewMirror()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { m.Close(); src.Close(); dst.Close() })
+	src.UseTheme(LightTheme())
+	dst.UseTheme(dark)
+	step := func(label, out string, want vt.TermColors) {
+		t.Helper()
+		src.Feed([]byte(out))
+		f, _ := m.Frame()
+		dst.Feed(f)
+		dst.mu.Lock()
+		got := dst.term.Colors(false)
+		dst.mu.Unlock()
+		if got.Foreground != want.Foreground || got.Background != want.Background || got.HasCursor != want.HasCursor || got.Cursor != want.Cursor || got.Palette[1] != want.Palette[1] || got.Palette[200] != want.Palette[200] {
+			t.Errorf("%s: fg %v bg %v cursor %v palette 1 %v, 200 %v; want %v %v %v %v %v", label,
+				got.Foreground, got.Background, got.Cursor, got.Palette[1], got.Palette[200],
+				want.Foreground, want.Background, want.Cursor, want.Palette[1], want.Palette[200])
+		}
+	}
+	own := dst.term.Colors(true)
+	step("at the start", "", own)
+	set := own
+	set.Foreground, set.Background, set.Cursor, set.HasCursor = vt.RGB{R: 0x10, G: 0x20, B: 0x30}, vt.RGB{R: 0xfe, G: 0xdc, B: 0xba}, vt.RGB{R: 0xff}, true
+	set.Palette[1], set.Palette[200] = vt.RGB{B: 0xff}, vt.RGB{G: 0x80}
+	step("set", "\x1b]10;#102030\x07\x1b]11;#fedcba\x07\x1b]12;#ff0000\x07\x1b]4;1;#0000ff;200;#008000\x07", set)
+	step("reset", "\x1b]110\x07\x1b]111\x07\x1b]112\x07\x1b]104\x07", own)
+}
+
+// The images programs place (Kitty graphics) show in the other terminal
+// where they show here, sent once, scrolling as the rows do, and go when
+// deleted: grok's preview of a pasted image showed nothing in a window of
+// a server's session.
+func TestMirrorImages(t *testing.T) {
+	loadLib(t)
+	src, err := New(Options{Conn: newPipe()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	dst, err := New(Options{Conn: newPipe()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	m, err := src.NewMirror()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { m.Close(); src.Close(); dst.Close() })
+	src.ResizePixels(40, 10, 8, 16)
+	dst.ResizePixels(40, 10, 8, 16)
+	frame := func() string {
+		f, _ := m.Frame()
+		dst.Feed(f)
+		return string(f)
+	}
+	frame()
+	placements := func(term *Terminal) []vt.Placement {
+		term.mu.Lock()
+		defer term.mu.Unlock()
+		var out []vt.Placement
+		term.term.Placements(func(p vt.Placement) {
+			if p.Visible {
+				p.ID = 0 // the other terminal's are the Mirror's
+				out = append(out, p)
+			}
+		})
+		return out
+	}
+	same := func(label string) {
+		t.Helper()
+		a, b := placements(src), placements(dst)
+		if len(a) == 0 && label != "deleted" {
+			t.Errorf("%s: nothing placed here", label)
+		}
+		if fmt.Sprint(a) != fmt.Sprint(b) {
+			t.Errorf("%s: the other terminal places %+v, want %+v", label, b, a)
+		}
+	}
+	src.Feed([]byte("\x1b[3;5H" + kittyImage(9, 16, 32, ui.RGB(255, 0, 0), ",C=1") + "after"))
+	if f := frame(); !strings.Contains(f, "a=t") {
+		t.Fatalf("the image's pixels were not sent: %q", f)
+	}
+	same("placed")
+	dst.mu.Lock()
+	img, ok := dst.term.Image(9)
+	dst.mu.Unlock()
+	if !ok || img.Width != 16 || img.Height != 32 || img.Pixels[0] != 255 || img.Pixels[1] != 0 {
+		t.Errorf("the other terminal's image is %v, %+v", ok, img)
+	}
+	if f := frame(); strings.Contains(f, "_G") {
+		t.Errorf("a frame with nothing new sent images again: %q", f)
+	}
+	src.Feed([]byte("\x1b[10;1H\n\n\n"))
+	if f := frame(); strings.Contains(f, "_G") {
+		t.Errorf("scrolling sent images again: %q", f)
+	}
+	same("scrolled")
+	src.Feed([]byte("\x1b_Ga=d,d=I,i=9,q=2\x1b\\"))
+	frame()
+	same("deleted")
+	if p := placements(dst); len(p) != 0 {
+		t.Errorf("the other terminal still places %+v", p)
 	}
 }

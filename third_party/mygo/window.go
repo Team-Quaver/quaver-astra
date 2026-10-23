@@ -471,6 +471,8 @@ func newWindow(opts WindowOptions, bg *background, native uintptr, flyout *flyou
 	}
 	if w.content != nil {
 		w.attachContent()
+	} else {
+		startContentRules(nw, opts.Page.ContentRules)
 	}
 
 	windows.Lock()

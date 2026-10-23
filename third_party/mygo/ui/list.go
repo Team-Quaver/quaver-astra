@@ -192,6 +192,12 @@ type ListState struct {
 	wroteY  float64
 	req     listRequest
 	heights listHeights
+
+	// scrolled tells that the app asked the list to scroll (ScrollTo,
+	// ScrollIntoView, ScrollToEnd): a mouse wheel's notches on their way
+	// stop there (glideWheels).
+	scrolled bool
+
 	// width, gap and padTop are those the rows were placed with: the width
 	// of the rows, the gap between them, and where the first starts below
 	// the list's top. border is its top border.
@@ -227,6 +233,15 @@ type ListState struct {
 	editables, editablesNow bool
 	editKey                 any
 	editAsked               bool
+	// menuPick is a right-click on a row between frames (chooseRowAt),
+	// which the next frame's build chooses: the state of the row's
+	// element, the window's point, and the frame it came after.
+	menuPick struct {
+		set   bool
+		id    uint64
+		x, y  float32
+		frame uint64
+	}
 	// dragSel is the drag choosing rows (DragSelect): the row pressed, the
 	// state of its element, and whether it adds to the rows chosen.
 	dragSel struct {
@@ -280,17 +295,22 @@ type followMark struct {
 // is measured.
 func (s *ListState) ScrollTo(row int, align Align) {
 	s.req = listRequest{set: true, row: row, align: align}
+	s.scrolled = true
 }
 
 // ScrollIntoView scrolls the list as little as shows row whole, as
 // Element.ScrollIntoView does an element.
 func (s *ListState) ScrollIntoView(row int) {
 	s.req = listRequest{set: true, row: row, near: true}
+	s.scrolled = true
 }
 
 // ScrollToEnd scrolls the list to its end, where FollowEnd follows it
 // again.
-func (s *ListState) ScrollToEnd() { s.req = listRequest{set: true, end: true} }
+func (s *ListState) ScrollToEnd() {
+	s.req = listRequest{set: true, end: true}
+	s.scrolled = true
+}
 
 // Visible returns the first and the last row the list showed in the last
 // frame, last below first when it showed none: a list nearing the end of
@@ -467,6 +487,7 @@ func buildList(c *context, e, owner *node, s *ListState, n int, row func(i int),
 	e.list, owner.rowsOf = f, f
 	wrapElement(owner).Bind(&s.Handle)
 	s.sync(e, n)
+	f.pickForMenu()
 	if s.cursor() != nil && owner == e {
 		e.Focusable()
 	}
@@ -518,12 +539,14 @@ func (s *ListState) sync(e *node, n int) {
 				s.header.ok = false
 			}
 		}
-		// The choice follows its item, and is gone with it. With a
-		// Selection, only while the Selection still holds the item: one
-		// the app took out of it, choosing others, is the app moving the
-		// choice, which may land on the row the item had, as a pasted
-		// file sorted there, or an item renamed in its place.
-		if sel := s.cursor(); sel != nil && *sel == s.selRow && s.selKey != nil && (s.Selection == nil || s.Selection.has(s.selKey)) {
+		// The choice follows its item, and is gone with it. The app's
+		// Selected, with a Selection, only while the Selection still holds
+		// the item: one the app took out of it, choosing others, is the
+		// app moving the choice, which may land on the row the item had,
+		// as a pasted file sorted there, or an item renamed in its place.
+		// The list's own cursor, which only the user moves, always
+		// follows its item, chosen or not.
+		if sel := s.cursor(); sel != nil && *sel == s.selRow && s.selKey != nil && (s.Selected == nil || s.Selection == nil || s.Selection.has(s.selKey)) {
 			j, ok := s.find(s.selKey, *sel, n)
 			if !ok {
 				j = -1
@@ -933,7 +956,12 @@ func (f *listFrame) toggle(i int) {
 // extend chooses the rows from the pivot to row i, as Shift does: on
 // macOS in place of those it last chose, elsewhere in place of all others
 // unless keep.
-func (f *listFrame) extend(i int, keep bool) {
+func (f *listFrame) extend(i int, keep bool) { f.extendBy(i, keep, runtime.GOOS == "darwin") }
+
+// extendBy is extend, choosing the rows from the pivot to row i in place
+// of those it last chose with span, else in place of all others unless
+// keep.
+func (f *listFrame) extendBy(i int, keep, span bool) {
 	s, sel := f.s, f.s.Selection
 	p := s.pivot
 	if p < 0 || p >= f.n || f.isHeader(p) {
@@ -943,7 +971,7 @@ func (f *listFrame) extend(i int, keep bool) {
 	lo, hi := min(p, i), max(p, i)
 	changed := false
 	switch {
-	case runtime.GOOS == "darwin":
+	case span:
 		last := max(0, min(p+s.span, f.n-1))
 		for j := min(p, last); j <= max(p, last); j++ {
 			if (j < lo || j > hi) && !f.isHeader(j) {
@@ -1002,12 +1030,11 @@ func (s *ListState) ExtendTo(row int) {
 	f.extend(row, false)
 }
 
-// chooseRowAt chooses the row of a list with Selection in chain, the
-// elements under the pointer, unless it is chosen or the list's
-// MenuKeepsSelection is set: a right-click acts on the row it is on, as in
-// Finder, and on all those chosen when it is one of them. In a Table
-// choosing cells, it chooses the cell at the window's x, unless that is in
-// the block.
+// chooseRowAt notes a right-click on the row of a list with Selection
+// in chain, the elements under the pointer, for the next frame's build to
+// choose it (pickForMenu), before it builds the row's menu. It runs
+// between frames, where the app's rows may have changed since the last
+// one: its Key is called only once the build has their number.
 func (rt *engine) chooseRowAt(chain []uint64, x, y float32) {
 	for _, id := range chain {
 		s := rt.states[id]
@@ -1015,15 +1042,42 @@ func (rt *engine) chooseRowAt(chain []uint64, x, y float32) {
 			continue
 		}
 		b, ok := s.valueBinding.(*listRowInput)
-		if !ok || b.i >= b.f.n || b.f.s.Selection == nil || b.f.s.MenuKeepsSelection {
+		if !ok || b.f.s.Selection == nil || b.f.s.MenuKeepsSelection {
 			return
 		}
-		if f := b.f; !f.chosenAt(b.i, x, y) {
-			f.clickAt(b.i, x, y, 0)
-			rt.requestFrame()
-		}
+		p := &b.f.s.menuPick
+		p.set, p.id, p.x, p.y, p.frame = true, id, x, y, rt.frame
+		rt.requestFrame()
 		return
 	}
+}
+
+// pickForMenu chooses the row a right-click was on since the last frame
+// (chooseRowAt) unless it is chosen: a right-click acts on the row it is
+// on, as in Finder, and on all those chosen when it is one of them. In a
+// Table choosing cells, it chooses the cell at the window's x, unless
+// that is in the block. The row is where its item went since, or gone.
+func (f *listFrame) pickForMenu() {
+	s := f.s
+	p := s.menuPick
+	if !p.set {
+		return
+	}
+	s.menuPick.set = false
+	r, ok := s.rows[p.id]
+	if !ok || p.frame+1 != f.frame || s.Selection == nil || s.MenuKeepsSelection {
+		return
+	}
+	i := r.row
+	if s.Key != nil && r.key != nil {
+		if i, ok = s.find(r.key, r.row, f.n); !ok {
+			return
+		}
+	}
+	if i < 0 || i >= f.n || f.isHeader(i) || f.chosenAt(i, p.x, p.y) {
+		return
+	}
+	f.clickAt(i, p.x, p.y, 0)
 }
 
 // chosenAt reports whether row i is chosen and, in a table choosing

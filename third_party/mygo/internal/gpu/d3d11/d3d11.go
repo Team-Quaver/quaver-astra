@@ -294,9 +294,11 @@ type Renderer struct {
 	// lat is the swap chain's frame latency object (latency.go), pending
 	// tells that the frame drawn presents once it is signaled, through
 	// post, presentLater, and failed is why that failed; wake is what Ready
-	// was given meanwhile.
+	// was given meanwhile, or while refreshing tells that a frame that
+	// changed nothing waits for the display's next refresh (waitRefresh).
 	lat          latency
 	pending      bool
+	refreshing   bool
 	post         func(func())
 	presentLater func()
 	failed       error
@@ -667,7 +669,7 @@ func (r *Renderer) armSettle() {
 
 // Release frees the renderer's GPU objects.
 func (r *Renderer) Release() {
-	r.pending, r.wake = false, nil
+	r.pending, r.refreshing, r.wake = false, false, nil
 	r.lat.release()
 	r.b.Release()
 	if settling[r.hwnd] {
@@ -806,8 +808,12 @@ func (r *Renderer) Render(s *scene.Scene) error {
 	}
 	resized := r.swapChain != 0 && (s.Width != r.w || s.Height != r.h)
 	drawn, err := r.drawFrame(s)
-	if err != nil || !drawn {
+	if err != nil {
 		return err
+	}
+	if !drawn {
+		r.waitRefresh()
+		return nil
 	}
 	// A frame of a new size is presented at once (sync interval 0), not
 	// after the frame queued before it, which would miss the next
@@ -1348,7 +1354,7 @@ func (r *Renderer) newTarget(t *texture, w, h int, drawn bool) error {
 // as none waits to present (latency.go); otherwise wake runs, on the main
 // thread, once it has.
 func (r *Renderer) Ready(wake func()) bool {
-	if !r.pending {
+	if !r.pending && !r.refreshing {
 		return true
 	}
 	r.wake = wake
@@ -1375,10 +1381,70 @@ func (r *Renderer) presentPending() {
 	if err := r.present(1); err != nil && r.failed == nil {
 		r.failed = err // the next frame finds it
 	}
+	r.woke()
+}
+
+// woke runs what Ready was given.
+func (r *Renderer) woke() {
 	if w := r.wake; w != nil {
 		r.wake = nil
 		w()
 	}
+}
+
+// awaitRefresh returns once the display's next refresh shows; tests
+// replace it. DwmFlush may return at once when DWM has nothing to
+// compose, or wait until it next has, so the wait lasts at least
+// minRefresh and at most maxRefresh.
+var awaitRefresh = func() {
+	start := time.Now()
+	done := make(chan struct{})
+	go func() {
+		procDwmFlush.Call()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(maxRefresh):
+	}
+	if d := minRefresh - time.Since(start); d > 0 {
+		time.Sleep(d)
+	}
+}
+
+// minRefresh and maxRefresh bound awaitRefresh's wait: a 60 Hz refresh's
+// period, as frames that show nothing new need come no faster, and a few
+// of them, so that an animation goes on when DWM composes nothing.
+const (
+	minRefresh = time.Second / 60
+	maxRefresh = 4 * minRefresh
+)
+
+// waitRefresh has the frame following one that changed nothing, which
+// presents nothing to wait for, wait for the display's next refresh as a
+// frame presented would (Ready), a goroutine waiting for it meanwhile:
+// otherwise frames that change nothing, as an animation's moving less than
+// a pixel, follow each other as fast as the main thread draws them.
+func (r *Renderer) waitRefresh() {
+	if r.post == nil || r.refreshing {
+		return
+	}
+	r.refreshing = true
+	post := r.post
+	go func() {
+		awaitRefresh()
+		post(r.refreshed)
+	}()
+}
+
+// refreshed runs on the main thread once the refresh waitRefresh waited
+// for came.
+func (r *Renderer) refreshed() {
+	if !r.refreshing {
+		return
+	}
+	r.refreshing = false
+	r.woke()
 }
 
 // present shows the back buffer, after sync vertical blanks, once the

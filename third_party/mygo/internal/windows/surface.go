@@ -3,6 +3,7 @@
 package windows
 
 import (
+	"math"
 	"time"
 	"unicode/utf16"
 	"unsafe"
@@ -582,8 +583,16 @@ func (s *surface) message(hwnd uintptr, m uint32, wp, lp uintptr) (uintptr, bool
 		pt := point{int32(int16(loword(lp))), int32(int16(hiword(lp)))}
 		procScreenToClient.Call(hwnd, uintptr(unsafe.Pointer(&pt)))
 		delta := float64(int16(hiword(wp)))
+		precise := int(delta)%120 != 0
+		if m == wmMouseWheel && precise && loword(wp)&0x0008 != 0 { // MK_CONTROL
+			// A touchpad's pinch, which Windows sends as scrolling with
+			// Ctrl held, as it does Ctrl and two fingers: three notches'
+			// worth zoom twice as large.
+			s.send(platform.SurfaceEvent{Kind: platform.PointerZoom, X: s.toDIP(pt.X), Y: s.toDIP(pt.Y), Scale: math.Exp(delta / 120 * math.Ln2 / 3), Mods: mods()})
+			return 0, true
+		}
 		dist := delta / 120 * float64(wheelLines()) * 33
-		ev := platform.SurfaceEvent{Kind: platform.PointerScroll, X: s.toDIP(pt.X), Y: s.toDIP(pt.Y), Mods: mods(), Precise: int(delta)%120 != 0}
+		ev := platform.SurfaceEvent{Kind: platform.PointerScroll, X: s.toDIP(pt.X), Y: s.toDIP(pt.Y), Mods: mods(), Precise: precise}
 		if m == wmMouseWheel {
 			ev.DY = -dist
 		} else {

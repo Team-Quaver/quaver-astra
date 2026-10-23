@@ -34,10 +34,12 @@ const (
 	srcCopy                = 0x00CC0020
 	smCxMenuCheck          = 71
 	spiGetNonClientMetrics = 0x0029
+	layoutRTL              = 0x1
 )
 
 var (
 	procBitBlt                     = gdi32.NewProc("BitBlt")
+	procGetLayout                  = gdi32.NewProc("GetLayout")
 	procExcludeClipRect            = gdi32.NewProc("ExcludeClipRect")
 	procCreateFontIndirectW        = gdi32.NewProc("CreateFontIndirectW")
 	procSetMenuInfo                = user32.NewProc("SetMenuInfo")
@@ -273,9 +275,10 @@ func (b *Backend) dropMenuFonts() {
 
 // The glyphs of Segoe Fluent Icons, also in Segoe MDL2 Assets.
 const (
-	glyphCheck   = 0xE73E // CheckMark
-	glyphBullet  = 0xE915 // RadioBullet
-	glyphChevron = 0xE76C // ChevronRight
+	glyphCheck       = 0xE73E // CheckMark
+	glyphBullet      = 0xE915 // RadioBullet
+	glyphChevron     = 0xE76C // ChevronRight
+	glyphChevronLeft = 0xE76B // ChevronLeft
 )
 
 // menuItemMessage handles the messages of the popup items MyGo draws, which
@@ -424,7 +427,14 @@ func (b *Backend) drawItem(hwnd uintptr, l *menuLook, d *drawItemStruct) {
 			x += toPx(menuMarkColumn, dpi)
 		}
 		if l.submenu {
-			glyph(glyphChevron, rect{right - toPx(menuChevron, dpi), r.Top, right, r.Bottom}, fore)
+			// A menu laid out right to left has a mirrored DC, which
+			// places the glyphs from the right but draws them unmirrored:
+			// its submenus open to the left.
+			g := uint16(glyphChevron)
+			if layout, _, _ := procGetLayout.Call(d.DC); layout&layoutRTL != 0 {
+				g = glyphChevronLeft
+			}
+			glyph(g, rect{right - toPx(menuChevron, dpi), r.Top, right, r.Bottom}, fore)
 		}
 		old, _, _ := procSelectObject.Call(dc, f.text)
 		defer procSelectObject.Call(dc, old)

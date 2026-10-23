@@ -845,3 +845,29 @@ func TestSetLanguage(t *testing.T) {
 		t.Error("the same language made a new generation")
 	}
 }
+
+// A flex item gives text exactly the width of its unconstrained layout.
+// That width sums advances in float32, which may round below the
+// engine's own line width: on Core Text, 20pt semibold "Action required:
+// Complete your Artifact Signing identity validation" measured 599.78
+// and wrapped its last word at that width.
+func TestLayoutAtMeasuredWidth(t *testing.T) {
+	s := Shared()
+	texts := []string{
+		"Action required: Complete your Artifact Signing identity validation",
+		"The quick brown fox jumps over the lazy dog",
+		"Settings and Privacy",
+		"Welcome back, your inbox is up to date",
+	}
+	for _, text := range texts {
+		for _, weight := range []int{400, 500, 600, 700} {
+			for size := float32(10); size <= 32; size += 0.5 {
+				p := Params{Text: text, Style: Style{Size: size, Weight: weight}}
+				p.Width = s.Layout(p).Width
+				if l := s.Layout(p); len(l.Lines) != 1 {
+					t.Errorf("%q, weight %d, size %g: at measured width %g, %d lines", text, weight, size, p.Width, len(l.Lines))
+				}
+			}
+		}
+	}
+}

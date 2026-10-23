@@ -37,12 +37,20 @@ const (
 	// -1 when none is.
 	InputPointerMove
 	// InputScroll scrolls by DX, DY DIPs at X, Y; Precise marks
-	// touchpads, which scroll by pixels rather than by lines.
+	// touchpads, which scroll by pixels rather than by lines. One the
+	// element leaves scrolls the scroll containers around it.
 	InputScroll
 	// InputSelect selects runes Start to End of the text an element
 	// describes to assistive technology (Element.Access), as a screen
 	// reader moves the selection of a text field of the app's own.
 	InputSelect
+	// InputZoom zooms by Scale at X, Y, as pinching a touchpad does: 2
+	// shows the content twice as large as it was, 0.5 half as large.
+	// macOS, Linux on Wayland and browsers report pinches; Windows reports
+	// them as scrolling with Ctrl held, so there a touchpad's scrolling
+	// with Ctrl held comes as InputZoom too, and a mouse wheel's notches
+	// as InputScroll with Ctrl in Mods.
+	InputZoom
 )
 
 // InputEvent is input an element takes as it comes (HandleInput).
@@ -69,6 +77,8 @@ type InputEvent struct {
 	// down the content.
 	DX, DY  float32
 	Precise bool
+	// Scale is what InputZoom zooms by.
+	Scale float32
 	// Start and End are the runes InputSelect selects.
 	Start, End int
 	// Time is when the event came, by the clock of the window's frames
@@ -79,15 +89,16 @@ type InputEvent struct {
 // HandleInput has fn take the element's input as it comes, on the main
 // thread, before the next frame is built: keys, text and edit commands
 // while the element has the keyboard focus, the pointer pressed on it,
-// moving over it or scrolling over it. fn reports whether it took the
+// moving over it, scrolling or pinching over it. fn reports whether it took the
 // event; one it leaves goes on as it would without fn, to shortcuts, Tab,
 // context menus and scroll containers. Keys that the window or an element
 // around the focus handles as a Shortcut go to the shortcut first. A frame
 // follows the events fn takes.
 //
 // It is for widgets that need every key as it is pressed, such as a
-// terminal; most widgets ask about their input as they are built instead
-// (Clicked, Shortcut, Dragged).
+// terminal, or the scrolling and pinching over them, such as a chart that
+// zooms and pans; most widgets ask about their input as they are built
+// instead (Clicked, Shortcut, Dragged).
 func (e *node) HandleInput(fn func(ev InputEvent) bool) *node {
 	e.inputFn = fn
 	return e

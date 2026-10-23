@@ -8,3 +8,5 @@ import (
 )
 
 func newBackend() platform.Backend { return win.New() }
+
+func linkContentRules() { win.LinkContentRules() }

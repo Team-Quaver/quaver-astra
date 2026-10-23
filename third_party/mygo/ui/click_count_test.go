@@ -178,3 +178,50 @@ func TestScrollbarPressStartsOver(t *testing.T) {
 		t.Fatalf("%d double clicks, the last press counted %d, want none and 1", doubles, tt.rt.pressClicks)
 	}
 }
+
+// A hidden scroll bar takes no press: one on its track before the
+// pointer showed it, as the first click into a window, goes to the row
+// under it. Once the bar shows, a press there pages, and once the
+// pointer leaves and it hides again, a press goes to the row again.
+func TestHiddenScrollbarPassesPress(t *testing.T) {
+	var sc *node
+	clicks := 0
+	tt := coreNewTester(func(c *context) {
+		sc = coreScroll(c).Size(100, 200).Children(func() {
+			row := coreBox(c).Key("row").Size(100, 800)
+			row.flags |= flagClickable
+			if row.Clicked() {
+				clicks++
+			}
+		})
+	}, 200, 200)
+	defer tt.rt.close()
+	tt.Frame()
+	st := sc.st
+	g := scrollBars(Rect{st.x, st.y, st.w, st.h}, st.barInset, float32(st.contentW), float32(st.contentH), 0, 0, st.flags, tt.rt.c.theme.scrollbarWidth(), false)
+	// On the track, below the thumb.
+	x, y := g.vTrack.X+g.vTrack.W/2, g.v.Y+g.v.H+20
+	press := func() {
+		tt.Press(x, y)
+		tt.Release(x, y)
+		tt.Frame()
+	}
+	press()
+	if clicks != 1 || st.scrollY != 0 {
+		t.Fatalf("a press on the hidden track made %d clicks and scrolled to %v, want 1 and 0", clicks, st.scrollY)
+	}
+	if !st.barsShown {
+		t.Fatal("the bar does not show with the pointer over the container")
+	}
+	press()
+	if clicks != 1 || st.scrollY == 0 {
+		t.Fatalf("a press on the track showing made %d clicks and scrolled to %v, want 1 and down a page", clicks, st.scrollY)
+	}
+	tt.send(platform.SurfaceEvent{Kind: platform.PointerLeave})
+	tt.Frame()
+	scrolled := st.scrollY
+	press()
+	if clicks != 2 || st.scrollY != scrolled {
+		t.Fatalf("a press on the track hidden again made %d clicks and scrolled from %v to %v, want 2 and no scrolling", clicks, scrolled, st.scrollY)
+	}
+}

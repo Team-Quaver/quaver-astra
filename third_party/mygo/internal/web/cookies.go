@@ -10,3 +10,6 @@ func (app) ListCookies(_ string, done func([]platform.Cookie, error)) {
 func (app) SetCookie(_ platform.Cookie, done func(error))       { done(platform.ErrUnsupported) }
 func (app) DeleteCookie(_ platform.CookieKey, done func(error)) { done(platform.ErrUnsupported) }
 func (app) ClearCookies(done func(error))                       { done(platform.ErrUnsupported) }
+func (app) CompileContentRules(_, _, _ string, done func(any, error)) {
+	done(nil, platform.ErrUnsupported)
+}

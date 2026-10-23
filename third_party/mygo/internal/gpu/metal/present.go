@@ -177,7 +177,11 @@ func (r *Renderer) SetPost(post func(func())) {
 	r.post = post
 	finish := func() {
 		pool(func() {
-			if r.pending.cb == 0 {
+			// A frame not paced may have drawn the frame pending this was
+			// posted for, and another may be pending, whose drawable is
+			// being fetched: its fetch posts again once done, rather than
+			// the main thread waiting for it.
+			if r.pending.cb == 0 || !r.pre.ready(r.fetched) {
 				return
 			}
 			if err := r.finishPending(true); err != nil {
@@ -260,7 +264,8 @@ func (r *Renderer) finishPending(prefetch bool) error {
 }
 
 // dropPending drops the frame pending, committing what it drew before its
-// drawable: the next draws whole.
+// drawable: the next draws whole. What Ready was given meanwhile runs, as
+// the frame waiting for this one, which never comes, can draw now.
 func (r *Renderer) dropPending() {
 	if r.pending.cb == 0 {
 		return
@@ -270,6 +275,7 @@ func (r *Renderer) dropPending() {
 	r.track(r.pending.cb)
 	release(&r.pending.cb)
 	r.pending = pendingFrame{}
+	r.wakeContent()
 }
 
 // wakeContent runs what Ready was given while a frame was pending.

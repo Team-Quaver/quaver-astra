@@ -260,24 +260,26 @@ func (s *surface) RequestFrame() {
 // draw until the renderer had a drawable.
 func (s *surface) FrameNow() {
 	if !s.w.closed {
-		s.deferred = false
 		s.frameNow(false)
 	}
 }
 
-// frameNow draws a frame now, rather than when AppKit displays the view,
-// which would cost a pass of its display cycle and a commit of Core
-// Animation's transaction for each frame: the renderer presents frames
-// that change nothing else as soon as drawn. The display link's frames are
-// paced by it.
+// frameNow draws a frame now, rather than when AppKit displays the view
+// (or as it does), which would cost a pass of its display cycle and a
+// commit of Core Animation's transaction for each frame: the renderer
+// presents frames that change nothing else as soon as drawn. The display
+// link's frames are paced by it.
+//
+// The content draws a paced frame it leaves to draw later once the
+// display can take it (FrameNow), and the link keeps running meanwhile
+// (deferred). Any frame it draws instead, paced or not, as a resize's,
+// draws what the one left would have, and the content draws that one no
+// more: deferred holds only while the last frame sent was left.
 func (s *surface) frameNow(paced bool) {
 	s.resized = false
 	s.framePass = caPass
 	s.lastFrame = time.Now()
-	if s.send(platform.SurfaceEvent{Kind: platform.SurfaceFrame, Paced: paced}) && paced {
-		// The content draws it once the display can take it (FrameNow).
-		s.deferred = true
-	}
+	s.deferred = s.send(platform.SurfaceEvent{Kind: platform.SurfaceFrame, Paced: paced}) && paced
 }
 
 // presentsWithTransaction reports whether the GPU renderer's CAMetalLayer
@@ -775,10 +777,7 @@ func registerSurfaceClass() {
 				s.RequestFrame()
 				return
 			}
-			s.resized = false
-			s.framePass = caPass
-			s.lastFrame = time.Now()
-			s.send(platform.SurfaceEvent{Kind: platform.SurfaceFrame})
+			s.frameNow(false)
 		}),
 		method("mygoTick:", func(self id, _ objc.SEL, link id) {
 			s := b().surfaceOf(self)
@@ -874,6 +873,16 @@ func registerSurfaceClass() {
 				dx, dy = dx*40, dy*40
 			}
 			s.send(platform.SurfaceEvent{Kind: platform.PointerScroll, X: x, Y: y, DX: -dx, DY: -dy, Precise: precise, Mods: eventMods(ev)})
+		}),
+		method("magnifyWithEvent:", func(self id, _ objc.SEL, ev id) {
+			s := b().surfaceOf(self)
+			if s == nil {
+				return
+			}
+			// magnification is how much the pinch grew the content since
+			// its last event, as a fraction of its size then.
+			x, y := s.location(ev)
+			s.send(platform.SurfaceEvent{Kind: platform.PointerZoom, X: x, Y: y, Scale: 1 + msgFloat(ev, sel("magnification")), Mods: eventMods(ev)})
 		}),
 		method("keyDown:", func(self id, _ objc.SEL, ev id) {
 			s := b().surfaceOf(self)

@@ -60,6 +60,8 @@ const (
 	cairoHintMetricsOn         = 2
 	cairoStatusSuccess         = 0
 	fcResultMatch              = 0
+	fcMatchPattern             = 0
+	fcLangEqual                = 0
 	fcSetApplication           = 1
 	gTrue, gFalse          int = 1, 0
 )
@@ -201,6 +203,14 @@ var pangoLib struct {
 	fcConfigGetFonts          func(config uintptr, set int32) *fcFontSet
 	fcConfigParseFromMemory   func(config uintptr, xml string, complain int32) int32
 	fcPatternGetString        func(pattern uintptr, object string, n int32, out **byte) int32
+	fcPatternCreate           func() uintptr
+	fcPatternDestroy          func(pattern uintptr)
+	fcPatternAddString        func(pattern uintptr, object, s string) int32
+	fcPatternGetLangSet       func(pattern uintptr, object string, n int32, out *uintptr) int32
+	fcLangSetHasLang          func(langs uintptr, lang string) int32
+	fcConfigSubstitute        func(config, pattern uintptr, kind int32) int32
+	fcDefaultSubstitute       func(pattern uintptr)
+	fcFontMatch               func(config, pattern uintptr, result *int32) uintptr
 }
 
 func loadPango() error {
@@ -340,6 +350,14 @@ func loadPango() error {
 		bind(fc, &l.fcConfigGetFonts, "FcConfigGetFonts")
 		bind(fc, &l.fcConfigParseFromMemory, "FcConfigParseAndLoadFromMemory")
 		bind(fc, &l.fcPatternGetString, "FcPatternGetString")
+		bind(fc, &l.fcPatternCreate, "FcPatternCreate")
+		bind(fc, &l.fcPatternDestroy, "FcPatternDestroy")
+		bind(fc, &l.fcPatternAddString, "FcPatternAddString")
+		bind(fc, &l.fcPatternGetLangSet, "FcPatternGetLangSet")
+		bind(fc, &l.fcLangSetHasLang, "FcLangSetHasLang")
+		bind(fc, &l.fcConfigSubstitute, "FcConfigSubstitute")
+		bind(fc, &l.fcDefaultSubstitute, "FcDefaultSubstitute")
+		bind(fc, &l.fcFontMatch, "FcFontMatch")
 	}
 	return nil
 }
@@ -367,6 +385,9 @@ type pangoEngine struct {
 	antialias, hintStyle, subpixels int32
 	// languages are the PangoLanguages of tags.
 	languages map[string]uintptr
+	// hanFamilies are the families fontconfig picks for the languages
+	// writing Han, by language and generic family (hanFamily).
+	hanFamilies map[[2]string]string
 }
 
 // setFontRendering takes the desktop's settings (platform.FontRendering)
@@ -422,12 +443,13 @@ func newPango() (*pangoEngine, error) {
 	}
 	l := &pangoLib
 	e := &pangoEngine{
-		descs:      map[Style]uintptr{},
-		fonts:      map[uintptr]*Font{},
-		scaled:     map[scaledKey]uintptr{},
-		registered: map[string]bool{},
-		appFamily:  map[string]string{},
-		languages:  map[string]uintptr{},
+		descs:       map[Style]uintptr{},
+		fonts:       map[uintptr]*Font{},
+		scaled:      map[scaledKey]uintptr{},
+		registered:  map[string]bool{},
+		appFamily:   map[string]string{},
+		languages:   map[string]uintptr{},
+		hanFamilies: map[[2]string]string{},
 	}
 	// A font map of our own: the default one belongs to the thread that
 	// asks for it, and goroutines move between threads.
@@ -445,27 +467,111 @@ func newPango() (*pangoEngine, error) {
 
 // pangoFamily returns the family list of a style for Pango, where
 // fontconfig knows the generic families, and system-ui is the desktop's
-// interface font, ui, when the app knows it.
-func pangoFamily(list, ui string) string {
+// interface font, ui, when the app knows it. The family before returns
+// for the first generic family, if any, goes before it, or after the
+// list without one.
+func pangoFamily(list, ui string, before func(generic string) string) string {
 	var out []string
 	systemUI := []string{"system-ui", "sans-serif"}
 	if ui != "" {
 		systemUI = []string{ui, "system-ui", "sans-serif"}
 	}
+	insert := func(generic string) {
+		if before != nil {
+			if f := before(generic); f != "" {
+				out = append(out, f)
+			}
+			before = nil
+		}
+	}
 	for _, f := range familyList(list) {
-		switch generic(f) {
+		switch g := generic(f); g {
 		case "system-ui":
+			insert(g)
 			out = append(out, systemUI...)
 		case "":
 			out = append(out, f)
 		default:
-			out = append(out, generic(f))
+			insert(g)
+			out = append(out, g)
 		}
 	}
 	if len(out) == 0 {
-		out = systemUI
+		insert("system-ui")
+		out = append(out, systemUI...)
 	}
+	insert("system-ui")
 	return strings.Join(out, ",")
+}
+
+// hanFamily returns the family fontconfig picks for a generic family in
+// a language that writes Han, as fc-match does, when that family's font
+// supports the language; "" otherwise.
+func (e *pangoEngine) hanFamily(lang, generic string) string {
+	lang = fcHanLang(lang)
+	if generic == "system-ui" {
+		generic = "sans-serif"
+	}
+	key := [2]string{lang, generic}
+	if f, ok := e.hanFamilies[key]; ok {
+		return f
+	}
+	l := &pangoLib
+	family := ""
+	if l.fcFontMatch != nil && l.fcLangSetHasLang != nil && l.fcPatternGetString != nil {
+		p := l.fcPatternCreate()
+		l.fcPatternAddString(p, "family", generic)
+		l.fcPatternAddString(p, "lang", lang)
+		l.fcConfigSubstitute(0, p, fcMatchPattern)
+		l.fcDefaultSubstitute(p)
+		var result int32
+		if m := l.fcFontMatch(0, p, &result); m != 0 {
+			var name *byte
+			var langs uintptr
+			if l.fcPatternGetString(m, "family", 0, &name) == fcResultMatch &&
+				l.fcPatternGetLangSet(m, "lang", 0, &langs) == fcResultMatch && l.fcLangSetHasLang(langs, lang) == fcLangEqual {
+				family = cString(name)
+			}
+			l.fcPatternDestroy(m)
+		}
+		l.fcPatternDestroy(p)
+	}
+	e.hanFamilies[key] = family
+	return family
+}
+
+// fcHanLang returns fontconfig's language for a language that writes
+// Han: ja, ko, or zh-cn, zh-tw, zh-hk, zh-mo or zh-sg for Chinese, by
+// script and region.
+func fcHanLang(tag string) string {
+	parts := strings.FieldsFunc(strings.ToLower(tag), func(r rune) bool { return r == '-' || r == '_' })
+	if len(parts) == 0 {
+		return "zh-cn"
+	}
+	switch parts[0] {
+	case "ja", "ko":
+		return parts[0]
+	}
+	script, region := "", ""
+	for _, p := range parts[1:] {
+		switch {
+		case len(p) == 4 && script == "":
+			script = p
+		case len(p) == 2 && region == "":
+			region = p
+		}
+	}
+	switch {
+	case (region == "tw" || region == "hk" || region == "mo") && script != "hans":
+		return "zh-" + region
+	case region == "sg" && script != "hant":
+		return "zh-sg"
+	case script == "hant":
+		return "zh-tw"
+	case script == "" && parts[0] == "yue":
+		return "zh-hk"
+	}
+	return "zh-cn"
 }
 
 func (e *pangoEngine) desc(style Style) uintptr {
@@ -481,7 +587,7 @@ func (e *pangoEngine) desc(style Style) uintptr {
 		clear(e.descs)
 	}
 	d := l.descNew()
-	l.descSetFamily(d, pangoFamily(key.Family, e.uiFamily))
+	l.descSetFamily(d, pangoFamily(key.Family, e.uiFamily, nil))
 	l.descSetWeight(d, int32(key.Weight))
 	if key.Italic {
 		l.descSetStyle(d, pangoStyleItalic)
@@ -682,7 +788,8 @@ func (e *pangoEngine) attributes(style Style, spans []Span, text []rune) uintptr
 		add(l.attrLanguageNew(e.language(style.Lang)), 0, 0)
 	}
 	runs := langRuns(text, style.Lang, spans)
-	if len(spans) == 0 && len(runs) == 0 {
+	han := hanPunctRuns(text, style, spans)
+	if len(spans) == 0 && len(runs) == 0 && len(han) == 0 {
 		return list
 	}
 	// The byte each rune starts at.
@@ -700,7 +807,7 @@ func (e *pangoEngine) attributes(style Style, spans []Span, text []rune) uintptr
 			continue
 		}
 		if sp.Family != "" {
-			add(l.attrFamilyNew(pangoFamily(sp.Family, e.uiFamily)), b0, b1)
+			add(l.attrFamilyNew(pangoFamily(sp.Family, e.uiFamily, nil)), b0, b1)
 		}
 		if sp.Size > 0 {
 			add(l.attrSizeAbsoluteNew(int32(math.Round(float64(sp.Size)*pangoScale))), b0, b1)
@@ -728,7 +835,69 @@ func (e *pangoEngine) attributes(style Style, spans []Span, text []rune) uintptr
 	for _, r := range runs {
 		add(l.attrLanguageNew(e.language(r.lang)), at[r.start], at[r.end])
 	}
+	// Pango gives punctuation the script of its neighbours, and so the
+	// first font for Latin that has it, as Noto Sans Mongolian's
+	// ideographic comma between Latin words, whatever the language: the
+	// font the language picks goes before the generic families.
+	for _, r := range han {
+		before := func(generic string) string { return e.hanFamily(r.lang, generic) }
+		add(l.attrFamilyNew(pangoFamily(r.family, e.uiFamily, before)), at[r.start], at[r.end])
+	}
 	return list
+}
+
+// hanRun is a run of runes of a text, from start to end, of punctuation
+// or full-width forms in a language that writes Han, in one family.
+type hanRun struct {
+	start, end   int
+	lang, family string
+}
+
+// hanPunctRuns returns the runs of a text's punctuation and full-width
+// forms in the languages writing Han, given the text's style and spans;
+// nil when none of its languages writes Han.
+func hanPunctRuns(text []rune, style Style, spans []Span) []hanRun {
+	if !writesHan(style.Lang) && !spansWriteHan(spans) {
+		return nil
+	}
+	var out []hanRun
+	span, from := 0, 0
+	for i, r := range text {
+		if (r < 0x3000 || r > 0x303F) && (r < 0xFF00 || r > 0xFFEF) {
+			continue
+		}
+		for span < len(spans) && max(spans[span].End, from) <= i {
+			from = max(spans[span].End, from)
+			span++
+		}
+		lang, family := style.Lang, style.Family
+		if span < len(spans) {
+			if spans[span].Lang != "" {
+				lang = spans[span].Lang
+			}
+			if spans[span].Family != "" {
+				family = spans[span].Family
+			}
+		}
+		if !writesHan(lang) {
+			continue
+		}
+		if n := len(out); n > 0 && out[n-1].end == i && out[n-1].lang == lang && out[n-1].family == family {
+			out[n-1].end = i + 1
+			continue
+		}
+		out = append(out, hanRun{i, i + 1, lang, family})
+	}
+	return out
+}
+
+func spansWriteHan(spans []Span) bool {
+	for _, sp := range spans {
+		if writesHan(sp.Lang) {
+			return true
+		}
+	}
+	return false
 }
 
 // space returns the glyph and advance, in Pango units, of a whitespace
@@ -1077,6 +1246,7 @@ func (e *pangoEngine) register(data []byte, family string) error {
 		l.descFree(d)
 	}
 	clear(e.descs)
+	clear(e.hanFamilies)
 	return nil
 }
 

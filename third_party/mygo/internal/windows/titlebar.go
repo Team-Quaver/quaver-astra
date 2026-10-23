@@ -224,7 +224,9 @@ func (c *captionBar) layout() {
 		}
 		procSetWindowPos.Call(c.edge, 0, 0, 0, uintptr(max(x, 0)), uintptr(resizeBorder(dpi)), swpNoActivate|edge)
 	}
-	c.layoutSnap(dpi)
+	if c.snap != 0 {
+		placeSnap(c, dpi)
+	}
 	c.paint()
 }
 
@@ -300,7 +302,7 @@ func (c *captionBar) click(b captionButton) {
 func (c *captionBar) message(hwnd uintptr, m uint32, wp, lp uintptr) (uintptr, bool) {
 	w := c.w
 	if hwnd == c.snap {
-		return c.snapMessage(m, lp)
+		return handleSnap(c, m, lp)
 	}
 	if hwnd == c.edge {
 		switch m {
@@ -581,9 +583,20 @@ type trackMouseEvent struct {
 // as non-client messages, go on to the content, whose button hovers and
 // clicks as any other.
 
+// handleSnap handles the messages of the window over the maximize button,
+// and placeSnap lays it out: SetMaximizeButton sets them as it makes the
+// window, which package ui calls once a view marks such a button, so that
+// apps that mark none don't link them.
+var (
+	handleSnap func(c *captionBar, m uint32, lp uintptr) (uintptr, bool)
+	placeSnap  func(c *captionBar, dpi int)
+)
+
 // SetMaximizeButton puts the window that brings the snap layouts over the
-// content's maximize button, or hides it for the zero RectF.
-func (w *window) SetMaximizeButton(r platform.RectF) {
+// content's maximize button, or hides it for the zero RectF
+// (platform.MaximizeButtonSurface).
+func (s *surface) SetMaximizeButton(r platform.RectF) {
+	w := s.w
 	c := w.caption
 	if c == nil || c.snapRect == r {
 		return
@@ -596,15 +609,15 @@ func (w *window) SetMaximizeButton(r platform.RectF) {
 		}
 		procSetLayeredWindowAttributes.Call(c.snap, 0, 255, lwaAlpha)
 		w.b.captions[c.snap] = c
+		handleSnap, placeSnap = (*captionBar).snapMessage, (*captionBar).layoutSnap
 	}
-	c.layoutSnap(dpiOf(w.hwnd))
+	if c.snap != 0 {
+		c.layoutSnap(dpiOf(w.hwnd))
+	}
 }
 
 func (c *captionBar) layoutSnap(dpi int) {
 	w := c.w
-	if c.snap == 0 {
-		return
-	}
 	r := c.snapRect
 	px := func(v float64) int32 { return int32(math.Round(v * float64(dpi) / 96)) }
 	x0, y0, x1, y1 := px(r.X), px(r.Y), px(r.X+r.W), px(r.Y+r.H)

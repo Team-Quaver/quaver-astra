@@ -5,6 +5,8 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"slices"
+	"strconv"
 	"time"
 
 	"github.com/egoist/mygo/plugins/terminal/internal/vt"
@@ -22,14 +24,16 @@ import (
 //
 // Frames draw rows where they are, and rows that scroll off pass through
 // the other terminal's screen in order, so that its scrollback is this
-// one's. Soft wraps stay soft. The first frame, and a frame after the
+// one's: rows this one's limit lets go of stay there, under its own
+// limit. Soft wraps stay soft. The first frame, and a frame after the
 // screen took another size, start the other terminal over. A frame does
 // not come while a program holds a synchronized update (mode 2026), for up
 // to a second, as the view's frames do not: Frame then reports that one
 // is due.
 //
-// Programs' writes to the clipboard (OSC 52) go on to the other terminal,
-// and so do their reads with ClipboardForward, for it to answer.
+// Programs' writes to the clipboard (OSC 52) go on to the other terminal
+// of each Mirror, and their reads with ClipboardForward to one of them, the
+// first to frame, for it to answer.
 //
 // Frames read the terminal as its view does, which takes the terminal's
 // record of what changed since it last read it: a terminal a view shows
@@ -51,8 +55,15 @@ type Mirror struct {
 	// scrollback is how many rows the main screen's scrollback held at the
 	// last frame that showed the main screen.
 	scrollback int
-	// modes, cursor and title are what the last frame set of them.
-	modes, cursor, title string
+	// modes, colors, cursor and title are what the last frame set of them.
+	modes, colors, cursor, title string
+	// imgs are the images sent of the main and the alternate screens, and
+	// placement the last id of a placement made.
+	imgs      [2]mirroredImages
+	placement uint32
+	// clipOut is what programs copied since the last frame, which each
+	// Mirror passes on.
+	clipOut []string
 }
 
 // NewMirror returns a Mirror of the terminal, whose first frame starts the
@@ -61,14 +72,21 @@ func (t *Terminal) NewMirror() (*Mirror, error) {
 	if !vt.Loaded() {
 		return nil, errors.New("terminal: libghostty-vt is not loaded")
 	}
-	return &Mirror{t: t}, nil
+	m := &Mirror{t: t}
+	t.mu.Lock()
+	t.mirrors = append(t.mirrors, m)
+	t.mu.Unlock()
+	return m, nil
 }
 
 // Close frees the mirror.
 func (m *Mirror) Close() {
-	m.t.mu.Lock()
-	defer m.t.mu.Unlock()
+	t := m.t
+	t.mu.Lock()
+	defer t.mu.Unlock()
 	m.closed = true
+	m.clipOut = nil
+	t.mirrors = slices.DeleteFunc(t.mirrors, func(o *Mirror) bool { return o == m })
 }
 
 // Reset has the next frame start the other terminal over, as when another
@@ -152,8 +170,12 @@ func (m *Mirror) frame(out *bytes.Buffer) {
 			m.restart(out, screen, alt, top)
 		case scrolled > 0:
 			// Rows went to the scrollback: they pass through the other
-			// screen's top in order, the screen's rows after them.
-			if scrollback < m.scrollback {
+			// screen's top in order, the screen's rows after them. A
+			// scrollback that holds fewer rows was cleared when none of
+			// those before them are left: one at its limit lets go of its
+			// oldest rows instead, which the other terminal keeps, its own
+			// limit taking them.
+			if scrollback < m.scrollback && scrollback <= scrolled {
 				out.WriteString("\x1b[3J")
 			}
 			m.write(out, append(m.lines(top-scrolled, top), screen...))
@@ -168,6 +190,7 @@ func (m *Mirror) frame(out *bytes.Buffer) {
 	if !alt {
 		m.scrollback = scrollback
 	}
+	m.images(out, term, alt, top, rows)
 	m.state(out, rs.Cursor())
 }
 
@@ -192,8 +215,49 @@ func (m *Mirror) scrolled(ids []vt.RowID, scrollback int) int {
 		return grew
 	case k >= 0:
 		return k
-	case grew > 0:
+	}
+	// More than a screen scrolled: as many rows as are below the last
+	// frame's first row, now in the scrollback. The scrollback's growth
+	// tells it too, but for one at its limit, which lets go of rows as it
+	// takes others.
+	if n := scrolledPast(m.t.term, m.ids[0], scrollback); n > 0 {
+		return n
+	}
+	if grew > 0 {
 		return grew
+	}
+	return -1
+}
+
+// scrolledPast returns how many rows of the scrollback, which holds
+// scrollback rows, are below the row id, from the bottom up, a screen's
+// worth at a time, or -1 when it holds no such row. It leaves the viewport
+// at the bottom.
+func scrolledPast(term *vt.Terminal, id vt.RowID, scrollback int) int {
+	_, rows := term.Size()
+	defer term.ScrollToBottom()
+	for y := scrollback; y > 0; {
+		y = max(y-rows, 0)
+		term.ScrollToRow(y)
+		// A render state of its own, as readLines reads.
+		rs, err := vt.NewRenderState()
+		if err != nil {
+			return -1
+		}
+		rs.Update(term)
+		off := int(term.Scrollbar().Offset)
+		found := -1
+		rs.Rows()
+		for i := 0; rs.NextRow(); i++ {
+			if r := off + i; r < scrollback && found < 0 && rs.RowID() == id {
+				found = scrollback - r
+			}
+		}
+		rs.Free()
+		if found >= 0 {
+			return found
+		}
+		y = min(y, off)
 	}
 	return -1
 }
@@ -201,13 +265,19 @@ func (m *Mirror) scrolled(ids []vt.RowID, scrollback int) int {
 // restart starts the other terminal over: its scrollback and screen, then
 // this one's, row by row.
 func (m *Mirror) restart(out *bytes.Buffer, screen []line, alt bool, top int) {
-	out.WriteString("\x1b[?1049l\x1b[0m\x1b[H\x1b[2J\x1b[3J")
+	// Both screens' images go too, which frames send again.
+	const noImages = "\x1b_Ga=d,d=A,q=2\x1b\\"
+	out.WriteString("\x1b[?1049h" + noImages + "\x1b[?1049l" + noImages + "\x1b[0m\x1b[H\x1b[2J\x1b[3J")
 	m.modes, m.cursor = "", ""
+	m.imgs = [2]mirroredImages{}
 	m.sent = make([][]byte, len(screen))
 	m.main = nil
 	if alt {
 		// The main screen of a full-screen program's terminal is not to be
-		// read: the other one's shows from when the program ends.
+		// read: the other one's shows from when the program ends, which
+		// starts over again, as the other's main screen and scrollback are
+		// empty now.
+		m.scrollback = -1
 		out.WriteString("\x1b[?1049h")
 		m.redraw(out, screen)
 		return
@@ -453,12 +523,48 @@ func readLine(term *vt.Terminal, rs *vt.RenderState, y int) line {
 }
 
 // mirroredModes are the modes the other terminal takes: those that change
-// what it sends, as the keys and the mouse, and how it draws.
+// what it sends, as the keys and the mouse, and how it draws. Those off
+// go first: the mouse's events and format are one setting each, which
+// setting one of their modes picks and resetting any sets back to none or
+// X10's, as Ghostty does.
 var mirroredModes = []vt.Mode{
 	vt.ModeCursorKeys, 66, // DECCKM, DECNKM (the keypad's)
 	vt.ModeFocusEvent, vt.ModeAltScroll, vt.ModeBracketedPaste, vt.ModeGraphemes,
 	9, 1000, 1002, 1003, 1005, 1006, 1015, 1016, // the mouse's
 	5, // DECSCNM, the screen in reverse video
+}
+
+// programColors returns the sequences that set the colors programs set
+// (OSC 4, 10, 11, 12) and reset the others, which the other terminal's
+// own defaults then color.
+func programColors(term *vt.Terminal) string {
+	set, def := term.Colors(false), term.Colors(true)
+	var b bytes.Buffer
+	osc := func(code string, c vt.RGB) {
+		fmt.Fprintf(&b, "\x1b]%s;rgb:%02x/%02x/%02x\x1b\\", code, c.R, c.G, c.B)
+	}
+	for _, c := range []struct {
+		code      string
+		set, def  vt.RGB
+		has, dhas bool
+	}{
+		{"10", set.Foreground, def.Foreground, set.HasForeground, def.HasForeground},
+		{"11", set.Background, def.Background, set.HasBackground, def.HasBackground},
+		{"12", set.Cursor, def.Cursor, set.HasCursor, def.HasCursor},
+	} {
+		if c.has && (!c.dhas || c.set != c.def) {
+			osc(c.code, c.set)
+		} else {
+			fmt.Fprintf(&b, "\x1b]1%s\x1b\\", c.code)
+		}
+	}
+	b.WriteString("\x1b]104\x1b\\")
+	for i := range set.Palette {
+		if set.Palette[i] != def.Palette[i] {
+			osc("4;"+strconv.Itoa(i), set.Palette[i])
+		}
+	}
+	return b.String()
 }
 
 // state sets the cursor, the modes and the title, where they changed, and
@@ -467,12 +573,17 @@ func (m *Mirror) state(out *bytes.Buffer, c vt.Cursor) {
 	t := m.t
 	term := t.term
 	var modes bytes.Buffer
-	for _, md := range mirroredModes {
-		v := byte('l')
-		if term.Mode(md) {
-			v = 'h'
+	for _, on := range []bool{false, true} {
+		for _, md := range mirroredModes {
+			if term.Mode(md) != on {
+				continue
+			}
+			v := byte('l')
+			if on {
+				v = 'h'
+			}
+			fmt.Fprintf(&modes, "\x1b[?%d%c", md, v)
 		}
-		fmt.Fprintf(&modes, "\x1b[?%d%c", md, v)
 	}
 	mok := 1
 	if term.ModifyOtherKeys() {
@@ -486,14 +597,18 @@ func (m *Mirror) state(out *bytes.Buffer, c vt.Cursor) {
 		out.WriteString(s)
 		m.modes = s
 	}
+	if colors := programColors(term); colors != m.colors {
+		out.WriteString(colors)
+		m.colors = colors
+	}
 	if title := term.Title(); title != m.title {
 		fmt.Fprintf(out, "\x1b]2;%s\x1b\\", title)
 		m.title = title
 	}
-	for _, text := range t.clipOut {
+	for _, text := range m.clipOut {
 		fmt.Fprintf(out, "\x1b]52;c;%s\x1b\\", base64.StdEncoding.EncodeToString([]byte(text)))
 	}
-	t.clipOut = nil
+	m.clipOut = nil
 	for _, primary := range t.clipForward {
 		sel := "c"
 		if primary {
@@ -504,12 +619,18 @@ func (m *Mirror) state(out *bytes.Buffer, c vt.Cursor) {
 	t.clipForward = nil
 	x, y := term.Cursor()
 	var cur bytes.Buffer
-	shape := map[vt.CursorStyle]int{vt.CursorBlock: 2, vt.CursorUnderline: 4, vt.CursorBar: 6}[c.Style]
-	if shape == 0 {
-		shape = 2
-	}
-	if c.Blinking {
-		shape--
+	// A cursor as this terminal's options make it, which programs left
+	// alone or reset, is the default of the other terminal too (DECSCUSR
+	// 0), which takes its own options': a client's Cursor shows.
+	shape := 0
+	if c.Style != vtCursor(t.opts.Cursor) || c.Blinking == t.opts.NoBlink {
+		shape = map[vt.CursorStyle]int{vt.CursorBlock: 2, vt.CursorUnderline: 4, vt.CursorBar: 6}[c.Style]
+		if shape == 0 {
+			shape = 2
+		}
+		if c.Blinking {
+			shape--
+		}
 	}
 	visible := "l"
 	if c.Visible {

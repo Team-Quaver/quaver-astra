@@ -401,6 +401,11 @@ func tableHeader(c *context, table, h *node, j int, s *ListState, drag *tableDra
 	if col.Fixed {
 		return
 	}
+	if _, ok := s.Columns.width(col); !ok && j == order[len(order)-1] {
+		// The last column sharing the room left ends at the table's end:
+		// an edge there would resize nothing, as AppKit's has none.
+		return
+	}
 	// The edge, which resizes the column, and fits it to its cells on a
 	// double click.
 	grip := t.Space(2)

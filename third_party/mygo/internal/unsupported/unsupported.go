@@ -60,6 +60,7 @@ type app struct{}
 func (app) SetActivationPolicy(string)                        {}
 func (app) Activate()                                         {}
 func (app) AllowForeground()                                  {}
+func (app) WithActivationToken(_ string, fn func())           { fn() }
 func (app) Hide()                                             {}
 func (app) Unhide()                                           {}
 func (app) IsHidden() bool                                    { return false }
@@ -93,6 +94,9 @@ func (app) ListCookies(_ string, done func([]platform.Cookie, error)) {
 func (app) SetCookie(_ platform.Cookie, done func(error))       { done(platform.ErrUnsupported) }
 func (app) DeleteCookie(_ platform.CookieKey, done func(error)) { done(platform.ErrUnsupported) }
 func (app) ClearCookies(done func(error))                       { done(platform.ErrUnsupported) }
+func (app) CompileContentRules(_, _, _ string, done func(any, error)) {
+	done(nil, platform.ErrUnsupported)
+}
 
 type dialogs struct{}
 

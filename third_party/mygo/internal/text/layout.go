@@ -658,9 +658,11 @@ func (s *System) Layout(p Params) *Layout {
 	p.Style.Lang = strings.Clone(p.Style.Lang)
 	c := s.layout(p)
 	c.bytes = layoutBytes(c)
-	// A large paragraph still lays out correctly; keeping it would evict
-	// all the ordinary labels and lines of other windows.
-	if c.bytes <= maxLayoutBytes {
+	// A large paragraph is kept only where it fits next to the layouts
+	// recent frames used: evicting those for it would have the ordinary
+	// labels and lines of other windows laid out again. Otherwise it still
+	// lays out correctly, every time.
+	if c.bytes <= maxLayoutBytes || c.bytes <= maxLargeLayoutBytes && s.roomBesideLive(c.bytes) {
 		for s.oldest != nil && (s.overLayoutBudget(c.bytes) || len(s.layouts) >= maxLayouts) {
 			s.removeLayout(s.oldest)
 		}
@@ -673,12 +675,29 @@ func (s *System) Layout(p Params) *Layout {
 
 // The memory estimate includes text, shaped glyphs and room for lazy caret
 // geometry. A count limit also bounds the map for many very short labels.
+// A layout above maxLayoutBytes is kept, up to maxLargeLayoutBytes, only
+// within the live budget beside the layouts recent frames used.
 const (
-	liveLayoutFrames   = 8
-	maxLiveLayoutBytes = 64 << 20
-	maxLayoutBytes     = 8 << 20
-	maxLayouts         = 4096
+	liveLayoutFrames    = 8
+	maxLiveLayoutBytes  = 64 << 20
+	maxLayoutBytes      = 8 << 20
+	maxLargeLayoutBytes = maxLiveLayoutBytes / 2
+	maxLayouts          = 4096
 )
+
+// roomBesideLive tells whether n more bytes fit within the live budget by
+// evicting only layouts no frame used within liveLayoutFrames. The list
+// is in order of use, so those are the oldest.
+func (s *System) roomBesideLive(n int) bool {
+	free, count := maxLiveLayoutBytes-s.layoutBytes, len(s.layouts)
+	for c := s.oldest; free < n || count >= maxLayouts; c = c.next {
+		if c == nil || s.frame-c.used < liveLayoutFrames {
+			return false
+		}
+		free, count = free+c.bytes, count-1
+	}
+	return true
+}
 
 // Above the ordinary budget, keep layouts used within a few global frames:
 // otherwise sequential reuse of a larger working set evicts each layout just

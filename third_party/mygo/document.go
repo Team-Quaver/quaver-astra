@@ -70,6 +70,10 @@ type DocumentsOptions[T any] struct {
 	// it, or typing a character and deleting it, leaves the document
 	// unedited. Without it, every Set and Changed edits the document
 	// until it is saved.
+	//
+	// It is called with no document lock held, so an implementation may
+	// read the document it is comparing for (Document.Content and the
+	// rest) — doing so used to deadlock, and is legal now.
 	Equal func(a, b T) bool
 	// Window creates the window that shows a document, on the main
 	// thread. MyGo sets its title, represented file and edited state,
@@ -253,10 +257,15 @@ func (d *Document[T]) Set(content T) {
 	d.content = content
 	d.changes++
 	edited := true
-	if eq := d.ds.opts.Equal; eq != nil && d.savedKnown {
-		edited = !eq(content, d.saved)
-	}
+	// Equal is the app's and may read the document, so it is called with
+	// the lock down: a document holding it would deadlock on the mutex its
+	// own Content takes (the same mistake ImageCache.ask made, 0487c37b).
+	eq, saved := d.ds.opts.Equal, d.saved
+	known := d.savedKnown
 	d.mu.Unlock()
+	if eq != nil && known {
+		edited = !eq(content, saved)
+	}
 	d.changed(edited)
 }
 
@@ -310,12 +319,33 @@ func (d *Document[T]) capture() docSnapshot {
 }
 
 // markSaved records that the file has s. d.mu is held.
-func (d *Document[T]) markSaved(s docSnapshot) {
+//
+// When Equal still has to say whether the document is edited, it returns
+// a function that asks it, to call once d.mu is down: Equal is the app's
+// and may read the document. That function reports whether the document
+// became unedited while it has a recovery copy, which is then of no use.
+func (d *Document[T]) markSaved(s docSnapshot) (settle func() bool) {
 	v := s.value.(T)
 	d.saved, d.savedKnown = v, true
 	d.edited = d.changes != s.at
-	if eq := d.ds.opts.Equal; eq != nil && d.edited {
-		d.edited = !eq(d.content, v)
+	eq := d.ds.opts.Equal
+	if eq == nil || !d.edited {
+		return nil
+	}
+	content, at := d.content, d.changes
+	return func() bool {
+		if !eq(content, v) {
+			return false
+		}
+		d.mu.Lock()
+		defer d.mu.Unlock()
+		// Unless the content or the file changed again meanwhile.
+		if !d.edited || d.changes != at || d.savedAt != s.at {
+			return false
+		}
+		d.edited, d.dirtySince = false, time.Time{}
+		d.scheduleLocked()
+		return d.backedUp != 0
 	}
 }
 
@@ -349,7 +379,7 @@ type docSnapshot struct {
 // machinery.
 type docOps interface {
 	capture() docSnapshot
-	markSaved(s docSnapshot)
+	markSaved(s docSnapshot) (settle func() bool)
 	replace(v any)
 	restore(v any)
 	makeWindow() *Window

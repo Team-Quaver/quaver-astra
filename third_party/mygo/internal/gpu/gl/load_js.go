@@ -95,6 +95,8 @@ func currentContext() uintptr {
 	return cur.id
 }
 
+func hasContext() bool { return cur != nil }
+
 func contextVersion() (version int32, es bool) { return 30, true }
 
 func hasExtension(name string) bool {

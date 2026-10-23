@@ -294,6 +294,8 @@ const (
 	wmAppCookieView = wmApp + 8
 	// wmAppTrayAdd adds the tray icons made since (tray.go).
 	wmAppTrayAdd = wmApp + 9
+	// wmAppRun runs what Backend.post posted.
+	wmAppRun = wmApp + 10
 
 	wsOverlapped       = 0x00000000
 	wsPopup            = 0x80000000

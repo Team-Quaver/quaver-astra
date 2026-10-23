@@ -768,6 +768,15 @@ func ghostOf(e *node) *node {
 	*g = *e
 	st := *e.st
 	st.trec = nil
+	// Its spans, and the styles they paint with, are its own: another
+	// element taking its state in its place, in this frame, made the
+	// state's its own already. A paragraph's spans are in a buffer of the
+	// state (inlineSpans).
+	g.spans, st.spans = slices.Clone(e.spans), nil
+	if g.spans != nil {
+		st.spans = &spanCache{}
+		st.spans.update(g.spans)
+	}
 	g.st = &st
 	g.parent, g.first, g.last, g.next, g.nchild = nil, nil, nil, nil, 0
 	g.shadows, g.cols, g.rows, g.frags = slices.Clone(e.shadows), slices.Clone(e.cols), slices.Clone(e.rows), slices.Clone(e.frags)

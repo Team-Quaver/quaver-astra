@@ -52,7 +52,12 @@ Roles do what users expect of standard items, with their usual label and
 shortcut, which `Label` and `Accelerator` override:
 
 - editing: `RoleUndo`, `RoleRedo`, `RoleCut`, `RoleCopy`, `RolePaste`,
-  `RoleDelete`, `RoleSelectAll`, and on macOS `RolePasteAndMatchStyle`;
+  `RoleDelete`, `RoleSelectAll`, and on macOS `RolePasteAndMatchStyle`.
+  Their keys go to the content first, as in a browser: in a page on
+  Windows, WebView2 cuts, copies and pastes with the page's own events and
+  every format of the clipboard, while choosing Paste from the menu types
+  the clipboard's text, as pages may not read the clipboard (as does an
+  edit role given a key the page has no use for, as Copy on Ctrl+Shift+C);
 - formatting: `RoleBold`, `RoleItalic`, `RoleUnderline`,
   `RoleStrikethrough`, `RoleAlignLeft`, `RoleAlignCenter` and
   `RoleAlignRight`, which format the selection of a [rich text
@@ -236,6 +241,26 @@ macOS, AppKit places it below the status item and highlights its button
 while the menu is open. To show a menu only on right-click while keeping
 primary clicks available, set the menu in `OnRightClick`, call
 `PopUpMenu`, then clear it with `SetMenu(nil)` when the call returns.
+
+A tray icon does not keep the app running: the app quits when its last
+window closes ([Quitting](app.md#quitting)). To close a window to the
+tray, hide it instead, which keeps the window and the app. A quit, as the
+tray menu's `RoleQuit`, starts before the windows close, so `OnClose` can
+tell the closes it makes from the user's:
+
+```go
+var quitting bool // OnBeforeQuit and OnClose run on the main thread
+mygo.App.OnBeforeQuit(func(*mygo.QuitEvent) { quitting = true })
+
+win.OnClose(func(e *mygo.CloseEvent) {
+	if !quitting {
+		e.PreventDefault()
+		win.Hide()
+	}
+})
+// The icon's click, without a menu, or an item of its menu, brings it back.
+tray.OnClick(win.Show)
+```
 
 On Linux tray icons use AppIndicator, which needs
 `libayatana-appindicator3`: they show a menu and report no clicks, and

@@ -955,9 +955,6 @@ func (w *window) SetMenu(*platform.Menu) {}
 // SetAutoHideMenu does nothing: the menu bar belongs to the application.
 func (w *window) SetAutoHideMenu(bool) {}
 
-// SetMaximizeButton does nothing: the zoom button's menu is AppKit's own.
-func (w *window) SetMaximizeButton(platform.RectF) {}
-
 func (w *window) StartDrag() {
 	if w.lastMouseDown != 0 {
 		send(w.win, "performWindowDragWithEvent:", uintptr(w.lastMouseDown))

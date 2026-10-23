@@ -80,6 +80,9 @@ type Backend struct {
 	FileWatchNoFiles bool
 	// FileWatchAddHook is the AddHook of the file watches made.
 	FileWatchAddHook func(platform.FileWatchTarget) error
+	// ReplaceFileHook, when set, replaces files in place of ReplaceFile,
+	// as a system that fails halfway would.
+	ReplaceFileHook func(target, replacement string) error
 	// URLSchemes are the registered URL schemes, by scheme: "id name".
 	URLSchemes map[string]string
 	// LoginItem is the command that starts the app at login: "id name arg".
@@ -88,10 +91,17 @@ type Backend struct {
 	DockMenu *platform.Menu
 	// ForegroundAllowed counts AllowForeground calls.
 	ForegroundAllowed int
+	// ActivationToken is the token of WithActivationToken while its
+	// function runs.
+	ActivationToken string
 	// Cleared counts ClearBrowsingData calls.
 	Cleared int
 	// cookies holds the cookies of the pages, by name, domain and path.
 	cookies map[platform.CookieKey]platform.Cookie
+	// contentLists are the content rule lists compiled, by identifier;
+	// ContentRuleCompiles counts the compiles.
+	contentLists        map[string]*ContentRuleList
+	ContentRuleCompiles int
 	// CookiesCleared counts ClearCookies calls.
 	CookiesCleared int
 	// RecentDocuments are the paths AddRecentDocument recorded, in order,
@@ -483,6 +493,10 @@ type Window struct {
 	HTML []string
 	// UserScriptUpdates counts the calls of SetUserScripts.
 	UserScriptUpdates int
+	// contentRules are the lists SetContentRules set, whose calls
+	// ContentRuleUpdates counts.
+	contentRules       []*ContentRuleList
+	ContentRuleUpdates int
 	// What the window extras were last set to.
 	Background      platform.Color
 	Progress        string
@@ -666,7 +680,6 @@ func (w *Window) SetContentProtection(bool)          {}
 func (w *Window) SetVibrancy(string)                 {}
 func (w *Window) SetMenu(m *platform.Menu)           { w.mu.Lock(); w.menu = m; w.mu.Unlock() }
 func (w *Window) StartDrag()                         {}
-func (w *Window) SetMaximizeButton(r platform.RectF) { w.MaximizeButton = r }
 func (w *Window) TitleBarDoubleClicked()             {}
 func (w *Window) LoadURL(url string)                 { w.mu.Lock(); w.url = url; w.mu.Unlock() }
 func (w *Window) LoadHTML(html, _ string)            { w.addHTML(html) }
@@ -763,9 +776,15 @@ func (w *Window) UserClose() bool {
 
 type app struct{ b *Backend }
 
-func (app) SetActivationPolicy(string)                {}
-func (app) Activate()                                 {}
-func (a app) AllowForeground()                        { a.b.ForegroundAllowed++ }
+func (app) SetActivationPolicy(string) {}
+func (app) Activate()                  {}
+func (a app) AllowForeground()         { a.b.ForegroundAllowed++ }
+func (a app) WithActivationToken(token string, fn func()) {
+	prev := a.b.ActivationToken
+	a.b.ActivationToken = token
+	defer func() { a.b.ActivationToken = prev }()
+	fn()
+}
 func (app) Hide()                                     {}
 func (app) Unhide()                                   {}
 func (app) IsHidden() bool                            { return false }
@@ -1217,6 +1236,10 @@ func (s *Surface) FinishDataDrag(r transfer.Result) {
 }
 
 func (s *Surface) Native() platform.SurfaceNative { return platform.SurfaceNative{} }
+
+// SetMaximizeButton records the button in the window's MaximizeButton
+// (platform.MaximizeButtonSurface).
+func (s *Surface) SetMaximizeButton(r platform.RectF) { s.w.MaximizeButton = r }
 
 func (s *Surface) Size() (float64, float64, float64) {
 	s.w.mu.Lock()

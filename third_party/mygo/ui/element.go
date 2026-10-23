@@ -1343,7 +1343,11 @@ func (e *node) DragWindow() *node { e.flags |= flagDragWindow; return e }
 // the pointer as any element does, and the view maximizes the window when
 // it is clicked (mygo.Window.Maximize). The first such element of a frame
 // counts; elsewhere it does nothing.
-func (e *node) MaximizeButton() *node { e.maximizeButton = true; return e }
+func (e *node) MaximizeButton() *node {
+	e.maximizeButton = true
+	placeMaximizeButton = sendMaximizeButton
+	return e
+}
 
 // PassThrough lets the pointer reach what is under the element.
 func (e *node) PassThrough() *node { e.flags |= flagPassThrough; return e }

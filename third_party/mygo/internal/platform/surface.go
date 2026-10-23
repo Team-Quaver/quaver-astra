@@ -99,6 +99,19 @@ type PacedSurface interface {
 	FrameNow()
 }
 
+// MaximizeButtonSurface is a Surface whose window makes the maximize
+// button its content draws (in a window without its own, as
+// WindowOptions.HideWindowButtons) the system's for the pointer: Windows
+// shows the snap layouts over it. Package ui reaches it only once a view
+// marks such a button (ui.Element.MaximizeButton), for apps that mark none
+// not to link it.
+type MaximizeButtonSurface interface {
+	// SetMaximizeButton tells where the content shows the window's
+	// maximize button, in DIPs from the top-left corner of the content.
+	// The zero RectF is nowhere.
+	SetMaximizeButton(r RectF)
+}
+
 // IdleSurface is a Surface that can give back memory once frames stop.
 type IdleSurface interface {
 	// Idle tells that no frame came for a while: the surface may give
@@ -179,6 +192,9 @@ const (
 	// PointerScroll scrolls by DX, DY DIPs at X, Y: positive DY moves the
 	// view down the content, as dragging a scroll bar's thumb down does.
 	PointerScroll
+	// PointerZoom zooms by Scale at X, Y, as pinching a touchpad does: 2
+	// shows the content twice as large as it was.
+	PointerZoom
 	// KeyPressed and KeyReleased report Key with Mods; Repeat marks
 	// auto-repeat.
 	KeyPressed
@@ -251,7 +267,9 @@ type SurfaceEvent struct {
 	// other devices that scroll by pixels rather than by lines.
 	DX, DY  float64
 	Precise bool
-	Key     Key
+	// Scale is PointerZoom's.
+	Scale float64
+	Key   Key
 	// PhysicalKey is the key by its position on an ANSI US keyboard,
 	// whatever the active layout types; KeyUnknown where the backend does
 	// not report it. Key and PhysicalKey agree on a US layout.

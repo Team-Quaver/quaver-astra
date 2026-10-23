@@ -3,8 +3,10 @@
 package d3d11
 
 import (
+	"runtime"
 	"testing"
 
+	"github.com/egoist/mygo/internal/gpu/gputest"
 	"github.com/egoist/mygo/internal/wait"
 )
 
@@ -66,5 +68,62 @@ func TestFrameLatencyTokens(t *testing.T) {
 	// Every success taken: the count is back to none.
 	if l.waitObject(0) {
 		t.Fatal("the object's count drifted")
+	}
+}
+
+// TestUnchangedFrameWaitsForRefresh checks that a frame that changes
+// nothing, and so presents nothing, still has the next wait for the
+// display (Ready), until the refresh it waits for comes: an animation
+// whose frames move less than a pixel keeps the display's pace rather
+// than draw as fast as the main thread can (#608).
+func TestUnchangedFrameWaitsForRefresh(t *testing.T) {
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+	refresh := make(chan struct{})
+	defer func(f func()) { awaitRefresh = f }(awaitRefresh)
+	awaitRefresh = func() { <-refresh }
+
+	s := gputest.NewChanging(1).Scene()
+	r, err := New(hiddenWindow(t, s.Width, s.Height))
+	if err != nil {
+		t.Skip("no Direct3D 11:", err)
+	}
+	defer r.Release()
+	if r.ctx1 == 0 {
+		t.Skip("no Direct3D 11.1")
+	}
+	posted := make(chan func(), 4)
+	r.SetPost(func(f func()) { posted <- f })
+	if err := r.Render(s); err != nil {
+		t.Fatal(err)
+	}
+	for r.pending {
+		wait.For(t, "the first frame's present", posted)() // once the screen has room
+	}
+	if !r.Ready(func() {}) {
+		t.Fatal("not ready after a frame presented")
+	}
+	if err := r.Render(s); err != nil {
+		t.Fatal(err)
+	}
+	if r.redrew != redrewNothing {
+		t.Fatal("the same scene drew again")
+	}
+	woke := make(chan struct{}, 2)
+	if r.Ready(func() { woke <- struct{}{} }) {
+		t.Fatal("ready at once after a frame that changed nothing")
+	}
+	// The next frame that changes nothing waits for the same refresh.
+	if err := r.Render(s); err != nil {
+		t.Fatal(err)
+	}
+	refresh <- struct{}{}
+	wait.For(t, "the refresh's end", posted)()
+	wait.For(t, "the wake", woke)
+	if !r.Ready(func() { woke <- struct{}{} }) {
+		t.Fatal("not ready after the refresh")
+	}
+	if len(woke) != 0 || len(posted) != 0 {
+		t.Fatal("woken twice")
 	}
 }

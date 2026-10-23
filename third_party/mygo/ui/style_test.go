@@ -554,6 +554,59 @@ func TestScrollbarInsets(t *testing.T) {
 	}
 }
 
+func TestScrollbarCursor(t *testing.T) {
+	var sc *node
+	var content Rect
+	tt := coreNewTester(func(c *context) {
+		coreRow(c).Children(func() {
+			sc = coreScroll(c).Size(100, 200).Children(func() {
+				coreBox(c).Size(100, 800).Cursor(CursorText).Draw(func(p *Painter, r Rect) { content = r })
+			})
+			coreBox(c).Size(100, 200).Cursor(CursorPointer)
+		})
+	}, 200, 200)
+	tt.Move(50, 100)
+	if tt.Cursor() != CursorText {
+		t.Fatalf("the pointer is %v over the text", tt.Cursor())
+	}
+	st := sc.st
+	g := scrollBars(Rect{st.x, st.y, st.w, st.h}, st.barInset, float32(st.contentW), float32(st.contentH), float32(st.scrollX), float32(st.scrollY), st.flags, 6, false)
+	// Over the track, under the thumb and over it, the bar's arrow, not
+	// the text's I-beam.
+	if tt.Move(g.vTrack.X+1, g.vTrack.Y+g.vTrack.H-5); tt.Cursor() != CursorDefault {
+		t.Errorf("the pointer is %v over the track", tt.Cursor())
+	}
+	x, y := g.v.X+g.v.W/2, g.v.Y+g.v.H/2
+	if tt.Move(x, y); tt.Cursor() != CursorDefault {
+		t.Errorf("the pointer is %v over the thumb", tt.Cursor())
+	}
+	// Dragging the thumb keeps the arrow, off the track over the text and
+	// out of the scroll container over what sets another.
+	tt.Press(x, y)
+	if tt.Cursor() != CursorDefault {
+		t.Errorf("the pointer is %v pressing the thumb", tt.Cursor())
+	}
+	tt.Move(50, y+20)
+	if tt.Cursor() != CursorDefault {
+		t.Errorf("the pointer is %v dragging the thumb over the text", tt.Cursor())
+	}
+	tt.Move(150, y+40)
+	if tt.Cursor() != CursorDefault {
+		t.Errorf("the pointer is %v dragging the thumb out of the container", tt.Cursor())
+	}
+	if content.Y >= 0 {
+		t.Errorf("dragging the thumb scrolled to %v", content.Y)
+	}
+	// Let go, the pointer shows what it is over again.
+	tt.Release(150, y+40)
+	if tt.Cursor() != CursorPointer {
+		t.Errorf("the pointer is %v after the drag, over a box setting the pointer", tt.Cursor())
+	}
+	if tt.Move(50, 100); tt.Cursor() != CursorText {
+		t.Errorf("the pointer is %v back over the text", tt.Cursor())
+	}
+}
+
 func TestScrollContentShrinks(t *testing.T) {
 	long := true
 	var top *node

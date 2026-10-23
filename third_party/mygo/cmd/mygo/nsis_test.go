@@ -113,6 +113,41 @@ func TestWindowsInstaller(t *testing.T) {
 	uninstall(t, install)
 }
 
+// TestWindowsInstallerEncoding checks that installer.nsi is written as UTF-8
+// with a byte order mark. NSIS on Windows reads a script without a BOM as
+// ANSI, in the machine's code page, even after `Unicode true`: a name or a
+// path with a non-ASCII character, e.g. 望言字幕导出 or a folder named 中文,
+// then makes makensis report "no files found" and the build fails.
+func TestWindowsInstallerEncoding(t *testing.T) {
+	dir := testModule(t, map[string]string{
+		"main.go":   "package main\n\nfunc main() {}\n",
+		"mygo.json": `{"name": "望言字幕导出", "identifier": "com.example.encoding", "version": "1.0.0"}`,
+	})
+	c, err := loadConfig(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Name != "望言字幕导出" {
+		t.Fatalf("the name is %q", c.Name)
+	}
+	nsi := filepath.Join(t.TempDir(), "installer.nsi")
+	// The name reaches the script, as it does in writeInstaller.
+	script := "Unicode true\nName " + nsisString(c.Name) + "\n"
+	if err := writeNSIS(nsi, script); err != nil {
+		t.Fatal(err)
+	}
+	b, err := os.ReadFile(nsi)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(b) < 3 || b[0] != 0xEF || b[1] != 0xBB || b[2] != 0xBF {
+		t.Fatalf("installer.nsi starts with % x, want a UTF-8 byte order mark", b[:min(len(b), 3)])
+	}
+	if !strings.Contains(string(b[3:]), "望言字幕导出") {
+		t.Fatalf("installer.nsi does not hold the name as UTF-8: %q", b)
+	}
+}
+
 // uninstall runs the uninstaller of the app installed in dir silently, and
 // waits until it is done.
 func uninstall(t *testing.T, dir string) {

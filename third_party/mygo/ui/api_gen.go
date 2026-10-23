@@ -3983,15 +3983,16 @@ func (_handle Element) Grow(f float32) Element {
 // HandleInput has fn take the element's input as it comes, on the main
 // thread, before the next frame is built: keys, text and edit commands
 // while the element has the keyboard focus, the pointer pressed on it,
-// moving over it or scrolling over it. fn reports whether it took the
+// moving over it, scrolling or pinching over it. fn reports whether it took the
 // event; one it leaves goes on as it would without fn, to shortcuts, Tab,
 // context menus and scroll containers. Keys that the window or an element
 // around the focus handles as a Shortcut go to the shortcut first. A frame
 // follows the events fn takes.
 //
 // It is for widgets that need every key as it is pressed, such as a
-// terminal; most widgets ask about their input as they are built instead
-// (Clicked, Shortcut, Dragged).
+// terminal, or the scrolling and pinching over them, such as a chart that
+// zooms and pans; most widgets ask about their input as they are built
+// instead (Clicked, Shortcut, Dragged).
 func (_handle Element) HandleInput(fn func(ev InputEvent) bool) Element {
 	_node := _handle.node()
 	if _node == nil {

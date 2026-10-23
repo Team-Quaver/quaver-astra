@@ -16,7 +16,8 @@ import (
 // not make), and registers its desktop entry and file types
 // (writeLinuxDesktop) with the paths of the install, as updates do again
 // (update.RefreshDesktopEntry). It warns when WebKitGTK is missing, with
-// the command that installs it. It installs the archive it is given, else
+// the command that installs it, unless the app shows no web page
+// (linux.webview false). It installs the archive it is given, else
 // the one of its version next to it, else, with updates, the latest
 // version, which the manifest of the machine's target names:
 //
@@ -43,6 +44,10 @@ func installScript(c *Config) string {
 		"Releases":  "",
 		"API":       "",
 		"TagPrefix": "",
+		"WebKit":    "",
+	}
+	if c.Linux.webView() {
+		data["WebKit"] = "yes"
 	}
 	switch u := c.Updates; {
 	case u != nil && u.tagged():
@@ -239,10 +244,12 @@ main() {
 	else
 		echo "Installed $app_name: open it from the applications menu"
 	fi
+{{- if .WebKit}}
 	if ! has_webkit; then
 		echo "$app_name needs WebKitGTK, which is not installed. Install it with:" >&2
 		echo "  $(webkit_install_command)" >&2
 	fi
+{{- end}}
 }
 
 # latest_tag prints the tag of the newest release tagged $tag_prefix that is

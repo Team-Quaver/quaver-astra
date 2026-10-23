@@ -29,15 +29,15 @@ import (
 // The wheel scrolls the scrollback unless the program takes the mouse,
 // and zooms with Control held (Command on macOS; Options.OnZoom). Hold
 // Shift to select while a program takes the mouse, and Command (Control
-// elsewhere) to open a link on click: a hyperlink (OSC 8), a URL printed as
-// text, or a file path with Options.OpenLink.
+// elsewhere) to underline a link and open it on click: a hyperlink (OSC 8),
+// a URL printed as text, or a file path with Options.OpenLink.
 func View(c *ui.Context, t *Terminal) ui.Element {
 	v := t.viewOf(c)
 	// A terminal's grid is left to right in a right-to-left interface too.
 	e := ui.Box(c).Direction(ui.LeftToRight).Focusable().FocusRing(false).Clip().Label("Terminal")
 	v.build(c, e)
 	cursor := v.pointerAt
-	if v.hoverLink {
+	if v.hover.on() {
 		cursor = ui.CursorPointer
 	}
 	e.Cursor(cursor)
@@ -157,14 +157,18 @@ type view struct {
 	scale                  float32
 	cellW, cellH, baseline int
 	ox, oy                 int
-	alt                    bool // the alternate screen shows, as of the last paint
 	cols, rows             int
 
 	colors    vt.Colors
+	contrast  float32 // Options.MinimumContrast, as of the last paint
 	cursor    vt.Cursor
 	scrollbar vt.Scrollbar
 	lines     []rowCache
 	shaped    lru
+	// images are the placements of images that show, and bitmaps their
+	// images' (readImages).
+	images  []shownImage
+	bitmaps map[uint32]*cachedImage
 
 	keys    *vt.KeyEncoder
 	mouse   *vt.MouseEncoder
@@ -183,10 +187,14 @@ type view struct {
 	// press went to the program, which gets the release too.
 	selecting, reporting bool
 	pointer              [2]float32
-	// hoverLink: Command is held over a link, which a click opens;
-	// linkPress: the primary button pressed one, and the press is the
-	// link's until the release.
-	hoverLink, linkPress bool
+	// hover is the link Command is held over, which a click opens and
+	// which shows underlined, hoverLink what it opens and hoverPath
+	// whether that is a file path (HoveredLink); linkPress: the primary
+	// button pressed one, and the press is the link's until the release.
+	hover     linkSpan
+	hoverLink string
+	hoverPath bool
+	linkPress bool
 	// pointerAt is the pointer over the grid (pointerShape); tracking whether
 	// the program took the mouse as of the last frame, and modeShape the
 	// shape that taking or leaving it showed, while the program's shape
@@ -215,6 +223,13 @@ type view struct {
 	reads      []*clipboardRequest
 	clipPrompt *clipboardRequest
 	clipOpen   bool
+
+	// searched is the search's status OnSearch was last told; matches are
+	// the cells of the matches the viewport shows, as of the last paint,
+	// found in matchBuf.
+	searched SearchStatus
+	matches  []matchSpan
+	matchBuf []vt.Selection
 }
 
 type pendingKey struct {
@@ -230,6 +245,9 @@ type pendingKey struct {
 // build updates the view as a frame builds.
 func (v *view) build(c *ui.Context, e ui.Element) {
 	t := v.t
+	if files := e.DroppedFiles(); len(files) > 0 {
+		t.dropFiles(files)
+	}
 	v.lang = c.Locale()
 	dark := c.Theme().Dark
 	focused := e.Focused()
@@ -248,15 +266,19 @@ func (v *view) build(c *ui.Context, e ui.Element) {
 		if v.applied != theme {
 			theme.apply(t.term)
 			v.applied = theme
+			t.themeConn(theme)
 		}
+		t.schemeChanged(t.curTheme, theme)
 		t.curTheme = theme
 		if focused != v.focused && t.term.Mode(vt.ModeFocusEvent) {
 			t.in.push(vt.EncodeFocus(focused))
 		}
 		// The hand over a link follows Command as it is pressed and let
 		// go of, with the pointer still.
-		link, _ := v.linkUnder(c.Modifiers(), v.pointer[0], v.pointer[1])
-		v.hoverLink = link != ""
+		v.hover, v.hoverLink, v.hoverPath = linkSpan{}, "", false
+		if e.Hovered() {
+			v.hoverLink, v.hoverPath, v.hover = v.linkUnder(c.Modifiers(), v.pointer[0], v.pointer[1])
+		}
 		v.pointerAt = v.pointerShape(t.term, c.Modifiers())
 		// Input methods compose where the cursor is now, which the last
 		// frame may not show yet.
@@ -271,7 +293,19 @@ func (v *view) build(c *ui.Context, e ui.Element) {
 	reads := t.clipReads
 	t.clipReads = nil
 	term := t.term
+	searching := term != nil && t.find.drive(term)
+	searched := t.find.status
 	t.mu.Unlock()
+	if searched != v.searched {
+		v.searched = searched
+		if t.opts.OnSearch != nil {
+			t.opts.OnSearch(searched)
+		}
+	}
+	if searching {
+		// The rest of the scrollback, in the frames to come.
+		c.After(time.Millisecond)
+	}
 	for _, s := range copied {
 		c.WriteClipboard(s)
 		v.copied(s, CopyProgram)
@@ -482,9 +516,10 @@ func (v *view) caret() ui.Rect {
 func (v *view) menu(m *ui.Menu) {
 	t := v.t
 	t.mu.Lock()
-	text, selected := "", false
+	text, selected, alt := "", false, false
 	if t.term != nil {
 		text, selected = t.term.SelectionText()
+		alt = t.term.AltScreen()
 	}
 	t.mu.Unlock()
 	tx := l10n.In(v.lang)
@@ -499,10 +534,10 @@ func (v *view) menu(m *ui.Menu) {
 		v.selectAll()
 	}
 	m.Separator()
-	if m.Item(tx.ClearScrollback()).Chosen() {
-		if on := t.opts.OnClear; on == nil || !on(ClearScrollback) {
-			t.ClearScrollback()
-		}
+	// Clear clears as ⌘K does, as Ghostty's: clearing the scrollback
+	// alone would change nothing on the screen.
+	if v.menuItem(m, tx.ClearTerminal(), ActionClearScreen).Disabled(alt).Chosen() {
+		v.clearScreen()
 	}
 }
 
@@ -958,9 +993,9 @@ func (v *view) pointerEvent(ev ui.InputEvent) bool {
 	}
 	// Command over a link: a hand, and a click opens it, before a
 	// program that takes the mouse sees it.
-	link, path := v.linkUnder(ev.Mods, ev.X, ev.Y)
-	if hover := link != ""; hover != v.hoverLink {
-		v.hoverLink = hover
+	link, path, hover := v.linkUnder(ev.Mods, ev.X, ev.Y)
+	if hover != v.hover {
+		v.hover, v.hoverLink, v.hoverPath = hover, link, path
 		v.services.Invalidate()
 	}
 	if link != "" && ev.Kind == ui.InputPointerDown && ev.Button == 0 {
@@ -1035,35 +1070,79 @@ func (v *view) pointerEvent(ev ui.InputEvent) bool {
 	return false
 }
 
-// linkUnder is the link a click with mods at (x, y) opens, and whether it
-// is a file path: none without Command, or while the primary button
-// selects or the program has a press; t.mu is held.
-func (v *view) linkUnder(mods ui.Modifiers, x, y float32) (link string, path bool) {
+// linkSpan is the cells of a link in a row of the viewport, columns x0 up
+// to x1; the zero span is no link.
+type linkSpan struct{ row, x0, x1 int }
+
+func (s linkSpan) on() bool { return s.x1 > s.x0 }
+
+// HoveredLink returns the link Command (Control elsewhere) is held over
+// in the view, which a click opens and which shows underlined, as
+// Options.OpenLink takes it; whether it is a file path; and the rectangle
+// of its cells in DIPs, relative to the view. It returns "" over no link,
+// or while no view shows the terminal. An app shows a preview of a link
+// with it, over the view: read it in the view function, after View.
+func (t *Terminal) HoveredLink() (link string, path bool, at ui.Rect) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	v := t.v
+	if v == nil || !v.hover.on() || v.scale == 0 {
+		return "", false, ui.Rect{}
+	}
+	cw, ch := float32(v.cellW)/v.scale, float32(v.cellH)/v.scale
+	h := v.hover
+	return v.hoverLink, v.hoverPath, ui.Rect{
+		X: float32(v.ox)/v.scale + float32(h.x0)*cw,
+		Y: float32(v.oy)/v.scale + float32(h.row)*ch,
+		W: float32(h.x1-h.x0) * cw,
+		H: ch,
+	}
+}
+
+// linkUnder is the link a click with mods at (x, y) opens, whether it is
+// a file path, and its cells: none without Command, or while the primary
+// button selects or the program has a press; t.mu is held.
+func (v *view) linkUnder(mods ui.Modifiers, x, y float32) (link string, path bool, at linkSpan) {
 	if mods&ui.Cmd == 0 || v.selecting || v.reporting || v.cellW == 0 {
-		return "", false
+		return "", false, linkSpan{}
 	}
 	return v.linkAt(v.cellAt(x, y))
 }
 
 // linkAt is the link at the cell: a hyperlink (OSC 8), a URL printed as
 // text, or with Options.OpenLink a file path, or ""; t.mu is held.
-func (v *view) linkAt(col, row int) (link string, path bool) {
+func (v *view) linkAt(col, row int) (link string, path bool, at linkSpan) {
 	t := v.t
-	if ref, ok := t.term.CellAt(col, row); ok {
-		if url := t.term.Hyperlink(ref); url != "" {
-			return url, false
+	if url := v.hyperlinkAt(col, row); url != "" {
+		// The hyperlink's cells are those around the cell with its URL.
+		x0, x1 := col, col+1
+		for x0 > 0 && v.hyperlinkAt(x0-1, row) == url {
+			x0--
 		}
+		for x1 < v.cols && v.hyperlinkAt(x1, row) == url {
+			x1++
+		}
+		return url, false, linkSpan{row, x0, x1}
 	}
 	text, cols := t.term.RowText(row)
-	if url := urlAt(text, cols, col); url != "" {
-		return url, false
+	if url, x0, x1 := urlAt(text, cols, col); url != "" {
+		return url, false, linkSpan{row, x0, x1}
 	}
 	if t.opts.OpenLink != nil {
-		if p := pathAt(text, cols, col); p != "" {
-			return p, true
+		if p, x0, x1 := pathAt(text, cols, col); p != "" {
+			return p, true, linkSpan{row, x0, x1}
 		}
 	}
-	return "", false
+	return "", false, linkSpan{}
+}
+
+// hyperlinkAt is the URL of the hyperlink (OSC 8) at the cell, or ""; t.mu
+// is held.
+func (v *view) hyperlinkAt(col, row int) string {
+	if ref, ok := v.t.term.CellAt(col, row); ok {
+		return v.t.term.Hyperlink(ref)
+	}
+	return ""
 }
 
 // geometry is the grid in pixels, for selection gestures.

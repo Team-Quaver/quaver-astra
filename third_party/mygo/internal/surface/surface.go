@@ -22,9 +22,6 @@ type Conn struct {
 	// TitleBarDoubleClicked does what a double click on a title bar does.
 	StartDrag             func()
 	TitleBarDoubleClicked func()
-	// SetMaximizeButton tells where the content shows the window's maximize
-	// button, in DIPs, the zero RectF for nowhere (ui.Element.MaximizeButton).
-	SetMaximizeButton func(platform.RectF)
 	// Escape is called with an Escape that no element or shortcut of the
 	// content handled, which closes a flyout.
 	Escape func()

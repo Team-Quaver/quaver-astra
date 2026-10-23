@@ -95,8 +95,12 @@ func watchDocumentFile(ctx context.Context, path string) {
 		if r.events[len(r.events)-1].Op == FileRemove {
 			ids := []fileWatchGone{r.gone}
 			for _, b := range docs {
+				// A document in conflict read a file another replaced,
+				// whose identity a new file may have taken since.
 				b.mu.Lock()
-				ids = append(ids, b.stamp.file)
+				if !b.conflict && !b.deleted {
+					ids = append(ids, b.stamp.file)
+				}
 				b.mu.Unlock()
 			}
 			moved = findRenamed(filepath.Dir(w.Root()), ids)

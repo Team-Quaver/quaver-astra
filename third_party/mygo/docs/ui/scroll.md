@@ -8,8 +8,11 @@ Page Down, Space, Home and End scroll the container around the focus, or
 under the pointer, unless the focused element takes those keys, as a text
 input does. `ui.ScrollBoth` scrolls both ways, as a canvas or a wide table
 does. A notch of a mouse wheel glides over a short ease out, as browsers
-scroll it, and notches in a row add up; a touchpad follows the fingers,
-and while the desktop asks for less motion, a notch scrolls at once.
+scroll it, and notches in a row add up, until the app scrolls the
+container (a `ScrollState`, a `ListState`'s `ScrollTo`, `ScrollIntoView`
+and `ScrollToEnd`, or `ScrollIntoView` of an element in it), which takes
+over; a touchpad follows the fingers, and while the desktop asks for less
+motion, a notch scrolls at once.
 
 ```go
 ui.Scroll(c).Grow(1).Padding(16).Gap(12).Children(func() {
@@ -91,6 +94,10 @@ ui.Scroll(c).Fill().Padding(64, 16, 16).ScrollbarInsets(64, 0, 0).Children(func(
 // The toolbar floats over the top 64 DIPs.
 ui.Row(c).Absolute().Top(0).Left(0).Right(0).Height(64).Children(func() { /* ... */ })
 ```
+
+An element inside that zooms or pans with the wheel, the touchpad and
+pinches, as a chart, takes them from the container: see
+[Scrolling and pinching](input.md#scrolling-and-pinching).
 
 ## Accessibility
 
