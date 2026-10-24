@@ -145,3 +145,21 @@ func TestAlignQrcTrans(t *testing.T) {
 		t.Errorf("翻译对齐异常：%q / %q", ql[0].Trans, ql[1].Trans)
 	}
 }
+
+// qrc=1 时上游的翻译/音译同样是 QRC 行时间，不能再按 LRC 时间戳丢弃。
+func TestAlignQrcAuxParsesQrcTimestamps(t *testing.T) {
+	ql := ParseQRC("[0,2000]君(0,500)\n[5000,2000]名(5000,500)")
+	if len(ql) != 2 {
+		t.Fatalf("前置解析失败：%+v", ql)
+	}
+	alignQrcAux(ql,
+		"[0,2000]你",
+		"[0,2000]kimi(0,2000)\n[5000,2000]na(5000,2000)",
+	)
+	if ql[0].Trans != "你" || ql[0].Roma != "kimi" {
+		t.Errorf("QRC 辅助行对齐异常：%+v", ql[0])
+	}
+	if ql[1].Roma != "na" {
+		t.Errorf("第二行音译对齐异常：%q", ql[1].Roma)
+	}
+}

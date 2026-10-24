@@ -86,6 +86,9 @@ func (b profileBackend) Tiers() (*player.TierTable, error)        { return nil, 
 func (b profileBackend) Resolve(string, string, int64, string, []string, int64) (*player.StreamInfo, error) {
 	return nil, nil
 }
+func (b profileBackend) ReportListenTime(player.ListenReport) (player.ListenReportResult, error) {
+	return player.ListenReportResult{OK: true}, nil
+}
 func (b profileBackend) FetchLyric(string, bool, bool) (string, string, string, error) {
 	return "", "", "", nil
 }

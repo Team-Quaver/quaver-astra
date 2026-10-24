@@ -191,6 +191,9 @@ func (stubBackend) Resolve(string, string, int64, string, []string, int64) (*Str
 func (stubBackend) FetchLyric(string, bool, bool) (string, string, string, error) {
 	return "", "", "", nil
 }
+func (stubBackend) ReportListenTime(ListenReport) (ListenReportResult, error) {
+	return ListenReportResult{OK: true}, nil
+}
 func (stubBackend) LikeSong(int64, int64, bool) error               { return nil }
 func (stubBackend) StreamOpen(string, int64) (io.ReadCloser, error) { return nil, nil }
 

@@ -103,6 +103,9 @@ func (loggedBackend) Tiers() (*player.TierTable, error)     { return nil, nil }
 func (loggedBackend) Resolve(string, string, int64, string, []string, int64) (*player.StreamInfo, error) {
 	return nil, nil
 }
+func (loggedBackend) ReportListenTime(player.ListenReport) (player.ListenReportResult, error) {
+	return player.ListenReportResult{OK: true}, nil
+}
 func (loggedBackend) FetchLyric(string, bool, bool) (string, string, string, error) {
 	return "", "", "", nil
 }

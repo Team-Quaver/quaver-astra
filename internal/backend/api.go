@@ -25,6 +25,9 @@ func (e *APIError) Error() string {
 	return fmt.Sprintf("HTTP %d (code %d)", e.Status, e.Code)
 }
 
+// HTTPStatus 让播放器不用做类型断言也能区分可重试与确定性失败。
+func (e *APIError) HTTPStatus() int { return e.Status }
+
 // Unauthorized 报告 401（未登录/凭证过期）。
 func Unauthorized(err error) bool {
 	e, ok := err.(*APIError)
@@ -129,6 +132,7 @@ func q(params ...any) url.Values {
 
 // SingerRef 歌手引用（raw 歌曲扁平结构里的 singer 数组项）。
 type SingerRef struct {
+	ID   int64  `json:"id"`
 	Mid  string `json:"mid"`
 	Name string `json:"name"`
 	Pmid string `json:"pmid"`
@@ -313,6 +317,27 @@ type Resolved struct {
 	Filename      string `json:"filename"`
 	Encrypted     bool   `json:"encrypted"`
 	RequestedTier string `json:"requested_tier"`
+}
+
+// SoundPowerReport 一段真实听歌时长（秒）。stream_token 让后端复用当次
+// 播放凭证；audio_time_ms 是歌曲总时长，与本次实际听了多久无关。
+type SoundPowerReport struct {
+	StreamToken        string `json:"stream_token"`
+	SongID             int64  `json:"song_id"`
+	Mid                string `json:"mid"`
+	MediaMid           string `json:"media_mid"`
+	AudioTimeMS        int64  `json:"audio_time_ms"`
+	PlayDurationSecond int    `json:"play_duration_seconds"`
+	SongType           int    `json:"song_type"`
+	SingerID           int64  `json:"singer_id"`
+	CoSinger           string `json:"co_singer"`
+}
+
+// SoundPowerResult true 表示上游已把这段时间计入当日音响力。
+type SoundPowerResult struct {
+	OK       bool   `json:"ok"`
+	Duration int    `json:"duration"`
+	Reason   string `json:"reason,omitempty"`
 }
 
 // SearchResults 归一化搜索结果。
@@ -565,6 +590,14 @@ func (c *Client) ResolveStream(mid, mediaMid string, songType int, tier string, 
 		"duration_ms": durationMs,
 	}
 	err := c.postJSONInto("/stream/resolve", body, &out)
+	return out, err
+}
+
+// ReportListenTime 提交 QQ 音乐音响力物理流水。确定性失败（未登录、
+// 参数无效、上游明确拒绝）返回 ok=false，调用方不应重试。
+func (c *Client) ReportListenTime(report SoundPowerReport) (SoundPowerResult, error) {
+	var out SoundPowerResult
+	err := c.postJSONInto("/sound-power/report", report, &out)
 	return out, err
 }
 

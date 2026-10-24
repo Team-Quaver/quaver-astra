@@ -32,6 +32,41 @@ func TestResolveStreamSendsDuration(t *testing.T) {
 	}
 }
 
+func TestReportListenTimeSendsSoundPowerBody(t *testing.T) {
+	var got map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/sound-power/report" {
+			t.Errorf("path = %q", r.URL.Path)
+		}
+		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+			t.Errorf("decode body: %v", err)
+		}
+		_, _ = w.Write([]byte(`{"code":0,"msg":"ok","data":{"ok":true,"duration":60}}`))
+	}))
+	defer srv.Close()
+
+	res, err := NewClient(srv.URL).ReportListenTime(SoundPowerReport{
+		StreamToken: "token", SongID: 735018740, Mid: "004Bjrow3AzR86",
+		AudioTimeMS: 208000, PlayDurationSecond: 60, SongType: 1,
+		SingerID: 50, CoSinger: "测试歌手",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.OK || res.Duration != 60 {
+		t.Fatalf("result = %+v", res)
+	}
+	for k, want := range map[string]any{
+		"stream_token": "token", "song_id": float64(735018740), "mid": "004Bjrow3AzR86",
+		"audio_time_ms": float64(208000), "play_duration_seconds": float64(60),
+		"song_type": float64(1), "singer_id": float64(50), "co_singer": "测试歌手",
+	} {
+		if got[k] != want {
+			t.Errorf("%s = %#v, want %#v", k, got[k], want)
+		}
+	}
+}
+
 func TestEnvelopeDecode(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {

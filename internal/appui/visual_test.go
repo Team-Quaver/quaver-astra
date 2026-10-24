@@ -236,6 +236,9 @@ func (npBackend) Tiers() (*player.TierTable, error)        { return nil, nil }
 func (npBackend) Resolve(string, string, int64, string, []string, int64) (*player.StreamInfo, error) {
 	return &player.StreamInfo{URL: "test://stream", Tier: "flac", TierLabel: "FLAC"}, nil
 }
+func (npBackend) ReportListenTime(player.ListenReport) (player.ListenReportResult, error) {
+	return player.ListenReportResult{OK: true}, nil
+}
 func (b npBackend) FetchLyric(string, bool, bool) (string, string, string, error) {
 	return b.qrc, b.trans, "", nil
 }

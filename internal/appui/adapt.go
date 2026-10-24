@@ -56,7 +56,7 @@ func toPlayerSong(s backend.Song) player.Song {
 		SongType: int64(s.Type),
 	}
 	for _, g := range s.Singer {
-		out.Singers = append(out.Singers, player.Singer{Mid: g.Mid, Name: g.Name})
+		out.Singers = append(out.Singers, player.Singer{ID: g.ID, Mid: g.Mid, Name: g.Name})
 	}
 	if s.ID != "" {
 		if v, err := s.ID.Int64(); err == nil {
@@ -125,7 +125,22 @@ func (a apiAdapter) Resolve(mid, mediaMid string, songType int64, tier string, d
 		TierLabel: r.TierLabel,
 		Degraded:  r.Degraded,
 		Size:      r.Size,
+		Token:     r.Token,
 	}, nil
+}
+
+func (a apiAdapter) ReportListenTime(report player.ListenReport) (player.ListenReportResult, error) {
+	res, err := a.c.ReportListenTime(backend.SoundPowerReport{
+		StreamToken:        report.StreamToken,
+		SongID:             report.SongID,
+		Mid:                report.Mid,
+		AudioTimeMS:        report.AudioTimeMS,
+		PlayDurationSecond: report.Seconds,
+		SongType:           int(report.SongType),
+		SingerID:           report.SingerID,
+		CoSinger:           report.CoSinger,
+	})
+	return player.ListenReportResult{OK: res.OK, Reason: res.Reason}, err
 }
 
 func (a apiAdapter) FetchLyric(mid string, trans, roma bool) (string, string, string, error) {

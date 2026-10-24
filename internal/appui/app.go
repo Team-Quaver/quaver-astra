@@ -604,7 +604,7 @@ func (a *App) sideNavItem(c *ui.Context, t *ui.Theme, it navItem, label bool) {
 		MarginX(a.sidePad()).Radius(8).AlignItems(ui.Center).Gap(10).
 		Transition(hoverFade)
 	btn.Children(func() {
-		ui.Icon(c, Icons[it.icon]).FontSize(fz(sideIconSize)).AlignSelf(ui.Center)
+		ui.Icon(c, Icons[it.icon]).FontSize(fz(sideIconSize)).AlignSelf(ui.Center).Label(it.label)
 		if label {
 			ui.Text(c, it.label).FontSize(fz(13.5)).Grow(1)
 		}

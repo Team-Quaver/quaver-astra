@@ -45,6 +45,15 @@ func lrcLines(s string) []LyricLine {
 	var out []LyricLine
 	for _, line := range strings.Split(s, "\n") {
 		line = strings.TrimRight(line, "\r")
+		// qrc=1 时上游把翻译/音译也换成 QRC 行时间（[start,dur]text）。
+		if m := reQrcLine.FindStringSubmatch(line); m != nil {
+			start, _ := strconv.ParseFloat(m[1], 64)
+			text := strings.TrimSpace(qrcPlainText(m[3]))
+			if text != "" && !junkLine(text) {
+				out = append(out, LyricLine{Time: start / 1000, Text: text})
+			}
+			continue
+		}
 		stamps := lrcTimestamps(line)
 		if len(stamps) == 0 {
 			continue
@@ -53,14 +62,7 @@ func lrcLines(s string) []LyricLine {
 		if text == "" {
 			continue
 		}
-		skip := false
-		for _, p := range junkPrefixes {
-			if strings.HasPrefix(text, p) {
-				skip = true
-				break
-			}
-		}
-		if skip {
+		if junkLine(text) {
 			continue
 		}
 		for _, t := range stamps {
@@ -96,6 +98,15 @@ func lrcStrip(line string) string {
 		}
 		line = line[loc[1]:]
 	}
+}
+
+func junkLine(text string) bool {
+	for _, p := range junkPrefixes {
+		if strings.HasPrefix(text, p) {
+			return true
+		}
+	}
+	return false
 }
 
 // attachAux 把一路辅助行按时间就近（<1.5s）对齐进主行，一一对应。

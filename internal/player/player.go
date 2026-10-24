@@ -3,6 +3,7 @@ package player
 import (
 	"errors"
 	"fmt"
+	"net/http"
 	"strings"
 	"sync"
 	"time"
@@ -72,6 +73,19 @@ type Player struct {
 	saveForce       bool
 	sessionWroteQ   string
 	sessionWrotePos sessionPos
+
+	// listenTick 是音响力物理流水的采样窗口：只有真实出声的时间会累计，
+	// 满 60 秒切一片；goroutine 只负责发送，状态全部由 p.mu 保护。
+	listenActive     bool
+	listenLast       time.Time
+	listenSeen       float64
+	listenQueue      []ListenReport
+	listenSending    bool
+	listenRetryAt    time.Time
+	listenFailures   int
+	listenTimer      *time.Timer
+	listenRetryTimer *time.Timer
+	listenTarget     ListenReport
 }
 
 // Song / StreamInfo / TierTable / UserInfo 是 player 与外界解耦的最小形状，
@@ -89,6 +103,7 @@ type Song struct {
 
 // Singer 歌手引用（跳歌手页需要 mid，不能只有拼好的名字）。
 type Singer struct {
+	ID        int64
 	Mid, Name string
 }
 
@@ -105,6 +120,7 @@ type StreamInfo struct {
 	TierLabel string
 	Degraded  bool
 	Size      int64
+	Token     string
 }
 
 type Tier struct {
@@ -131,9 +147,35 @@ type Backend interface {
 	Playlists() (pls []PlaylistRef, err error)
 	Tiers() (*TierTable, error)
 	Resolve(mid, mediaMid string, songType int64, tier string, deprioritize []string, durationMs int64) (*StreamInfo, error)
+	ReportListenTime(report ListenReport) (ListenReportResult, error)
 	FetchLyric(mid string, trans, roma bool) (lrc, translation, romanization string, err error)
 	GuessSongs(rounds int) ([]Song, error)
 	LikeSong(songID int64, writeType int64, like bool) error
+}
+
+// ListenReport 一段归属明确的真实听歌时间。60 秒一片、尾片随切歌交给后端。
+type ListenReport struct {
+	StreamToken string
+	SongID      int64
+	Mid         string
+	MediaMid    string
+	AudioTimeMS int64
+	Seconds     int
+	SongType    int64
+	SingerID    int64
+	CoSinger    string
+}
+
+// ListenReportResult ok=false 表示上游明确拒绝这一段，重试不会变成功。
+type ListenReportResult struct {
+	OK     bool
+	Reason string
+}
+
+// httpStatusError 播放器对 HTTP 状态码的最小依赖。
+type httpStatusError interface {
+	error
+	HTTPStatus() int
 }
 
 // PlaylistRef 用户歌单引用（歌单页与选择菜单共用）。
@@ -418,6 +460,79 @@ func (p *Player) currentLocked() (Song, bool) {
 	}
 	return p.queue[p.index], true
 }
+
+// listenTargetLocked 返回正在累计的上报目标。恢复会话时没有 token，
+// 音响力不上报：后端宁可重新取凭证也不接受可能已换人的旧 token。
+func (p *Player) listenTargetLocked(seconds int) (ListenReport, bool) {
+	if p.listenTarget.StreamToken == "" || p.listenTarget.SongID <= 0 {
+		return ListenReport{}, false
+	}
+	job := p.listenTarget
+	job.Seconds = seconds
+	return job, true
+}
+
+// listenSwitchLocked 在新流真正载入后切换上报目标。旧目标此时已在
+// startCurrent 开头交出尾段，这里只建立新窗口。
+func (p *Player) listenSwitchLocked(song Song, info *StreamInfo) {
+	p.listenTarget = ListenReport{}
+	if info == nil || info.Token == "" || song.Mid == "" || song.SongID <= 0 || p.dur <= 0 {
+		return
+	}
+	var singerID int64
+	coSinger := ""
+	if len(song.Singers) > 0 {
+		singerID = song.Singers[0].ID
+		coSinger = song.Singers[0].Name
+	}
+	p.listenTarget = ListenReport{
+		StreamToken: info.Token,
+		SongID:      song.SongID,
+		Mid:         song.Mid,
+		AudioTimeMS: int64(p.dur * 1000),
+		SongType:    song.SongType,
+		SingerID:    singerID,
+		CoSinger:    coSinger,
+	}
+}
+
+// listenEnabled 是音响力开关的唯一读取入口；nil 配置只在测试直构 App 时出现。
+func (p *Player) listenEnabled() bool {
+	return p.conf != nil && p.conf.Bool("Playing.ReportListenTime", true)
+}
+
+// listenSyncLocked 把采样窗口对齐真实出声状态；停止时顺手交出尾段。
+func (p *Player) listenSyncLocked(active bool) {
+	if p.listenActive == active {
+		if active {
+			if p.listenLast.IsZero() {
+				p.listenLast = time.Now()
+			}
+			if p.listenTimer == nil {
+				p.listenTimer = time.AfterFunc(listenTickInterval, func() { go p.listenTick() })
+			}
+		}
+		return
+	}
+	if active {
+		p.listenActive = true
+		p.listenLast = time.Now()
+		if p.listenTimer == nil {
+			p.listenTimer = time.AfterFunc(listenTickInterval, func() { go p.listenTick() })
+		}
+		return
+	}
+	p.listenResetLocked()
+}
+
+const (
+	listenChunkSeconds     = 60
+	listenMinTailSeconds   = 5
+	listenMaxSampleSeconds = 5
+	listenTickInterval     = time.Second
+	listenRetryBase        = 30 * time.Second
+	listenRetryMax         = 5 * time.Minute
+)
 
 // PlayList 用给定列表替换队列并从 i 开始播放。
 func (p *Player) PlayList(songs []Song, i int) {
@@ -1066,7 +1181,9 @@ func (p *Player) PlayOrPause() {
 		p.eng.Pause()
 		p.playing = false
 	}
+	listenActive := p.listenAudioLocked()
 	p.mu.Unlock()
+	go p.listenSetPlaying(listenActive)
 	p.sessionSaveSoon(true)
 	p.notifyChange()
 }
@@ -1099,7 +1216,9 @@ func (p *Player) Play() {
 		}
 		p.eng.Play()
 		p.playing = true
+		listenActive := p.listenAudioLocked()
 		p.mu.Unlock()
+		go p.listenSetPlaying(listenActive)
 		p.sessionSaveSoon(true)
 		p.notifyChange()
 		return
@@ -1116,7 +1235,9 @@ func (p *Player) Pause() {
 		p.eng.Pause()
 		p.playing = false
 	}
+	listenActive := p.listenAudioLocked()
 	p.mu.Unlock()
+	go p.listenSetPlaying(listenActive)
 	if paused {
 		p.sessionSaveSoon(true)
 		p.notifyChange()
@@ -1135,6 +1256,10 @@ func (p *Player) PlayingAudio() bool {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 	return p.playing && !p.eng.Paused() && p.eng.IsPlaying()
+}
+
+func (p *Player) listenAudioLocked() bool {
+	return p.listenEnabled() && p.playing && !p.eng.Paused() && p.eng.IsPlaying()
 }
 
 func (p *Player) Loading() bool {
@@ -1165,6 +1290,161 @@ func (p *Player) Stream() *StreamInfo {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 	return p.stream
+}
+
+// listenTick 是音响力的采样心跳。上报与 HTTP 重试全部走后台 goroutine，
+// 采样本身只做时间差累计，不阻塞播放心跳。
+func (p *Player) listenTick() {
+	p.mu.Lock()
+	if !p.listenEnabled() {
+		p.listenActive = false
+		p.listenLast = time.Time{}
+		p.listenSeen = 0
+		p.listenQueue = nil
+		p.listenStopTimersLocked()
+		p.mu.Unlock()
+		return
+	}
+	if p.listenTimer == nil && p.listenActive {
+		p.listenTimer = time.AfterFunc(listenTickInterval, func() { go p.listenTick() })
+	}
+	if !p.listenActive {
+		p.mu.Unlock()
+		return
+	}
+	now := time.Now()
+	elapsed := now.Sub(p.listenLast).Seconds()
+	p.listenLast = now
+	if elapsed > listenMaxSampleSeconds {
+		elapsed = listenMaxSampleSeconds
+	}
+	if elapsed < 0 {
+		elapsed = 0
+	}
+	p.listenSeen += elapsed
+	for p.listenSeen >= listenChunkSeconds {
+		p.listenSeen -= listenChunkSeconds
+		if job, ok := p.listenTargetLocked(listenChunkSeconds); ok {
+			p.listenQueue = append(p.listenQueue, job)
+		}
+	}
+	p.mu.Unlock()
+	p.listenDrain()
+}
+
+// listenSetPlaying 在真实出声与暂停/缓冲之间切换采样窗口。
+func (p *Player) listenSetPlaying(active bool) {
+	p.mu.Lock()
+	p.listenSyncLocked(active)
+	p.mu.Unlock()
+	p.listenDrain()
+}
+
+// listenFlushLocked 把当前曲的尾段入队。调用方必须持有 p.mu 且已先采样。
+func (p *Player) listenFlushLocked() {
+	if job, ok := p.listenTargetLocked(int(p.listenSeen)); ok && int(p.listenSeen) >= listenMinTailSeconds {
+		job.Seconds = int(p.listenSeen)
+		p.listenQueue = append(p.listenQueue, job)
+	}
+	p.listenSeen = 0
+}
+
+// listenResetLocked 结束当前目标：交出尾段并停住采样。新歌要等引擎
+// 真正重新出声（listenSetPlaying）才开始累计，加载间隙不算听歌时间。
+func (p *Player) listenResetLocked() {
+	if p.listenActive && !p.listenLast.IsZero() {
+		now := time.Now()
+		if elapsed := now.Sub(p.listenLast).Seconds(); elapsed > 0 {
+			if elapsed > listenMaxSampleSeconds {
+				elapsed = listenMaxSampleSeconds
+			}
+			p.listenSeen += elapsed
+		}
+		p.listenLast = time.Time{}
+	}
+	p.listenFlushLocked()
+	p.listenActive = false
+	p.listenStopTimersLocked()
+}
+
+// listenDrain 串行发送队列。网络失败按 30 秒起步的指数退避重试；
+// 401/403/422 与上游明确拒绝是确定性失败，直接丢弃这一段。
+func (p *Player) listenDrain() {
+	p.mu.Lock()
+	if p.listenSending || len(p.listenQueue) == 0 || !p.listenEnabled() {
+		p.mu.Unlock()
+		return
+	}
+	if time.Now().Before(p.listenRetryAt) {
+		p.mu.Unlock()
+		return
+	}
+	job := p.listenQueue[0]
+	p.listenQueue = p.listenQueue[1:]
+	p.listenSending = true
+	p.mu.Unlock()
+
+	go func() {
+		res, err := p.api.ReportListenTime(job)
+		p.mu.Lock()
+		p.listenSending = false
+		if err != nil {
+			var statusErr httpStatusError
+			if errors.As(err, &statusErr) {
+				status := statusErr.HTTPStatus()
+				if status >= 400 && status < 500 && status != http.StatusRequestTimeout && status != http.StatusTooManyRequests {
+					p.listenFailures = 0
+					p.listenRetryAt = time.Time{}
+					p.mu.Unlock()
+					p.listenKickRetryLocked()
+					return
+				}
+			}
+			p.listenFailures++
+			delay := listenRetryBase
+			for i := 1; i < p.listenFailures && i < 5; i++ {
+				delay *= 2
+			}
+			if delay > listenRetryMax {
+				delay = listenRetryMax
+			}
+			p.listenRetryAt = time.Now().Add(delay)
+			p.listenQueue = append([]ListenReport{job}, p.listenQueue...)
+			p.listenKickRetryLocked()
+		} else {
+			p.listenFailures = 0
+			p.listenRetryAt = time.Time{}
+			_ = res
+		}
+		hasQueue := len(p.listenQueue) > 0
+		p.mu.Unlock()
+		if hasQueue {
+			p.listenDrain()
+		}
+	}()
+}
+
+// listenKickRetryLocked 在退避窗口内保留一个发送队列的唤醒点。
+func (p *Player) listenKickRetryLocked() {
+	if p.listenRetryTimer != nil || p.listenRetryAt.IsZero() {
+		return
+	}
+	delay := time.Until(p.listenRetryAt)
+	if delay <= 0 {
+		delay = time.Millisecond
+	}
+	p.listenRetryTimer = time.AfterFunc(delay, func() { go p.listenDrain() })
+}
+
+func (p *Player) listenStopTimersLocked() {
+	if p.listenTimer != nil {
+		p.listenTimer.Stop()
+		p.listenTimer = nil
+	}
+	if p.listenRetryTimer != nil {
+		p.listenRetryTimer.Stop()
+		p.listenRetryTimer = nil
+	}
 }
 
 // SeekTo 按 0..1 比例跳转。引擎装载了当前曲时交给引擎（位置由引擎回报，
@@ -1275,6 +1555,7 @@ func (p *Player) stopLocked() {
 	p.loading = false
 	p.stream = nil
 	p.pos, p.dur = 0, 0
+	p.listenResetLocked()
 }
 
 // playFrom 用户/媒体键发起的起播：先清掉连跳计数再走完整起播链——
@@ -1291,6 +1572,8 @@ func (p *Player) startCurrent(resumeTo float64, autoplay bool, overrideTier stri
 	p.mu.Lock()
 	p.playSeq++
 	seq := p.playSeq
+	// 先结束旧目标：正在播的尾段归属旧流，不能在解析成功后记到新歌头上。
+	p.listenResetLocked()
 	song, ok := p.currentLocked()
 	if !ok {
 		p.loading = false
@@ -1391,7 +1674,10 @@ func (p *Player) startCurrent(resumeTo float64, autoplay bool, overrideTier stri
 		p.loading = false
 		p.stream = info
 		p.failStreak = 0
+		p.listenSwitchLocked(song, info)
+		listenActive := p.listenAudioLocked()
 		p.mu.Unlock()
+		go p.listenSetPlaying(listenActive)
 		p.notifyChange()
 		p.fetchLyric(song, seq)
 	}()
@@ -1525,6 +1811,7 @@ func (p *Player) failWithErr(seq uint64, err error) {
 		p.playing = false
 		p.stream = nil
 		p.eng.Stop()
+		p.listenResetLocked()
 	}
 	switch {
 	case fatal:
@@ -1765,6 +2052,7 @@ func (p *Player) tick() {
 
 	// 进度节流落盘：切歌或跨 5 秒才真写，退出时另有 Close 兜底。
 	p.sessionTickSave()
+	p.listenSetPlaying(p.PlayingAudio())
 
 	// 加载中不重复触发自动切歌：eof/atEnd 是上一首的残留状态——mpv 的
 	// end-file 已置 eof=true，但 startCurrent 的 goroutine 还在做 API
@@ -1839,6 +2127,7 @@ func (p *Player) Close() {
 	p.mu.Lock()
 	p.playing = false
 	p.loading = false
+	p.listenResetLocked()
 	eng := p.eng
 	p.mu.Unlock()
 	if eng != nil {

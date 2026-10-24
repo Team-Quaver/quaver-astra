@@ -141,6 +141,9 @@ type liveBackend struct {
 	guessCalls  int
 	// loadFail 指定哪些档位在引擎侧载入失败（模拟 mpv 打不开该流）。
 	loadFail map[string]bool
+	// listenReports 记录音响力流水；listenErr 模拟网络/HTTP 失败。
+	listenReports []ListenReport
+	listenErr     error
 }
 
 func (b *liveBackend) LoginStatus() (bool, error) {
@@ -177,7 +180,17 @@ func (b *liveBackend) Tiers() (*TierTable, error) {
 }
 func (b *liveBackend) Resolve(mid, mediaMid string, songType int64, tier string, dep []string, durationMs int64) (*StreamInfo, error) {
 	// URL 里带上档位，测试才能按档位模拟「这一档 mpv 打不开」
-	return &StreamInfo{URL: "http://x/" + mid + "/" + tier, Tier: tier, TierLabel: tier}, nil
+	return &StreamInfo{URL: "http://x/" + mid + "/" + tier, Tier: tier, TierLabel: tier, Token: "token-" + mid + "-" + tier}, nil
+}
+
+func (b *liveBackend) ReportListenTime(report ListenReport) (ListenReportResult, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.listenErr != nil {
+		return ListenReportResult{}, b.listenErr
+	}
+	b.listenReports = append(b.listenReports, report)
+	return ListenReportResult{OK: true}, nil
 }
 
 // LoadFailFor 报告该档位是否应模拟为载入失败。
