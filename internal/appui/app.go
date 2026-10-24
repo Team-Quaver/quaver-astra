@@ -149,6 +149,8 @@ func New(base string, store *conf.Store, v *vault.Vault, version string) *App {
 		playlist:      map[int64]*playlistState{},
 		lastLyricLine: -2,
 	}
+	// Wayland 会话下整列全局快捷键交给桌面持有，Astra 不注册（见 hotkeys.go）。
+	a.hotkeys.blocked = waylandSession()
 	a.initMedia()
 	a.initUpdate()
 	mygo.App.OnBeforeQuit(func(*mygo.QuitEvent) { a.quitStarted.Store(true) })

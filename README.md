@@ -59,6 +59,7 @@ CI 发布：每次 push 都会构建并发布一个带短 commit id 的 snapshot
 | `QAA_MPV_DEVICE` | 强制音频输出设备 |
 | `QAA_TEST_MPV=1` | 开启真实 mpv 往返测试 |
 | `QAA_TEST_MPRIS=1` | 开启 MPRIS 往返测试（需会话 D-Bus + playerctl） |
+| `QAA_SESSION_TYPE` | 覆盖会话类型判定（`wayland` / `x11`）：Wayland 下全局快捷键整列交给桌面持有，自检与测试据此切换这条分支 |
 | `GITHUB_TOKEN` / `GH_TOKEN` | 可选的 GitHub token，仅用于更新检查，提升匿名 API 60 次/小时的限流 |
 
 mpv 定位优先级与 Quaver Music 本体（`ui/electron/audio/dist/bins.js`）一致：
@@ -88,7 +89,7 @@ mpv 定位优先级与 Quaver Music 本体（`ui/electron/audio/dist/bins.js`）
 - 侧栏可收起；收起态底部按钮纵向排列；侧栏几何有布局测试守护（图标列共线、行距均匀）；纯图标按钮均有 tooltip
 - 系统托盘：对齐 Quaver Music 的曲目行、上一曲 / 播放暂停 / 下一曲、循环与随机、显示主窗口、退出；左键双击把程序拉回前台（单击不切换），右键弹出菜单；窗口关闭按钮可收进托盘
 - **系统媒体控制中心**：Linux 注册 MPRIS2（总线名 `org.mpris.MediaPlayer2.QuaverAstra`，`DesktopEntry` 为应用 ID `red.0w0.quaver-astra`，桌面键盘媒体键、播放状态/封面/进度/循环模式双向同步），Windows 接入 SMTC（系统媒体浮层、媒体键、封面缩略图与进度时间轴，支持系统侧循环/随机切换），macOS 接入 Now Playing（`MPNowPlayingInfoCenter` + `MPRemoteCommandCenter`，控制中心/菜单栏正在播放卡片：标题/歌手/专辑/封面与进度，播放/暂停/上一首/下一首/拖动进度回传）。macOS 的系统投影只对带 `CFBundleIdentifier` 的应用生效，裸跑可能看不到，打包 `.app` 后正常；架构见 `internal/smedia/`
-- **快捷键**（设置 → 快捷键）：全局与窗口内两套绑定，动作是播放/暂停、播放、暂停、上一曲、下一曲。全局默认绑媒体键（Windows `RegisterHotKey`、macOS Carbon 热键、Linux X11 由 Astra 抓键、Wayland 经 XDG 桌面门户 `org.freedesktop.portal.GlobalShortcuts` 由桌面代持——门户要求按安装包运行，让桌面读到 `red.0w0.quaver-astra.desktop`——条目名即应用 ID，与窗口 app_id、MPRIS `DesktopEntry` 一致——且可能请你确认或改键）；窗口内默认 `Ctrl+Alt+P` / `Ctrl+Alt+,` / `Ctrl+Alt+.`，点绑定格再按下组合键即改，Esc 取消，小叉解绑。两个作用域同键时全局优先（按键被系统截走，窗口收不到），媒体键只能作全局绑定；注册失败或与别的绑定撞车都会在设置页标出来。
+- **快捷键**（设置 → 快捷键）：全局与窗口内两套绑定，动作是播放/暂停、播放、暂停、上一曲、下一曲。全局默认绑媒体键（Windows `RegisterHotKey`、macOS Carbon 热键、Linux X11 由 Astra 抓键）；**Wayland 会话下全局快捷键整段交给桌面持有**——Astra 一个键都不注册，设置页里「全局」那一列直接不出现，播放/暂停、上一曲、下一曲与音量都由桌面的媒体键经 MPRIS2 送达（见上一条的媒体中心），改键请到桌面的快捷键设置里改，窗口内快捷键不受影响；判定见 `internal/appui/hotkeys.go` 的 `waylandSession`。窗口内默认 `Ctrl+Alt+P` / `Ctrl+Alt+,` / `Ctrl+Alt+.`，点绑定格再按下组合键即改，Esc 取消，小叉解绑。两个作用域同键时全局优先（按键被系统截走，窗口收不到），媒体键只能作全局绑定；注册失败或与别的绑定撞车都会在设置页标出来。
 - 播放音频时阻止系统睡眠（暂停/停止即恢复，不阻止熄屏）；正常退出、TERM/Ctrl+C 与 native SIGABRT 清理时都会终止 mpv；Linux 另设父进程死亡信号和进程组兜底，避免异常崩溃留下 mpv
 - **版本号**：「设置 → 关于」标题旁显示当前版本（优先取构建注入值，本地 `go build` 时回落到工作区的 git tag）
 - **自动更新**：「设置 → 关于」可切换**稳定版**（GitHub latest API，最新正式 Release）与**快照版**（最近一次 push 的 `snapshot-*` 预发布）两个渠道，启动时自动检查（可关）。
@@ -112,7 +113,8 @@ internal/smedia/        系统媒体控制中心投影（Linux MPRIS / Windows S
                         objc_darwin.go      = 无 cgo 的 Objective-C 桥（purego 动态发消息 + 主队列投递）
 internal/appui/         MyGo 原生 UI：外壳、侧栏、路由页、播放条、正在播放、队列、个人中心、快捷键
                         profile.go = 会员档位与各自到期时间的展示（时间口径见 backend/vip.go）
-                        hotkeys.go = 全局（mygo.GlobalShortcut）与窗口内（ui.Context.Shortcut）两套绑定
+                        hotkeys.go = 全局（mygo.GlobalShortcut）与窗口内（ui.Context.Shortcut）两套绑定；
+                                     waylandSession 判定 Wayland 会话后全局一列不注册，交由桌面持有
                         theme.go = 调色板与明暗判定；motion.go = 动效语言（缓动/错峰入场/逐字绘制）
 internal/colorprobe/    封面主色提取 + 模糊底图
 internal/vault/         登录凭证加密持久化（ChaCha20-Poly1305 + 随机主密钥）
@@ -139,11 +141,11 @@ player.startCurrent
 
 ## 与主项目（Quaver Music）的差异
 
-Astra 缺少以下内容：搜索联想、无歌单处理功能。桌面快捷键已实现：全局 + 窗口内两套绑定，见「设置 → 快捷键」。
+Astra 缺少以下内容：搜索联想、无歌单处理功能。桌面快捷键已实现：全局 + 窗口内两套绑定（Wayland 会话下全局一列交给桌面持有），见「设置 → 快捷键」。
 
 **逐字歌词**：请求歌词时带 `qrc=1&trans=1&roma=1`，上游把 QRC 明文塞在同一个 `lyric` 字段里（XML 信封形态，Typhoeus-go 在服务端解密）。解析在 `internal/player/qrc.go`；服务端万一解密失败、原样透传密文，再由 [jixunmoe-go/qrc](https://github.com/jixunmoe-go/qrc) 在本地兜底解一层。`[kana:]` 振假名在 `internal/player/qrc_kana.go` 按全曲可注音字符流对齐；翻译与音译分别挂行，由 `player.AuxText` 按档位取一路。
 
-**明暗主题**：应用自己按 `Style.Theme` 定明暗，不依赖 MyGo 的 `Theme.IsDark()`——它的 Linux 后端 `SetSource("light")` 只清 GTK 的
+**明暗主题**：应用自己按 `Style.Theme` 定明暗，不依赖 MyGo 的 `Theme.IsDark()`——它的 Linux 后端 `SetSource("light")` 只清掉 GTK 的 `gtk-application-prefer-dark-theme`，紧接着 `IsDark()` 又去问 XDG portal 的 `color-scheme`，深色桌面上「强制浅色」会被 portal 盖掉（darwin / windows 后端没有这一段）。所以对桌面说的 `SetSource` 只当「尽力而为」（让原生窗口底色与标题栏尽量跟上），真正的明暗一律看 `Style.Theme`。
 
 ## 许可
 

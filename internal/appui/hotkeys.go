@@ -2,6 +2,7 @@ package appui
 
 import (
 	"fmt"
+	"os"
 	"runtime"
 	"strings"
 	"time"
@@ -14,9 +15,11 @@ import (
 //
 //   - 全局（scopeGlobal）：系统级注册，Astra 在后台甚至隐藏到托盘时照样生效。
 //     Windows 用 RegisterHotKey、macOS 用 Carbon 热键、Linux X11 直接抓键，
-//     Wayland 经 XDG 桌面门户 org.freedesktop.portal.GlobalShortcuts 让桌面代持
 //     ——这些都在 MyGo 的 mygo.GlobalShortcut 里，见 third_party/mygo/internal/
 //     {windows/darwin/linux}/hotkey*.go。
+//     Wayland 是刻意屏蔽的一档：应用抓不到键，「全局」只能由桌面持有，Astra
+//     不去走 XDG GlobalShortcuts 门户自建一套，播放/上下曲/音量都交给桌面的
+//     快捷键与系统媒体中心。判定与理由见 waylandSession。
 //   - 窗口内（scopeLocal）：只在 Astra 拿着键盘焦点时生效，走 MyGo 原生 UI 的
 //     ui.Context.Shortcut，由根视图每帧轮询（见 App.localHotkeys）。
 //
@@ -64,7 +67,7 @@ type hotkeySpec struct {
 // hotkeySpecs 的顺序就是设置页的展示顺序。
 //
 // 全局默认用媒体键：那是「播放暂停 / 上一曲 / 下一曲」在三个平台共同的语言，
-// 不需要 Astra 在前台。窗口内用不了媒体键（MyGo 原生 UI 的 Key 集合里没有
+// 不需要 Astra 在前台（Wayland 除外，见上）。窗口内用不了媒体键（MyGo 原生 UI 的 Key 集合里没有
 // 它们，各平台也不把媒体键当普通按键送进窗口），所以默认给一组 Ctrl+Alt 组合，
 // 并刻意不与全局默认撞车。逗号/句号取「< / >」的形状表示前后，同时避开
 // Windows 上 Ctrl+Alt+方向键可能触发的显卡旋转热键。
@@ -81,6 +84,47 @@ const (
 	hotkeyEnabledKey = "Hotkeys.Enabled"
 	hotkeySection    = "Hotkeys."
 )
+
+// waylandSession 判断当前是否跑在 Wayland 会话里——是的话 Astra 不注册任何
+// 全局快捷键，整个「全局」作用域交给桌面。
+//
+// 为什么屏蔽：Wayland 的安全模型不让应用抓键，想「后台也生效」只有两条路，
+// 而两条都不是 Astra 该走的。一是 XDG GlobalShortcuts 门户：要求按安装包运行
+// （桌面要能读到 app_id 对应的 desktop entry），可能弹确认框，被拒绝时没有
+// 回执，等于把一堆「按了没反应还修不掉」的绑定留给用户；二是 i3/ sway 那类
+// 按键绑定，属于桌面配置而不是应用配置。更关键的是，KDE/GNOME 本来就把
+// 播放暂停、上下曲、音量这些媒体键送给当前活跃的播放器，Astra 经 MPRIS2
+// 收得到（见 internal/smedia/mpris.go 与 appui.mediaCommands）。
+// 所以这里的口径是：不自建一套和桌面抢键的全局快捷键，把设置完全交给桌面。
+//
+// 判定顺序：QAA_SESSION_TYPE（只为测试与排障保留，优先级最高）→ 显式的
+// XDG_SESSION_TYPE（登录器写入，最权威）→ GDK_BACKEND=x11 → WAYLAND_DISPLAY。
+//
+// XDG_SESSION_TYPE 说的是「这个会话由谁持有键」，压得过 GDK_BACKEND：Wayland
+// 会话里把 GTK 推到 X11 只是转去 XWayland，抓到的键也只在 XWayland 窗口
+// 有焦点时生效，照样不是「后台也生效」。只有会话类型没写（裸起 X 会话、
+// startx、某些嵌入式桌面）时，才拿 GDK_BACKEND 与 WAYLAND_DISPLAY 当线索。
+func waylandSession() bool {
+	if runtime.GOOS != "linux" {
+		return false
+	}
+	switch strings.ToLower(os.Getenv("QAA_SESSION_TYPE")) {
+	case "wayland":
+		return true
+	case "x11":
+		return false
+	}
+	switch strings.ToLower(os.Getenv("XDG_SESSION_TYPE")) {
+	case "wayland":
+		return true
+	case "x11":
+		return false
+	}
+	if strings.EqualFold(os.Getenv("GDK_BACKEND"), "x11") {
+		return false
+	}
+	return os.Getenv("WAYLAND_DISPLAY") != ""
+}
 
 // init 处理一个平台差异：macOS 的 Carbon RegisterEventHotKey 只认 ANSI 虚拟键，
 // 媒体键（播放/暂停、上一曲、下一曲）不在其中，注册必然失败；而 macOS 本来就
@@ -479,6 +523,9 @@ type hotkeyState struct {
 	reg hotkeyRegistrar
 	// local 是每帧轮询的窗口内绑定表。
 	local []hotkeyLocal
+	// blocked 表示本会话屏蔽全局快捷键（Wayland）：设置页据此把「全局」一列
+	// 整段标成「交给桌面」，syncHotkeys 据此一个键都不注册。
+	blocked bool
 	// notes 按配置键存放该条绑定的问题（解析失败、撞车、注册被拒），
 	// 设置页就地显示；没有问题的绑定不入表。
 	notes map[string]string
@@ -530,8 +577,15 @@ func (a *App) hotkeyRaw(scope hotkeyScope, spec hotkeySpec) string {
 // 全部快捷键，改一条就得换一次会话（见 mygo 的 hotkey_portal.go），
 // Windows/macOS 的撤销也只是一个函数调用。换来的是配置、系统状态、
 // 设置页三者的口径永远一致。
+//
+// Wayland 会话（hotkeys.blocked）下全局那一整列都不进注册面：一个键都不抓，
+// 撤册照做，所以从 X11 换到 Wayland，或中途关掉开关，都不会留下半套绑定。
+// 窗口内快捷键不受影响。
 func (a *App) syncHotkeys() {
-	enabled := a.hotkeyEnabled()
+	// 会话类型在一次运行里不会变，所以判一次存下来（New 里），而不是每回都读环境：
+	// 直接构造 App 的单测不继承任何桌面环境，注册面照旧可测。
+	blocked := a.hotkeys.blocked
+	enabled := a.hotkeyEnabled() && !blocked
 	reg := a.hotkeys.registrar()
 	reg.UnregisterAll()
 
@@ -634,8 +688,6 @@ func hotkeyRegisterProblem(err error) string {
 		strings.Contains(msg, "unsupported key"),
 		strings.Contains(msg, "cannot be used in a global shortcut"):
 		return "这个键不能用作全局快捷键（macOS 的媒体键由系统「正在播放」接管，无需在这里绑）"
-	case strings.Contains(msg, "GlobalShortcuts portal"), strings.Contains(msg, "desktop entry"):
-		return "Wayland 下需要桌面提供 GlobalShortcuts 门户（KDE Plasma 6 / GNOME 48+），且 Astra 需按安装包方式运行（带 desktop entry）"
 	case strings.Contains(msg, "not supported"):
 		return "当前桌面不支持全局快捷键"
 	default:

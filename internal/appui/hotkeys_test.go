@@ -327,6 +327,106 @@ func TestSyncHotkeysGlobalDisabledKeepsLocal(t *testing.T) {
 	}
 }
 
+// TestWaylandSessionDetection 是会话判定的取值表。判定顺序本身是功能：
+// 桌面写的 XDG_SESSION_TYPE 最权威，GDK_BACKEND=x11 是「强制走 X11」的逃生门，
+// 只有啥都没标时才拿 WAYLAND_DISPLAY 当线索。
+func TestWaylandSessionDetection(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("会话判定只在 Linux 有意义")
+	}
+	cases := []struct {
+		name string
+		env  map[string]string
+		want bool
+	}{
+		{"门户 Wayland", map[string]string{"XDG_SESSION_TYPE": "wayland"}, true},
+		{"大写也要认", map[string]string{"XDG_SESSION_TYPE": "Wayland"}, true},
+		{"X11 会话", map[string]string{"XDG_SESSION_TYPE": "x11", "WAYLAND_DISPLAY": "wayland-1"}, false},
+		{"X11 优先于 wayland-1 残留", map[string]string{"XDG_SESSION_TYPE": "x11", "WAYLAND_DISPLAY": "wayland-0"}, false},
+		{"只有 WAYLAND_DISPLAY", map[string]string{"WAYLAND_DISPLAY": "wayland-1"}, true},
+		{"GDK 强制 X11", map[string]string{"GDK_BACKEND": "x11", "WAYLAND_DISPLAY": "wayland-1"}, false},
+		// 会话类型是登录器写的，压不过：Wayland 会话里 GDK_BACKEND=x11 只是转去
+		// XWayland，抓键只在 XWayland 窗口有焦点时生效，照样不是「全局」。
+		{"GDK 强制 X11 压不住 wayland 会话类型", map[string]string{"GDK_BACKEND": "x11", "XDG_SESSION_TYPE": "wayland"}, true},
+		{"纯 X11 无变量", map[string]string{}, false},
+		{"显式覆盖最高优先级", map[string]string{"QAA_SESSION_TYPE": "x11", "XDG_SESSION_TYPE": "wayland"}, false},
+		{"未知会话类型落到线索", map[string]string{"XDG_SESSION_TYPE": "tty", "WAYLAND_DISPLAY": "wayland-2"}, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("QAA_SESSION_TYPE", "")
+			t.Setenv("XDG_SESSION_TYPE", "")
+			t.Setenv("GDK_BACKEND", "")
+			t.Setenv("WAYLAND_DISPLAY", "")
+			for k, v := range tc.env {
+				t.Setenv(k, v)
+			}
+			if got := waylandSession(); got != tc.want {
+				t.Errorf("waylandSession() = %v，期望 %v（%v）", got, tc.want, tc.env)
+			}
+		})
+	}
+}
+
+// TestSyncHotkeysWaylandBlocksGlobal 是这次改动的核心：Wayland 会话下
+// 一个全局键都不注册，但配置、窗口内快捷键与退出清理都不受影响。
+func TestSyncHotkeysWaylandBlocksGlobal(t *testing.T) {
+	app, reg, _ := hotkeyApp(t)
+	app.hotkeys.blocked = true
+	// 开关照旧是「开」，说明屏蔽不是靠关掉开关实现的。
+	app.syncHotkeys()
+
+	if len(reg.keys()) != 0 {
+		t.Errorf("Wayland 会话下仍注册了全局快捷键：%v", reg.keys())
+	}
+	if reg.unregisters == 0 {
+		t.Error("屏蔽时也要先撤干净，否则会留下上一个会话的半套绑定")
+	}
+	if len(app.hotkeys.local) != 3 {
+		t.Errorf("窗口内快捷键不该被会话屏蔽关掉，实际 %d 条", len(app.hotkeys.local))
+	}
+	// 配置必须原样留着：切回 X11 会话就恢复，屏蔽是运行期的决定，不是用户意图。
+	if app.hotkeyRaw(scopeGlobal, hotkeySpecs[0]) == "" {
+		t.Error("出厂默认不该被写成空——退出 Wayland 会话后用户会发现绑定全没了")
+	}
+	// 屏蔽不是错误：全局一列整段不进设置页，也不留逐条的问题提示。
+	if n := len(app.hotkeys.notes); n != 0 {
+		t.Errorf("Wayland 屏蔽不该产生任何绑定级提示，实际 %d 条：%v", n, app.hotkeys.notes)
+	}
+	// 提示是「没在工作」而不是「出错了」：不能和红色的注册失败混为一谈。
+	app.closeHotkeys()
+	if len(reg.keys()) != 0 {
+		t.Errorf("退出后仍挂着全局快捷键：%v", reg.keys())
+	}
+}
+
+// TestSyncHotkeysWaylandNoLocalCollisionNote 检查屏蔽时窗口内不再被要求让路：
+// 全局那列一个键都没占，同键的窗口内绑定必须照常生效。
+func TestSyncHotkeysWaylandNoLocalCollisionNote(t *testing.T) {
+	app, _, _ := hotkeyApp(t)
+	app.hotkeys.blocked = true
+	app.Conf.Set(hotkeyConfKey(scopeGlobal, "Next"), "Ctrl+Alt+J")
+	app.Conf.Set(hotkeyConfKey(scopeLocal, "PlayPause"), "Ctrl+Alt+J")
+	app.syncHotkeys()
+
+	if note := app.hotkeyNote(scopeLocal, hotkeySpecs[0]); note != "" {
+		t.Errorf("全局没占住任何键，窗口内不该被判定撞车：%q", note)
+	}
+	var hit bool
+	for _, b := range app.hotkeys.local {
+		if b.action == hkPlayPause {
+			hit = true
+		}
+	}
+	if !hit {
+		t.Error("窗口内的「播放/暂停」应当生效")
+	}
+	// tooltip 也不能报出那条按不动的全局绑定。
+	if tip := app.hotkeyTip(hkPlayPause); !strings.Contains(tip, "Ctrl+Alt+J") {
+		t.Errorf("tooltip 应取窗口内绑定，实际 %q", tip)
+	}
+}
+
 func TestSyncHotkeysSameKeyAcrossScopes(t *testing.T) {
 	app, _, _ := hotkeyApp(t)
 	// 把窗口内的「播放/暂停」和全局的「下一曲」绑到同一个组合键。
@@ -673,3 +773,46 @@ func TestHotkeyTipPrefersEffectiveBinding(t *testing.T) {
 		t.Errorf("全局关闭后不该再报全局键，实际 %q", got)
 	}
 }
+
+// TestSettingsPageHidesGlobalColumnOnWayland 是设置页的实测：屏蔽时「全局」
+// 这一列（表头、录制格、解绑按钮、总开关）整段不出现，窗口内照常能点。
+// tooltip 也不能报出一条按不动的全局媒体键。
+func TestSettingsPageHidesGlobalColumnOnWayland(t *testing.T) {
+	app, reg, _ := hotkeyApp(t)
+	app.settings.tab = hotkeysTab
+	app.hotkeys.blocked = true
+	app.Conf.Set(hotkeyConfKey(scopeGlobal, "PlayPause"), "")
+	app.Conf.Set(hotkeyConfKey(scopeGlobal, "Play"), "MediaPlayPause")
+	app.syncHotkeys()
+
+	tester := ui.NewTester(app.View, 1200, 1100)
+	tester.Frame()
+
+	if tester.HasText("全局（后台也生效）") {
+		t.Error("屏蔽时不该还有「全局」表头")
+	}
+	for _, label := range []string{"全局快捷键：播放/暂停", "清除全局快捷键：播放/暂停"} {
+		if err := tester.Click(label); err == nil {
+			t.Errorf("屏蔽时「%s」不该点得到", label)
+		}
+	}
+	if !tester.HasText("由桌面持有") {
+		t.Errorf("没有说明全局一列交给桌面：%v", tester.Texts())
+	}
+	if tester.HasText("启用全局快捷键") {
+		t.Error("屏蔽时不该留一个开了也没用的开关")
+	}
+	// 窗口内那一列必须还在，否则这个页面就没有可编辑的东西了。
+	if err := tester.Click("窗口内快捷键：播放/暂停"); err != nil {
+		t.Errorf("点不到窗口内录制格：%v", err)
+	}
+	// 播放条的 tooltip 里不能出现那条按不动的媒体键。
+	if tip := app.hotkeyTip(hkPlay); tip != "" {
+		t.Errorf("屏蔽后不该把全局绑定报进 tooltip，实际 %q", tip)
+	}
+	// 而且真的一个键都没注册。
+	if len(reg.keys()) != 0 {
+		t.Errorf("屏蔽后仍注册了：%v", reg.keys())
+	}
+}
+
