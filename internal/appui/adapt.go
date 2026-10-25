@@ -7,11 +7,12 @@ import (
 
 // apiAdapter 把 *backend.Client 适配成 player.Backend。
 type apiAdapter struct {
-	c *backend.Client
+	c         *backend.Client
+	seedCache func() string
 }
 
-func newAPIAdapter(c *backend.Client) apiAdapter {
-	return apiAdapter{c: c}
+func newAPIAdapter(c *backend.Client, cacheSeed func() string) apiAdapter {
+	return apiAdapter{c: c, seedCache: cacheSeed}
 }
 
 func (a apiAdapter) LoginStatus() (bool, error) {
@@ -115,7 +116,7 @@ func (a apiAdapter) Tiers() (*player.TierTable, error) {
 }
 
 func (a apiAdapter) Resolve(mid, mediaMid string, songType int64, tier string, deprioritize []string, durationMs int64) (*player.StreamInfo, error) {
-	r, err := a.c.ResolveStream(mid, mediaMid, int(songType), tier, true, deprioritize, durationMs)
+	r, err := a.c.ResolveStream(mid, mediaMid, int(songType), tier, true, deprioritize, durationMs, a.cacheSeed())
 	if err != nil {
 		return nil, err
 	}
@@ -127,6 +128,15 @@ func (a apiAdapter) Resolve(mid, mediaMid string, songType int64, tier string, d
 		Size:      r.Size,
 		Token:     r.Token,
 	}, nil
+}
+
+// cacheSeed 返回本地缓存的前端半种：关闭本地缓存（缺省）或尚未生成时为空，
+// 后端会跳过缓存命中与落盘。种子与缓存索引绑定，换种子等于换账号缓存。
+func (a apiAdapter) cacheSeed() string {
+	if a.seedCache == nil {
+		return ""
+	}
+	return a.seedCache()
 }
 
 func (a apiAdapter) ReportListenTime(report player.ListenReport) (player.ListenReportResult, error) {

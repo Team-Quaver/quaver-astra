@@ -24,11 +24,33 @@ func TestResolveStreamSendsDuration(t *testing.T) {
 	defer srv.Close()
 
 	c := NewClient(srv.URL)
-	if _, err := c.ResolveStream("mid", "", 1, "flac", true, nil, 245000); err != nil {
+	if _, err := c.ResolveStream("mid", "", 1, "flac", true, nil, 245000, ""); err != nil {
 		t.Fatal(err)
 	}
 	if got["duration_ms"] != float64(245000) {
 		t.Fatalf("duration_ms = %#v, want 245000", got["duration_ms"])
+	}
+	if _, ok := got["cache_seed"]; ok {
+		t.Fatalf("cache_seed should be omitted when empty, got %#v", got["cache_seed"])
+	}
+}
+
+// TestResolveStreamSendsCacheSeed 锁住本地缓存前端半种的上行契约：
+// 非空时必须原样随 resolve 交给后端（LocalCache 命中判断与落盘都靠它）。
+func TestResolveStreamSendsCacheSeed(t *testing.T) {
+	var got map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&got)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"code":0,"msg":"ok","data":{"token":"t","path":"/stream/t","tier":"128","cached":true}}`))
+	}))
+	defer srv.Close()
+
+	if _, err := NewClient(srv.URL).ResolveStream("mid", "", 1, "auto", true, nil, 0, "c2VlZC1zZWVkLXNlZWQtc2VlZC1zZWVkLXNlZWQ"); err != nil {
+		t.Fatal(err)
+	}
+	if got["cache_seed"] != "c2VlZC1zZWVkLXNlZWQtc2VlZC1zZWVkLXNlZWQ" {
+		t.Fatalf("cache_seed = %#v", got["cache_seed"])
 	}
 }
 

@@ -126,6 +126,10 @@ type App struct {
 	apiOnce  sync.Once
 	apiSlots chan struct{}
 
+	// cacheSeed 是本地缓存前端半种（见 localcache.go），首次用到时生成。
+	cacheSeedOnce sync.Once
+	cacheSeed     string
+
 	// wasLoggedIn 记录上一次通知时的登录态，用来识别「登录/登出」这一跳变
 	wasLoggedIn bool
 }
@@ -134,13 +138,11 @@ type App struct {
 // 当前构建版本，用于更新比较）。
 func New(base string, store *conf.Store, v *vault.Vault, version string) *App {
 	api := backend.NewClient(base)
-	eng := audio.New()
-	pl := player.New(newAPIAdapter(api), eng, store)
+	eng := audio.NewCompatIf(store.Bool(CompatModeKey, false))
 	a := &App{
 		API:           api,
 		Conf:          store,
 		Version:       version,
-		PL:            pl,
 		sleep:         newSystemSleepBlocker(),
 		Router:        ui.NewRouter("/"),
 		Covers:        NewCoverCache(),
@@ -149,6 +151,8 @@ func New(base string, store *conf.Store, v *vault.Vault, version string) *App {
 		playlist:      map[int64]*playlistState{},
 		lastLyricLine: -2,
 	}
+	pl := player.New(newAPIAdapter(api, a.localCacheSeed), eng, store)
+	a.PL = pl
 	// Wayland 会话下整列全局快捷键交给桌面持有，Astra 不注册（见 hotkeys.go）。
 	a.hotkeys.blocked = waylandSession()
 	a.initMedia()

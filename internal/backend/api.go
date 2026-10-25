@@ -319,6 +319,13 @@ type Resolved struct {
 	RequestedTier string `json:"requested_tier"`
 }
 
+// MusicCacheStatus 是 GET /cache/music/status 的响应。
+type MusicCacheStatus struct {
+	Items      int   `json:"items"`
+	Bytes      int64 `json:"bytes"`
+	LimitBytes int64 `json:"limit_bytes"`
+}
+
 // SoundPowerReport 一段真实听歌时长（秒）。stream_token 让后端复用当次
 // 播放凭证；audio_time_ms 是歌曲总时长，与本次实际听了多久无关。
 type SoundPowerReport struct {
@@ -488,6 +495,22 @@ type QRStatus struct {
 	Error string `json:"error"`
 }
 
+// QQQuickAccount 是本机 QQ 客户端检测到的一个在线账号；uin 用于一键登录。
+type QQQuickAccount struct {
+	UIN      int64  `json:"uin"`
+	Nickname string `json:"nickname"`
+	Avatar   string `json:"avatar"`
+}
+
+// QQQuickAvailability 是 GET /login/qq-quick 的响应：available=false 表示
+// 本机没有检测到已登录的 QQ 客户端（不是错误，UI 直接降级为二维码登录）。
+type QQQuickAvailability struct {
+	Available bool   `json:"available"`
+	UIN       int64  `json:"uin"`
+	Nickname  string `json:"nickname"`
+	Avatar    string `json:"avatar"`
+}
+
 // VIPInfo 是后端稳定的会员权益契约。svip=超级会员、identity.huge_vip=豪华绿钻、
 // identity.vip=绿钻；它们是各自独立且已经按到期时间过滤的有效标志，不是档位数值。
 type VIPInfo struct {
@@ -521,6 +544,21 @@ func (c *Client) LoginStatus() (LoginStatus, error) {
 	var out LoginStatus
 	err := c.getJSON("/login/status", nil, &out)
 	return out, err
+}
+
+// LoginQQQuickDetect 探测本机 QQ 客户端的快速登录可用性。
+// available=false 不是错误：只有真正的通信故障才返回 error。
+func (c *Client) LoginQQQuickDetect() (QQQuickAvailability, error) {
+	var out QQQuickAvailability
+	err := c.getJSON("/login/qq-quick", nil, &out)
+	return out, err
+}
+
+// LoginQQQuick 用本机 QQ 的 clientkey 一键登录。QQ 客户端中途退出/拒绝时
+// 后端返回 DataError，这里原样透传给 UI 展示。
+func (c *Client) LoginQQQuick(uin int64) error {
+	_, err := c.postJSON("/login/qq-quick", map[string]any{"uin": uin})
+	return err
 }
 
 func (c *Client) Logout() error {
@@ -575,8 +613,10 @@ func (c *Client) StreamTiers() (Tiers, error) {
 
 // ResolveStream 解析播放流。tier 为档位 id 或 "auto"；deprioritize 降权档位；
 // durationMs 是上游曲长提示，后端据此把中继限速定在该曲 ≈3× 实时码率
-// （缺省时按整曲 ≥2 分钟兜底，高码率档会被压得过慢）。
-func (c *Client) ResolveStream(mid, mediaMid string, songType int, tier string, auto bool, deprioritize []string, durationMs int64) (Resolved, error) {
+// （缺省时按整曲 ≥2 分钟兜底，高码率档会被压得过慢）。cacheSeed 是本地缓存
+// 前端半种：非空时后端先查本地缓存命中（cached=true 的 path 指向缓存流），
+// 未命中则回源并异步落盘缓存。
+func (c *Client) ResolveStream(mid, mediaMid string, songType int, tier string, auto bool, deprioritize []string, durationMs int64, cacheSeed string) (Resolved, error) {
 	if deprioritize == nil {
 		deprioritize = []string{}
 	}
@@ -589,7 +629,17 @@ func (c *Client) ResolveStream(mid, mediaMid string, songType int, tier string, 
 		"tier": tier, "auto": auto, "deprioritize": deprioritize,
 		"duration_ms": durationMs,
 	}
+	if cacheSeed != "" {
+		body["cache_seed"] = cacheSeed
+	}
 	err := c.postJSONInto("/stream/resolve", body, &out)
+	return out, err
+}
+
+// MusicCacheStatus 查询本地音乐缓存占用。
+func (c *Client) MusicCacheStatus() (MusicCacheStatus, error) {
+	var out MusicCacheStatus
+	err := c.getJSON("/cache/music/status", nil, &out)
 	return out, err
 }
 

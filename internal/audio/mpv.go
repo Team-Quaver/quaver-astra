@@ -77,6 +77,11 @@ type Engine struct {
 	mpvVersion    string
 	loadfileIndex bool
 
+	// MPV 兼容模式（PCM 输出）：mpv 只解码，实时 PCM 由本进程出声。
+	// pcm nil = 原生直出；非 nil = 兼容模式会话（见 engine_pcm.go）。
+	pcmCompat bool
+	pcm       *pcmOutput
+
 	// readTimeout 是 socket 单次读的兜底超时：默认 30s（兼作空闲连接的
 	// keepalive），握手期的探测收紧——mpv 在无声卡的环境里可能迟迟不回应，
 	// 不能让应用启动跟着一起卡住。
@@ -132,6 +137,18 @@ func New() *Engine {
 	e := &Engine{
 		volume: 0.8, obsCh: make(chan struct{}, 1), done: make(chan struct{}),
 		started: make(chan struct{}), readTimeout: ipcReadTimeout,
+	}
+	go e.start()
+	return e
+}
+
+// NewCompatIf 按配置选引擎：want=true 用 MPV 兼容模式（mpv 仅解码、应用侧
+// 出声，见 engine_pcm.go），false 原生直出。
+func NewCompatIf(want bool) *Engine {
+	e := &Engine{
+		volume: 0.8, obsCh: make(chan struct{}, 1), done: make(chan struct{}),
+		started: make(chan struct{}), readTimeout: ipcReadTimeout,
+		pcmCompat: want,
 	}
 	go e.start()
 	return e
@@ -211,6 +228,21 @@ func mpvArgs(sock string) []string {
 	return args
 }
 
+// pcmArgs 追加 MPV 兼容模式的 ao_pcm 参数：48kHz/stereo/float32 是应用侧
+// PCM 管线的共同地板（见 engine_pcm.go）。音量在应用侧逐采样相乘，mpv 的
+// volume 保持 0dB；audio-samplerate/channels/format 强制重采样到固定形状。
+func pcmArgs(fifo string) []string {
+	return []string{
+		"--ao=pcm",
+		"--ao-pcm-file=" + fifo,
+		"--ao-pcm-waveheader=no",
+		"--ao-pcm-append=yes",
+		"--audio-samplerate=" + strconv.Itoa(pcmRate),
+		"--audio-channels=stereo",
+		"--audio-format=float",
+	}
+}
+
 // spawn 拉起 mpv 并连上 IPC。
 func (e *Engine) spawn() error {
 	// 握手命令的读超时收紧：后台启动不会挡窗口，但用户可能在启动完成前
@@ -221,20 +253,55 @@ func (e *Engine) spawn() error {
 	if err != nil {
 		return err
 	}
+	// 兼容模式先备好 FIFO 与 speaker：任何一步失败都让整次 spawn 失败，
+	// 上层据此回退原生直出（appui 在 New/NewCompat 之间选择）。
+	var pcm *pcmOutput
+	if e.pcmCompat {
+		p, err := newPCMPipe(nil, nil)
+		if err != nil {
+			return fmt.Errorf("pcm: 管道不可用: %w", err)
+		}
+		sp, err := newSpeakerFor(os.Getenv("QAA_PCM_SPEAKER"))
+		if err != nil {
+			p.close()
+			return fmt.Errorf("pcm: 音频输出不可用: %w", err)
+		}
+		if err := sp.Start(); err != nil {
+			p.close()
+			sp.Close()
+			return fmt.Errorf("pcm: 音频输出不可用: %w", err)
+		}
+		pcm = &pcmOutput{pipe: p, speaker: sp}
+		p.onData = pcm.onData
+		p.onErr = pcm.onErr
+		pcm.vol.set(e.volume)
+	}
 	// IPC 端点：Unix/macOS 是临时目录里的 AF_UNIX socket；Windows 是
 	// 命名管道（mpv 的 Windows IPC 只支持命名管道，见 ipc_windows.go）。
 	serverArg, dialIPC, cleanupIPC, err := ipcSetup()
 	if err != nil {
+		if pcm != nil {
+			pcm.speaker.Close()
+			pcm.pipe.close()
+		}
 		return err
 	}
 
-	cmd := exec.Command(bin.command[0], bin.args(mpvArgs(serverArg)...)...)
+	args := mpvArgs(serverArg)
+	if pcm != nil {
+		args = append(args, pcmArgs(pcm.pipe.path)...)
+	}
+	cmd := exec.Command(bin.command[0], bin.args(args...)...)
 	cmd.Stderr = mpvStderr()
 	// quick-sharun 由包内 loader 隔离；旧式目录布局才追加 lib 路径。
 	cmd.Env = childEnv(bin)
 	configureMPVProcess(cmd)
 	if err := cmd.Start(); err != nil {
 		cleanupIPC()
+		if pcm != nil {
+			pcm.speaker.Close()
+			pcm.pipe.close()
+		}
 		return err
 	}
 
@@ -243,9 +310,14 @@ func (e *Engine) spawn() error {
 		e.mu.Unlock()
 		_ = cmd.Process.Kill()
 		cleanupIPC()
+		if pcm != nil {
+			pcm.speaker.Close()
+			pcm.pipe.close()
+		}
 		return errors.New("引擎已关闭")
 	}
 	e.cmd = cmd
+	e.pcm = pcm
 	e.mu.Unlock()
 
 	// exited 是一个原子标志：mpv 进程退出时置位，用于建连失败时快速诊断。
@@ -353,7 +425,7 @@ func (e *Engine) spawn() error {
 // 载入根本没有开始。本项目只有「带进度起播」（恢复上次会话的进度、播放中途
 // 换音质）会发 options，症状就是「打开后播放卡在加载，然后自己跳下一曲」。
 func loadfileWantsIndex(version string) bool {
-	major, minor, ok := parseMPVVersion(version)
+	major, minor, ok := ParseMPVVersion(version)
 	if !ok {
 		// 认不出版本就按 0.38 之前的布局发；真被拒了 applyReply 会换布局重发。
 		return false
@@ -361,8 +433,9 @@ func loadfileWantsIndex(version string) bool {
 	return major > 0 || minor >= 38
 }
 
-// parseMPVVersion 从 "mpv v0.41.0" / "mpv 0.38.0-27-gabcdef" 取主次版本。
-func parseMPVVersion(s string) (major, minor int, ok bool) {
+// ParseMPVVersion 从 "mpv v0.41.0" / "mpv 0.38.0-27-gabcdef" 取主次版本。
+// 设置页判断「MPV 兼容模式」是否适用也用它。
+func ParseMPVVersion(s string) (major, minor int, ok bool) {
 	nums := make([]int, 0, 2)
 	digits := ""
 	for _, r := range s {
@@ -631,6 +704,10 @@ func (e *Engine) applyEvent(resp *ipcResp) {
 		// mpv 开始打开这个文件（还保证不了成功）。给当前载入代次盖章：
 		// 之后的 file-loaded / end-file 才归属于本次载入。
 		e.startGen = e.loadGen
+		if e.pcm != nil {
+			// 兼容模式：新曲新 FIFO 世代。旧会话迟到的 PCM 由代次丢弃。
+			e.pcm.beginGen(e.loadGen)
+		}
 	case "file-loaded":
 		// 载入成功的权威信号：demuxer 已经把文件打开并准备播了。
 		// 但必须先见到本次载入的 start-file——mpv 总是 start-file 在前、
@@ -651,6 +728,11 @@ func (e *Engine) applyEvent(resp *ipcResp) {
 			break
 		}
 		e.eof = true
+		if e.pcm != nil {
+			// ao_pcm 的 EOF 只说明 mpv 写完了 FIFO。位置/结束由 PCM 消费侧
+			// 接管（position/Ended 走 pcmOutput），这里只标记 mpv 侧收尾。
+			e.pcm.markEOF()
+		}
 		if resp.Reason == "error" {
 			// 带 error 原因的是载入失败（网络 404、格式不支持等），要能让
 			// player 知道并降档重试；file_error 里是具体原因，比笼统一句话有用。
@@ -773,6 +855,10 @@ func (e *Engine) OpenURL(url string, startFrac, dur float64, autoplay bool) erro
 	e.startGen, e.loadedGen = 0, 0
 	e.loadErr, e.loadErrGen, e.loadErrFatal = "", 0, false
 	e.lastLoad = cmd
+	if e.pcm != nil {
+		// 兼容模式：把续播起点钉进 PCM 时间轴；start-file 到来时代次生效。
+		e.pcm.beginPending(startFrac * dur)
+	}
 	e.mu.Unlock()
 
 	// loadfile 异步下发（async:true）。异步有两个理由：
@@ -861,15 +947,28 @@ func (e *Engine) Loaded() bool {
 // Ended 报告当前曲目是否自然播完。
 func (e *Engine) Ended() bool {
 	e.mu.Lock()
-	defer e.mu.Unlock()
-	return e.eof
+	pcm := e.pcm
+	eof := e.eof
+	e.mu.Unlock()
+	if pcm != nil {
+		// ao_pcm 的 EOF 是「写完 FIFO」：真正播完要等设备把尾巴消费掉。
+		return pcm.ended()
+	}
+	return eof
 }
 
 // Position 当前播放位置（秒），直接取 mpv 的 time-pos。
 func (e *Engine) Position() float64 {
 	e.mu.Lock()
-	defer e.mu.Unlock()
-	return e.pos
+	pcm := e.pcm
+	mpvPos := e.pos
+	e.mu.Unlock()
+	if pcm != nil && pcm.active() {
+		// ao_pcm 无时钟：mpv 的 time-pos 被预写缓冲带偏，位置以设备侧
+		// 消费量为准（mpv time-pos 只留给未开会的间隙兜底）。
+		return pcm.position()
+	}
+	return mpvPos
 }
 
 // Duration 当前曲目时长（秒）；mpv 尚未报出时回退到已知值。
@@ -892,9 +991,47 @@ func (e *Engine) seekAbs(sec float64) {
 	if sec < 0 {
 		sec = 0
 	}
-	// absolute+exact：精确 seek 到目标时间点。默认的 absolute 会落到
-	// 关键帧上，听感上是「跳早了几百毫秒」。
-	e.commandQuiet("seek", strconv.FormatFloat(sec, 'f', 3, 64), "absolute+exact")
+	e.mu.Lock()
+	pcm := e.pcm
+	url := ""
+	if pcm != nil {
+		url = e.lastLoad.url
+	}
+	e.mu.Unlock()
+	if pcm == nil || url == "" {
+		// 原生直出：mpv 自己有时钟，原地精确 seek 即可。
+		e.commandQuiet("seek", strconv.FormatFloat(sec, 'f', 3, 64), "absolute+exact")
+		return
+	}
+	// 兼容模式：ao_pcm 是顺序写文件，seek 没有帧标记、时间轴锚点不会自己
+	// 动。对齐上游 MPVCompat 的 restartPcmAt——换代重挂：beginPending 把
+	// 在途 PCM 全部作废，loadfile 带 start= 重新打开同一 URL，start-file
+	// 到来时 beginGen 开新一代 FIFO 会话（pos 已由 beginPending 钉好）。
+	e.pcm.beginPending(sec)
+	e.mu.Lock()
+	if e.closed || e.conn == nil {
+		e.mu.Unlock()
+		return
+	}
+	e.loadGen++
+	e.startGen, e.loadedGen = 0, 0
+	e.loadErr, e.loadErrGen, e.loadErrFatal = "", 0, false
+	e.eof, e.pos = false, sec
+	// dur 不清零：重挂间隙里时长沿用旧值，等 mpv 重新报。暂停态也不动，
+	// loadfile 会保留 pause 属性。
+	cmd := loadCmd{url: url, flags: "replace"}
+	if sec > 0.5 {
+		cmd.opts = map[string]any{"start": strconv.FormatFloat(sec, 'f', 3, 64)}
+	}
+	e.lastLoad = cmd
+	e.mu.Unlock()
+	if id := e.sendLoadfile(cmd); id != 0 {
+		e.mu.Lock()
+		if id > e.loadReq {
+			e.loadReq = id
+		}
+		e.mu.Unlock()
+	}
 }
 
 // SetVolume 0..1（mpv 的 volume 单位是百分制）。
@@ -902,7 +1039,14 @@ func (e *Engine) SetVolume(v float64) {
 	v = clamp01(v)
 	e.mu.Lock()
 	e.volume = v
+	pcm := e.pcm
 	e.mu.Unlock()
+	if pcm != nil {
+		// ao_pcm 预写了整段音频，改 mpv volume 慢一个缓冲；音量在
+		// 应用侧逐采样相乘，捕获端拿到的也是处理后的声音。
+		pcm.setVolume(v)
+		return
+	}
 	e.commandQuiet("set_property", "volume", strconv.FormatFloat(v*100, 'f', 0, 64))
 }
 
@@ -923,6 +1067,9 @@ func (e *Engine) Stop() {
 	e.loadGen++
 	e.startGen, e.loadedGen = 0, 0
 	e.loadErr, e.loadErrGen, e.loadErrFatal = "", 0, false
+	if e.pcm != nil {
+		e.pcm.stop() // mpv 侧 stop 后 FIFO 不再有新数据，会话即刻作废
+	}
 	e.mu.Unlock()
 	e.commandQuiet("stop")
 }
@@ -946,7 +1093,14 @@ func (e *Engine) Close() {
 	e.closed = true // 即便 spawn 刚失败，也由这里统一收口
 	conn, cmd := e.conn, e.cmd
 	e.conn = nil
+	pcm := e.pcm
+	e.pcm = nil
 	e.mu.Unlock()
+	if pcm != nil {
+		pcm.stop()
+		pcm.speaker.Close()
+		pcm.pipe.close()
+	}
 	if already {
 		return
 	}
@@ -1024,10 +1178,11 @@ func (e *Engine) Available() bool {
 
 // MPVInfo 是设置页展示用的 mpv 状态。
 type MPVInfo struct {
-	Path   string // 实际使用的可执行文件路径
-	Origin string // explicit / bundled / PATH
-	OK     bool
-	Detail string // 失败原因或补充说明
+	Path    string // 实际使用的可执行文件路径
+	Origin  string // explicit / bundled / PATH
+	OK      bool
+	Detail  string // 失败原因或补充说明
+	Version string // mpv-version（握手属性；未启动过时为空）
 }
 
 // MPVInfoFor 探测并返回 mpv 状态（设置页「关于」与播放设置页用）。
@@ -1048,6 +1203,14 @@ func MPVInfoFor() MPVInfo {
 		info.Detail = "系统安装"
 	}
 	return info
+}
+
+// Version 报告最近一次引擎握手读到的 mpv-version；还没握手成功时为空串。
+// 设置页用它提示当前 mpv 是否为老版本（「MPV 兼容模式」的适用场景）。
+func (e *Engine) Version() string {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.mpvVersion
 }
 
 func clamp01(v float64) float64 {

@@ -221,6 +221,23 @@ type startVolumeSetter interface {
 	SetStartVolume(v float64)
 }
 
+// versionReporter 是引擎的可选版本自报；设置页用它提示 mpv 能力边界。
+type versionReporter interface {
+	Version() string
+}
+
+// EngineVersion 返回播放引擎的版本串（不可用时为空）。
+func (p *Player) EngineVersion() string {
+	p.mu.RLock()
+	e := p.eng
+	p.mu.RUnlock()
+	vr, ok := e.(versionReporter)
+	if !ok {
+		return ""
+	}
+	return vr.Version()
+}
+
 // Preferences 是持久化配置读写接口。
 type Preferences interface {
 	String(key, def string) string

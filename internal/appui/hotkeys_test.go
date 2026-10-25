@@ -815,4 +815,3 @@ func TestSettingsPageHidesGlobalColumnOnWayland(t *testing.T) {
 		t.Errorf("屏蔽后仍注册了：%v", reg.keys())
 	}
 }
-

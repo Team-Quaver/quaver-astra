@@ -17,6 +17,10 @@ type settingsState struct {
 	draftsLoaded   bool
 }
 
+// CompatModeKey 是「MPV 兼容模式」的配置键：为老版本 mpv（<0.38）禁用
+// 新 loadfile 参数布局。见 settingsAbout 的说明与 internal/audio 的自愈逻辑。
+const CompatModeKey = "Playing.MPVCompat"
+
 var themeNames = []struct {
 	key  string
 	name string
@@ -290,6 +294,19 @@ func (a *App) settingsPlayback(c *ui.Context, t *ui.Theme) {
 		ui.Text(c, "只统计真实出声时间：每满 60 秒提交一次，切歌或退出时补报尾段；关闭后立即停止累计。").
 			FontSize(fz(11.5)).TextColor(t.TextMuted).MaxLines(2)
 
+		// 本地音乐缓存：播放过的整曲加密落盘（<配置目录>/cache/music/），
+		// 弱网重播免回源。密钥拆成磁盘半种 + 前端半种，只拿磁盘解不开。
+		a.localCacheStatusRow(c)
+		if a.Conf.Bool("Playing.LocalCache", false) {
+			if st, err := a.API.MusicCacheStatus(); err == nil {
+				ui.Textf(c, "已缓存 %d 首，占用 %.0f MiB（上限 %.0f MiB）。缓存按播放时间自动清理。",
+					st.Items, float64(st.Bytes)/(1<<20), float64(st.LimitBytes)/(1<<20)).
+					FontSize(fz(11.5)).TextColor(t.TextMuted).MaxLines(2)
+			}
+		}
+		ui.Text(c, "缓存数据全程加密存储，不含歌曲名与曲目 ID；换账号登录会重置缓存。").
+			FontSize(fz(11.5)).TextColor(t.TextMuted).MaxLines(2)
+
 		ui.Divider(c)
 
 		// 上一首按钮
@@ -373,6 +390,16 @@ func (a *App) settingsAbout(c *ui.Context, t *ui.Theme) {
 			ui.Text(c, mpv.Detail).FontSize(fz(12)).TextColor(t.TextMuted).MaxLines(3)
 		}
 		ui.Text(c, "查找顺序：QAA_MPV 显式路径 → QAA_MPV_DIR 随包目录 → PATH。").
+			FontSize(fz(11.5)).TextColor(t.TextMuted).MaxLines(2)
+
+		// MPV 兼容模式（对齐上游 Quaver Music 的 MPVCompat）：mpv 只解码，
+		// 实时 PCM 由 Astra 自己出声——音频会话归属本应用，OBS/Discord 的
+		// 窗口音频捕获能直接看到。切换需重启应用（引擎随进程构造）。
+		ui.Text(c, "MPV 兼容模式").FontSize(fz(14)).FontWeight(700)
+		compat := a.Conf.Bool(CompatModeKey, false)
+		a.prefRow(c, "mpv 仅解码，由应用出声", func() bool { return compat },
+			func(v bool) { a.Conf.Set(CompatModeKey, v) })
+		ui.Text(c, "mpv 仅解码，由应用出声：OBS/Discord 等按窗口捕获时能录到 Astra 的声音。开启后重启应用生效；无声卡或平台不支持时自动回退原生直出。").
 			FontSize(fz(11.5)).TextColor(t.TextMuted).MaxLines(2)
 
 		ui.Divider(c)

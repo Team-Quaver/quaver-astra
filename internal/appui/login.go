@@ -17,6 +17,10 @@ type loginState struct {
 	auto     bool
 	gen      uint64 // 生成批次号，防止旧轮询写新状态
 	pollStop bool
+	// 快速登录（本机 QQ 客户端 SSO）：available=false 是「没检测到」而非错误。
+	quick        *backend.QQQuickAccount
+	quickChecked bool
+	quickTrying  bool
 }
 
 var loginChannels = []string{"mobile", "qq", "wx"}
@@ -26,6 +30,7 @@ func (a *App) loginView(c *ui.Context) {
 	t := c.Theme()
 	if !st.auto {
 		st.auto = true
+		a.detectQQQuick(st)
 		a.genQR(st)
 	}
 	ui.Column(c).Fill().Center().Gap(14).Children(func() {
@@ -54,12 +59,97 @@ func (a *App) loginView(c *ui.Context) {
 			}
 		})
 
+		a.quickLoginCard(c, st)
+
 		a.loginQRBox(c, st)
 
 		if st.status != "" {
 			ui.Text(c, st.status).FontSize(fz(12.5)).TextColor(t.TextMuted)
 		}
 	})
+}
+
+// detectQQQuick 后台探测本机 QQ 客户端；失败或不可用都静默降级二维码。
+func (a *App) detectQQQuick(st *loginState) {
+	go func() {
+		var acc backend.QQQuickAvailability
+		var err error
+		a.withAPILimit(func() { acc, err = a.API.LoginQQQuickDetect() })
+		a.update(func() {
+			if st.quickChecked {
+				return
+			}
+			st.quickChecked = true
+			if err == nil && acc.Available {
+				st.quick = &backend.QQQuickAccount{UIN: acc.UIN, Nickname: acc.Nickname, Avatar: acc.Avatar}
+			}
+		})
+	}()
+}
+
+// quickLoginCard 登录页顶部的「一键登录」入口：展示本机 QQ 账号，
+// 点击即用 clientkey 兑换 QQ 音乐凭证，全程不打开登录页。
+func (a *App) quickLoginCard(c *ui.Context, st *loginState) {
+	t := c.Theme()
+	if !st.quickChecked {
+		return
+	}
+	if st.quick == nil {
+		return
+	}
+	card := ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(12).Padding(12, 16).
+		Radius(12).Background(t.SurfaceHover).Border(1, t.Border)
+	card.Children(func() {
+		if bmp := a.Covers.Get(st.quick.Avatar, a.invalidate); bmp != nil {
+			ui.Image(c, bmp).Size(40, 40).Fit(ui.Cover).Radius(20)
+		} else {
+			ui.Box(c).Size(40, 40).Radius(20).Background(t.Border).Center().Children(func() {
+				ui.Text(c, st.quick.Nickname[:1]).FontSize(fz(15)).FontWeight(700)
+			})
+		}
+		ui.Column(c).Grow(1).Gap(2).Children(func() {
+			ui.Text(c, "检测到本机 QQ：").FontSize(fz(12)).TextColor(t.TextMuted)
+			ui.Text(c, st.quick.Nickname).FontSize(fz(14)).FontWeight(700).SingleLine()
+		})
+		if st.quickTrying {
+			ui.Spinner(c)
+		} else {
+			primaryBtn(c, "一键登录", func() { a.startQuickLogin(st) })
+		}
+	})
+}
+
+// startQuickLogin 用本机 clientkey 换 QQ 音乐凭证；clientkey 是一次性短寿命
+// 凭据，失败直接提示重试，不做服务端缓存。
+func (a *App) startQuickLogin(st *loginState) {
+	if st.quickTrying {
+		return
+	}
+	st.quickTrying = true
+	uin := st.quick.UIN
+	gen := st.gen
+	go func() {
+		var err error
+		a.withAPILimit(func() { err = a.API.LoginQQQuick(uin) })
+		a.update(func() {
+			st.quickTrying = false
+			if gen != st.gen {
+				return
+			}
+			if err != nil {
+				st.status = "快速登录失败：" + err.Error()
+				return
+			}
+			st.status = "登录成功"
+			st.pollStop = true
+			a.PL.RefreshUser()
+			if a.Router.CanGoBack() {
+				a.Router.Back()
+			} else {
+				a.Router.Push("/")
+			}
+		})
+	}()
 }
 
 func (a *App) loginQRBox(c *ui.Context, st *loginState) {

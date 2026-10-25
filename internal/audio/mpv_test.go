@@ -399,9 +399,9 @@ func TestParseMPVVersion(t *testing.T) {
 		{"", 0, 0, false, false},
 	}
 	for _, c := range cases {
-		major, minor, ok := parseMPVVersion(c.in)
+		major, minor, ok := ParseMPVVersion(c.in)
 		if ok != c.ok || (ok && (major != c.major || minor != c.minor)) {
-			t.Errorf("parseMPVVersion(%q) = %d,%d,%v，期望 %d,%d,%v", c.in, major, minor, ok, c.major, c.minor, c.ok)
+			t.Errorf("ParseMPVVersion(%q) = %d,%d,%v，期望 %d,%d,%v", c.in, major, minor, ok, c.major, c.minor, c.ok)
 		}
 		if got := loadfileWantsIndex(c.in); got != c.wantIndex {
 			t.Errorf("loadfileWantsIndex(%q) = %v，期望 %v", c.in, got, c.wantIndex)
