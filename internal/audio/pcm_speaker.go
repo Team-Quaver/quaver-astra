@@ -25,11 +25,15 @@ const (
 	pcmChannels = 2
 )
 
-// newSpeakerFor 返回当前平台可用的实时输出。name 保留给将来的显式选择。
+// newSpeakerFor 返回当前平台可用的实时输出。Linux 上默认 PipeWire/JACK
+// （都讲 PulseAudio native 协议，走同一份纯 Go 客户端），显式 "alsa" 才
+// 强制 hw 直通；其余平台只有一个出口，name 忽略。
 func newSpeakerFor(name string) (pcmSpeaker, error) {
 	switch name {
-	case "", "auto", "alsa":
+	case "", "auto", "pipewire", "jack", "pulse":
 		return newDefaultSpeaker()
+	case "alsa":
+		return newALSASpeakerForced()
 	default:
 		return nil, fmt.Errorf("pcm: 不支持的音频输出 %q", name)
 	}
@@ -37,6 +41,13 @@ func newSpeakerFor(name string) (pcmSpeaker, error) {
 
 // speakerFactory 是各平台实现挂接点（见 pcm_speaker_*.go）。
 var speakerFactory func() (pcmSpeaker, error)
+
+// newALSASpeakerForced 是显式 "alsa" 的分派点：Linux 由
+// pcm_speaker_alsa.go 提供（强制 hw 直通，绕过 Pulse）；其他平台没有
+// ALSA，直接报不支持。
+var newALSASpeakerForced = func() (pcmSpeaker, error) {
+	return nil, errors.New(`pcm: 当前平台不支持音频输出 "alsa"`)
+}
 
 func newDefaultSpeaker() (pcmSpeaker, error) {
 	if speakerFactory == nil {

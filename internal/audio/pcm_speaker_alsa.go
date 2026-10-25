@@ -206,9 +206,12 @@ func newALSASpeaker() (pcmSpeaker, error) {
 	return s, nil
 }
 
-// ALSA 是 Linux 上唯一的实时出口；挂到 pcm_speaker.go 的平台分派点。
+// ALSA hw 直通是 Linux 的兜底/显式选择出口。默认分派点在
+// pcm_speaker_pulse.go 的 init（Pulse 优先、ALSA 兜底）；用户显式点名
+// "alsa" 时经 newALSASpeakerForced 强制走这里，绕过 Pulse。
 func init() {
 	speakerFactory = func() (pcmSpeaker, error) { return newALSASpeaker() }
+	newALSASpeakerForced = newALSASpeaker
 }
 
 // openALSAPCM 找第一个可用的 playback 设备（card 升序、device 升序）。
