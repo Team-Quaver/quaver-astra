@@ -2,6 +2,7 @@ package appui
 
 import (
 	"encoding/base64"
+	"fmt"
 	"time"
 
 	"github.com/Team-Quaver/quaver-astra/internal/backend"
@@ -33,39 +34,51 @@ func (a *App) loginView(c *ui.Context) {
 		a.detectQQQuick(st)
 		a.genQR(st)
 	}
-	ui.Column(c).Fill().Center().Gap(14).Children(func() {
-		ui.Text(c, "登录 QQ 音乐").FontSize(fz(22)).FontWeight(800)
-		ui.Text(c, "扫码后凭证只驻留在本机后端内存中").FontSize(fz(12.5)).TextColor(t.TextMuted)
+	// 入场走路由页口径（motion.go）：整页淡入上浮，块间 40ms 错峰。
+	a.pageEnter(c, ui.Column(c).Fill().Center().Gap(14)).Children(func() {
+		head := ui.Column(c).FillWidth().Center().Gap(3)
+		head.Children(func() {
+			ui.Text(c, "登录 QQ 音乐").FontSize(fz(22)).FontWeight(800)
+			ui.Text(c, "扫码后凭证只驻留在本机后端内存中").FontSize(fz(12.5)).TextColor(t.TextMuted)
+		})
+		a.enterBlock(c, 0, head)
 
-		seg := ui.Row(c).Gap(6).Padding(4).Radius(10).Background(t.SurfaceHover)
-		seg.Children(func() {
-			for i, ch := range []string{"手机", "QQ", "微信"} {
-				idx := i
-				btn := ui.ButtonBase(c).Padding(6, 16).Radius(8)
-				btn.Children(func() {
-					ui.Text(c, ch).FontSize(fz(13))
-				})
-				if idx == st.channel {
-					btn.Background(t.Surface).Shadow(0, 1, 3, 0, ui.RGBA(0, 0, 0, 0.1))
-				}
-				if btn.Clicked() {
-					if st.channel != idx {
-						st.channel = idx
-						st.qr = nil
-						st.expired = false
-						st.gen++
+		mid := ui.Column(c).FillWidth().Center().Gap(14)
+		mid.Children(func() {
+			seg := ui.Row(c).Gap(6).Padding(4).Radius(10).Background(t.SurfaceHover)
+			seg.Children(func() {
+				for i, ch := range []string{"手机", "QQ", "微信"} {
+					idx := i
+					btn := ui.ButtonBase(c).Padding(6, 16).Radius(8)
+					btn.Children(func() {
+						ui.Text(c, ch).FontSize(fz(13))
+					})
+					if idx == st.channel {
+						btn.Background(t.Surface).Shadow(0, 1, 3, 0, ui.RGBA(0, 0, 0, 0.1))
+					}
+					if btn.Clicked() {
+						if st.channel != idx {
+							st.channel = idx
+							st.qr = nil
+							st.expired = false
+							st.gen++
+						}
 					}
 				}
+			})
+
+			a.quickLoginCard(c, st)
+		})
+		a.enterBlock(c, 1, mid)
+
+		tail := ui.Column(c).FillWidth().Center().Gap(10)
+		tail.Children(func() {
+			a.loginQRBox(c, st)
+			if st.status != "" {
+				ui.Text(c, st.status).FontSize(fz(12.5)).TextColor(t.TextMuted)
 			}
 		})
-
-		a.quickLoginCard(c, st)
-
-		a.loginQRBox(c, st)
-
-		if st.status != "" {
-			ui.Text(c, st.status).FontSize(fz(12.5)).TextColor(t.TextMuted)
-		}
+		a.enterBlock(c, 2, tail)
 	})
 }
 
@@ -97,26 +110,35 @@ func (a *App) quickLoginCard(c *ui.Context, st *loginState) {
 	if st.quick == nil {
 		return
 	}
-	card := ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(12).Padding(12, 16).
-		Radius(12).Background(t.SurfaceHover).Border(1, t.Border)
+	// 昵称可空（后端只保证 available=false 才不算错误），空值回退通用名；
+	// 头像走 ui.Avatar，首字符兜底按字符取，不踩中文昵称的字节切片。
+	name := st.quick.Nickname
+	if name == "" {
+		name = "QQ 用户"
+	}
+	// 身份卡对齐主项目 .quick-card：整卡可点，居中栅格，64px 圆头像。
+	card := ui.ButtonBase(c).FillWidth().MaxWidth(460).AlignItems(ui.Center).Gap(14).
+		Padding(14, 16).Radius(12).Transition(hoverFade)
 	card.Children(func() {
-		if bmp := a.Covers.Get(st.quick.Avatar, a.invalidate); bmp != nil {
-			ui.Image(c, bmp).Size(40, 40).Fit(ui.Cover).Radius(20)
-		} else {
-			ui.Box(c).Size(40, 40).Radius(20).Background(t.Border).Center().Children(func() {
-				ui.Text(c, st.quick.Nickname[:1]).FontSize(fz(15)).FontWeight(700)
-			})
-		}
+		ui.Avatar(c, name, a.Covers.Get(st.quick.Avatar, a.invalidate)).Size(64, 64)
 		ui.Column(c).Grow(1).Gap(2).Children(func() {
-			ui.Text(c, "检测到本机 QQ：").FontSize(fz(12)).TextColor(t.TextMuted)
-			ui.Text(c, st.quick.Nickname).FontSize(fz(14)).FontWeight(700).SingleLine()
+			ui.Text(c, name).FontSize(fz(14)).FontWeight(700).SingleLine().Ellipsis("…")
+			uin := "本机已登录 QQ"
+			if st.quick.UIN != 0 {
+				uin = fmt.Sprintf("QQ 号 %d", st.quick.UIN)
+			}
+			ui.Text(c, uin).FontSize(fz(12.5)).TextColor(t.TextMuted).SingleLine()
 		})
 		if st.quickTrying {
 			ui.Spinner(c)
-		} else {
-			primaryBtn(c, "一键登录", func() { a.startQuickLogin(st) })
 		}
 	})
+	if card.Hovered() {
+		card.Background(t.SurfaceHover)
+	}
+	if card.Clicked() {
+		a.startQuickLogin(st)
+	}
 }
 
 // startQuickLogin 用本机 clientkey 换 QQ 音乐凭证；clientkey 是一次性短寿命
