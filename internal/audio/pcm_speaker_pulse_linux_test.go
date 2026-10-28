@@ -4,26 +4,26 @@ package audio
 
 import (
 	"math"
-	"os"
 	"testing"
 	"time"
 )
 
-// 环境守卫：只在有 PA socket 的 Linux 桌面上跑；CI/无头环境自动跳过。
-// 真机冒烟：要求本机有 PulseAudio/PipeWire socket，无头 CI 会因拨号失败退出。
-// 0.5s 音频应耗时约 0.5s——REQUEST 流控在按 sink 消费时钟背压。
+// TestPulseSpeakerSmoke 是真机冒烟：只在本机确实有 PulseAudio/PipeWire 服务器时跑，
+// 无头环境（CI 的 ubuntu runner 没有 PA socket，也没有 /dev/snd）自动跳过。
+//
+// 这里刻意直连 newPulseSpeaker()，不用 newSpeakerFor("")：后者在 Pulse 拨号失败时会
+// 兜底去开 ALSA hw 直通，于是"能不能跑"要看两台设备的脸色，失败时报的还是 ALSA 的
+// /dev/snd 错误（CI 上就是这么炸的）。Pulse 优先于 ALSA 的分派顺序改由 fake 服务器
+// 测试覆盖（TestPulseSpeakerFakeBackpressure），不依赖真声卡。
 func TestPulseSpeakerSmoke(t *testing.T) {
-	if os.Getenv("XDG_RUNTIME_DIR") == "" {
-		t.Skip("XDG_RUNTIME_DIR 未设置，无 PulseAudio 环境")
-	}
-	s, err := newSpeakerFor("")
+	s, err := newPulseSpeaker()
 	if err != nil {
-		t.Fatal("newSpeakerFor:", err)
-	}
-	if _, ok := s.(*pulseSpeaker); !ok {
-		t.Fatalf("expected pulseSpeaker, got %T", s)
+		t.Skipf("本机无可用 PulseAudio 服务器: %v", err)
 	}
 	defer s.Close()
+	if err := s.Start(); err != nil {
+		t.Fatal("Start:", err)
+	}
 	frames := pcmRate / 2
 	samples := make([]float32, frames*pcmChannels)
 	for i := 0; i < frames; i++ {

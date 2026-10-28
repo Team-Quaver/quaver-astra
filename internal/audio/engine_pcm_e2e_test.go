@@ -8,7 +8,8 @@ import (
 )
 
 // TestEngineRealPCMCompat 是 MPV 兼容模式的端到端冒烟：mpv --ao=pcm 解码
-// 进 FIFO，应用侧经 ALSA 出声。真机 + 有 mpv 才跑（QAA_TEST_MPV=1）。
+// 进 FIFO，应用侧经系统音频出口（Linux 上 Pulse 优先、ALSA 兜底）出声。
+// 真机 + 有 mpv 才跑（QAA_TEST_MPV=1）。
 func TestEngineRealPCMCompat(t *testing.T) {
 	if os.Getenv("QAA_TEST_MPV") != "1" {
 		t.Skip("设 QAA_TEST_MPV=1 开启真实 mpv 测试")
@@ -16,12 +17,13 @@ func TestEngineRealPCMCompat(t *testing.T) {
 	if _, err := mpvPath(); err != nil {
 		t.Skip("本机无 mpv")
 	}
-	if _, err := newALSASpeaker(); err != nil {
-		t.Skipf("无可用 ALSA 设备: %v", err)
-	} else {
-		// 探测用的设备立即还回去，引擎自己会再开一个。
-		// （speakerFactory 由 init 挂好，这里只验证环境。）
+	// 探测的是引擎真正会用的出口（不是只看 ALSA：PipeWire 桌面往往没有
+	// 可直通的 /dev/snd）。探测用的出口立即还回去，引擎自己会再开一个。
+	sp, err := newSpeakerFor(os.Getenv("QAA_PCM_SPEAKER"))
+	if err != nil {
+		t.Skipf("无可用音频输出: %v", err)
 	}
+	sp.Close()
 
 	wav := filepath.Join(t.TempDir(), "tone.wav")
 	if err := writeTestWAV(wav, 3); err != nil {
