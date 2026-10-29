@@ -294,46 +294,22 @@ func (a *App) foliaCurrentWords(c *ui.Context, t *ui.Theme, line player.TTMLLine
 	if w > 1800 {
 		size = 64
 	}
-	words := ui.Row(c).FillWidth().Wrap().GapX(0).GapY(4).Justify(align).
-		AlignItems(ui.Center)
-	words.Children(func() {
-		for i, word := range line.Words {
-			if word.Text == "" {
-				continue
-			}
-			fill := float32(0)
-			if i < len(fills) {
-				fill = fills[i]
-			}
-			col := ui.RGBA(255, 255, 255, 0.44)
-			if fill >= 1 {
-				col = ui.Hex("#ffffff")
-			} else if fill > 0 {
-				col = t.Accent.Mix(ui.Hex("#ffffff"), 0.35)
-			}
-			wordEl := ui.Text(c, word.Text).Font(a.lyricFontFamily()).FontSize(fz(size)).
-				FontWeight(800).TextColor(col).Shrink(0)
-			// The word being sung settles upward into the baseline. This is
-			// intentionally restrained: AMLL's spring is the motion source,
-			// not a bouncy per-letter effect.
-			if fill > 0 && fill < 1 {
-				wordEl.Translate(0, (1-fill)*9)
-			} else if fill <= 0 {
-				wordEl.Translate(0, 5)
-			}
-			if len(word.Ruby) > 0 {
-				// QRC kana stays part of the word, not a separate lyric line.
-				wordEl = ui.Column(c).Shrink(0).AlignItems(ui.Center).Gap(0).Children(func() {
-					ui.Text(c, rubyText(word.Ruby)).Font(a.lyricFontFamily()).FontSize(fz(size * 0.42)).
-						TextColor(ui.RGBA(255, 255, 255, 0.52)).Shrink(0)
-					ui.Text(c, word.Text).Font(a.lyricFontFamily()).FontSize(fz(size)).
-						FontWeight(800).TextColor(col).Shrink(0)
-				})
-			}
-			wordEl.Label(word.Text)
+	// A single shaped paragraph keeps the line's own word spacing, kerning
+	// and wrapping. Splitting it into Row children drops the QRC spacer
+	// words and turns Latin spaces into zero-width gaps.
+	ql := player.QrcLine{
+		Time: line.Time, Dur: line.Dur, Text: line.Text,
+		Trans: line.Trans, Roma: line.Roma, Words: line.Words,
+	}
+	a.karaokeRubyLine(c, ql, true, size, npFoliaLyricWidth(c), align, func(fill float32) ui.Color {
+		if fill >= 1 {
+			return ui.Hex("#ffffff")
 		}
-	})
-	words.Label(line.Text)
+		if fill > 0 {
+			return t.Accent.Mix(ui.Hex("#ffffff"), 0.35)
+		}
+		return ui.RGBA(255, 255, 255, 0.44)
+	}, true)
 }
 
 func (a *App) foliaTrackCard(c *ui.Context, t *ui.Theme, cur player.Song, source string) {

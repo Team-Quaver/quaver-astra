@@ -70,11 +70,11 @@ type App struct {
 	dark atomic.Bool
 
 	// enter 是路由页错峰入场的时钟；pos 把低频采样位置外推成每帧连续值；
-	// karaBuf/karaSpans 是逐字高亮的复用缓冲（每帧都要算，不该每帧分配）。
-	enter     enterState
-	pos       posSmoother
-	karaBuf   []float32
-	karaSpans []ui.Span
+	// karaBuf 是逐字进度的复用缓冲。歌词 spans 不能跨行复用：列表的绘制
+	// 回调到帧末才执行，后建的行会覆盖先建行的缓冲区。
+	enter   enterState
+	pos     posSmoother
+	karaBuf []float32
 
 	// npBlurKey/npBlurAt 是正在播放页模糊底图的换曲淡入时钟。
 	npBlurKey string

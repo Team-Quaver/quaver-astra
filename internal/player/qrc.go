@@ -61,6 +61,12 @@ type QrcWord struct {
 	Ruby []RubySpan // 词上方振假名；来自 QRC 的 [kana:...] 标签
 }
 
+// HasSpace 报告该词是否只是词与词之间的空白。QRC 里的空格通常单独成词，
+// 带自己的时间轴；它不参与逐字着色，但必须保留排版宽度。
+func (w QrcWord) HasSpace() bool {
+	return w.Text != "" && strings.TrimSpace(w.Text) == ""
+}
+
 // HasRuby 报告一行是否带词级振假名。
 func (l QrcLine) HasRuby() bool {
 	for _, w := range l.Words {

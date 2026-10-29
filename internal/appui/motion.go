@@ -261,17 +261,13 @@ func karaokeColor(fill float32) ui.Color {
 	return karaDim.Mix(karaLit, fill)
 }
 
-// karaokeLine 画当前句的逐字高亮。
-//
-// 走 Painter 而不是文本元素：MyGo 的文本元素只能整块着色，逐字高亮却要求
-// 同一行里每个词各自一个颜色。这里用 RichText 的 span 做，一个词一个 span。
-//
-// 宽度必须由视图算好传进来（npLyricWidth），量高度和画用的是同一个宽度，
-// 换行才会一致；Box 没有子元素就没有内在高度，高度也得这么量出来。
+// karaokeLine 画当前句的逐字高亮。RichText 把整句作为一个段落排版，
+// 词间空格、西文 kerning 和换行都交给同一个文本布局；按词拆成 Row 会
+// 丢掉空格宽度，也会让逐字绘制与普通文本行使用不同的行高。
 //
 // 帧驱动：正在唱的这句每帧都要重算，所以叫的是 view 层的 c.AnimationFrame()
 // ——p.AnimationFrame() 只重绘不重跑视图，span 颜色会冻在上一帧。
-func (a *App) karaokeLine(c *ui.Context, ql player.QrcLine, size float32, width float32) {
+func (a *App) karaokeLine(c *ui.Context, ql player.QrcLine, size float32, align ui.Align) {
 	pos := a.lyricPos(c)
 	// 只在「正在播且这句还没唱完」时逐帧推进：暂停时位置不再变化，再叫帧
 	// 就是白烧 CPU（窗口会一直以为自己有东西在动）。
@@ -281,31 +277,150 @@ func (a *App) karaokeLine(c *ui.Context, ql player.QrcLine, size float32, width 
 	fills := ql.WordFills(pos, a.karaBuf[:0])
 	a.karaBuf = fills
 
-	spans := a.karaSpans[:0]
-	for i, w := range ql.Words {
+	spans, _ := a.qrcWordSpans(ql.Words, fills, size, func(fill float32) ui.Color {
+		return karaokeColor(fill)
+	})
+	if len(spans) == 0 {
+		return
+	}
+	ui.RichText(c, spans...).Font(a.lyricFontFamily()).FontSize(fz(size)).
+		TextAlign(align).Label(ql.Text)
+}
+
+// karaokeRubyLine lays out a whole lyric line once, colors its words from
+// the word timeline, and draws QRC ruby above the word rectangles of that
+// same layout. It is the shared implementation for both now-playing
+// layouts: keeping the base line as one paragraph preserves Latin spaces,
+// kerning and wrap points, while shaping first gives the ruby exact word
+// positions instead of a second, differently wrapped row of word boxes.
+func (a *App) karaokeRubyLine(c *ui.Context, ql player.QrcLine, current bool, size float32, width float32, align ui.Align, colorAt func(float32) ui.Color, shadow bool) {
+	pos := a.lyricPos(c)
+	if current && a.PL.Playing() && pos < ql.End() {
+		c.AnimationFrame()
+	}
+	fills := ql.WordFills(pos, a.karaBuf[:0])
+	a.karaBuf = fills
+
+	spans, starts := a.qrcWordSpans(ql.Words, fills, size, colorAt)
+	if len(spans) == 0 {
+		return
+	}
+
+	font := ui.Font{Family: a.lyricFontFamily(), Size: fz(size), Weight: 800}
+	layout := ui.ShapeRichTextWith(spans, font, ui.TextShape{Width: width, Align: align})
+	_, h := layout.Size()
+	rubySize := fz(size * 0.45)
+	rubyH := float32(0)
+	if ql.HasRuby() {
+		m := font.Metrics()
+		rubyH = m.Ascent + m.Descent
+	}
+
+	label := ql.Text
+	for _, w := range ql.Words {
+		if ruby := rubyText(w.Ruby); ruby != "" {
+			label += " " + ruby
+		}
+	}
+	lineH := h
+	rowH := lineH
+	if ql.HasRuby() {
+		rowH = lineH * 2
+	}
+	box := ui.Box(c).FillWidth().Height(rowH).Role(ui.RoleText).Label(label)
+	box.Draw(func(p *ui.Painter, r ui.Rect) {
+		baseY := r.Y + rubyH
+		if shadow {
+			shadowSpans := make([]ui.Span, 0, len(spans))
+			for _, sp := range spans {
+				sp.Color = ui.RGBA(0, 0, 0, 0.34)
+				shadowSpans = append(shadowSpans, sp)
+			}
+			p.RichText(r.X, baseY+8, width, shadowSpans...)
+		}
+		boxX := r.X
+		lw, _ := layout.Size()
+		switch align {
+		case ui.Center:
+			boxX += (r.W - lw) / 2
+		case ui.End:
+			boxX += r.W - lw
+		}
+		p.RichText(boxX, baseY, width, spans...)
+
+		rubyIndex := 0
+		for _, w := range ql.Words {
+			ruby := rubyText(w.Ruby)
+			if w.HasSpace() {
+				continue
+			}
+			if ruby == "" {
+				rubyIndex++
+				continue
+			}
+			if rubyIndex >= len(starts) {
+				continue
+			}
+			start := textRuneOffset(spans, starts[rubyIndex])
+			end := start + len([]rune(w.Text))
+			rubyIndex++
+			startCaret := layout.CaretAt(ui.TextCaretPosition{Index: start})
+			endCaret := layout.CaretAt(ui.TextCaretPosition{Index: end})
+			x := startCaret.X
+			if endCaret.Y == startCaret.Y && endCaret.X > startCaret.X {
+				x = (startCaret.X + endCaret.X) / 2
+			}
+			rubySpan := ui.Span{
+				Text:  ruby,
+				Font:  a.lyricFontFamily(),
+				Size:  rubySize,
+				Color: ui.RGBA(255, 255, 255, 0.52),
+			}
+			if current {
+				rubySpan.Color = karaokeColor(rubyFill(w.Ruby, pos)).Alpha(0.78)
+			}
+			rw, _ := p.MeasureText(0, rubySpan)
+			p.RichText(boxX+x-rw/2, r.Y+startCaret.Y, 0, rubySpan)
+		}
+	})
+}
+
+func textRuneOffset(spans []ui.Span, spanIndex int) int {
+	n := 0
+	for i := 0; i < spanIndex && i < len(spans); i++ {
+		n += len([]rune(spans[i].Text))
+	}
+	return n
+}
+
+// qrcWordSpans turns QRC words into one paragraph's spans. Space-only words
+// stay in the span list: they carry the advance that separates Latin words.
+// starts records the first span of each word so ruby can locate its base
+// word in the shared layout.
+func (a *App) qrcWordSpans(words []player.QrcWord, fills []float32, size float32, colorAt func(float32) ui.Color) ([]ui.Span, []int) {
+	spans := make([]ui.Span, 0, len(words))
+	starts := make([]int, 0, len(words))
+	for i, w := range words {
 		if w.Text == "" {
 			continue
 		}
+		fill := float32(0)
+		if i < len(fills) {
+			fill = fills[i]
+		}
+		idx := len(spans)
 		spans = append(spans, ui.Span{
 			Text:   w.Text,
 			Font:   a.lyricFontFamily(),
 			Size:   fz(size),
 			Weight: 800,
-			Color:  karaokeColor(fills[i]),
+			Color:  colorAt(fill),
 		})
+		if !w.HasSpace() {
+			starts = append(starts, idx)
+		}
 	}
-	a.karaSpans = spans
-	if len(spans) == 0 {
-		return
-	}
-	_, h := c.MeasureText(width, spans...)
-
-	// 逐字行是纯绘制，没有文本元素了——读屏与测试就靠 Label 认出这一行，
-	// 别让逐字高亮把歌词从无障碍树里抹掉。
-	ui.Box(c).FillWidth().Height(h).Role(ui.RoleText).Label(ql.Text).
-		Draw(func(p *ui.Painter, r ui.Rect) {
-			p.RichText(r.X, r.Y, width, spans...)
-		})
+	return spans, starts
 }
 
 // qrcRubyLine 画带振假名（QRC [kana:]）的逐字歌词行。

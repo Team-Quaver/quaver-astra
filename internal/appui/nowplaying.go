@@ -51,6 +51,17 @@ func npListPadding(c *ui.Context) float32 {
 	return pad
 }
 
+// npFoliaLyricWidth is the usable text width of the 辞曲 stage: its content
+// column is padded 54px on each side, the same as foliaStage.
+func npFoliaLyricWidth(c *ui.Context) float32 {
+	w, _ := c.Size()
+	v := w - 108
+	if v < 120 {
+		v = 120
+	}
+	return v
+}
+
 // nowPlaying 是正在播放页：绝对定位覆盖内容区（播放条仍在其下方可见）。
 //
 // 动效（对齐主项目 .np）：整体上滑 + 淡入，.34s cubic-bezier(.32,.72,.24,1)；
@@ -258,9 +269,11 @@ func (a *App) lyricColumnAMLLLine(c *ui.Context, t *ui.Theme, line player.TTMLLi
 		}
 		switch {
 		case current && ql.HasRuby():
-			a.qrcRubyLine(c, ql, true, size)
+			a.karaokeRubyLine(c, ql, true, size, npLyricWidth(c), align, func(fill float32) ui.Color {
+				return karaokeColor(fill)
+			}, false)
 		case current && len(line.Words) > 0:
-			a.karaokeLine(c, ql, size, npLyricWidth(c))
+			a.karaokeLine(c, ql, size, align)
 		default:
 			ui.Text(c, line.Text).Font(a.lyricFontFamily()).FontSize(fz(size)).
 				FontWeight(500).TextColor(ui.Hex("#ffffff")).TextAlign(align)
@@ -313,7 +326,12 @@ func (a *App) lyricColumnLine(c *ui.Context, line player.LyricLine, index int) {
 		case hasQRC && qrcLine.HasRuby():
 			// 日文 QRC 的振假名挂在词上：即使不是当前句也画在词上方，
 			// 这是歌词正文的一部分，不受翻译/音译档位影响。
-			a.qrcRubyLine(c, qrcLine, isCur, size)
+			a.karaokeRubyLine(c, qrcLine, isCur, size, npLyricWidth(c), ui.Start, func(fill float32) ui.Color {
+				if !isCur {
+					return ui.Hex("#ffffff")
+				}
+				return karaokeColor(fill)
+			}, false)
 		case isCur && a.karaokeLineAt(c, index, size):
 			// 已经由逐字绘制接管。
 		default:
@@ -352,7 +370,7 @@ func (a *App) karaokeLineAt(c *ui.Context, index int, size float32) bool {
 	if !ok || len(ql.Words) == 0 {
 		return false
 	}
-	a.karaokeLine(c, ql, size, npLyricWidth(c))
+	a.karaokeLine(c, ql, size, ui.Start)
 	return true
 }
 
