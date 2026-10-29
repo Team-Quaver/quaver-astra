@@ -1,6 +1,8 @@
 package appui
 
 import (
+	"fmt"
+
 	"github.com/Team-Quaver/quaver-astra/internal/audio"
 	"github.com/Team-Quaver/quaver-astra/internal/player"
 
@@ -15,6 +17,8 @@ type settingsState struct {
 	lyricFontDraft string
 	accentDraft    ui.Color
 	draftsLoaded   bool
+	scroll         ui.ScrollState
+	scrollTab      int
 }
 
 // CompatModeKey 是「MPV 兼容模式」的配置键：为老版本 mpv（<0.38）禁用
@@ -62,16 +66,22 @@ func (a *App) settingsView(c *ui.Context) {
 	a.pageEnter(c, ui.Column(c).Fill().Padding(20, 24, 24, 24).Gap(14)).Children(func() {
 		ui.Text(c, "设置").FontSize(fz(24)).FontWeight(800)
 		ui.Tabs(c, &st.tab, "外观", "播放", "快捷键", "关于")
-		switch st.tab {
-		case appearanceTab:
-			a.settingsAppearance(c, t)
-		case playbackTab:
-			a.settingsPlayback(c, t)
-		case hotkeysTab:
-			a.hotkeysSettings(c, t)
-		default:
-			a.settingsAbout(c, t)
+		if st.tab != st.scrollTab {
+			st.scroll = ui.ScrollState{}
+			st.scrollTab = st.tab
 		}
+		ui.Scroll(c).Grow(1).FillWidth().TrackScroll(&st.scroll).Children(func() {
+			switch st.tab {
+			case appearanceTab:
+				a.settingsAppearance(c, t)
+			case playbackTab:
+				a.settingsPlayback(c, t)
+			case hotkeysTab:
+				a.hotkeysSettings(c, t)
+			default:
+				a.settingsAbout(c, t)
+			}
+		})
 	})
 }
 
@@ -132,6 +142,58 @@ func (a *App) settingsAppearance(c *ui.Context, t *ui.Theme) {
 			}
 			ui.Text(c, "翻译优先时缺翻译回落音译；音译优先时缺音译回落翻译。").
 				FontSize(fz(11.5)).TextColor(t.TextMuted).MaxLines(2)
+		})
+
+		ui.Text(c, "正在播放与歌词").FontSize(fz(14)).FontWeight(700)
+		stageLabels := []string{"经典双栏", "辞曲舞台（沉浸式）"}
+		stageKeys := []string{"classic", "folia"}
+		stageLabel := stageLabels[0]
+		if a.lyricStage() == "folia" {
+			stageLabel = stageLabels[1]
+		}
+		stageSel := ui.Select(c, &stageLabel, stageLabels).Width(280)
+		if stageSel.Changed() {
+			for i, label := range stageLabels {
+				if label == stageLabel {
+					a.setLyricStage(stageKeys[i])
+					break
+				}
+			}
+		}
+		ui.Text(c, "辞曲舞台以歌词排版为主，保留封面氛围、逐字发光与多声部层次；随窗口尺寸自动收敛。").
+			FontSize(fz(11.5)).TextColor(t.TextMuted).MaxLines(2)
+
+		a.prefRow(c, "自动匹配 AMLL TTML 逐字歌词", func() bool { return a.amllEnabled() }, func(v bool) {
+			a.Conf.Set(amllAutoKey, v)
+			a.invalidate()
+		})
+		ui.Text(c, "按歌曲 mid 匹配 AMLL TTML DB，本地缓存后离线可用；没有 TTML 时自动回退 QQ 音乐 QRC。").
+			FontSize(fz(11.5)).TextColor(t.TextMuted).MaxLines(2)
+
+		ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(10).Children(func() {
+			btn := ui.ButtonBase(c).Padding(7, 12).Radius(8).Border(1, t.Border).Transition(hoverFade)
+			btn.Children(func() { ui.Text(c, "载入当前歌曲 TTML…").FontSize(fz(12.5)) })
+			if btn.Hovered() {
+				btn.Background(t.SurfaceHover)
+			}
+			if btn.Clicked() {
+				a.pickAMLLFile()
+			}
+			if cur, ok := a.PL.Current(); ok {
+				entry := a.amllFor(cur.Mid)
+				status := "尚未匹配"
+				switch entry.state {
+				case "loading":
+					status = "匹配中…"
+				case "ok":
+					status = fmt.Sprintf("%d 行 · %s", len(entry.lines), entry.source)
+				case "none":
+					status = "库中没有这首的 TTML"
+				case "error":
+					status = "匹配失败：" + entry.err
+				}
+				ui.Text(c, status).FontSize(fz(11)).TextColor(t.TextMuted).MaxLines(2)
+			}
 		})
 
 		ui.Divider(c)

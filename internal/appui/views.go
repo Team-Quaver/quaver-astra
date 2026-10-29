@@ -48,18 +48,14 @@ type homeState struct {
 func (a *App) homeView(c *ui.Context) {
 	st := &a.home
 	a.ensureHome()
-	t := c.Theme()
 
-	a.pageEnter(c, ui.Scroll(c).Fill().Padding(20, 24, 28, 24).Gap(22)).Children(func() {
-		ui.Column(c).FillWidth().Gap(3).Children(func() {
-			ui.Text(c, "首页").FontSize(fz(26)).FontWeight(800)
-			ui.Text(c, "从无限电台、新歌与歌单开始，开启今日").FontSize(fz(12.5)).TextColor(t.TextMuted)
-		})
+	a.pageEnter(c, ui.Scroll(c).Fill().Padding(24, 28, 30, 28).Gap(28)).Children(func() {
+		a.homeHeader(c)
 
 		// 快速开始 + 新歌速递。宽屏双栏，窄屏自动换行。
 		lead := ui.Row(c).FillWidth().Wrap().GapX(18).GapY(18).AlignItems(ui.Stretch)
 		lead.Children(func() {
-			a.homeRadioCard(c)
+			a.homeRadioCard(c, st)
 			a.homeNewSongs(c, st)
 		})
 
@@ -69,45 +65,104 @@ func (a *App) homeView(c *ui.Context) {
 	})
 }
 
+// homeHeader 把首页从“后台仪表盘”拉回一张有日期的听歌桌面：
+// 早上、下午与深夜各有自己的问候，右侧只留日期和星期，不放无意义的
+// 统计数字。它是页面里唯一的大字号标题，下面各区围绕它降一级。
+func (a *App) homeHeader(c *ui.Context) {
+	t := c.Theme()
+	now := time.Now()
+	name := ""
+	if a.PL.LoggedIn() {
+		if me := a.PL.Me(); me.Name != "" {
+			name = "，" + me.Name
+		}
+	}
+	greeting := homeGreeting(now.Hour()) + name
+	weekday := [...]string{"星期日", "星期一", "星期二", "星期三", "星期四", "星期五", "星期六"}[int(now.Weekday())]
+
+	ui.Row(c).FillWidth().AlignItems(ui.End).Gap(18).Children(func() {
+		ui.Column(c).Grow(1).Gap(5).Children(func() {
+			ui.Row(c).AlignItems(ui.Center).Gap(10).Children(func() {
+				ui.Text(c, "ASTRA / SIGNAL DESK").Font("monospace").FontSize(fz(9.5)).
+					FontWeight(700).TextColor(t.Accent)
+				ui.Box(c).Width(24).Height(1).Background(t.Accent.Alpha(0.55))
+				ui.Text(c, "从今天的推荐开始").FontSize(fz(10.5)).TextColor(t.TextMuted)
+			})
+			ui.Text(c, greeting).FontSize(fz(30)).FontWeight(800).SingleLine().Ellipsis("…")
+		})
+		ui.Column(c).AlignItems(ui.End).Gap(1).Children(func() {
+			ui.Text(c, now.Format("01 / 02")).Font("monospace").FontSize(fz(17)).FontWeight(800)
+			ui.Text(c, weekday).FontSize(fz(10.5)).TextColor(t.TextMuted)
+		})
+	})
+}
+
+func homeGreeting(h int) string {
+	switch {
+	case h < 5:
+		return "夜深了"
+	case h < 11:
+		return "早上好"
+	case h < 13:
+		return "中午好"
+	case h < 18:
+		return "下午好"
+	case h < 23:
+		return "晚上好"
+	default:
+		return "夜深了"
+	}
+}
+
 // homeRadioCard 是首页的无限电台入口：未开始时负责开台，播放中则直接
 // 展示当前曲并给出播放/暂停、下一首、收藏。进入详情页只恢复主舞台，
 // 不会打断队列——这正是电台的「退出页面保留」语义。
-func (a *App) homeRadioCard(c *ui.Context) {
-	t := c.Theme()
+func (a *App) homeRadioCard(c *ui.Context, st *homeState) {
 	cur, hasCur := a.PL.Current()
 	active := a.PL.RadioActive()
 	busy := a.PL.RadioLoading()
 	artURL := ""
 	if active && hasCur {
 		artURL = coverURL(cur.AlbumPmid, cur.AlbumMid, 300)
+	} else if len(st.recs) > 0 {
+		artURL = st.recs[0].Picurl
 	}
 	art := a.Covers.Get(artURL, a.invalidate)
 
-	card := ui.Row(c).Grow(2).Basis(480).MinWidth(420).MinHeight(212).Padding(18).Gap(18).
-		Radius(16).Background(t.Surface).Border(1, t.Border).AlignItems(ui.Center)
-	card.Children(func() {
-		box := ui.Box(c).Size(172, 172).Radius(14).Clip().Background(t.SurfaceHover).Shrink(0)
-		box.Children(func() {
-			if art != nil {
-				ui.Image(c, art).Fill().Fit(ui.Cover)
-			} else {
-				ui.Box(c).Fill().Center().Children(func() {
-					ui.Text(c, "∞").FontSize(fz(64)).FontWeight(800).TextColor(t.Accent)
-				})
-			}
-		})
+	heroBg := ui.Hex("#151b18")
+	heroInk := ui.Hex("#f7f1e4")
+	heroMuted := ui.RGBA(247, 241, 228, 0.64)
+	heroLine := ui.RGBA(247, 241, 228, 0.16)
 
-		ui.Column(c).Grow(1).Gap(7).Children(func() {
+	card := ui.Row(c).Grow(2).Basis(500).MinWidth(440).Height(236).Padding(22, 24).
+		Gap(22).Radius(16).Background(heroBg).Clip().AlignItems(ui.Center)
+	card.Draw(func(p *ui.Painter, r ui.Rect) {
+		// Orbital geometry gives the hero a Quaver/Astra signature without
+		// borrowing the traffic-light, glass and floating-pill language of
+		// the reference desktop shell.
+		cx, cy := r.X+r.W*0.8, r.Y+r.H*0.5
+		for _, rad := range []float32{58, 88, 118} {
+			var orbit ui.Path
+			orbit.Circle(cx, cy, rad)
+			p.StrokePath(&orbit, 1, ui.RGBA(25, 194, 216, 0.13))
+		}
+		p.Line(cx-96, cy, cx+96, cy, 1, ui.RGBA(247, 241, 228, 0.07))
+		p.Line(cx, cy-96, cx, cy+96, 1, ui.RGBA(247, 241, 228, 0.07))
+	})
+	card.Children(func() {
+		ui.Column(c).Grow(1).Basis(0).MinWidth(220).Gap(7).Children(func() {
 			ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(6).Children(func() {
-				ui.Text(c, "∞").FontSize(fz(14)).FontWeight(800).TextColor(t.Accent)
-				ui.Text(c, "无限电台").FontSize(fz(11.5)).FontWeight(700).TextColor(t.Accent)
+				ui.Text(c, "∞").FontSize(fz(16)).FontWeight(800).TextColor(ui.Hex("#19c2d8"))
+				ui.Text(c, "无限电台").FontSize(fz(11.5)).FontWeight(700).TextColor(ui.Hex("#19c2d8"))
+				ui.Text(c, "PICKED FOR YOU").Font("monospace").FontSize(fz(9)).
+					TextColor(heroMuted)
 				ui.Spacer(c)
 				if active && busy {
-					ui.Text(c, "正在续歌…").FontSize(fz(11)).TextColor(t.TextMuted)
+					ui.Text(c, "正在续歌…").FontSize(fz(10.5)).TextColor(heroMuted)
 				}
 			})
 			title := "猜你喜欢"
-			sub := "按你的口味持续播放"
+			sub := "按你的口味持续播放。没有列表尽头，只有下一首。"
 			if active && hasCur {
 				title = cur.DisplayName()
 				sub = cur.Artists
@@ -120,44 +175,84 @@ func (a *App) homeRadioCard(c *ui.Context) {
 			} else if e := a.PL.RadioError(); e != "" {
 				sub = e
 			}
-			ui.Text(c, title).FontSize(fz(21)).FontWeight(800).SingleLine().Ellipsis("…")
-			ui.Text(c, sub).FontSize(fz(12.5)).TextColor(t.TextMuted).SingleLine().Ellipsis("…")
+			ui.Text(c, title).FontSize(fz(29)).FontWeight(800).TextColor(heroInk).
+				SingleLine().Ellipsis("…")
+			ui.Text(c, sub).FontSize(fz(12.5)).TextColor(heroMuted).SingleLine().Ellipsis("…")
 			ui.Spacer(c)
 			ui.Row(c).FillWidth().Wrap().Gap(8).Children(func() {
 				if !active {
-					primaryBtn(c, "开始电台", func() { a.startRadioFromUI(true) })
+					heroBtn(c, "开始电台", true, heroInk, heroBg, heroLine, func() { a.startRadioFromUI(true) })
 				} else {
 					playLabel := "播放"
 					if a.PL.Playing() {
 						playLabel = "暂停"
 					}
-					primaryBtn(c, playLabel, func() { a.PL.PlayOrPause() })
-					plainBtn(c, "下一首", func() { a.PL.Next(false) })
+					heroBtn(c, playLabel, true, heroInk, heroBg, heroLine, func() { a.PL.PlayOrPause() })
+					heroBtn(c, "下一首", false, heroInk, heroBg, heroLine, func() { a.PL.Next(false) })
 					if hasCur {
 						loveLabel := "收藏"
 						if a.PL.IsLoved(cur.Mid) {
 							loveLabel = "已收藏"
 						}
-						plainBtn(c, loveLabel, func() { a.PL.ToggleLove(cur) })
+						heroBtn(c, loveLabel, false, heroInk, heroBg, heroLine, func() { a.PL.ToggleLove(cur) })
 					}
 				}
-				linkButton(c, "打开电台", func() { a.Router.Push("/guess") })
+				heroBtn(c, "打开电台", false, heroInk, heroBg, heroLine, func() { a.Router.Push("/guess") })
 			})
+		})
+
+		// The cover is a physical sleeve rather than a dashboard thumbnail.
+		// Two offset cards behind it imply a stack without making the page
+		// look like an Apple Music shelf.
+		visual := ui.Box(c).Width(212).Height(188).Shrink(0)
+		visual.Children(func() {
+			ui.Text(c, time.Now().Format("02")).Absolute().Right(2).Bottom(-42).
+				Font("monospace").FontSize(fz(126)).FontWeight(800).
+				TextColor(ui.RGBA(247, 241, 228, 0.045))
+			ui.Box(c).Absolute().Top(28).Right(32).Size(142, 142).Radius(12).
+				Background(ui.RGBA(25, 194, 216, 0.13)).Rotate(5)
+			ui.Box(c).Absolute().Top(24).Right(48).Size(142, 142).Radius(12).
+				Background(ui.RGBA(247, 241, 228, 0.08)).Rotate(-3)
+			box := ui.Box(c).Absolute().Top(20).Right(38).Size(146, 146).Radius(12).
+				Clip().Background(ui.RGBA(247, 241, 228, 0.1)).
+				Shadow(0, 14, 38, 0, ui.RGBA(0, 0, 0, 0.38))
+			box.Children(func() {
+				if art != nil {
+					ui.Image(c, art).Fill().Fit(ui.Cover)
+				} else {
+					ui.Box(c).Fill().Center().Children(func() {
+						ui.Text(c, "∞").FontSize(fz(64)).FontWeight(800).TextColor(ui.Hex("#19c2d8"))
+					})
+				}
+			})
+			status := "READY / 01"
+			if active && hasCur {
+				status = "ON AIR / 01"
+			}
+			ui.Text(c, status).Absolute().Left(2).Bottom(4).Font("monospace").
+				FontSize(fz(9)).FontWeight(700).TextColor(heroMuted)
 		})
 	})
 }
 
 func (a *App) homeNewSongs(c *ui.Context, st *homeState) {
 	t := c.Theme()
-	ui.Column(c).Grow(1).Basis(380).MinWidth(340).Gap(2).Children(func() {
+	panel := ui.Column(c).Grow(1).Basis(370).MinWidth(340).Height(236).
+		Padding(14).Radius(16).Background(t.Surface).Border(1, t.Border)
+	panel.Children(func() {
 		ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(8).Children(func() {
-			ui.Text(c, "新歌速递").FontSize(fz(15)).FontWeight(800).Grow(1)
+			ui.Column(c).Grow(1).Gap(0).Children(func() {
+				ui.Text(c, "新歌速递").FontSize(fz(15)).FontWeight(800)
+				ui.Text(c, "NEW RELEASES / DAILY").Font("monospace").FontSize(fz(8.5)).
+					TextColor(t.TextMuted)
+			})
 			if len(st.newsong) > 0 {
 				linkButton(c, "播放全部", func() { a.playListNow(st.newsong, 0) })
 			}
 		})
+		ui.Box(c).FillWidth().Height(1).Margin(8, 0, 4, 0).Background(t.Border.Alpha(0.7))
 		if st.loading && len(st.newsong) == 0 {
-			ui.Column(c).FillWidth().Center().Padding(36).Children(func() { ui.Spinner(c) })
+			ui.Column(c).FillWidth().Grow(1).Center().Children(func() { ui.Spinner(c) })
 			return
 		}
 		if len(st.newsong) == 0 {
@@ -165,13 +260,38 @@ func (a *App) homeNewSongs(c *ui.Context, st *homeState) {
 			if msg == "" {
 				msg = "暂时没有新歌"
 			}
-			ui.Text(c, msg).FontSize(fz(12.5)).TextColor(t.TextMuted).Padding(20)
+			ui.Column(c).FillWidth().Grow(1).Center().Children(func() {
+				ui.Text(c, msg).FontSize(fz(12)).TextColor(t.TextMuted)
+			})
 			return
 		}
-		for i := 0; i < len(st.newsong) && i < 6; i++ {
+		for i := 0; i < len(st.newsong) && i < 5; i++ {
 			a.compactSongRow(c, st.newsong, i)
 		}
 	})
+}
+
+// heroBtn is the in-hero action style: one warm paper button, the rest
+// quiet outlines. It deliberately avoids the bright accent fill used by
+// primary buttons elsewhere, so the radio's cover remains the loudest thing
+// in the card.
+func heroBtn(c *ui.Context, label string, primary bool, ink, ground, line ui.Color, onClick func()) {
+	b := ui.ButtonBase(c).Height(32).Padding(0, 13).Radius(8).Center().
+		Border(1, line).Transition(hoverFade)
+	text := ink
+	if primary {
+		b.Background(ink).Border(0, line)
+		text = ground
+	}
+	b.Children(func() {
+		ui.Text(c, label).FontSize(fz(12)).FontWeight(700).TextColor(text)
+	})
+	if !primary && b.Hovered() {
+		b.Background(ui.RGBA(247, 241, 228, 0.1))
+	}
+	if b.Clicked() {
+		onClick()
+	}
 }
 
 func (a *App) homeRecommendations(c *ui.Context, st *homeState) {
@@ -421,12 +541,19 @@ func (a *App) startRadioFromUI(autoplay bool) {
 func (a *App) compactSongRow(c *ui.Context, songs []player.Song, i int) {
 	t := c.Theme()
 	s := songs[i]
-	row := ui.Row(c).FillWidth().Height(40).PaddingX(10).Gap(10).AlignItems(ui.Center).Radius(8).
+	row := ui.Row(c).FillWidth().Height(34).PaddingX(4).Gap(10).AlignItems(ui.Center).Radius(7).
 		Transition(hoverFade)
 	row.Children(func() {
-		ui.Textf(c, "%02d", i+1).FontSize(fz(11)).TextColor(t.TextMuted).Width(22)
-		ui.Text(c, s.DisplayName()).FontSize(fz(13)).SingleLine().Ellipsis("…").Grow(1)
-		ui.Text(c, s.Artists).FontSize(fz(11.5)).TextColor(t.TextMuted).SingleLine().Ellipsis("…").Width(120).TextAlign(ui.End)
+		col := t.TextMuted
+		if i == 0 {
+			col = t.Accent
+		}
+		ui.Textf(c, "%02d", i+1).Font("monospace").FontSize(fz(10)).
+			FontWeight(700).TextColor(col).Width(22)
+		ui.Text(c, s.DisplayName()).FontSize(fz(12.5)).FontWeight(600).
+			SingleLine().Ellipsis("…").Grow(1)
+		ui.Text(c, s.Artists).FontSize(fz(10.5)).TextColor(t.TextMuted).
+			SingleLine().Ellipsis("…").Width(108).TextAlign(ui.End)
 	})
 	if row.Hovered() {
 		row.Background(t.SurfaceHover)

@@ -24,6 +24,15 @@ func Open(dir string) *Store {
 	return s
 }
 
+// Dir is the configuration directory holding quaver-astra.json and the
+// application's caches.
+func (s *Store) Dir() string {
+	if s == nil {
+		return ""
+	}
+	return filepath.Dir(s.path)
+}
+
 func (s *Store) Get(key string, def any) any {
 	s.mu.Lock()
 	defer s.mu.Unlock()

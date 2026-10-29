@@ -12,10 +12,10 @@ func TestWindowBackgroundFollowsForcedTheme(t *testing.T) {
 		theme string
 		want  string
 	}{
-		{"light", "#f7f7f8"},
-		{"dark", "#131417"},
-		{"system", "light-dark(#f7f7f8, #131417)"},
-		{"broken", "light-dark(#f7f7f8, #131417)"},
+		{"light", "#f3efe6"},
+		{"dark", "#101412"},
+		{"system", "light-dark(#f3efe6, #101412)"},
+		{"broken", "light-dark(#f3efe6, #101412)"},
 	}
 	for _, tc := range cases {
 		store.Set("Style.Theme", tc.theme)
@@ -23,7 +23,7 @@ func TestWindowBackgroundFollowsForcedTheme(t *testing.T) {
 			t.Errorf("theme %q: background %q, want %q", tc.theme, got, tc.want)
 		}
 	}
-	if got := WindowBackground(nil); got != "light-dark(#f7f7f8, #131417)" {
+	if got := WindowBackground(nil); got != "light-dark(#f3efe6, #101412)" {
 		t.Errorf("nil store: %q", got)
 	}
 }

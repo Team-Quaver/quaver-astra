@@ -1,6 +1,8 @@
 package appui
 
 import (
+	"fmt"
+	"strings"
 	"time"
 
 	"github.com/Team-Quaver/quaver-astra/internal/player"
@@ -70,36 +72,71 @@ func (a *App) nowPlaying(c *ui.Context, t *ui.Theme) {
 	np.Children(func() {
 		a.npBackdrop(c, coverLarge)
 
-		// 内容层：必须也是绝对定位。
-		//
-		// 根因（用户报的「正在播放页封面渲染透明化」）：MyGo 里 Absolute 子元素
-		// 绘制在流式子元素【之上】（ui/paint.go：先画 flow、再画 absolute，与
-		// CSS 定位元素的层叠关系一致）。背景层只做绝对定位的话，模糊封面图与
-		// 黑色遮罩就会压在歌词和封面上——封面看着像掺进背景里、半透明。
-		// 让内容层同样绝对定位，绘制顺序就回到「底图 → 遮罩 → 内容」；
-		// 关闭按钮建在最后，仍然最上。
-		content := ui.Row(c).Absolute().Fill().
-			Padding(npPadY, npPadX, npPadY, npPadX).Gap(npGap).AlignItems(ui.Center)
-		content.Children(func() {
-			a.lyricColumn(c, t)
-			a.npSide(c, t, cur, hasCur)
-		})
+		if a.lyricStage() == "folia" {
+			a.foliaStage(c, t, cur, hasCur)
+		} else {
+			// 内容层：必须也是绝对定位。
+			//
+			// 根因（用户报的「正在播放页封面渲染透明化」）：MyGo 里 Absolute 子元素
+			// 绘制在流式子元素【之上】（ui/paint.go：先画 flow、再画 absolute，与
+			// CSS 定位元素的层叠关系一致）。背景层只做绝对定位的话，模糊封面图与
+			// 黑色遮罩就会压在歌词和封面上——封面看着像掺进背景里、半透明。
+			// 让内容层同样绝对定位，绘制顺序就回到「底图 → 遮罩 → 内容」；
+			// 关闭按钮建在最后，仍然最上。
+			content := ui.Row(c).Absolute().Fill().
+				Padding(npPadY, npPadX, npPadY, npPadX).Gap(npGap).AlignItems(ui.Center)
+			content.Children(func() {
+				a.lyricColumn(c, t)
+				a.npSide(c, t, cur, hasCur)
+			})
+		}
 
-		// 右上关闭
-		closeBtn := ui.Box(c).Absolute().Top(14).Right(14).Size(30, 30).Radius(15).
-			Background(ui.RGBA(255, 255, 255, 0.12)).Center().Transition(hoverFade)
-		closeBtn.Children(func() {
-			ui.Icon(c, Icons["clear"]).FontSize(fz(15)).TextColor(ui.Hex("#ffffff")).AlignSelf(ui.Center)
-		})
-		if closeBtn.Hovered() {
-			closeBtn.Background(ui.RGBA(255, 255, 255, 0.22))
-		}
-		if closeBtn.Clicked() {
-			a.npOpen = false
-			a.npMoreOpen = false
-			a.npQInfoOpen = false
-		}
+		a.npTopControls(c)
 	})
+}
+
+// npTopControls keeps closing and the stage switch above both now-playing
+// layouts. The stage switch is deliberately visible rather than buried in
+// settings: it is the fastest way to compare the quiet split view with the
+// typography-led 辞曲 stage.
+func (a *App) npTopControls(c *ui.Context) {
+	stage := ui.Box(c).Absolute().Top(14).Right(54).Padding(4, 10).Radius(999).
+		Background(ui.RGBA(255, 255, 255, 0.12)).Center().Transition(hoverFade)
+	stage.Children(func() {
+		label := "辞曲"
+		if a.lyricStage() == "folia" {
+			label = "经典"
+		}
+		ui.Text(c, label).FontSize(fz(11.5)).FontWeight(700).TextColor(ui.Hex("#ffffff"))
+	})
+	if stage.Hovered() {
+		stage.Background(ui.RGBA(255, 255, 255, 0.22))
+	}
+	stage.Tooltip("切换正在播放布局")
+	stage.Label("切换正在播放布局")
+	if stage.Clicked() {
+		if a.lyricStage() == "folia" {
+			a.setLyricStage("classic")
+		} else {
+			a.setLyricStage("folia")
+		}
+	}
+
+	closeBtn := ui.Box(c).Absolute().Top(14).Right(14).Size(30, 30).Radius(15).
+		Background(ui.RGBA(255, 255, 255, 0.12)).Center().Transition(hoverFade)
+	closeBtn.Children(func() {
+		ui.Icon(c, Icons["clear"]).FontSize(fz(15)).TextColor(ui.Hex("#ffffff")).AlignSelf(ui.Center)
+	})
+	if closeBtn.Hovered() {
+		closeBtn.Background(ui.RGBA(255, 255, 255, 0.22))
+	}
+	closeBtn.Tooltip("关闭正在播放页")
+	closeBtn.Label("关闭正在播放页")
+	if closeBtn.Clicked() {
+		a.npOpen = false
+		a.npMoreOpen = false
+		a.npQInfoOpen = false
+	}
 }
 
 // npBackdrop 画正在播放页的背景两层：模糊封面底 + 轻度压暗遮罩。
@@ -133,6 +170,10 @@ func (a *App) npBackdrop(c *ui.Context, cover string) {
 
 // lyricColumn 左侧歌词列（行级歌词 + 翻译 + 跟随滚动）。
 func (a *App) lyricColumn(c *ui.Context, t *ui.Theme) {
+	if data := a.stageLyrics(); strings.HasPrefix(data.source, "AMLL") && len(data.lines) > 0 {
+		a.lyricColumnAMLL(c, t, data)
+		return
+	}
 	lines, state := a.PL.LyricLines()
 	cur := a.PL.LyricIndex(a.PL.Position())
 
@@ -168,6 +209,83 @@ func (a *App) lyricColumn(c *ui.Context, t *ui.Theme) {
 			}).Grow(1).Padding(pad, 0, pad, 0)
 		}
 	})
+}
+
+// lyricColumnAMLL renders a matched AMLL TTML lyric in the quiet split
+// layout. The Folia stage is the more expressive presentation, but TTML
+// should still improve the default layout: duet sides and background
+// vocals are visible here too.
+func (a *App) lyricColumnAMLL(c *ui.Context, t *ui.Theme, data stageLyricData) {
+	cur := stageIndexAt(data.lines, a.PL.Position())
+	if cur >= 0 && cur != a.lastLyricLine {
+		a.lastLyricLine = cur
+		a.npList.ScrollTo(cur, ui.Center)
+	}
+	ui.Column(c).Grow(1).Fill().Gap(8).Children(func() {
+		a.npList.Key = nil
+		a.npList.Label = func(i int) string { return data.lines[i].Text }
+		pad := npListPadding(c)
+		ui.List(c, &a.npList, len(data.lines), func(i int) {
+			a.lyricColumnAMLLLine(c, t, data.lines[i], i, i == cur)
+		}).Grow(1).Padding(pad, 0, pad, 0)
+	})
+}
+
+func (a *App) lyricColumnAMLLLine(c *ui.Context, t *ui.Theme, line player.TTMLLine, index int, current bool) {
+	align := ui.Start
+	if line.Agent == "v2" {
+		align = ui.End
+	}
+	scale := a.Conf.Float("Style.LyricScale", 100) / 100
+	size := 17 * float32(scale)
+	if current {
+		size = 20 * float32(scale)
+	}
+	row := ui.Column(c).FillWidth().Padding(6, 0).Gap(2).Radius(8).
+		Cursor(ui.CursorPointer).Transition(hoverFade)
+	if align == ui.End {
+		row.AlignItems(ui.End)
+	}
+	target := float32(0.42)
+	if current {
+		target = 1
+	}
+	row.Opacity(row.Animate(fmt.Sprintf("amll-line-%d", index), target, 260*time.Millisecond))
+	row.Children(func() {
+		ql := player.QrcLine{
+			Time: line.Time, Dur: line.Dur, Text: line.Text,
+			Trans: line.Trans, Roma: line.Roma, Words: line.Words,
+		}
+		switch {
+		case current && ql.HasRuby():
+			a.qrcRubyLine(c, ql, true, size)
+		case current && len(line.Words) > 0:
+			a.karaokeLine(c, ql, size, npLyricWidth(c))
+		default:
+			ui.Text(c, line.Text).Font(a.lyricFontFamily()).FontSize(fz(size)).
+				FontWeight(500).TextColor(ui.Hex("#ffffff")).TextAlign(align)
+		}
+		if aux := stageAux(line, a.PL.LyricAuxMode()); aux != "" {
+			col := ui.RGBA(255, 255, 255, 0.8)
+			if !current {
+				col = ui.RGBA(255, 255, 255, 0.55)
+			}
+			ui.Text(c, aux).Font(a.lyricFontFamily()).FontSize(fz(size * 0.7)).
+				TextColor(col).TextAlign(align)
+		}
+		if line.BackgroundText != "" {
+			ui.Text(c, line.BackgroundText).Font(a.lyricFontFamily()).FontSize(fz(size * 0.68)).
+				TextColor(t.Accent.Alpha(0.7)).TextAlign(align)
+		}
+	})
+	if row.Hovered() && !current {
+		row.Background(ui.RGBA(255, 255, 255, 0.055))
+	}
+	if row.Clicked() {
+		if d := a.PL.Duration(); d > 0 {
+			a.PL.SeekTo(line.Time / d)
+		}
+	}
 }
 
 // lyricColumnLine 是歌词列表的一行（与列表容器分开命名，便于单独维护行样式）。
@@ -287,6 +405,10 @@ func (a *App) npSide(c *ui.Context, t *ui.Theme, cur player.Song, hasCur bool) {
 			}
 			a.npMoreMenu(c, more)
 		})
+		if source := a.stageLyricSource(); source != "" {
+			ui.Text(c, "歌词源 · "+source).FontSize(fz(10.5)).
+				TextColor(ui.RGBA(255, 255, 255, 0.45)).SingleLine()
+		}
 	})
 }
 

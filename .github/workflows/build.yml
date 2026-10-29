@@ -284,6 +284,15 @@ jobs:
             "$VERSION" \
             out
 
+      - name: Validate Pacman metadata
+        run: |
+          set -euo pipefail
+          # `pacman -Qip` is the same metadata parser a user's pacman runs
+          # before install. It catches invalid/missing pkgrel at package
+          # build time instead of after a release is published.
+          docker run --rm -v "$PWD/out:/out:ro" archlinux:latest \
+            bash -lc 'pacman -Qip /out/*.pkg.tar.zst'
+
       - uses: actions/upload-artifact@v7
         with:
           name: release-system-${{ matrix.target }}

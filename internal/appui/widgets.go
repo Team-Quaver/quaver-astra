@@ -280,8 +280,10 @@ func (a *App) playListNow(songs []player.Song, i int) {
 
 // sectionHeader 是区块标题（右侧可选动作）。
 func sectionHeader(c *ui.Context, title string, action func()) {
+	t := c.Theme()
 	ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(8).Children(func() {
 		ui.Text(c, title).FontSize(fz(16)).FontWeight(800)
+		ui.Box(c).Width(22).Height(2).Background(t.Accent.Alpha(0.72)).Margin(0, 0, 0, 1)
 		ui.Spacer(c)
 		if action != nil {
 			action()

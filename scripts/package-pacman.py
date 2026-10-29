@@ -84,6 +84,7 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--name", required=True)
     parser.add_argument("--version", required=True)
+    parser.add_argument("--pkgrel", default="1", required=True)
     parser.add_argument("--arch", required=True)
     parser.add_argument("--desc", required=True)
     parser.add_argument("--url", required=True)
@@ -92,6 +93,8 @@ def main() -> None:
     parser.add_argument("--payload", required=True, type=Path)
     parser.add_argument("--output", required=True, type=Path)
     args = parser.parse_args()
+    if not args.pkgrel.isdigit():
+        parser.error(f"pkgrel must be a positive integer: {args.pkgrel}")
 
     payload = args.payload.resolve()
     if not payload.is_dir():
@@ -102,7 +105,10 @@ def main() -> None:
     pkginfo = "\n".join([
         "pkgname = " + args.name,
         "pkgbase = " + args.name,
-        "pkgver = " + args.version,
+        # Pacman's .PKGINFO stores the complete EVR without the epoch:
+        # pkgver-pkgrel. A bare "5" is rejected as an invalid package
+        # version, even though the filename itself is otherwise valid.
+        "pkgver = " + args.version + "-" + args.pkgrel,
         "pkgdesc = " + args.desc,
         "url = " + args.url,
         "builddate = 0",

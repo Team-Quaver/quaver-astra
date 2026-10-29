@@ -12,7 +12,9 @@ import (
 	"github.com/egoist/mygo/ui"
 )
 
-// Quaver 调色板（对齐主项目 ui/src/style.css 的 CSS 变量）。
+// Quaver 调色板：暖灰纸面 + 墨色文字，不再沿用系统设置页那种冷白玻璃感。
+// 这是 Astra 自己的视觉口径：像一张放在工作台上的唱片封套，而不是一块
+// 悬浮的 macOS 面板。
 type palette struct {
 	bg, card, side     ui.Color
 	ink, ink2          ui.Color
@@ -21,24 +23,24 @@ type palette struct {
 
 var (
 	palLight = palette{
-		bg:    ui.Hex("#f7f7f8"),
-		card:  ui.Hex("#ffffff"),
-		side:  ui.Hex("#ececec"),
-		ink:   ui.Hex("#1f2329"),
-		ink2:  ui.Hex("#6b7280"),
-		hover: ui.Hex("#e3e3e4"),
-		line:  ui.Hex("#d9d9db"),
-		heart: ui.Hex("#e8465a"),
+		bg:    ui.Hex("#f3efe6"),
+		card:  ui.Hex("#fbf8f1"),
+		side:  ui.Hex("#e9e3d7"),
+		ink:   ui.Hex("#1d201c"),
+		ink2:  ui.Hex("#686a61"),
+		hover: ui.Hex("#e7e1d5"),
+		line:  ui.Hex("#d4cdbf"),
+		heart: ui.Hex("#d94b54"),
 	}
 	palDark = palette{
-		bg:    ui.Hex("#131417"),
-		card:  ui.Hex("#232529"),
-		side:  ui.Hex("#1b1d21"),
-		ink:   ui.Hex("#e6e8ec"),
-		ink2:  ui.Hex("#a6adb8"),
-		hover: ui.Hex("#2e3138"),
-		line:  ui.Hex("#3a3d45"),
-		heart: ui.Hex("#e8465a"),
+		bg:    ui.Hex("#101412"),
+		card:  ui.Hex("#1a201c"),
+		side:  ui.Hex("#151a16"),
+		ink:   ui.Hex("#ece8dc"),
+		ink2:  ui.Hex("#9d9f94"),
+		hover: ui.Hex("#252c27"),
+		line:  ui.Hex("#374039"),
+		heart: ui.Hex("#ef666f"),
 	}
 )
 
@@ -312,7 +314,7 @@ func (a *App) buildTheme(c *ui.Context) *ui.Theme {
 	t.Text = p.ink
 	t.TextMuted = p.ink2
 	t.Danger = p.heart
-	t.Radius = 8
+	t.Radius = 10
 	// 强调色（含悬停/按下/选择/焦点环）统一从用户选择解析，避免某些
 	// 状态退回 MyGo 默认蓝。
 	accent, glow := a.configuredAccent(c)

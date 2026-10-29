@@ -71,6 +71,25 @@ func TestUIShots(t *testing.T) {
 	time.Sleep(450 * time.Millisecond)
 	shot(baseTester, "np-lyrics.png")
 
+	// 整个控制条即进度条：拖拽预览时已播放底色铺满条高，时间同步预览。
+	progressApp, progressTester := npTestApp(t, color.RGBA{R: 96, G: 148, B: 210, A: 255})
+	progressApp.seekDragging, progressApp.seekFrac = true, 0.42
+	time.Sleep(450 * time.Millisecond)
+	shot(progressTester, "np-progress.png")
+
+	// 辞曲舞台 + AMLL TTML：多声部、背景和声与逐字发光。
+	foliaApp, foliaTester := npTestApp(t, color.RGBA{R: 96, G: 148, B: 210, A: 255})
+	foliaApp.setAMLL("m1", "file", player.ParseTTML(testTTML), nil)
+	foliaApp.PL.SetLyricAuxMode("translation")
+	foliaApp.setLyricStage("folia")
+	time.Sleep(450 * time.Millisecond)
+	shot(foliaTester, "np-folia-amll.png")
+
+	// 新增外观设置：正在播放布局与 AMLL 匹配状态。
+	appearance, appearanceTester := sideTestApp(t, false)
+	appearance.settings.tab = appearanceTab
+	shot(appearanceTester, "settings-appearance.png")
+
 	// 振假名 + 翻译辅助行。
 	kanaQRC := "[0,1800]君(0,900)の(900,900)名(1800,1200)は(3000,700)\n[kana:1きみ1な1な]"
 	kanaApp, kanaTester := npTestAppLyrics(t, color.RGBA{R: 96, G: 148, B: 210, A: 255}, kanaQRC, "[00:00.00]你的名字")

@@ -60,6 +60,7 @@ CI 发布：每次 push 都会构建并发布一个带短 commit id 的 snapshot
 | `QAA_TEST_MPV=1` | 开启真实 mpv 往返测试 |
 | `QAA_TEST_MPRIS=1` | 开启 MPRIS 往返测试（需会话 D-Bus + playerctl） |
 | `QAA_SESSION_TYPE` | 覆盖会话类型判定（`wayland` / `x11`）：Wayland 下全局快捷键整列交给桌面持有，自检与测试据此切换这条分支 |
+| `QAA_AMLL_DB_BASE` | 覆盖 AMLL TTML DB 地址（镜像或自建源）；默认依次尝试 GitHub Raw 与 jsDelivr |
 | `GITHUB_TOKEN` / `GH_TOKEN` | 可选的 GitHub token，仅用于更新检查，提升匿名 API 60 次/小时的限流 |
 
 mpv 定位优先级与 Quaver Music 本体（`ui/electron/audio/dist/bins.js`）一致：
@@ -78,8 +79,10 @@ mpv 定位优先级与 Quaver Music 本体（`ui/electron/audio/dist/bins.js`）
 - **猜你喜欢 · 无限电台**：首轮 5 首，轮末自动续歌并裁掉历史；只向前播放，禁用上一首、插队、循环与随机，离开页面不打断
 - 登录：QQ / 微信 / 手机三通道扫码（自动生成 + 轮询），凭证加密保存、重启自动恢复
 - **个人中心**（点侧栏头像进入）：昵称、UID、当前档位，以及超级会员 / 豪华绿钻 / 绿钻**各自的到期时间**——三个档位是独立权益，到期日不同就不合并成一行；上游只给标志不给时间时如实写「未提供到期时间」。退出登录与「清除已保存的凭证」也收在这一页（原先埋在「设置 → 关于」最底下，点头像只会跳设置的人根本找不到）
-- 正在播放页：模糊封面底、**逐字（QRC）歌词与振假名注音**——`[kana:]` Ruby 画在词上方，逐字卡拉OK 高亮；无逐字时间轴时自动回退行级。辅助行支持**关闭 / 翻译优先 / 音译优先**三档，缺首选那一路时自动回落另一路（点击跳转、跟随高亮）、音质胶囊
-- 播放条：整条拖拽 seek、音量弹层、循环模式、随机播放（每日一套确定性顺序）、音质菜单（会话级切换）、红心收藏、队列面板（可拖拽排序）；「回退到全景声」同时降权 7.1 与 5.1
+- 正在播放页：**经典双栏**与 **辞曲舞台** 两种布局。辞曲舞台参考 Folia 的“歌词即构图”思路，使用自定义轨道几何、巨型逐字排版、当前词上浮与封面氛围，不复刻 Folia 主题或 Apple 式组件
+- 歌词：QQ 音乐 **QRC 逐字与振假名**，并自动匹配 **AMLL TTML**（按 QQ 音乐 mid，匹配 `amll-ttml-db` 的 `qq-lyrics/`）。支持 TTML 词级时间轴、对唱 agent、背景和声、翻译与音译；匹配失败或离线时无缝回退 QRC/LRC。TTML 本地缓存，可在「设置 → 外观」载入当前歌曲的本地 `.ttml`
+- 歌词辅助行支持**关闭 / 翻译优先 / 音译优先**三档，缺首选那一路时自动回落另一路（点击跳转、跟随高亮）；播放条提供音质胶囊
+- 播放条：底部细进度轨拖拽 seek（两端吸附到 0/1，支持 Home/End 与方向键）、音量弹层、循环模式、随机播放（每日一套确定性顺序）、音质菜单（会话级切换）、红心收藏、队列面板（可拖拽排序）；「回退到全景声」同时降权 7.1 与 5.1
 - 播放队列：插队播放 / 加入队列 / 删除 / 清空；双击歌曲即播
 - **会话记忆**：退出时保留播放列表、当前曲目、循环模式与随机开关，以及正在播放的进度（播放中每跨 5 秒节流落盘，切歌/暂停/seek/退出即时；崩溃最多丢 5 秒进度）。下次启动原地恢复但只「就位」——不自动连网、不自动起播，按播放键（含媒体键/托盘）从退出位置续播。落盘在 `quaver-astra.json` 的 `Session.Queue` / `Session.Pos` 两个键，队列快照与进度按当前曲 mid 对齐，进度跟错歌时作废、队列照恢复
 - 封面动态取色：主题强调色随当前封面变化（含深浅色两套映射）
@@ -103,6 +106,7 @@ internal/backend/       quaver-server 进程内嵌 + HTTP 客户端（信封 {co
                         vip.go = 会员权益契约：档位顺序 + 只认各档 *_end 的到期解析
 internal/player/        播放器状态机（队列/模式/随机/回退链/歌词/收藏），与 UI 解耦
                         lyric.go = 行级 LRC 解析；qrc.go = 逐字 QRC 解码与解析
+                        ttml.go = AMLL/Apple Music TTML 词级、对唱与背景和声解析
 internal/audio/         mpv 子进程 + JSON IPC 引擎
                         bins.go = 二进制定位（显式/随包/PATH）+ 子进程环境
                         mpv.go  = 引擎（命令下发 / 属性观察 / 事件处理）
@@ -115,6 +119,8 @@ internal/appui/         MyGo 原生 UI：外壳、侧栏、路由页、播放条
                         profile.go = 会员档位与各自到期时间的展示（时间口径见 backend/vip.go）
                         hotkeys.go = 全局（mygo.GlobalShortcut）与窗口内（ui.Context.Shortcut）两套绑定；
                                      waylandSession 判定 Wayland 会话后全局一列不注册，交由桌面持有
+                        stage.go = 辞曲舞台（Folia 式排版）与 AMLL/QRC 统一歌词渲染
+                        amll.go = AMLL TTML 自动匹配、镜像回退、本地缓存与手动载入
                         theme.go = 调色板与明暗判定；motion.go = 动效语言（缓动/错峰入场/逐字绘制）
 internal/colorprobe/    封面主色提取 + 模糊底图
 internal/vault/         登录凭证加密持久化（ChaCha20-Poly1305 + 随机主密钥）

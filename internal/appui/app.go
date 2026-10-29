@@ -55,7 +55,11 @@ type App struct {
 	npMoreOpen  bool
 	npQInfoOpen bool
 	// npQInfo 是音质胶囊浮窗的流参数探测缓存（后台探测、回填重绘）。
-	npQInfo       qinfoProbe
+	npQInfo qinfoProbe
+	// amll 是当前账号下按歌曲 mid 缓存的 AMLL TTML 解析结果。网络
+	// 回填在后台 goroutine，UI 每帧只读；amllMu 保证两者不打架。
+	amllMu        sync.Mutex
+	amll          map[string]amllEntry
 	seekDragging  bool
 	seekFrac      float32
 	probedMid     string
@@ -256,15 +260,15 @@ func (a *App) ApplyWindowBackground() error {
 // 跟随系统时交给 MyGo 的 light-dark（原生侧据此解析当前桌面外观）。
 func WindowBackground(store *conf.Store) string {
 	if store == nil {
-		return "light-dark(#f7f7f8, #131417)"
+		return "light-dark(#f3efe6, #101412)"
 	}
 	switch store.String("Style.Theme", "system") {
 	case "light":
-		return "#f7f7f8"
+		return "#f3efe6"
 	case "dark":
-		return "#131417"
+		return "#101412"
 	default:
-		return "light-dark(#f7f7f8, #131417)"
+		return "light-dark(#f3efe6, #101412)"
 	}
 }
 
@@ -304,6 +308,9 @@ func (a *App) View(c *ui.Context) {
 		a.probedMid = cur.Mid
 		a.probeCover(coverURL(cur.AlbumPmid, cur.AlbumMid, 300))
 	}
+	// AMLL TTML 与 QRC 并行准备：网络慢或没有 TTML 时，正在播放页继续
+	// 使用 QQ 音乐 QRC 逐字歌词，不阻塞首帧。
+	a.ensureAMLL()
 
 	root := ui.Column(c).Fill()
 	root.Children(func() {
@@ -631,6 +638,12 @@ func (a *App) styleSideBtn(btn ui.Element, active bool, c *ui.Context) {
 	if active {
 		btn.Background(t.Accent.Alpha(0.13))
 		btn.TextColor(t.Accent)
+		// A two-pixel signal rule instead of a full rounded "selected pill".
+		// It keeps the active row legible without turning the sidebar into a
+		// stack of iOS-style capsules.
+		btn.Draw(func(p *ui.Painter, r ui.Rect) {
+			p.Fill(ui.Rect{X: r.X, Y: r.Y + 9, W: 2, H: r.H - 18}, t.Accent, 1)
+		})
 	} else if btn.Hovered() {
 		btn.Background(t.SurfaceHover)
 	}
@@ -638,16 +651,19 @@ func (a *App) styleSideBtn(btn ui.Element, active bool, c *ui.Context) {
 
 func (a *App) sideBg(t *ui.Theme) ui.Color {
 	if t.Dark {
-		return ui.Hex("#1b1d21")
+		return ui.Hex("#151a16")
 	}
-	return ui.Hex("#ececec")
+	return ui.Hex("#e9e3d7")
 }
 
 // ===== 顶栏 =====
 
 func (a *App) topBar(c *ui.Context) {
 	t := c.Theme()
-	bar := ui.Row(c).FillWidth().Height(44).Padding(0, 14).Gap(8).AlignItems(ui.Center).DragWindow()
+	bar := ui.Row(c).FillWidth().Height(46).Padding(0, 18).Gap(8).AlignItems(ui.Center).DragWindow()
+	bar.Draw(func(p *ui.Painter, r ui.Rect) {
+		p.Fill(ui.Rect{X: r.X, Y: r.Y + r.H - 1, W: r.W, H: 1}, t.Border.Alpha(0.65), 0)
+	})
 	bar.Children(func() {
 		if a.Router.CanGoBack() {
 			back := ui.ButtonBase(c).Size(30, 30).Radius(15).Center()
@@ -665,7 +681,7 @@ func (a *App) topBar(c *ui.Context) {
 
 		// 居中搜索胶囊
 		ui.Spacer(c)
-		sf := ui.SearchField(c, &a.searchDraft).Width(250).Label("搜索音乐")
+		sf := ui.SearchField(c, &a.searchDraft).Width(280).Label("搜索音乐")
 		if sf.Submitted() {
 			kw := strings.TrimSpace(a.searchDraft)
 			if kw != "" {

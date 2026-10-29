@@ -43,6 +43,7 @@ file "$binary" | grep -Eiq "$machine"
 # release version; release files below still use the exact version in names.
 rpm_version="${version//-/.}"
 pacman_version="${version//-/.}"
+pacman_pkgrel=1
 mkdir -p "$outdir"
 outdir="$(cd "$outdir" && pwd)"
 
@@ -172,6 +173,7 @@ build_pacman() {
   python3 scripts/package-pacman.py \
     --name "$name" \
     --version "$pacman_version" \
+    --pkgrel "$pacman_pkgrel" \
     --arch "$pacman_arch" \
     --desc "$description" \
     --url "$url" \
@@ -182,6 +184,7 @@ build_pacman() {
   zstd -q -f -T0 "$stage/package.tar" -o "$output"
   rm -f "$stage/package.tar"
   tar --zstd -xOf "$output" .PKGINFO | grep -Fx 'pkgname = quaver-astra'
+  tar --zstd -xOf "$output" .PKGINFO | grep -Fx "pkgver = ${pacman_version}-${pacman_pkgrel}"
   tar --zstd -xOf "$output" .PKGINFO | grep -Fx "arch = $pacman_arch"
   tar --zstd -xOf "$output" .PKGINFO | grep -Fx 'license = AGPL-3.0-only'
   tar --zstd -xOf "$output" .PKGINFO | grep -Fx 'depend = mpv'
