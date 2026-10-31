@@ -10,12 +10,15 @@
   <img src="img/astra.png" width="480">
 </p>
 
-Quaver Music Astra，是一个基于 MyGO 的，以 Quaver Music 轻量化为目的的第三方 QQ 音乐客户端。以复用 Typhoeus Golang 后端，而非重复造轮子
+Quaver （Music） Astra，是一个基于 MyGO 的，使 Quaver Music 轻量化为目的的第三方 QQ 音乐客户端。以复用 Typhoeus Golang 后端，而非重复造轮子
 
-Astra 名字取自《绝区零》角色耀嘉音（Astra Yao），也可以是《无畏契约》角色星礈（Astra），由于想名部想了半天，这个名字容易冲突，且能代表星星闪耀，该名字并不会成为 Quaver Music 开发代号。
+Astra 名字取自《绝区零》角色耀嘉音（Astra Yao），也可以是《无畏契约》角色星礈（Astra），由于想名想了半天，这个名字容易冲突，且能代表星星闪耀
+
+该名字并不会成为 Quaver Music 开发代号。
 
 - **UI**：[MyGo](https://github.com/egoist/mygo) 的原生 UI 工具包（`ui` 包）——视图是状态的函数，由 MyGo 在 GPU 上直接绘制（Linux 走 OpenGL），不开 WebKitGTK，窗口秒开、内存占用小。已合并 MyGo 主线（增量绘制、文本测量缓存、局部布局重算、滚动惯性）；Linux GtkGLArea 渲染回调固定在持有 GL context 的原生线程，避免 Go 调度迁移后 libepoxy 找不到当前 GLX/EGL context；检测到 NVIDIA 显卡时在加载 GL 前设置 `__GL_THREADED_OPTIMIZATIONS=0`。
 - **后端**：[Typhoeus-go](https://github.com/Team-Quaver/typhoeus-go)（子模块 `third_party/Typhoeus-go`）**进程内嵌**——不再是 sidecar 独立进程，`quaver-server` 的完整路由表直接挂在本进程 `127.0.0.1` 的随机端口上。
+- **音频后端**：[Typhoeus-go](https://github.com/Team-Quaver/liino)（子模块 `third_party/Liino`）**进程内嵌**
 
 > [!CAUTION]
 > 真爱音乐，尊重正版，音乐平台不易，该应用**不提供盗版 QQ 音乐曲目服务！**
@@ -25,7 +28,8 @@ Astra 名字取自《绝区零》角色耀嘉音（Astra Yao），也可以是�
 依赖：
 
 - Go 1.27+（Linux 需 GTK3）
-- **mpv**（播放必需）：`apt install mpv` / `dnf install mpv` / `brew install mpv`。设置 → 关于页会显示检测状态与实际路径；也可用 `QAA_MPV` 指定可执行文件。
+- **mpv**（播放必需）：`apt install mpv` / `dnf install mpv` / `brew install mpv`。设置 → 关于页会显示检测状态与实际路径；也可用 `QAA_MPV` 指定可执行文件。（即将弃置）
+- FFmpeg/WMF/AVF：各个系统所用的解码后端，除 Linux 外优先调用 WMF、AVF
 
 ```sh
 git clone --recurse-submodules https://github.com/Team-Quaver/quaver-astra
