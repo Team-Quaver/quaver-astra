@@ -1,3 +1,6 @@
 [submodule "third_party/Typhoeus-go"]
 	path = third_party/Typhoeus-go
 	url = https://github.com/Team-Quaver/typhoeus-go
+[submodule "third_party/Liino"]
+	path = third_party/Liino
+	url = https://github.com/Team-Quaver/liino

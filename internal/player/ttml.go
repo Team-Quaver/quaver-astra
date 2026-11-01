@@ -138,6 +138,19 @@ func parseTTMLParagraph(p *ttmlNode) (TTMLLine, bool) {
 			child := &n.Children[i]
 			if child.Name == "#text" {
 				text.WriteString(child.Text)
+				// AMLL TTML separates lyric words with plain text nodes
+				// (`</span> <span>`), not with spaces inside the spans.
+				// Those spaces belong to the word timeline's layout: dropping
+				// them runs Latin words together in the karaoke line. Keep
+				// them as spacer words when they sit between two lyric spans;
+				// newlines/indentation between pretty-printed spans normalize
+				// to nothing, and whitespace beside translation/background
+				// spans is formatting rather than a word boundary.
+				if spacer := ttmlInlineSpace(child.Text); spacer != "" &&
+					lyricSpanAt(n, i-1) && lyricSpanAt(n, i+1) &&
+					!endswithSpace(line.Words) {
+					line.Words = append(line.Words, QrcWord{Time: start, Text: spacer})
+				}
 				continue
 			}
 			if !strings.EqualFold(child.Name, "span") {
@@ -175,6 +188,25 @@ func parseTTMLParagraph(p *ttmlNode) (TTMLLine, bool) {
 	return line, true
 }
 
+// lyricSpanAt reports whether n.Children[i] is a main lyric span (one with no
+// ttm:role), i.e. a node whose text belongs to the sung line.
+func lyricSpanAt(n *ttmlNode, i int) bool {
+	if i < 0 || i >= len(n.Children) {
+		return false
+	}
+	child := &n.Children[i]
+	return strings.EqualFold(child.Name, "span") && child.Attr["role"] == ""
+}
+
+// endswithSpace reports whether the last appended word already carries the
+// separating space, so a text node beside it does not add a second one.
+func endswithSpace(words []QrcWord) bool {
+	if len(words) == 0 {
+		return false
+	}
+	return strings.HasSuffix(words[len(words)-1].Text, " ")
+}
+
 // appendTTMLWords flattens a span tree into timed words. A timed leaf is
 // one word; containers with timed descendants recurse instead of becoming
 // one large, badly timed word. Untimed text between spans is kept as a
@@ -194,7 +226,7 @@ func appendTTMLWords(dst []QrcWord, n *ttmlNode, fallback float64) []QrcWord {
 		}
 	}
 	if hasBegin && !timedChildren {
-		word := normalizeTTMLSpace(n.plainText())
+		word := ttmlWordText(n.plainText())
 		if word != "" {
 			dur := 0.0
 			if hasEnd && end > begin {
@@ -208,7 +240,7 @@ func appendTTMLWords(dst []QrcWord, n *ttmlNode, fallback float64) []QrcWord {
 		for i := range n.Children {
 			child := &n.Children[i]
 			if child.Name == "#text" {
-				if text := ttmlInlineSpace(child.Text); text != "" {
+				if text := ttmlInlineSpace(child.Text); text != "" && !endswithSpace(dst) {
 					dst = append(dst, QrcWord{Time: fallback, Text: text})
 				}
 				continue
@@ -262,8 +294,26 @@ func normalizeTTMLSpace(s string) string {
 	return strings.Join(strings.Fields(s), " ")
 }
 
+// ttmlWordText collapses a span's whitespace but keeps one leading or trailing
+// space when the span text itself carried it. Some TTML writers put the
+// separating space inside the word span ("<span>the </span>"); trimming it
+// runs the karaoke words together.
+func ttmlWordText(s string) string {
+	word := normalizeTTMLSpace(s)
+	if word == "" {
+		return ""
+	}
+	if strings.HasPrefix(s, " ") || strings.HasPrefix(s, "\t") {
+		word = " " + word
+	}
+	if strings.HasSuffix(s, " ") || strings.HasSuffix(s, "\t") {
+		word += " "
+	}
+	return word
+}
+
 func ttmlInlineSpace(s string) string {
-	if word := normalizeTTMLSpace(s); word != "" {
+	if word := ttmlWordText(s); word != "" {
 		return word
 	}
 	if s != "" && !strings.ContainsAny(s, "\r\n\t") {

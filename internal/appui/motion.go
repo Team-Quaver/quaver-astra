@@ -199,7 +199,7 @@ func (a *App) pageEnter(c *ui.Context, e ui.Element) ui.Element {
 // posSmoother 把低频采样（tick 200ms 一次）的播放位置外推成每帧连续的
 // 估计值，供逐字高亮插值使用。
 //
-// 播放位置的唯一真相源仍然是 mpv 的 time-pos——换曲、暂停、跳转都会立刻
+// 播放位置的唯一真相源仍然是引擎时钟——换曲、暂停、跳转都会立刻
 // 重新锚定；外推只作用在「两次采样之间」，误差被下一次采样抹掉，既不累积
 // 也不回写给进度条或 seek。
 type posSmoother struct {
@@ -307,12 +307,20 @@ func (a *App) karaokeRubyLine(c *ui.Context, ql player.QrcLine, current bool, si
 	}
 
 	font := ui.Font{Family: a.lyricFontFamily(), Size: fz(size), Weight: 800}
-	layout := ui.ShapeRichTextWith(spans, font, ui.TextShape{Width: width, Align: align})
+	// Shape at the start edge: Painter.RichText has no alignment, so the base
+	// text is always painted from boxX, and the alignment offset is applied
+	// there once for both the base and the ruby. Shaping with the real align
+	// would fold the offset into CaretAt and shift ruby a second time on
+	// Center/End lines.
+	layout := ui.ShapeRichTextWith(spans, font, ui.TextShape{Width: width, Align: ui.Start})
 	_, h := layout.Size()
 	rubySize := fz(size * 0.45)
 	rubyH := float32(0)
 	if ql.HasRuby() {
-		m := font.Metrics()
+		// A ruby line is as tall as the small kana above it, not as tall as
+		// the base glyphs. Using the base font's ascent+descent here left a
+		// band of dead space between the kana and the lyric.
+		m := ui.Font{Family: a.lyricFontFamily(), Size: rubySize, Weight: 800}.Metrics()
 		rubyH = m.Ascent + m.Descent
 	}
 
@@ -325,7 +333,7 @@ func (a *App) karaokeRubyLine(c *ui.Context, ql player.QrcLine, current bool, si
 	lineH := h
 	rowH := lineH
 	if ql.HasRuby() {
-		rowH = lineH * 2
+		rowH = lineH + rubyH
 	}
 	box := ui.Box(c).FillWidth().Height(rowH).Role(ui.RoleText).Label(label)
 	box.Draw(func(p *ui.Painter, r ui.Rect) {

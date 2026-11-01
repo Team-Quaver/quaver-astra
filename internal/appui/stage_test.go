@@ -2,6 +2,7 @@ package appui
 
 import (
 	"image/color"
+	"math"
 	"strings"
 	"testing"
 	"time"
@@ -108,5 +109,33 @@ func TestQRCKanaRubyIsNotDuplicated(t *testing.T) {
 	}
 	if texts[0] != "震えて ふる" {
 		t.Errorf("ruby 行标签 = %q，期望正文与注音各出现一次", texts[0])
+	}
+}
+
+// TestQRCKanaRubyBandHugsLyric 守住注音与正文的垂直间距：ruby 行只额外
+// 占一行小字的高度，不能按正文行高再叠一层（否则注音和歌词之间会出现
+// 一大片空白）。同一字号下 ruby 行高 = 正文行高 + 小字 ascent+descent。
+func TestQRCKanaRubyBandHugsLyric(t *testing.T) {
+	app, _ := npTestApp(t, color.RGBA{R: 96, G: 148, B: 210, A: 255})
+	ql := player.ParseQRC("[0,2000]震(0,1000)えて(1000,1000)\n[kana:1ふる]")[0]
+	const size = 20
+	tester := ui.NewTester(func(c *ui.Context) {
+		app.karaokeRubyLine(c, ql, true, size, 300, ui.Start, karaokeColor, false)
+	}, 400, 200)
+	tester.Frame()
+
+	r, ok := tester.Find("震えて ふる")
+	if !ok {
+		t.Fatalf("找不到 ruby 行；当前文本：%v", tester.Texts())
+	}
+	_, baseH := ui.ShapeText("震えて", ui.Font{Family: app.lyricFontFamily(), Size: fz(size), Weight: 800}, 300).Size()
+	rm := ui.Font{Family: app.lyricFontFamily(), Size: fz(size * 0.45), Weight: 800}.Metrics()
+	want := baseH + rm.Ascent + rm.Descent
+	if math.Abs(float64(r.H-want)) > 1.5 {
+		t.Errorf("ruby 行高 = %.1f，期望 %.1f（正文 %.1f + 注音 %.1f）——注音与正文间距过大",
+			r.H, want, baseH, rm.Ascent+rm.Descent)
+	}
+	if r.H >= baseH*2 {
+		t.Errorf("ruby 行高 = %.1f ≥ 正文两倍 %.1f：注音又占了一整行高", r.H, baseH*2)
 	}
 }

@@ -2,6 +2,7 @@ package appui
 
 import (
 	"fmt"
+	"time"
 
 	"github.com/Team-Quaver/quaver-astra/internal/audio"
 	"github.com/Team-Quaver/quaver-astra/internal/player"
@@ -12,6 +13,11 @@ import (
 type settingsState struct {
 	tab int
 
+	// 播放后端自检要 dlopen FFmpeg / 连 PipeWire，不能每帧跑；关于页
+	// 缓存几秒，重新进入或设备变化时再刷新。
+	backendStatus   audio.Status
+	backendStatusAt time.Time
+
 	// 自定义字体输入框的草稿；TextInput 需要跨帧稳定地持有可编辑字符串。
 	fontDraft      string
 	lyricFontDraft string
@@ -20,10 +26,6 @@ type settingsState struct {
 	scroll         ui.ScrollState
 	scrollTab      int
 }
-
-// CompatModeKey 是「MPV 兼容模式」的配置键：为老版本 mpv（<0.38）禁用
-// 新 loadfile 参数布局。见 settingsAbout 的说明与 internal/audio 的自愈逻辑。
-const CompatModeKey = "Playing.MPVCompat"
 
 var themeNames = []struct {
 	key  string
@@ -433,36 +435,38 @@ func (a *App) settingsAbout(c *ui.Context, t *ui.Theme) {
 
 		ui.Divider(c)
 
-		// 播放后端：换用 mpv 后它成了外部依赖，必须让用户看得见摸得着。
+		// 播放后端：Liino 在进程内解码、直连系统音频，没有 mpv 子进程。
+		// 自检直接探测解码后端（系统 FFmpeg / 平台解码器）与输出驱动。
 		ui.Text(c, "播放后端").FontSize(fz(14)).FontWeight(700)
-		mpv := audio.MPVInfoFor()
+		if a.settings.backendStatusAt.IsZero() || time.Since(a.settings.backendStatusAt) > 5*time.Second {
+			a.settings.backendStatus = audio.NewStatus()
+			a.settings.backendStatusAt = time.Now()
+		}
+		st := a.settings.backendStatus
 		ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(8).Children(func() {
 			dot := ui.Box(c).Size(8, 8).Radius(4)
-			if mpv.OK {
+			if st.OK {
 				dot.Background(ui.Hex("#2ea043"))
 			} else {
 				dot.Background(ui.Hex("#e81123"))
 			}
-			ui.Text(c, "mpv").FontSize(fz(13))
-			ui.Text(c, mpv.Detail).FontSize(fz(12)).TextColor(t.TextMuted)
+			ui.Text(c, "Liino "+st.Version).FontSize(fz(13))
+			ui.Text(c, "Native 原生模式").FontSize(fz(12)).TextColor(t.TextMuted)
 			ui.Spacer(c)
-			ui.Text(c, mpv.Path).FontSize(fz(11.5)).TextColor(t.TextMuted).SingleLine().Ellipsis("…")
+			ui.Text(c, "进程内解码 · 直连系统音频").
+				FontSize(fz(11.5)).TextColor(t.TextMuted).SingleLine().Ellipsis("…")
 		})
-		if !mpv.OK {
-			ui.Text(c, mpv.Detail).FontSize(fz(12)).TextColor(t.TextMuted).MaxLines(3)
+		if st.OK {
+			ui.Text(c, "解码："+st.Decoder).FontSize(fz(12)).TextColor(t.TextMuted).MaxLines(2)
+			ui.Text(c, "输出："+st.Driver).FontSize(fz(12)).TextColor(t.TextMuted).MaxLines(2)
+		} else {
+			ui.Text(c, st.Detail).FontSize(fz(12)).TextColor(t.TextMuted).MaxLines(4)
+			for _, line := range append(st.DecoderAll, st.DriverAll...) {
+				ui.Text(c, line).FontSize(fz(11.5)).TextColor(t.TextMuted).MaxLines(2)
+			}
 		}
-		ui.Text(c, "查找顺序：QAA_MPV 显式路径 → QAA_MPV_DIR 随包目录 → PATH。").
-			FontSize(fz(11.5)).TextColor(t.TextMuted).MaxLines(2)
-
-		// MPV 兼容模式（对齐上游 Quaver Music 的 MPVCompat）：mpv 只解码，
-		// 实时 PCM 由 Astra 自己出声——音频会话归属本应用，OBS/Discord 的
-		// 窗口音频捕获能直接看到。切换需重启应用（引擎随进程构造）。
-		ui.Text(c, "MPV 兼容模式").FontSize(fz(14)).FontWeight(700)
-		compat := a.Conf.Bool(CompatModeKey, false)
-		a.prefRow(c, "mpv 仅解码，由应用出声", func() bool { return compat },
-			func(v bool) { a.Conf.Set(CompatModeKey, v) })
-		ui.Text(c, "mpv 仅解码，由应用出声：OBS/Discord 等按窗口捕获时能录到 Astra 的声音。开启后重启应用生效；无声卡或平台不支持时自动回退原生直出。").
-			FontSize(fz(11.5)).TextColor(t.TextMuted).MaxLines(2)
+		ui.Text(c, "音频管线全部在 Astra 进程内完成，不再启动 mpv。Linux 需要系统 FFmpeg 共享库（libav*）与 PipeWire；Windows 使用 WASAPI，macOS 使用 Core Audio。").
+			FontSize(fz(11.5)).TextColor(t.TextMuted).MaxLines(3)
 
 		ui.Divider(c)
 

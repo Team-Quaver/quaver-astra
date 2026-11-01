@@ -2,6 +2,7 @@ package player
 
 import (
 	"math"
+	"strings"
 	"testing"
 )
 
@@ -53,6 +54,72 @@ func TestParseTTMLWordsAgentsAndBackground(t *testing.T) {
 	}
 	if lines[1].Agent != "v2" || lines[1].End() != 7.25 {
 		t.Fatalf("duet line = %#v", lines[1])
+	}
+}
+
+// TestParseTTMLKeepsInterSpanWordSpaces 守住 AMLL 的词间空格：AMLL TTML 把
+// 空格写成 <span> 之间的独立文本节点（`</span> <span>`），word 时间轴必须
+// 把这些节点留在 Words 里，否则逐字行会把英文单词连成一串。
+func TestParseTTMLKeepsInterSpanWordSpaces(t *testing.T) {
+	const src = `<tt xmlns="http://www.w3.org/ns/ttml"
+		xmlns:ttm="http://www.w3.org/ns/ttml#metadata">
+	<body><div>
+		<p begin="16.110" end="18.500" ttm:agent="v1"><span begin="16.110" end="16.450">Fi</span><span begin="16.450" end="16.780">nally</span> <span begin="16.780" end="17.070">we</span> <span begin="17.070" end="17.380">got</span> <span begin="17.380" end="17.570">to</span> <span begin="17.570" end="17.720">the</span> <span begin="17.720" end="17.920">en</span><span begin="17.920" end="18.050">d of</span> <span begin="18.050" end="18.240">the</span> <span begin="18.240" end="18.500">world</span></p>
+	</div></body></tt>`
+
+	lines := ParseTTML(src)
+	if len(lines) != 1 {
+		t.Fatalf("parsed %d lines: %#v", len(lines), lines)
+	}
+	var got strings.Builder
+	for _, w := range lines[0].Words {
+		got.WriteString(w.Text)
+	}
+	if want := "Finally we got to the end of the world"; got.String() != want {
+		t.Fatalf("逐字文本 = %q，期望 %q", got.String(), want)
+	}
+	if lines[0].Text != "Finally we got to the end of the world" {
+		t.Errorf("整行文本 = %q", lines[0].Text)
+	}
+	// 词间空格是零时长 spacer，时间落到整行起点，不参与逐字着色。
+	for _, w := range lines[0].Words {
+		if w.Text == " " && math.Abs(w.Time-16.110) > 1e-6 {
+			t.Errorf("spacer 时间 = %v，期望行首 16.110", w.Time)
+		}
+	}
+}
+
+// TestParseTTMLKeepsTrailingSpaceInsideSpan 兼容把词间空格写在 span 内部的
+// 来源（`<span>the </span>`），不能只在 span 之间的文本节点上保留空格。
+func TestParseTTMLKeepsTrailingSpaceInsideSpan(t *testing.T) {
+	const src = `<tt><body><div><p begin="1.0" end="3.0"><span begin="1.0" end="2.0">the </span><span begin="2.0" end="3.0">end</span></p></div></body></tt>`
+	lines := ParseTTML(src)
+	if len(lines) != 1 {
+		t.Fatalf("parsed %d lines: %#v", len(lines), lines)
+	}
+	var got strings.Builder
+	for _, w := range lines[0].Words {
+		got.WriteString(w.Text)
+	}
+	if got.String() != "the end" {
+		t.Errorf("逐字文本 = %q，期望保留 span 内的词间空格", got.String())
+	}
+}
+
+// TestParseTTMLKeepsSpaceAfterFinalLyric 行末歌词与翻译 span 之间的空格是
+// 排版缩进，不能变成行尾的空格块（它会撑宽逐字行）。
+func TestParseTTMLKeepsSpaceAfterFinalLyric(t *testing.T) {
+	const src = `<tt><body><div><p begin="1.0" end="3.0"><span begin="1.0" end="2.0">end</span> <span ttm:role="x-translation">结束</span></p></div></body></tt>`
+	lines := ParseTTML(src)
+	if len(lines) != 1 {
+		t.Fatalf("parsed %d lines: %#v", len(lines), lines)
+	}
+	var got strings.Builder
+	for _, w := range lines[0].Words {
+		got.WriteString(w.Text)
+	}
+	if got.String() != "end" {
+		t.Errorf("逐字文本 = %q，翻译前不应留下行尾空格", got.String())
 	}
 }
 

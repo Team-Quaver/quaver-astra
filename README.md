@@ -18,7 +18,7 @@ Astra 名字取自《绝区零》角色耀嘉音（Astra Yao），也可以是�
 
 - **UI**：[MyGo](https://github.com/egoist/mygo) 的原生 UI 工具包（`ui` 包）——视图是状态的函数，由 MyGo 在 GPU 上直接绘制（Linux 走 OpenGL），不开 WebKitGTK，窗口秒开、内存占用小。已合并 MyGo 主线（增量绘制、文本测量缓存、局部布局重算、滚动惯性）；Linux GtkGLArea 渲染回调固定在持有 GL context 的原生线程，避免 Go 调度迁移后 libepoxy 找不到当前 GLX/EGL context；检测到 NVIDIA 显卡时在加载 GL 前设置 `__GL_THREADED_OPTIMIZATIONS=0`。
 - **后端**：[Typhoeus-go](https://github.com/Team-Quaver/typhoeus-go)（子模块 `third_party/Typhoeus-go`）**进程内嵌**——不再是 sidecar 独立进程，`quaver-server` 的完整路由表直接挂在本进程 `127.0.0.1` 的随机端口上。
-- **音频后端**：[Typhoeus-go](https://github.com/Team-Quaver/liino)（子模块 `third_party/Liino`）**进程内嵌**
+- **音频后端**：[Liino](https://github.com/Team-Quaver/liino)（子模块 `third_party/Liino`）**进程内嵌**，使用其 Native 模式：纯 Go（`CGO_ENABLED=0`）在 Astra 进程内完成解码 → DSP → 缓冲 → 系统输出，不启动 mpv 子进程。Linux 走 `decode/native`（ffgo 动态加载系统 FFmpeg）并输出到 PipeWire，Windows 优先 WMF + WASAPI，macOS 优先 AVFoundation + Core Audio。
 
 > [!CAUTION]
 > 真爱音乐，尊重正版，音乐平台不易，该应用**不提供盗版 QQ 音乐曲目服务！**
@@ -28,8 +28,11 @@ Astra 名字取自《绝区零》角色耀嘉音（Astra Yao），也可以是�
 依赖：
 
 - Go 1.27+（Linux 需 GTK3）
-- **mpv**（播放必需）：`apt install mpv` / `dnf install mpv` / `brew install mpv`。设置 → 关于页会显示检测状态与实际路径；也可用 `QAA_MPV` 指定可执行文件。（即将弃置）
-- FFmpeg/WMF/AVF：各个系统所用的解码后端，除 Linux 外优先调用 WMF、AVF
+- **Liino 运行库**（播放必需）：
+  - Linux：系统 FFmpeg 共享库（`libavformat` / `libavcodec` / `libavutil` / `libswresample`，装 `ffmpeg` 或发行版的 `ffmpeg-libs` 即可）与 PipeWire。设置 → 关于页会显示解码后端/输出驱动的自检结果。
+  - Windows：Media Foundation（Windows N 版需 Media Feature Pack）+ WASAPI；遇到 WMF 解不了的容器时回退系统 FFmpeg DLL。
+  - macOS：AVFoundation + Core Audio；同样在需要时回退系统 FFmpeg 动态库。
+  - LoongArch64：Liino 的 ffgo 后端只覆盖 amd64/arm64，龙芯构建可以启动，但当前没有可用的解码后端（设置 → 关于会显示原因）。
 
 ```sh
 git clone --recurse-submodules https://github.com/Team-Quaver/quaver-astra
@@ -48,30 +51,21 @@ Windows 的图标与版本信息资源在 CI 里由
 
 ```sh
 go test ./internal/...
-QAA_TEST_MPV=1 go test -run TestEngineRealMPV ./internal/audio/   # 需要装mpv
 ```
 
-CI 发布：每次 push 都会构建并发布一个带短 commit id 的 snapshot 预发布；`v*` tag 会发布对应版本。Linux AMD64/ARM64 为 AppImage（随包 Quaver Music 同款 mpv AppImage 运行时），并提供 DEB/RPM/Pacman（AMD64/ARM64/LoongArch64，依赖声明仅 mpv）；LoongArch64 另有二进制 tarball；Windows AMD64/ARM64 与 macOS ARM64 包含 mpv 官方 release 运行时。所有发行包按 AGPL-3.0-only 标记并附带 LICENSE。
+CI 发布：每次 push 都会构建并发布一个带短 commit id 的 snapshot 预发布；`v*` tag 会发布对应版本。Linux AMD64/ARM64 为 AppImage，并提供 DEB/RPM/Pacman（AMD64/ARM64/LoongArch64）；LoongArch64 另有二进制 tarball；Windows AMD64/ARM64 与 macOS ARM64 提供对应安装包。所有发行包按 AGPL-3.0-only 标记并附带 LICENSE。
+
+> 说明：发行脚本目前仍沿用旧的 mpv 运行时暂存/随包逻辑；Astra 已经不再读取它，这部分属于待清理的历史包袱。DEB/RPM/Pacman 经由依赖（如 mpv/ffmpeg）间接带上 `libav*`，可满足 Liino 的 native 解码后端；AppImage 目前不随包 `libav*`，需要宿主装有 FFmpeg 共享库（发行包清理时再补这一步）。
 
 环境变量（自检用）：
 
 | 变量 | 作用 |
 | --- | --- |
-| `QAA_MPV` | 指定 mpv 可执行文件（绝对路径） |
-| `QAA_MPV_DIR` | 随包 mpv 运行时目录（支持 quick-sharun、`mpv.app`、`mpv.exe` 与单文件布局） |
-| `QAA_MPV_AO` | 强制音频输出（如 `null` 用于无声卡环境自检） |
-| `QAA_MPV_DEVICE` | 强制音频输出设备 |
-| `QAA_TEST_MPV=1` | 开启真实 mpv 往返测试 |
+| `QAA_AUDIO_LOG=1` | 把 Liino/FFmpeg 的音频诊断日志打到 stderr（默认静音；拖动进度时 FLAC 的帧重同步告警属于预期行为） |
 | `QAA_TEST_MPRIS=1` | 开启 MPRIS 往返测试（需会话 D-Bus + playerctl） |
 | `QAA_SESSION_TYPE` | 覆盖会话类型判定（`wayland` / `x11`）：Wayland 下全局快捷键整列交给桌面持有，自检与测试据此切换这条分支 |
 | `QAA_AMLL_DB_BASE` | 覆盖 AMLL TTML DB 地址（镜像或自建源）；默认依次尝试 GitHub Raw 与 jsDelivr |
 | `GITHUB_TOKEN` / `GH_TOKEN` | 可选的 GitHub token，仅用于更新检查，提升匿名 API 60 次/小时的限流 |
-
-mpv 定位优先级与 Quaver Music 本体（`ui/electron/audio/dist/bins.js`）一致：
-显式路径 → 随包目录 → PATH。Linux 随包 mpv 是 AppImage 解包出的 quick-sharun
-目录时，由包内 loader 按 `lib/lib.path` 直启 `shared/bin/mpv`，不继承宿主
-`LD_LIBRARY_PATH`（避免包内 libc 与宿主 libc 混载）；Windows/macOS 直接启动
-官方 release 的 `mpv.exe` / `mpv.app`。
 
 ## 功能（轻量版范围）
 
@@ -97,7 +91,7 @@ mpv 定位优先级与 Quaver Music 本体（`ui/electron/audio/dist/bins.js`）
 - 系统托盘：对齐 Quaver Music 的曲目行、上一曲 / 播放暂停 / 下一曲、循环与随机、显示主窗口、退出；左键双击把程序拉回前台（单击不切换），右键弹出菜单；窗口关闭按钮可收进托盘
 - **系统媒体控制中心**：Linux 注册 MPRIS2（总线名 `org.mpris.MediaPlayer2.QuaverAstra`，`DesktopEntry` 为应用 ID `red.0w0.quaver-astra`，桌面键盘媒体键、播放状态/封面/进度/循环模式双向同步），Windows 接入 SMTC（系统媒体浮层、媒体键、封面缩略图与进度时间轴，支持系统侧循环/随机切换），macOS 接入 Now Playing（`MPNowPlayingInfoCenter` + `MPRemoteCommandCenter`，控制中心/菜单栏正在播放卡片：标题/歌手/专辑/封面与进度，播放/暂停/上一首/下一首/拖动进度回传）。macOS 的系统投影只对带 `CFBundleIdentifier` 的应用生效，裸跑可能看不到，打包 `.app` 后正常；架构见 `internal/smedia/`
 - **快捷键**（设置 → 快捷键）：全局与窗口内两套绑定，动作是播放/暂停、播放、暂停、上一曲、下一曲。全局默认绑媒体键（Windows `RegisterHotKey`、macOS Carbon 热键、Linux X11 由 Astra 抓键）；**Wayland 会话下全局快捷键整段交给桌面持有**——Astra 一个键都不注册，设置页里「全局」那一列直接不出现，播放/暂停、上一曲、下一曲与音量都由桌面的媒体键经 MPRIS2 送达（见上一条的媒体中心），改键请到桌面的快捷键设置里改，窗口内快捷键不受影响；判定见 `internal/appui/hotkeys.go` 的 `waylandSession`。窗口内默认 `Ctrl+Alt+P` / `Ctrl+Alt+,` / `Ctrl+Alt+.`，点绑定格再按下组合键即改，Esc 取消，小叉解绑。两个作用域同键时全局优先（按键被系统截走，窗口收不到），媒体键只能作全局绑定；注册失败或与别的绑定撞车都会在设置页标出来。
-- 播放音频时阻止系统睡眠（暂停/停止即恢复，不阻止熄屏）；正常退出、TERM/Ctrl+C 与 native SIGABRT 清理时都会终止 mpv；Linux 另设父进程死亡信号和进程组兜底，避免异常崩溃留下 mpv
+- 播放音频时阻止系统睡眠（暂停/停止即恢复，不阻止熄屏）；正常退出、TERM/Ctrl+C 与 native SIGABRT 清理时都会释放 Liino 的输出会话与解码线程
 - **版本号**：「设置 → 关于」标题旁显示当前版本（优先取构建注入值，本地 `go build` 时回落到工作区的 git tag）
 - **自动更新**：「设置 → 关于」可切换**稳定版**（GitHub latest API，最新正式 Release）与**快照版**（最近一次 push 的 `snapshot-*` 预发布）两个渠道，启动时自动检查（可关）。
   AppImage / 单文件二进制 / Windows 便携目录支持原地热替换（下载边算 sha256 校验 GitHub `digest`，同目录原子改名覆盖），系统包（deb/rpm/pacman）与 macOS `.app` 回退到打开发行页；发现新版本时只提示一次，可在设置页手动检查与下载安装
@@ -111,9 +105,9 @@ internal/backend/       quaver-server 进程内嵌 + HTTP 客户端（信封 {co
 internal/player/        播放器状态机（队列/模式/随机/回退链/歌词/收藏），与 UI 解耦
                         lyric.go = 行级 LRC 解析；qrc.go = 逐字 QRC 解码与解析
                         ttml.go = AMLL/Apple Music TTML 词级、对唱与背景和声解析
-internal/audio/         mpv 子进程 + JSON IPC 引擎
-                        bins.go = 二进制定位（显式/随包/PATH）+ 子进程环境
-                        mpv.go  = 引擎（命令下发 / 属性观察 / 事件处理）
+internal/audio/         Liino 原生音频适配层（进程内解码 + 直连系统音频）
+                        engine.go = 把 liino.Player 适配成 player.Engine（异步载入 / 时钟 / 事件）
+                        status.go = 解码后端与输出驱动自检（设置 → 关于）
 internal/smedia/        系统媒体控制中心投影（Linux MPRIS / Windows SMTC / macOS Now Playing）
                         mpris.go            = D-Bus MPRIS2 服务（状态 diff + PropertiesChanged/Seeked）
                         smtc_windows.go     = WinRT SMTC（裸 vtable 调用 + 纯 Go COM 事件对象，无 cgo）
@@ -137,9 +131,9 @@ internal/update/        自动更新：GitHub Releases 渠道/产物选择/下�
 ```
 player.startCurrent
   → backend /stream/resolve      解析音档 → 本地中继 URL
-  → audio.OpenURL                mpv loadfile（mpv 自己发 Range / 重试）
-  ← mpv observe_property         time-pos / duration / pause / eof-reached
-  → player.tick                  同步位置、检测自然播完切下一首
+  → audio.OpenURL                Liino 解码（ffgo/WMF/AVF 动态加载，自己发 Range / 重试）
+  ← liino Events                 loaded / playing / buffering / ended / failed
+  → player.tick                  读 Liino 高精度时钟同步位置、检测自然播完切下一首
 ```
 
 自检钩子（开发用）：
@@ -159,4 +153,4 @@ Astra 缺少以下内容：搜索联想、无歌单处理功能。桌面快捷�
 
 ## 许可
 
-AGPL-3.0-Only（见 [LICENSE](LICENSE)）。第三方依赖见 go.mod；MyGo（MIT）、Typhoeus-go、jixunmoe-go/qrc（MIT，QRC 本地兜底解码）、mpv（LGPL-2.1+，作为外部进程调用）。
+AGPL-3.0-Only（见 [LICENSE](LICENSE)）。第三方依赖见 go.mod；MyGo（MIT）、Typhoeus-go、Liino（AGPL-3.0，子模块）、jixunmoe-go/qrc（MIT，QRC 本地兜底解码）。

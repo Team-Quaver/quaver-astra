@@ -66,7 +66,7 @@ func main() {
 
 	store := conf.Open(cfgDir)
 	app := appui.New(srv.BaseURL(), store, vault.Open(cfgDir), buildinfo.Resolve(version))
-	// 正常退出与异常返回两条路径都收口 mpv；OnQuit 在事件循环结束后执行，
+	// 正常退出与异常返回两条路径都收口音频引擎；OnQuit 在事件循环结束后执行，
 	// 不会被窗口关闭到托盘误触发。
 	defer app.Close()
 	mygo.App.OnQuit(app.Close)
@@ -117,7 +117,7 @@ func main() {
 		time.AfterFunc(startupShowGrace, show)
 	})
 	if err := mygo.App.Run(); err != nil {
-		// fatal 会直接 os.Exit，普通 defer 不再有机会执行；先收掉 mpv。
+		// fatal 会直接 os.Exit，普通 defer 不再有机会执行；先收掉音频引擎。
 		app.Close()
 		fatal(err)
 	}

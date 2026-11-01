@@ -142,7 +142,7 @@ type App struct {
 // 当前构建版本，用于更新比较）。
 func New(base string, store *conf.Store, v *vault.Vault, version string) *App {
 	api := backend.NewClient(base)
-	eng := audio.NewCompatIf(store.Bool(CompatModeKey, false))
+	eng := audio.New() // Liino 原生模式：进程内解码 + 直连系统音频
 	a := &App{
 		API:           api,
 		Conf:          store,
@@ -179,7 +179,7 @@ func New(base string, store *conf.Store, v *vault.Vault, version string) *App {
 	return a
 }
 
-// Close 应用退出时释放睡眠禁止并终止 mpv。幂等，可同时挂 OnQuit 与 defer。
+// Close 应用退出时释放睡眠禁止并终止音频引擎。幂等，可同时挂 OnQuit 与 defer。
 func (a *App) Close() {
 	a.closeOnce.Do(func() {
 		a.quitStarted.Store(true)
@@ -210,7 +210,7 @@ func (a *App) withAPILimit(fn func()) {
 	fn()
 }
 
-// syncSleep 只在「设置开启 + mpv 实际出声」时持有系统睡眠禁止。
+// syncSleep 只在「设置开启 + 音频引擎实际出声」时持有系统睡眠禁止。
 // 暂停、停止、载入中和关闭开关都会立即释放。
 func (a *App) syncSleep() {
 	want := a.Conf != nil && a.Conf.Bool(sleepInhibitKey, true) && a.PL.PlayingAudio()
