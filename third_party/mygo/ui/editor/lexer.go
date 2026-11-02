@@ -171,7 +171,9 @@ func (lx *lexer) inString(st *lexState, i int) int {
 			st.out.add(j, s.kind)
 			e := j + len(s.interpOpen)
 			st.out.add(e, TokenEscape)
-			if st.stack>>16 == 0 {
+			// A stack entry holds the string's index plus one in five
+			// bits: a string past that lexes its interpolations as text.
+			if st.stack>>16 == 0 && k+1 < 1<<5 {
 				st.stack = st.stack<<8 | uint64(k+1)<<3
 				st.mode = 0
 				st.regexOK = true

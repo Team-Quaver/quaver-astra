@@ -83,7 +83,8 @@ link (`mygo.App.OnOpenURL`) pushes its page.
 
 Users go back and forward as in browsers and Finder: Cmd+[ and Cmd+] on
 macOS, Alt+Left and Alt+Right on Linux and Windows, the back and forward
-buttons of a mouse and the keys of keyboards that have them, and the
+buttons of a mouse and the keys of keyboards that have them, swiping
+between pages on a touchpad on macOS, and the
 [back and forward buttons](history-buttons.md), which a toolbar holds, and
 whose right click lists the pages to go back or forward to, by their
 titles. The keys go to the router holding the keyboard focus, else to the

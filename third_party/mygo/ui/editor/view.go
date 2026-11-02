@@ -17,8 +17,8 @@ import (
 // view shows the lines of a Buffer: it keeps the display model in step
 // with the text, lays out the lines in view a row at a time, shaping each
 // row's text once and keeping it while frames draw it, and paints them
-// with the colors of their tokens. An editor has one; a diff one per
-// side.
+// with the colors of their tokens, in the bold and italic faces their
+// styles ask for. An editor has one; a diff one per side.
 type view struct {
 	buf      *Buffer
 	text     rope.Text
@@ -38,6 +38,10 @@ type view struct {
 	wrapWidth  float32
 	scale      float32
 	theme      *Theme
+	// faces are the faces of the kinds of tokens, by the theme; styled
+	// tells whether any is not the regular one.
+	faces  [tokenKinds]uint8
+	styled bool
 
 	heights heights
 	// inlays are texts shown in lines that are not part of them, sorted
@@ -51,8 +55,14 @@ type view struct {
 	wrapAt  int     // the next line to measure the wraps of
 	// approx tells that a frame showed tokens from states the
 	// highlighter has not confirmed yet.
-	approx     bool
-	tokScratch []Token
+	approx      bool
+	tokScratch  []Token
+	faceScratch []faceRun
+	spanScratch []text.Span
+
+	// faceWidths measure the bold and italic faces, by face, as widths
+	// does the regular one (faceWidths[0] is unused).
+	faceWidths [4]charWidths
 }
 
 // inlay is text shown in a line at an offset, as an inlay hint or a
@@ -72,7 +82,8 @@ type lineLayout struct {
 	segs  []dispSeg
 	rows  []rowLayout
 	toks  []Token
-	exact bool // toks from a confirmed state
+	exact bool      // toks from a confirmed state
+	faces []faceRun // the faces of toks, none when all are regular
 	width float32
 	used  uint64
 }
@@ -112,6 +123,20 @@ type rowPiece struct {
 
 const pieceBytes = 2048
 
+// The faces of text: the font's regular one, or bold, italic or both,
+// as the styles of tokens ask.
+const (
+	faceBold uint8 = 1 << iota
+	faceItalic
+)
+
+// faceRun is a run of a line's displayed text in a face, up to the
+// displayed byte end; bytes past the last run are regular.
+type faceRun struct {
+	end  int
+	face uint8
+}
+
 type lineCache struct {
 	m     map[int]*lineLayout
 	frame uint64
@@ -122,25 +147,34 @@ type lineCache struct {
 // over as it uses them, and those of this one.
 type shapeCache struct {
 	style     text.Style
-	prev, cur map[string]*text.Layout
+	prev, cur map[shapeKey]*text.Layout
 }
 
+// shapeKey is a text and the spans of its faces (text.EncodeSpans).
+type shapeKey struct{ text, spans string }
+
 func (c *shapeCache) get(s string, style text.Style) *text.Layout {
+	return c.getSpans(s, "", style)
+}
+
+// getSpans returns the layout of s with spans, as text.Params has them.
+func (c *shapeCache) getSpans(s, spans string, style text.Style) *text.Layout {
 	if c.style != style {
 		c.style, c.prev, c.cur = style, nil, nil
 	}
 	if c.cur == nil {
-		c.cur = map[string]*text.Layout{}
+		c.cur = map[shapeKey]*text.Layout{}
 	}
-	if l, ok := c.cur[s]; ok {
+	k := shapeKey{s, spans}
+	if l, ok := c.cur[k]; ok {
 		return l
 	}
-	if l, ok := c.prev[s]; ok {
-		c.cur[s] = l
+	if l, ok := c.prev[k]; ok {
+		c.cur[k] = l
 		return l
 	}
-	l := text.Shared().Shape(text.Params{Text: s, Style: style, NoWrap: true, KeepSpaces: true})
-	c.cur[s] = l
+	l := text.Shared().Shape(text.Params{Text: s, Style: style, NoWrap: true, KeepSpaces: true, Spans: spans})
+	c.cur[k] = l
 	return l
 }
 
@@ -223,6 +257,58 @@ func (w *charWidths) width(s string) float32 {
 	return x
 }
 
+// widthsOf returns the widths of a face.
+func (v *view) widthsOf(face uint8) *charWidths {
+	if face == 0 {
+		return &v.widths
+	}
+	w := &v.faceWidths[face&3]
+	w.reset(v.faceStyle(face))
+	return w
+}
+
+// faceStyle returns the style of the editor's font in a face.
+func (v *view) faceStyle(face uint8) text.Style {
+	s := v.style
+	if face&faceBold != 0 {
+		s.Weight = v.boldWeight()
+	}
+	if face&faceItalic != 0 {
+		s.Italic = true
+	}
+	return s
+}
+
+// boldWeight is the weight of the bold face: 700, or black for a font
+// already bold.
+func (v *view) boldWeight() int {
+	if v.style.Weight >= 700 {
+		return 900
+	}
+	return 700
+}
+
+// runsWidth returns the width of displayed bytes a to b of s, whose
+// faces are faces.
+func (v *view) runsWidth(s string, faces []faceRun, a, b int) float32 {
+	if len(faces) == 0 {
+		return v.widths.width(s[a:b])
+	}
+	var x float32
+	prev := 0
+	for _, r := range faces {
+		from, to := max(prev, a), min(r.end, b)
+		prev = r.end
+		if from < to {
+			x += v.widthsOf(r.face).width(s[from:to])
+		}
+	}
+	if from := max(prev, a); from < b {
+		x += v.widths.width(s[from:b])
+	}
+	return x
+}
+
 func isASCII(s string) bool {
 	for i := 0; i < len(s); i++ {
 		if s[i] >= utf8.RuneSelf {
@@ -265,6 +351,27 @@ func (v *view) setStyle(f ui.Font, lineHeight, scale float32, tabSize int) {
 	if v.wrap {
 		v.heights.wraps.reset(v.text.LineCount(), true)
 		v.wrapAt = 0
+	}
+}
+
+// setTheme sets the theme, laying out lines anew when the faces of
+// tokens change.
+func (v *view) setTheme(ct *Theme) {
+	v.theme = ct
+	var faces [tokenKinds]uint8
+	styled := false
+	for k, ts := range ct.Tokens {
+		if ts.Bold {
+			faces[k] |= faceBold
+		}
+		if ts.Italic {
+			faces[k] |= faceItalic
+		}
+		styled = styled || faces[k] != 0
+	}
+	if faces != v.faces {
+		v.faces, v.styled = faces, styled
+		v.lines.m = nil
 	}
 }
 
@@ -384,8 +491,15 @@ func (v *view) line(n int) *lineLayout {
 		l.used = v.lines.frame
 		if !l.exact {
 			// A guess: the highlighter may know better now. The layout
-			// does not depend on the tokens, which only color it.
+			// depends on the tokens only through their faces.
 			l.toks, l.exact = v.tokens(n, l.text, l.toks[:0])
+			if v.styled {
+				v.faceScratch = v.facesOf(l, v.faceScratch[:0])
+				if !slices.Equal(v.faceScratch, l.faces) {
+					delete(v.lines.m, n)
+					return v.line(n)
+				}
+			}
 		}
 		return l
 	}
@@ -394,6 +508,12 @@ func (v *view) line(n int) *lineLayout {
 	l.text = v.text.Slice(l.start, v.text.LineEnd(n))
 	l.toks, l.exact = v.tokens(n, l.text, nil)
 	v.display(l)
+	if v.styled {
+		v.faceScratch = v.facesOf(l, v.faceScratch[:0])
+		if len(v.faceScratch) > 0 {
+			l.faces = slices.Clone(v.faceScratch)
+		}
+	}
 	v.layoutRows(l)
 	v.lines.m[n] = l
 	if l.width > v.maxLine {
@@ -426,6 +546,94 @@ func (v *view) tokens(n int, s string, dst []Token) ([]Token, bool) {
 		v.approx = true
 	}
 	return toks, ok
+}
+
+// facesOf appends to dst the faces of l's tokens, by displayed bytes,
+// with inlays regular, and returns none when all are regular.
+func (v *view) facesOf(l *lineLayout, dst []faceRun) []faceRun {
+	dst = dst[:0]
+	styled := false
+	for _, t := range l.toks {
+		f := v.faces[t.Kind]
+		styled = styled || f != 0
+		e := l.toDisp(t.End, false)
+		if n := len(dst); n > 0 && (dst[n-1].face == f || dst[n-1].end >= e) {
+			dst[n-1].end = max(dst[n-1].end, e)
+			continue
+		}
+		dst = append(dst, faceRun{e, f})
+	}
+	if !styled {
+		return dst[:0]
+	}
+	for i, sg := range l.segs {
+		if sg.kind == segInlay {
+			dst = regularFaces(dst, sg.disp, sg.disp+segLen(l, i))
+		}
+	}
+	return dst
+}
+
+// regularFaces makes displayed bytes a to b of runs regular.
+func regularFaces(runs []faceRun, a, b int) []faceRun {
+	if a >= b {
+		return runs
+	}
+	out := make([]faceRun, 0, len(runs)+2)
+	add := func(e int, f uint8) {
+		n := len(out)
+		switch {
+		case n > 0 && out[n-1].end >= e:
+		case n > 0 && out[n-1].face == f:
+			out[n-1].end = e
+		default:
+			out = append(out, faceRun{e, f})
+		}
+	}
+	prev := 0
+	for _, r := range runs {
+		if prev < a {
+			add(min(r.end, a), r.face)
+		}
+		if r.end > a && prev < b {
+			add(min(r.end, b), 0)
+		}
+		if r.end > b {
+			add(r.end, r.face)
+		}
+		prev = r.end
+	}
+	return out
+}
+
+// spansOf returns the spans of the faces of displayed bytes a to b of
+// l, for text.Params, "" when they are all regular.
+func (v *view) spansOf(l *lineLayout, a, b int) string {
+	if len(l.faces) == 0 {
+		return ""
+	}
+	spans := v.spanScratch[:0]
+	styled := false
+	runes, prev := 0, 0
+	for _, r := range l.faces {
+		from, to := max(prev, a), min(r.end, b)
+		prev = r.end
+		if from >= to {
+			continue
+		}
+		runes += utf8.RuneCountInString(l.disp[from:to])
+		sp := text.Span{End: runes, Italic: r.face&faceItalic != 0}
+		if r.face&faceBold != 0 {
+			sp.Weight = v.boldWeight()
+		}
+		spans = append(spans, sp)
+		styled = styled || r.face != 0
+	}
+	v.spanScratch = spans
+	if !styled {
+		return ""
+	}
+	return text.EncodeSpans(spans)
 }
 
 // display makes the displayed text of l: tabs expanded to the next tab
@@ -571,7 +779,7 @@ func (l *lineLayout) fromDisp(d int) int {
 // layoutRows wraps the displayed text of l into rows and shapes them.
 func (v *view) layoutRows(l *lineLayout) {
 	l.rows = l.rows[:0]
-	breaks := v.wrapBreaks(l.disp)
+	breaks := v.wrapBreaks(l.disp, l.faces)
 	indent := float32(0)
 	if len(breaks) > 0 {
 		indent = v.wrapIndent(l.disp)
@@ -588,7 +796,7 @@ func (v *view) layoutRows(l *lineLayout) {
 		}
 		// The rows of a wrapped line are shaped as they show, not all
 		// of a long line's at once.
-		v.shapeRow(l.disp, &row, len(breaks) > 0)
+		v.shapeRow(l, &row, len(breaks) > 0)
 		l.rows = append(l.rows, row)
 		l.width = max(l.width, row.indent+row.width)
 		from = to
@@ -598,21 +806,22 @@ func (v *view) layoutRows(l *lineLayout) {
 	}
 }
 
-// shapeRow shapes a row, in pieces of at most pieceBytes, placed by
+// shapeRow shapes a row of l, in pieces of at most pieceBytes, placed by
 // their widths: only the first piece of the row is shaped at once when
 // the row is long, the others as they show (piece).
-func (v *view) shapeRow(s string, row *rowLayout, lazy bool) {
+func (v *view) shapeRow(l *lineLayout, row *rowLayout, lazy bool) {
+	s := l.disp
 	text := s[row.from:row.to]
 	if len(text) <= pieceBytes && lazy {
-		w := v.widths.width(text)
+		w := v.runsWidth(s, l.faces, row.from, row.to)
 		row.pieces = append(row.pieces[:0], rowPiece{from: row.from, to: row.to, ascii: isASCII(text), width: w})
 		row.width = w
 		return
 	}
 	if len(text) <= pieceBytes {
-		l := v.shaped.get(text, v.style)
-		row.pieces = append(row.pieces[:0], rowPiece{from: row.from, to: row.to, l: l, ascii: isASCII(text), width: l.Width})
-		row.width = l.Width
+		lay := v.shaped.getSpans(text, v.spansOf(l, row.from, row.to), v.style)
+		row.pieces = append(row.pieces[:0], rowPiece{from: row.from, to: row.to, l: lay, ascii: isASCII(text), width: lay.Width})
+		row.width = lay.Width
 		return
 	}
 	row.pieces = row.pieces[:0]
@@ -622,7 +831,7 @@ func (v *view) shapeRow(s string, row *rowLayout, lazy bool) {
 		for b < row.to && !utf8.RuneStart(s[b]) {
 			b++
 		}
-		w := v.widths.width(s[a:b])
+		w := v.runsWidth(s, l.faces, a, b)
 		row.pieces = append(row.pieces, rowPiece{from: a, to: b, x: x, ascii: isASCII(s[a:b]), width: w})
 		x += w
 		a = b
@@ -633,7 +842,7 @@ func (v *view) shapeRow(s string, row *rowLayout, lazy bool) {
 // piece returns the layout of a row's piece, shaping it the first time.
 func (v *view) piece(l *lineLayout, p *rowPiece) *text.Layout {
 	if p.l == nil {
-		p.l = v.shaped.get(l.disp[p.from:p.to], v.style)
+		p.l = v.shaped.getSpans(l.disp[p.from:p.to], v.spansOf(l, p.from, p.to), v.style)
 	}
 	return p.l
 }
@@ -641,15 +850,18 @@ func (v *view) piece(l *lineLayout, p *rowPiece) *text.Layout {
 // wrapBreaks returns where the displayed text s breaks into rows when
 // wrapping, as Zed's LineWrapper: summing the advances of characters,
 // breaking after whitespace or between a word and what is not, anywhere
-// in CJK, and inside a word too long for a row.
-func (v *view) wrapBreaks(s string) []int {
+// in CJK, and inside a word too long for a row. faces are those of s,
+// if known.
+func (v *view) wrapBreaks(s string, faces []faceRun) []int {
 	if !v.wrap || v.wrapWidth <= 0 {
 		return nil
 	}
 	width := v.wrapWidth
-	if v.widths.mono > 0 && float32(len(s))*v.widths.mono <= width {
+	if len(faces) == 0 && v.widths.mono > 0 && float32(len(s))*v.widths.mono <= width {
 		return nil
 	}
+	fi := 0
+	cw := &v.widths
 	var breaks []int
 	indent := float32(0)
 	x := float32(0)
@@ -660,7 +872,16 @@ func (v *view) wrapBreaks(s string) []int {
 		if i > start && canBreak(prev, r) {
 			last = i
 		}
-		w := v.widths.of(r)
+		if len(faces) > 0 {
+			for fi < len(faces) && faces[fi].end <= i {
+				fi++
+			}
+			cw = &v.widths
+			if fi < len(faces) {
+				cw = v.widthsOf(faces[fi].face)
+			}
+		}
+		w := cw.of(r)
 		if x+w > width && i > start {
 			at := i
 			if last > start {
@@ -671,7 +892,7 @@ func (v *view) wrapBreaks(s string) []int {
 				indent = v.wrapIndent(s)
 			}
 			// Measure the new row from its start, after the indent.
-			x = indent + v.widths.width(s[at:i])
+			x = indent + v.runsWidth(s, faces, at, i)
 			start, last = at, -1
 		}
 		x += w
@@ -724,7 +945,7 @@ func (v *view) measureWraps(near int, budget time.Duration) bool {
 			v.display(l)
 			disp = l.disp
 		}
-		w.set(i, len(v.wrapBreaks(disp))+1)
+		w.set(i, len(v.wrapBreaks(disp, nil))+1)
 		return true
 	}
 	// Those around near first, so what shows is right at once.

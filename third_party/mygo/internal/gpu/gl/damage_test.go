@@ -4,7 +4,6 @@ package gl
 
 import (
 	"bytes"
-	"fmt"
 	"testing"
 
 	"github.com/egoist/mygo/internal/gpu/gputest"
@@ -76,7 +75,7 @@ func TestPartialFramesMatchWhole(t *testing.T) {
 					part := "whole"
 					if r.redrew != redrewWhole {
 						partial++
-						part = fmt.Sprint(r.redrewPart)
+						part = r.part.String()
 					}
 					glBindFramebuffer(glFramebuffer, fb)
 					if err := whole.Render(s); err != nil {
@@ -98,6 +97,52 @@ func TestPartialFramesMatchWhole(t *testing.T) {
 			}
 			if partial < frames/3 {
 				t.Errorf("%d frames of %d drawn in part", partial, frames)
+			}
+		})
+	}
+}
+
+// TestPartialFramesApart checks that two changes in opposite corners, a
+// spinner's and a progress bar's, redraw two rectangles, not all between,
+// and the bytes of the frame drawn whole.
+func TestPartialFramesApart(t *testing.T) {
+	for _, api := range apis {
+		t.Run(api.name, func(t *testing.T) {
+			read := offscreen(t, api.es, 320, 240)
+			s := gputest.NewChanging(5).Scene()
+			s.Ops = append(s.Ops,
+				scene.Op{Kind: scene.OpFill, Rect: scene.Rect{X: 4, Y: 4, W: 12, H: 12}, Radii: scene.Uniform(6), Color: scene.Color{R: 200, A: 255}},
+				scene.Op{Kind: scene.OpFill, Rect: scene.Rect{X: 250, Y: 226, W: 60, H: 6}, Radii: scene.Uniform(3), Color: scene.Color{B: 200, A: 255}})
+			r, err := New()
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer r.Release()
+			r.Partial = true
+			whole, err := New()
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer whole.Release()
+			for step := range 4 {
+				if step > 0 {
+					n := len(s.Ops)
+					s.Ops[n-2].Color.G += 60
+					s.Ops[n-1].Rect.W -= 7
+				}
+				if err := r.Render(s); err != nil {
+					t.Fatal(err)
+				}
+				got := read()
+				if step > 0 && (r.redrew != redrewPart || len(r.part.Rects) != 2) {
+					t.Errorf("step %d redrew %v: %s", step, r.redrew, r.part.String())
+				}
+				if err := whole.Render(s); err != nil {
+					t.Fatal(err)
+				}
+				if !bytes.Equal(got, read()) {
+					t.Fatalf("step %d, redrew %s: differs from the frame drawn whole", step, r.part.String())
+				}
 			}
 		})
 	}

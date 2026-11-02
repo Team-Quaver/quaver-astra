@@ -633,7 +633,7 @@ func (e *node) Selected(on bool) *node {
 		e.checked = 1
 		return e
 	}
-	t := e.c.theme
+	t := e.theme()
 	e.checked = 2
 	e.Background(t.Accent).TextColor(t.AccentText)
 	return e

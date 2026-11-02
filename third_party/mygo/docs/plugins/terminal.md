@@ -75,6 +75,8 @@ The terminal does what terminal apps do:
 - **Selecting** with the pointer works as in Ghostty: a drag selects
   cells, a double click words and a triple click lines, and dragging past
   the top or the bottom scrolls. Option (Alt elsewhere) drags a rectangle.
+  Shift-click extends an existing selection from its original anchor;
+  subsequent Shift-clicks can extend or shrink it, including across lines.
   While a program takes the mouse, as editors do, Shift selects.
 - **The pointer** is Ghostty's: the I-beam over a shell, the arrow while a
   program takes the mouse (the I-beam again while Shift is held, as Shift
@@ -155,6 +157,12 @@ term, err := terminal.New(terminal.Options{
 - `Cursor` and `NoBlink` set the cursor, which programs may change.
 - `Scrollback` is about how many bytes of output to keep above the
   screen: 10 MB by default, none when negative.
+- `ScrollMultiplier` scales scrolling, as Ghostty's
+  `mouse-scroll-multiplier`: `Discrete` is the rows a notch of a mouse
+  wheel scrolls (3 by default; on Windows it scales the "lines to scroll"
+  setting as 3 would be the setting's), and `Precision` scales a
+  touchpad's distance (1 by default). `SetScrollMultiplier` changes it in
+  a running terminal.
 - `MinimumContrast` is the least contrast text has with its background,
   as Ghostty's `minimum-contrast`: a WCAG ratio from 1 (none, the
   default) to 21. Text with less, as a program's light gray on a light
@@ -259,9 +267,13 @@ term, err := terminal.New(terminal.Options{
   It is not asked on a full-screen program's screen.
 - `OnTitle`, `OnExit`, `OnBell` and `OnNotify` run on a goroutine of the
   terminal when the program sets the title, ends, rings the bell or asks
-  for a desktop notification. `Done` is closed once the program exited,
-  and `ExitCode` returns its code (-1 for a program that could not
-  start); the terminal then shows "[Process exited]".
+  for a desktop notification. They may run before the window that shows
+  the terminal exists, which `NewWindow` makes after `New`: callbacks
+  that use the window wait for it, as the terminal example's do (`<-ready`
+  before `win`, and `close(ready)` once `NewWindow` set `win`). `Done` is
+  closed once the program exited, and `ExitCode` returns its code (-1 for
+  a program that could not start); the terminal then shows "[Process
+  exited]".
 - `OpenLink` takes the links Command+click opens, on the main thread,
   and with it file paths printed as text too (`/abs/path`, `~/notes.md`,
   `./a.go`, `src/app.go:12:3`, `main.go:250`), as printed: a relative
@@ -311,7 +323,10 @@ term, err := terminal.New(terminal.Options{
   (unless Shift is held), or as arrow keys on a full-screen program's
   screen (alternate scroll, which `\x1b[?1007l` turns off). A `Conn`
   whose history lives at the other end, as a remote multiplexer streaming
-  only its screen, sends the wheel there this way.
+  only its screen, sends the wheel there this way. A notch of a mouse
+  wheel is three rows, or on Windows as many as its "lines to scroll"
+  setting asks (3 unless changed), as in Windows Terminal; a touchpad
+  scrolls by the distance it moves.
 - `OnZoom` sees a zoom on the main thread: the wheel with Control held
   (Command on macOS), which zooms before `OnScroll` and a program that
   takes the mouse see it, or a key bound to a font size action. Its

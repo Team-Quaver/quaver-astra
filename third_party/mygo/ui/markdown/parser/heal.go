@@ -42,16 +42,25 @@ func (ip *inlineParser) heal(s string) (string, int, bool) {
 		closer string
 	}
 	var open []opener
+	// Math not closed, by $$ or a single $ (ExtDollarMath), runs to the
+	// end: what follows is TeX, whose _ and * open no emphasis.
+	math, closer := len(s), ""
+	if ip.ext&ExtMath != 0 && ip.openMath >= 0 {
+		math, closer = ip.openMath, "$$"
+	}
+	if ip.ext&ExtDollarMath != 0 && ip.openDollar >= 0 && ip.openDollar < math {
+		math, closer = ip.openDollar, "$"
+	}
+	if closer != "" {
+		open = append(open, opener{math, closer})
+	}
 	for _, d := range ip.leftover {
-		if d.c == '*' && wordInside(s, d.at, d.orig) || d.c == '~' && d.orig == 1 {
-			continue // 2*3, or a tilde for "about", as ~200
+		if d.c == '*' && wordInside(s, d.at, d.orig) || d.c == '~' && d.orig == 1 || d.at > math {
+			continue // 2*3, a tilde for "about", as ~200, or TeX
 		}
 		open = append(open, opener{d.at, strings.Repeat(string(d.c), d.n)})
 	}
-	if ip.ext&ExtMath != 0 && ip.openMath >= 0 {
-		open = append(open, opener{ip.openMath, "$$"})
-	}
-	if ip.lastB >= 0 {
+	if ip.lastB >= 0 && ip.nodes[ip.br[ip.lastB].node].start < math {
 		ip.hide = ip.nodes[ip.br[ip.lastB].node].start
 	}
 	if len(open) == 0 && ip.hide < 0 {

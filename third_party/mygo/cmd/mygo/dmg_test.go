@@ -114,12 +114,12 @@ func TestPackagingArgs(t *testing.T) {
 // where they are uploaded. A universal disk image is for every Mac.
 func TestInstallerNames(t *testing.T) {
 	c := &Config{Name: "A/B: C", Version: "1.0"}
-	for goarch, want := range map[string]string{"arm64": "A-B- C 1.0 arm64.dmg", "amd64": "A-B- C 1.0 amd64.dmg", "universal": "A-B- C 1.0.dmg"} {
+	for goarch, want := range map[string]string{"arm64": "a-b-c-1.0-arm64.dmg", "amd64": "a-b-c-1.0-amd64.dmg", "universal": "a-b-c-1.0.dmg"} {
 		if got := dmgFileName(c, goarch); got != want {
 			t.Errorf("dmgFileName(%s) = %q, want %q", goarch, got, want)
 		}
 	}
-	for goarch, want := range map[string]string{"amd64": "A-B- C Setup 1.0 amd64.exe", "arm64": "A-B- C Setup 1.0 arm64.exe"} {
+	for goarch, want := range map[string]string{"amd64": "a-b-c-setup-1.0-amd64.exe", "arm64": "a-b-c-setup-1.0-arm64.exe"} {
 		if got := installerFileName(c, goarch); got != want {
 			t.Errorf("installerFileName(%s) = %q, want %q", goarch, got, want)
 		}
@@ -162,7 +162,7 @@ func TestBuildDMG(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if filepath.Base(dmg) != "DMG Test 1.2.3 "+runtime.GOARCH+".dmg" {
+	if filepath.Base(dmg) != "dmg-test-1.2.3-"+runtime.GOARCH+".dmg" {
 		t.Errorf("dmg = %s", dmg)
 	}
 	mnt := attachDMG(t, dmg)

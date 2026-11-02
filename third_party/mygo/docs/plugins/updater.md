@@ -94,9 +94,12 @@ mygo.Use(updater.New(updater.Options{
 The user's choices are kept in `updater.json` in `PathUserData`.
 `AutomaticChecks` and `AutomaticDownloads` read them and
 `SetAutomaticChecks` and `SetAutomaticDownloads` change them, for a
-preferences page; `LastCheck` returns when the app last checked.
+preferences page; `LastCheck` returns when the app last checked, and
+`AvailableVersion` the newer version it found, for a badge or a settings
+row ("Version 1.4 is available"): empty before a check, after one that
+failed or found nothing, and for a skipped version.
 `OnChange` calls a function on the main thread whenever one of them
-changed, after a check or an answer in the update window as well, so the
+changed, after a check (`AvailableVersion` too) or an answer in the update window as well, so the
 page can show them again:
 
 ```go

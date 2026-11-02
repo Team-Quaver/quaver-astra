@@ -279,7 +279,10 @@ whatever the app is written in.
 - `App.SetActivationPolicy(mygo.ActivationPolicyAccessory)` removes the
   Dock icon of an app that lives in the menu bar, see
   [tray icons](menus.md#tray-icons); its windows can still show.
-- `App.Focus` brings the app to the front. On macOS, `App.Hide` and
+  `App.ActivationPolicy` returns the policy.
+- `App.Focus` brings the app to the front, and `App.IsActive` reports
+  whether it is there: the active app, or the one with the focused window
+  on Windows and Linux. On macOS, `App.Hide` and
   `App.Show` hide and show all its windows, and `App.ShowAboutPanel` shows
   the standard about panel.
 
@@ -328,7 +331,8 @@ together. Its methods do nothing on macOS and Linux.
 `App.ClearBrowsingData()` deletes what the app's pages stored: cookies,
 local and session storage, IndexedDB, service workers and caches, for
 example when the user signs out. Open pages keep what they hold in memory
-until they reload.
+until they reload. It clears the default session; `Session.ClearData`
+clears another, or some kinds of data only.
 
 ### Cookies
 
@@ -391,3 +395,55 @@ seconds, as when the engine refuses a cookie. On Linux they need
 WebKitGTK 2.42 or newer, and `Set` libsoup 2.70 or newer; WebKitGTK keeps
 the cookies in `cookies.sqlite` of the app's user data directory
 (`~/.config/<Name>`).
+
+### Sessions
+
+Every page shows in the default session unless `PageOptions.Session` names
+another: a store of cookies, local and session storage, IndexedDB, caches
+and service workers of its own, which the pages of other sessions don't
+see, as Electron's partitions. Two accounts of a service side by side, a
+private window, a preview that must not see the user's sign-ins, or a
+third-party page kept away from the app's own storage each take one:
+
+```go
+work := mygo.NewSession("work")        // kept on disk from one run to the next
+private := mygo.NewEphemeralSession()  // in memory only
+
+win := mygo.NewWindow(mygo.WindowOptions{
+	URL:  "https://mail.example.com",
+	Page: mygo.PageOptions{Session: work},
+})
+
+list, err := work.Cookies.List(mygo.CookieFilter{})
+err = work.Cookies.Set(mygo.Cookie{Name: "session", Value: token, Domain: "example.com"})
+err = work.ClearData(mygo.SiteDataAll)                             // signing out
+err = work.ClearData(mygo.SiteDataCookies | mygo.SiteDataCaches)  // some kinds
+```
+
+`NewSession` returns the same session for the same name, whose data stays
+on disk as the default session's does. `NewEphemeralSession` returns a new
+session every time, which writes nothing to disk: its data goes when the
+last page using it closes, and its next page starts with none. A cookie set
+before its first page opens goes to that page. `mygo.Cookies` and
+`App.ClearBrowsingData` are the default session's, which
+`mygo.DefaultSession()` returns too. A window a page opens with
+`window.open` or a `target="_blank"` link is in its opener's session,
+whatever the `Session` of the options the open handler returns. Custom
+protocols (`mygo.Protocol`) serve the pages of every session, and a web
+view in [native UI](ui/web-view.md) takes a session in its `PageOptions`
+too.
+
+`ClearData` takes `SiteDataCookies`, `SiteDataLocalStorage` (with session
+storage), `SiteDataIndexedDB` (with WebSQL), `SiteDataCaches` (the HTTP
+cache and Cache Storage), `SiteDataServiceWorkers`, or `SiteDataAll`: all
+the data the engine keeps for sites, those kinds and the others it has.
+
+| | persistent session | ephemeral session |
+|---|---|---|
+| macOS | `WKWebsiteDataStore dataStoreForIdentifier:` with a UUID made of the name, from macOS 14; before, an in-memory store that lasts until the app quits | `nonPersistentDataStore` |
+| Linux | a web context of its own, with its data in `Sessions/<UUID>` of the user data directory and its caches in that of the cache directory; WebKitGTK 2.16 or newer | a web context with an ephemeral website data manager |
+| Windows | a WebView2 profile, `mygo-<UUID>`, in the app's WebView2 user data; WebView2 Runtime 1.0.1185 or newer | an InPrivate profile, `mygo-private-<n>`, which WebView2 drops with its last web view |
+
+On Windows, the cookies of a session come from a web view of its profile,
+as the default session's do: before one of its windows shows a page, the
+calls make a hidden one.

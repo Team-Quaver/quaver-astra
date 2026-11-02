@@ -38,6 +38,9 @@ type Backend struct {
 	frames [2]extents
 
 	appMenu *platform.Menu
+	// stores are the web contexts of sessions (session.go); schemes,
+	// below, the custom schemes registered on the default web context.
+	stores []*dataStore
 	// languages are those SetLanguages told, which the web context
 	// takes as the first web view is made (webLanguages).
 	languages    []string
@@ -277,6 +280,8 @@ func initCallbacks() {
 		initFlyoutCallbacks()
 		initSurfaceCallbacks()
 		initDownloadCallbacks()
+		initAuthCallbacks()
+		initContextMenuCallbacks()
 		initMenuCallbacks()
 		initSystemCallbacks()
 		initClipboardCallbacks()
@@ -313,6 +318,17 @@ func (a appController) Unhide() {
 }
 
 func (a appController) IsHidden() bool { return false }
+
+// IsActive reports whether a window of the app has the keyboard.
+func (a appController) IsActive() bool {
+	for _, w := range a.b.windows {
+		if !w.closed && gtkWindowIsActive(w.win) {
+			return true
+		}
+	}
+	return false
+}
+
 func (a appController) SetBadge(label string) {
 	a.b.launcher.badge = label
 	a.b.updateLauncherEntry()
@@ -362,21 +378,20 @@ func (a appController) ShowAboutPanel(o platform.AboutPanelOptions) {
 
 func (a appController) Package() (platform.PackageInfo, bool) { return platform.PackageInfo{}, false }
 
-func (a appController) ClearBrowsingData(done func(error)) {
+func (a appController) ClearBrowsingData(store platform.DataStore, types platform.SiteData, done func(error)) {
 	// Web views of earlier runs kept their data on disk: WebKitGTK clears
 	// it, loaded for that when no window has shown a web page yet.
 	if webKit() != nil {
 		done(nil) // no web view kept any data
 		return
 	}
-	const all = 1<<14 - 1 // WEBKIT_WEBSITE_DATA_ALL
-	manager := webkitWebContextGetWebsiteDataManager(webkitWebContextGetDefault())
+	manager := webkitWebContextGetWebsiteDataManager(webContext(store))
 	id := pending.add(func(source, res ptr) {
 		var gerr ptr
 		webkitWebsiteDataManagerClearFinish(source, res, &gerr)
 		done(gErr(gerr))
 	})
-	webkitWebsiteDataManagerClear(manager, all, 0, 0, cbAsyncReady, id)
+	webkitWebsiteDataManagerClear(manager, websiteDataTypes(types), 0, 0, cbAsyncReady, id)
 }
 
 func (a appController) AddRecentDocument(path string) error {

@@ -60,6 +60,18 @@ if done.Clicked() {
 }
 ```
 
+`Clarity`, from 0 to 1, makes panes as large as sidebars and inspectors
+clearer, the content under them reading through: 0, the default, is
+macOS's material, unchanged; 0.5 blurs up to 5 DIPs rather than 10, maps
+black to 35% in light mode and white to 60% in dark mode, lights the rim
+more and curves the last 48 DIPs; 1 is nearly clear, blurring up to 2
+DIPs and mapping black to 20% in light mode, and black to 10% and white
+to 85% in dark mode. Each half of the range is a straight step between
+those. Panes up to 100 DIPs keep their material whatever the clarity,
+which eases in up to 200 DIPs: `glass.Glass{Clarity: 0.5}`. Clear glass
+barely tones what shows through already; on it, clarity only lights the
+rim and curves the bezel.
+
 In a drawing, `glass.Paint(p, r, radius, g)` paints a pane of glass over
 what the painter painted before it.
 

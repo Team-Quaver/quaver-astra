@@ -195,9 +195,10 @@ func popoverDelegateMethods() []objc.MethodDef {
 
 // pressed reports whether the user is pressing the icon's button: the
 // event being handled is a press on it, or a mouse button is down with the
-// pointer over it, as when the app hears of the press only after it made
-// the app resign, or in a monitor of other apps' events, which the menu
-// bar's are on recent macOS.
+// pointer over it, or over the copy of it the user last clicked (frame),
+// as when the app hears of the press only after it made the app resign,
+// or in a monitor of other apps' events, which the menu bar's are on
+// recent macOS.
 func (t *tray) pressed() bool {
 	if t.item == 0 {
 		return false
@@ -216,7 +217,7 @@ func (t *tray) pressed() bool {
 	if send(class("NSEvent"), "pressedMouseButtons") == 0 {
 		return false
 	}
-	return inRect(msgPoint(class("NSEvent"), sel("mouseLocation")), msgRect(win, sel("frame")))
+	return inRect(msgPoint(class("NSEvent"), sel("mouseLocation")), t.frame())
 }
 
 // inRect reports whether p is in r, its far edges excluded.

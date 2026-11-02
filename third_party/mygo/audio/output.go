@@ -7,7 +7,8 @@ import (
 	"time"
 )
 
-// A device is the system's audio output, opened by openDevice.
+// A device is the system's audio output, opened by openDevice to hold
+// about ahead of what is heard.
 type device interface {
 	// write plays interleaved stereo frames after those written before,
 	// waiting while the device holds enough already. An error closes the
@@ -46,10 +47,16 @@ func active() bool {
 	return len(voices) > 0 && !testMode
 }
 
-func inTest() bool {
+// mixFor mixes into buf for an output open at latency lat, and reports
+// whether anything plays; ok is false, and it mixes nothing, once tests
+// mix by hand or the latency changed.
+func mixFor(buf []float32, lat Latency) (busy, ok bool) {
 	mu.Lock()
 	defer mu.Unlock()
-	return testMode
+	if testMode || latency != lat {
+		return false, false
+	}
+	return mixLocked(buf), true
 }
 
 // run opens the device while anything plays, and mixes into it.
@@ -60,18 +67,25 @@ func run() {
 		for !active() {
 			<-wake
 		}
-		dev, n, err := openOutput()
+		lat := outputLatency()
+		dev, n, err := openOutput(lat.ahead())
 		if err != nil {
 			setErr(err)
 			dev, n = newNullDevice(err != errUnsupported), nullFrames
+			// It holds nothing: what it takes is heard as it takes it.
+			setHeld(0)
 		} else {
 			setErr(nil)
+			setHeld(int64(lat.ahead() * sampleRate / time.Second))
 		}
 		buf := make([]float32, n*channels)
 		idle := time.Duration(0)
 		per := frames(int64(n), sampleRate)
-		for !inTest() {
-			busy := mix(buf)
+		for {
+			busy, ok := mixFor(buf, lat)
+			if !ok {
+				break
+			}
 			if err := dev.write(buf); err != nil {
 				// Lost, or a null device trying the real one again.
 				break

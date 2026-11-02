@@ -45,7 +45,16 @@ sound's players need no closing.
 A `Player` plays, pauses (`Pause`), and goes back to the start (`Stop`);
 `Play` after its end plays it again from the start. `Seek` moves it,
 `Position` and `Duration` say where it is and how long it is, and
-`Playing` turns false at its end, so a game can wait for a sound.
+`Playing` turns false at its end, so a game can wait for a sound;
+`OnEnd` calls a function then, on a goroutine of its own, as a playlist
+plays the next track (a looping player never ends).
+
+`Position` is where the player is heard. The output mixes ahead of what
+the speakers play (see [the output](#the-output)), and `Position` lags
+what it mixed by that much, so lyrics, a progress bar or a visualizer
+drawn from it keep time with the sound: after `Pause` it goes on while
+the output plays what it held, and after `Play` it waits until the
+player is heard. `Seek` and `Stop` move it at once.
 
 | setting | effect |
 |---|---|
@@ -58,6 +67,20 @@ A `Player` plays, pauses (`Pause`), and goes back to the start (`Stop`);
 The setters return the player, to chain them. Volume changes, pauses and
 resumes ramp over 5 ms, so none clicks. `audio.SetVolume` sets the volume
 of everything.
+
+## Media keys and Now Playing
+
+`mygo.NowPlaying.Control` lets the media keys and the system's media
+controls (Control Center on macOS, the volume flyout on Windows, MPRIS
+clients on Linux) play, pause, stop and seek a player, and shows its state
+there; see [Now Playing](native.md#now-playing-and-media-keys):
+
+```go
+release := mygo.NowPlaying.Control(music)
+mygo.NowPlaying.Set(mygo.NowPlayingInfo{Title: "Spring", Artist: "Vivaldi", Commands: mygo.MediaNext})
+music.Play()
+mygo.NowPlaying.Sync() // after playing it from the app
+```
 
 ## Formats
 
@@ -109,6 +132,18 @@ The output opens when something first plays and closes five seconds after
 everything stopped, so an app that plays nothing keeps no audio device
 busy. It plays at 48 kHz in stereo, about 40 ms ahead; players of other
 rates are resampled as they play.
+
+`audio.SetLatency` sets how far ahead it mixes, as Web Audio's
+`latencyHint`:
+
+| latency | ahead | for |
+|---|---|---|
+| `LatencyInteractive` (the default) | about 40 ms | games and interfaces: sounds start, stop and change as soon as asked |
+| `LatencyPlayback` | about 250 ms | music players: playback rides out the moments the system keeps an app waiting, as macOS does for up to 0.2 s while its appearance changes, where 40 ms runs dry and is heard to stop |
+
+With `LatencyPlayback`, plays, pauses, seeks and volume changes are heard
+that much later; players' `Position` follows what is heard. Set it before playing: an output already open opens
+again, which drops what it held.
 
 | platform | output |
 |---|---|

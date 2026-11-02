@@ -40,10 +40,11 @@ memory and CPU use.
   on every platform with the glass plugin; web pages inside native UI, under
   the menus and dialogs it shows over them.
 - **Desktop APIs** for both: windows, menus, tray, dialogs, notifications,
-  global shortcuts, deep links, file associations, recent documents, the
-  system accent color and accessibility settings, watching files, and more.
+  global shortcuts, deep links, file associations, recent documents, Now
+  Playing and the media keys, the system accent color and accessibility
+  settings, watching files, and more.
 - **Ready to ship**: app bundles and disk images, Windows installers, Debian
-  packages and a Linux install script, code signing, notarization, and signed
+  packages, PKGBUILDs for Arch Linux and a Linux install script, code signing, notarization, and signed
   auto-updates with delta updates and an update window in the manner of
   Sparkle.
 
@@ -102,7 +103,7 @@ func main() {
 
 ## Getting started
 
-With [Go](https://go.dev/dl/) 1.27+ and [Bun](https://bun.sh), create an app
+With [Go](https://go.dev/dl/) 1.27.3+ and [Bun](https://bun.sh), create an app
 with a web frontend:
 
 ```sh

@@ -13,6 +13,7 @@ import { Route as IndexRouteImport } from './routes/index'
 import { Route as R404RouteImport } from './routes/404'
 import { Route as BenchmarksRouteImport } from './routes/benchmarks'
 import { Route as DocsRouteRouteImport } from './routes/docs/route'
+import { Route as ShowcaseRouteImport } from './routes/showcase'
 import { Route as DocsIndexRouteImport } from './routes/docs/index'
 import { Route as DocsSplatRouteImport } from './routes/docs/$'
 import { Route as DocsSearchDotjsonRouteImport } from './routes/docs/search[.]json'
@@ -37,6 +38,11 @@ const DocsRouteRoute = DocsRouteRouteImport.update({
   path: '/docs',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ShowcaseRoute = ShowcaseRouteImport.update({
+  id: '/showcase',
+  path: '/showcase',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const DocsIndexRoute = DocsIndexRouteImport.update({
   id: '/',
   path: '/',
@@ -58,6 +64,7 @@ export interface FileRoutesByFullPath {
   '/docs': typeof DocsRouteRouteWithChildren
   '/404': typeof R404Route
   '/benchmarks': typeof BenchmarksRoute
+  '/showcase': typeof ShowcaseRoute
   '/docs/$': typeof DocsSplatRoute
   '/docs/search.json': typeof DocsSearchDotjsonRoute
   '/docs/': typeof DocsIndexRoute
@@ -66,6 +73,7 @@ export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/404': typeof R404Route
   '/benchmarks': typeof BenchmarksRoute
+  '/showcase': typeof ShowcaseRoute
   '/docs/$': typeof DocsSplatRoute
   '/docs/search.json': typeof DocsSearchDotjsonRoute
   '/docs': typeof DocsIndexRoute
@@ -76,6 +84,7 @@ export interface FileRoutesById {
   '/docs': typeof DocsRouteRouteWithChildren
   '/404': typeof R404Route
   '/benchmarks': typeof BenchmarksRoute
+  '/showcase': typeof ShowcaseRoute
   '/docs/$': typeof DocsSplatRoute
   '/docs/search.json': typeof DocsSearchDotjsonRoute
   '/docs/': typeof DocsIndexRoute
@@ -87,17 +96,26 @@ export interface FileRouteTypes {
     | '/docs'
     | '/404'
     | '/benchmarks'
+    | '/showcase'
     | '/docs/$'
     | '/docs/search.json'
     | '/docs/'
   fileRoutesByTo: FileRoutesByTo
-  to: '/' | '/404' | '/benchmarks' | '/docs/$' | '/docs/search.json' | '/docs'
+  to:
+    | '/'
+    | '/404'
+    | '/benchmarks'
+    | '/showcase'
+    | '/docs/$'
+    | '/docs/search.json'
+    | '/docs'
   id:
     | '__root__'
     | '/'
     | '/docs'
     | '/404'
     | '/benchmarks'
+    | '/showcase'
     | '/docs/$'
     | '/docs/search.json'
     | '/docs/'
@@ -108,6 +126,7 @@ export interface RootRouteChildren {
   DocsRouteRoute: typeof DocsRouteRouteWithChildren
   R404Route: typeof R404Route
   BenchmarksRoute: typeof BenchmarksRoute
+  ShowcaseRoute: typeof ShowcaseRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -138,6 +157,13 @@ declare module '@tanstack/react-router' {
       path: '/docs'
       fullPath: '/docs'
       preLoaderRoute: typeof DocsRouteRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/showcase': {
+      id: '/showcase'
+      path: '/showcase'
+      fullPath: '/showcase'
+      preLoaderRoute: typeof ShowcaseRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/docs/': {
@@ -185,6 +211,7 @@ const rootRouteChildren: RootRouteChildren = {
   DocsRouteRoute: DocsRouteRouteWithChildren,
   R404Route: R404Route,
   BenchmarksRoute: BenchmarksRoute,
+  ShowcaseRoute: ShowcaseRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

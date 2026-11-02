@@ -409,8 +409,9 @@ func TestRingSplitDrawsTheSamePixels(t *testing.T) {
 			instances := len(r.b.Instances)
 			r.b.NoRingSplit = true
 			whole := renderRaw(t, r, c.Scene, wide)
-			if c.Split && instances <= len(r.b.Instances) {
-				t.Errorf("%s wide=%v: the split drew %d instances, whole %d", c.Name, wide, instances, len(r.b.Instances))
+			// Split, a ring is more pieces, or none where it shows nothing.
+			if c.Split && instances == len(r.b.Instances) {
+				t.Errorf("%s wide=%v: the split drew %d instances, as whole", c.Name, wide, instances)
 			}
 			if d := differing(split, whole); d != 0 {
 				t.Errorf("%s wide=%v: %d bytes differ between split and whole", c.Name, wide, d)
@@ -1161,4 +1162,73 @@ func TestTranslatedBoxes(t *testing.T) {
 		t.Error("translated boxes draw other pixels than boxes in their places")
 	}
 	gputest.Compare(t, "metal-translated-boxes", moved, s.Width*4, s)
+}
+
+// TestBorderedCardDrawsAsTheCPURenderer draws the card of #531, a large
+// opaque card with a border of 2 pixels and continuous corners at scale 2,
+// over an opaque backdrop, and a small button like it, with each way the
+// builder can split them (an opaque core and pieces around it, nine-patches
+// of continuous corners, rings, specialized shaders) and without, and
+// requires the CPU renderer's pixels along their straight edges, exactly:
+// Metal drew a second line of border color at about 65% inside the card's
+// top edge, in the rows under its border, which Compare's tolerance (as
+// in the other parity tests) lets through.
+func TestBorderedCardDrawsAsTheCPURenderer(t *testing.T) {
+	r, err := newRenderer()
+	if err != nil {
+		unavailable(t, err)
+	}
+	defer r.Release()
+	reset := func() {
+		r.b.Opaque, r.b.NoCornerSplit, r.b.NoRingSplit, r.b.NoCull = true, false, false, false
+		r.b.NoClasses, r.b.GeneralFill, r.b.NoClipSkip, r.b.NoJoin = false, false, false, false
+	}
+	defer reset()
+	wide := r.SetWide(true)
+	if !wide {
+		t.Log("no wide target:", r.wideErr)
+	}
+	ways := []struct {
+		name string
+		set  func()
+	}{
+		{"", func() {}},
+		{"-blended", func() { r.b.Opaque = false }},
+		{"-whole-corners", func() { r.b.NoCornerSplit = true }},
+		{"-blended-whole-corners", func() { r.b.Opaque, r.b.NoCornerSplit = false, true }},
+		{"-no-cull", func() { r.b.NoCull, r.b.NoRingSplit = true, true }},
+		{"-general", func() { r.b.NoClasses, r.b.GeneralFill, r.b.NoClipSkip = true, true, true }},
+	}
+	for _, continuous := range []bool{true, false} {
+		s := gputest.BorderedCardScene(continuous)
+		name := "metal-bordered-card"
+		if !continuous {
+			name += "-round"
+		}
+		for _, w := range ways {
+			reset()
+			w.set()
+			// Twice: the second frame draws with what the first made.
+			for range 2 {
+				pix, err := r.renderOffscreen(s)
+				if err != nil {
+					t.Fatal(err)
+				}
+				gputest.CompareStraightEdges(t, name+w.name, pix, s.Width*4, s)
+			}
+			if !wide {
+				continue
+			}
+			// In float16, as windows showing wide colors draw.
+			raw := renderRaw(t, r, s, true)
+			pix := make([]byte, s.Width*s.Height*4)
+			for i := range s.Width * s.Height {
+				for c, from := range [4]int{2, 1, 0, 3} { // RGBA to BGRA
+					v := half(uint16(raw[8*i+2*from]) | uint16(raw[8*i+2*from+1])<<8)
+					pix[4*i+c] = byte(math.Round(float64(min(max(v, 0), 1) * 255)))
+				}
+			}
+			gputest.CompareStraightEdges(t, name+w.name+"-float16", pix, s.Width*4, s)
+		}
+	}
 }

@@ -1,8 +1,10 @@
 package shader_test
 
 import (
+	"bytes"
 	"fmt"
 	"image"
+	"image/png"
 	"strings"
 	"testing"
 
@@ -50,6 +52,30 @@ func Fragment(dst vec4, pos vec2) vec4 {
 	}
 	if got := at(2*10+1, 2*10+1); got != at(2, 2) {
 		t.Errorf("the rounded corner shows %v, want the background", got)
+	}
+}
+
+// A shader reads a bitmap that released its pixels (issue #664): the CPU
+// renderer decodes them again.
+func TestDrawReleasedBitmap(t *testing.T) {
+	s := shader.MustCompile("package main\n\nfunc Fragment(dst vec4, pos vec2) vec4 {\n\treturn image0At(vec2(0))\n}\n")
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, solid(2, 2, 255, 0, 0)); err != nil {
+		t.Fatal(err)
+	}
+	red, err := ui.DecodeBitmap(buf.Bytes())
+	if err != nil {
+		t.Fatal(err)
+	}
+	red.ReleasePixels()
+	tt := ui.NewTester(func(c *ui.Context) {
+		ui.Box(c).Fill().Draw(func(p *ui.Painter, r ui.Rect) {
+			s.Draw(p, ui.Rect{W: 40, H: 40}, shader.Options{Images: [4]*ui.Bitmap{red}})
+		})
+	}, 50, 50)
+	img := tt.Image()
+	if o := img.PixOffset(20, 20); [4]uint8(img.Pix[o:o+4]) != [4]uint8{255, 0, 0, 255} {
+		t.Errorf("a released bitmap reads %v, want red", img.Pix[o:o+4])
 	}
 }
 

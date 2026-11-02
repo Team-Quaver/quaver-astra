@@ -2,6 +2,7 @@ package appui
 
 import (
 	"fmt"
+	"runtime"
 	"time"
 
 	"github.com/Team-Quaver/quaver-astra/internal/audio"
@@ -17,6 +18,9 @@ type settingsState struct {
 	// 缓存几秒，重新进入或设备变化时再刷新。
 	backendStatus   audio.Status
 	backendStatusAt time.Time
+
+	// 本地音乐缓存面板的状态（占用/上限/回执），见 localcache.go。
+	localCache localCacheState
 
 	// 自定义字体输入框的草稿；TextInput 需要跨帧稳定地持有可编辑字符串。
 	fontDraft      string
@@ -360,16 +364,7 @@ func (a *App) settingsPlayback(c *ui.Context, t *ui.Theme) {
 
 		// 本地音乐缓存：播放过的整曲加密落盘（<配置目录>/cache/music/），
 		// 弱网重播免回源。密钥拆成磁盘半种 + 前端半种，只拿磁盘解不开。
-		a.localCacheStatusRow(c)
-		if a.Conf.Bool("Playing.LocalCache", false) {
-			if st, err := a.API.MusicCacheStatus(); err == nil {
-				ui.Textf(c, "已缓存 %d 首，占用 %.0f MiB（上限 %.0f MiB）。缓存按播放时间自动清理。",
-					st.Items, float64(st.Bytes)/(1<<20), float64(st.LimitBytes)/(1<<20)).
-					FontSize(fz(11.5)).TextColor(t.TextMuted).MaxLines(2)
-			}
-		}
-		ui.Text(c, "缓存数据全程加密存储，不含歌曲名与曲目 ID；换账号登录会重置缓存。").
-			FontSize(fz(11.5)).TextColor(t.TextMuted).MaxLines(2)
+		a.localCacheStatusRow(c, t)
 
 		ui.Divider(c)
 
@@ -465,8 +460,10 @@ func (a *App) settingsAbout(c *ui.Context, t *ui.Theme) {
 				ui.Text(c, line).FontSize(fz(11.5)).TextColor(t.TextMuted).MaxLines(2)
 			}
 		}
-		ui.Text(c, "音频管线全部在 Astra 进程内完成，不再启动 mpv。Linux 需要系统 FFmpeg 共享库（libav*）与 PipeWire；Windows 使用 WASAPI，macOS 使用 Core Audio。").
-			FontSize(fz(11.5)).TextColor(t.TextMuted).MaxLines(3)
+		if runtime.GOOS == "linux" {
+			ui.Text(c, "Linux 需要系统安装 FFmpeg 运行库与 PipeWire 才能播放。").
+				FontSize(fz(11.5)).TextColor(t.TextMuted).MaxLines(2)
+		}
 
 		ui.Divider(c)
 

@@ -1,6 +1,8 @@
 package ui
 
 import (
+	"maps"
+	"runtime"
 	"slices"
 	"testing"
 
@@ -341,5 +343,147 @@ func TestMenuAndContextMenuOfOneElement(t *testing.T) {
 	tt.ChooseMenuItem("From the context menu")
 	if !slices.Equal(chosen, []string{"menu", "context"}) {
 		t.Errorf("chose %q", chosen)
+	}
+}
+
+// TestMenuButtonInAToolbarsOverflow opens the menu of a menu button that
+// does not fit in its toolbar, from the toolbar's overflow menu, below
+// the overflow button.
+func TestMenuButtonInAToolbarsOverflow(t *testing.T) {
+	chosen := ""
+	tt := coreNewTester(func(c *context) {
+		coreToolbar(c, func() {
+			for _, n := range []string{"Alpha", "Bravo", "Charlie", "Delta"} {
+				coreButton(c, n)
+			}
+			coreMenuButton(c, "Export", func(m *Menu) {
+				for _, as := range []string{"PDF", "PNG"} {
+					if m.Item("As " + as).Chosen() {
+						chosen = as
+					}
+				}
+			})
+		}).Fill()
+	}, 260, 300)
+	if tt.HasText("Export") {
+		t.Fatal("the menu button fits")
+	}
+	tt.Click("More")
+	if err := tt.ChooseMenuItem("Export"); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := tt.Menu(), []string{"As PDF", "As PNG"}; !slices.Equal(got, want) {
+		t.Fatalf("choosing Export shows %q, want %q", got, want)
+	}
+	more, _ := tt.Find("More")
+	if at := tt.h.menuAt; at[0] != more.X || at[1] != more.Y+more.H {
+		t.Errorf("the menu shows at %v, not below the overflow button at %+v", at, more)
+	}
+	if err := tt.ChooseMenuItem("As PNG"); err != nil || chosen != "PNG" {
+		t.Errorf("chose As PNG: %v, chosen %q", err, chosen)
+	}
+}
+
+func TestEditMenuEnabled(t *testing.T) {
+	value, notes, pin := "", "read only", "1234"
+	disabled := false
+	tt := NewTester(func(c *Context) {
+		c.OnShortcut(Cmd, KeyV, func() {})
+		TextInput(c, &value).Label("field").Disabled(disabled)
+		TextInput(c, &notes).Label("notes").ReadOnly(true)
+		TextInput(c, &pin).Label("pin").ReadOnly(true).Password()
+		Box(c).Size(100, 20).Focusable().Label("list").OnShortcut(Cmd, KeyC, func() {})
+		Box(c).Size(100, 20).Focusable().Label("terminal").HandleInput(func(InputEvent) bool { return false })
+	}, 300, 200)
+	mac := runtime.GOOS == "darwin"
+	check := func(where string, want map[string]bool) {
+		t.Helper()
+		got := map[string]bool{}
+		tt.rt.focusRead = false
+		for name := range want {
+			got[name] = tt.rt.event(platform.SurfaceEvent{Kind: platform.SurfaceCommandEnabled, Text: name})
+		}
+		if !maps.Equal(got, want) {
+			t.Errorf("%s: enabled %v, want %v", where, got, want)
+		}
+		if tt.rt.focusRead {
+			t.Errorf("%s: asking read the window's focus, so its next change draws a frame", where)
+		}
+	}
+
+	check("no focus, with the window's Cmd+V", map[string]bool{"copy": false, "paste": mac, "selectAll": false})
+
+	tt.Click("field")
+	check("an empty text input", map[string]bool{"undo": false, "redo": false, "cut": false, "copy": false, "paste": true, "pasteAndMatchStyle": true, "delete": false, "selectAll": false})
+	tt.Type("hi")
+	tt.Key(Cmd, KeyA)
+	check("a text input with its text selected", map[string]bool{"undo": true, "redo": false, "cut": true, "copy": true, "delete": true, "selectAll": true})
+	tt.Command("undo")
+	check("a text input after undo", map[string]bool{"undo": false, "redo": true})
+
+	tt.Click("notes")
+	// A menu asks before the next frame applies the command.
+	tt.rt.event(platform.SurfaceEvent{Kind: platform.SurfaceCommand, Text: "selectAll"})
+	check("a read-only text input with Select All queued", map[string]bool{"copy": true, "cut": false})
+	tt.Click("pin")
+	tt.rt.event(platform.SurfaceEvent{Kind: platform.SurfaceCommand, Text: "selectAll"})
+	check("a read-only password input with Select All queued", map[string]bool{"copy": false, "cut": false})
+	tt.Click("notes")
+	tt.Key(Cmd, KeyA)
+	check("a read-only text input", map[string]bool{"copy": true, "selectAll": true, "cut": false, "paste": mac, "delete": false})
+
+	tt.Click("list")
+	check("a list copying with Cmd+C", map[string]bool{"copy": mac, "paste": mac, "selectAll": false})
+
+	tt.Click("terminal")
+	check("an element taking its input", map[string]bool{"copy": true, "paste": true})
+
+	tt.Click("field")
+	tt.Type("hi")
+	tt.Key(Cmd, KeyA)
+	disabled = true
+	tt.Frame()
+	if !tt.Focused("field") {
+		t.Fatal("the text input lost the focus as it was disabled")
+	}
+	check("a text input disabled with the focus", map[string]bool{"copy": false, "paste": false, "selectAll": false})
+}
+
+func TestEditMenuEnabledSelectable(t *testing.T) {
+	disabled := false
+	tt := NewTester(func(c *Context) {
+		Column(c).Selectable().Gap(8).Children(func() {
+			Text(c, "First").Disabled(disabled)
+			Text(c, "Last")
+			Text(c, "").Width(150).Height(25).Label("empty")
+		})
+		Column(c).Selectable().Children(func() {
+			Text(c, "").Width(150).Height(25).Label("blank")
+			Text(c, "").Width(150).Height(25)
+		})
+		Column(c).Selectable().Children(func() {
+			Text(c, "").Width(150).Height(25).Label("alone")
+		})
+	}, 200, 300)
+	enabled := func() bool {
+		return tt.rt.event(platform.SurfaceEvent{Kind: platform.SurfaceCommandEnabled, Text: "selectAll"})
+	}
+	tt.Click("empty")
+	if !enabled() {
+		t.Error("an empty paragraph: Select All disabled, want enabled for the container's text")
+	}
+	tt.Click("blank")
+	if !enabled() {
+		t.Error("empty paragraphs: Select All disabled, want enabled for the newline between them")
+	}
+	tt.Click("alone")
+	if enabled() {
+		t.Error("a lone empty paragraph: Select All enabled, want disabled as there is nothing to select")
+	}
+	selectBetween(t, tt, "First", 0, "Last", 4)
+	disabled = true
+	tt.Frame()
+	if enabled() {
+		t.Error("the focused paragraph disabled: Select All enabled, want disabled as it takes no command")
 	}
 }

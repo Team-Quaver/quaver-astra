@@ -18,6 +18,7 @@ import (
 	"github.com/egoist/mygo/ui"
 
 	// MyGo's own strings in the languages the tests show.
+	_ "github.com/egoist/mygo/locales/ja"
 	_ "github.com/egoist/mygo/locales/zh-Hans"
 	_ "github.com/egoist/mygo/locales/zh-Hant"
 )

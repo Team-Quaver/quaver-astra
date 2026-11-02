@@ -14,15 +14,21 @@ on:
 permissions:
   contents: read
 
+# A push supersedes the runs before it, on main as on a pull request: the
+# newest commit's run covers theirs. A release commit runs on its own, so
+# that it is neither queued behind nor canceled by others, as its tag waits
+# for its run.
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  group: ci-${{ github.workflow }}-${{ github.ref }}${{ startsWith(github.event.head_commit.message, 'Release ') && format('-{0}', github.sha) || '' }}
+  cancel-in-progress: true
 
 jobs:
   test:
     name: ${{ matrix.name }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
+    env:
+      LINUX_PACKAGES: libwebkit2gtk-4.1-0 libayatana-appindicator3-1 xvfb xauth dbus-x11 libgl1-mesa-dri libglx-mesa0 libegl-mesa0
     strategy:
       fail-fast: false
       matrix:
@@ -36,11 +42,40 @@ jobs:
         with:
           go-version-file: go.mod
       - uses: oven-sh/setup-bun@v2
+      # Ubuntu's mirrors are slow now and then (9 minutes for these packages
+      # once), so the packages are kept in the Actions cache, under a key of
+      # the files apt would download for them.
+      - name: List the packages for WebKitGTK and a virtual display
+        if: runner.os == 'Linux'
+        id: apt
+        run: |
+          sudo apt-get update
+          debs=$(apt-get install --print-uris -qq -y --no-install-recommends $LINUX_PACKAGES | awk '{print $2}' | sort | sha256sum | cut -c1-16)
+          echo "prefix=apt-$ImageOS-${{ runner.arch }}-" >> "$GITHUB_OUTPUT"
+          echo "key=apt-$ImageOS-${{ runner.arch }}-$debs" >> "$GITHUB_OUTPUT"
+      - name: Restore the packages
+        if: runner.os == 'Linux'
+        id: apt-cache
+        uses: actions/cache/restore@v6
+        with:
+          path: ~/.cache/apt-archives
+          key: ${{ steps.apt.outputs.key }}
+          restore-keys: ${{ steps.apt.outputs.prefix }}
       - name: Install WebKitGTK and a virtual display
         if: runner.os == 'Linux'
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends libwebkit2gtk-4.1-0 xvfb xauth dbus-x11 libgl1-mesa-dri libglx-mesa0 libegl-mesa0
+          mkdir -p ~/.cache/apt-archives/partial
+          apt="-o Dir::Cache::Archives=$HOME/.cache/apt-archives -o APT::Sandbox::User=root"
+          sudo apt-get install -y --no-install-recommends $apt $LINUX_PACKAGES
+          # Drops what a restored older cache has that the mirror no longer does.
+          sudo apt-get autoclean $apt
+          sudo chown -R "$USER" ~/.cache/apt-archives
+      - name: Save the packages
+        if: runner.os == 'Linux' && steps.apt-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: ~/.cache/apt-archives
+          key: ${{ steps.apt.outputs.key }}
       - run: bun install --frozen-lockfile
       - name: Build the JavaScript packages
         run: bun run build

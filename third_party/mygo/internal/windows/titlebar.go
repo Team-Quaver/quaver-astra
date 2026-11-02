@@ -25,10 +25,8 @@ import (
 //     instead. It answers WM_NCHITTEST with the buttons' hit-test codes,
 //     which brings Windows 11's snap layouts over the maximize button, and
 //     runs the buttons from the non-client mouse messages that follow.
-//   - The top edge: an invisible window (WS_EX_NOREDIRECTIONBITMAP) as tall
-//     as the resize border, along the rest of the top. It answers HTTOP and
-//     hands presses to the window, which then resizes from its top edge as
-//     one with a caption does.
+//   - The top edge (newTopEdge), which every resizable window without a
+//     caption has, frameless ones too, along the rest of the top.
 //
 // Pages keep clear of the buttons with the --mygo-titlebar-* CSS variables
 // (Window.TitleBar).
@@ -40,9 +38,6 @@ const (
 	captionButtonWidth = 46
 	captionHeight      = 32
 	captionGlyphSize   = 10
-	// resizeCornerSize is how far from the left corner the top edge resizes
-	// the corner, as Chromium's frames do.
-	resizeCornerSize = 16
 )
 
 type captionButton int
@@ -83,7 +78,6 @@ func (b captionButton) hitTest() uintptr {
 type captionBar struct {
 	w       *window
 	buttons uintptr // the buttons' window
-	edge    uintptr // the top edge's window, 0 when it could not be created
 	shown   []captionButton
 	// hot is the index of the button under the pointer and pressed that of
 	// the button pressed, or -1.
@@ -120,13 +114,6 @@ func newCaptionBar(w *window) *captionBar {
 		return nil
 	}
 	w.b.captions[c.buttons] = c
-	c.edge = createWindow(wsExLayered|wsExNoRedirect, captionClass, "", wsChild|wsClipSiblings, 0, 0, 0, 0, w.hwnd)
-	if c.edge != 0 {
-		// A layered window shows, and takes the mouse, once it has
-		// attributes; this one has no pixels to show.
-		procSetLayeredWindowAttributes.Call(c.edge, 0, 255, lwaAlpha)
-		w.b.captions[c.edge] = c
-	}
 	c.shown = w.shownButtons()
 	return c
 }
@@ -138,9 +125,6 @@ func (c *captionBar) forget() {
 		c.comp.free()
 	}
 	delete(c.w.b.captions, c.buttons)
-	if c.edge != 0 {
-		delete(c.w.b.captions, c.edge)
-	}
 	if c.snap != 0 {
 		delete(c.w.b.captions, c.snap)
 	}
@@ -185,6 +169,7 @@ func (w *window) titleBarScript() string { return bridge.TitleBarScript(w.TitleB
 // captionChanged lays the controls out again after the window gained or lost
 // a button, or entered or left full screen, and tells the page.
 func (w *window) captionChanged() {
+	w.layoutTopEdge()
 	if w.caption == nil {
 		return
 	}
@@ -192,10 +177,9 @@ func (w *window) captionChanged() {
 	w.h.TitleBarChanged()
 }
 
-// layout puts the buttons at the top-right corner and the edge along the
-// rest of the top, above the webview, and paints the buttons. It runs when
-// the window changes size, state or DPI, when the webview appears, and when
-// the buttons change.
+// layout puts the buttons at the top-right corner, above the webview, and
+// paints them. It runs when the window changes size, state or DPI, when the
+// webview appears, and when the buttons change.
 func (c *captionBar) layout() {
 	w := c.w
 	if w.IsMinimized() {
@@ -217,30 +201,10 @@ func (c *captionBar) layout() {
 	}
 	// HWND_TOP (0): above the webview's window, created after them.
 	procSetWindowPos.Call(c.buttons, 0, uintptr(x), 0, uintptr(width), uintptr(height), swpNoActivate|show)
-	if c.edge != 0 {
-		edge := uintptr(swpShowWindow)
-		if w.fullScreen || w.IsMaximized() || !w.hasStyle(wsThickFrame) {
-			edge = swpHideWindow // nothing resizes it
-		}
-		procSetWindowPos.Call(c.edge, 0, 0, 0, uintptr(max(x, 0)), uintptr(resizeBorder(dpi)), swpNoActivate|edge)
-	}
 	if c.snap != 0 {
 		placeSnap(c, dpi)
 	}
 	c.paint()
-}
-
-// resizeBorder is the height of the band along the top edge that resizes the
-// window: the thickness of its sizing frame, as above a caption.
-func resizeBorder(dpi int) int32 {
-	if has(procGetSystemMetricsForDpi) {
-		frame, _, _ := procGetSystemMetricsForDpi.Call(smCyFrame, uintptr(dpi))
-		padding, _, _ := procGetSystemMetricsForDpi.Call(smCxPaddedBorder, uintptr(dpi))
-		if frame+padding > 0 {
-			return int32(frame + padding)
-		}
-	}
-	return toPx(8, dpi)
 }
 
 func (c *captionBar) activate(active bool) {
@@ -297,29 +261,12 @@ func (c *captionBar) click(b captionButton) {
 	procSendMessageW.Call(w.hwnd, wmSysCommand, cmd, 0)
 }
 
-// message handles a message of the buttons' or the edge's window; ok false
-// lets DefWindowProc run.
+// message handles a message of the buttons' window; ok false lets
+// DefWindowProc run.
 func (c *captionBar) message(hwnd uintptr, m uint32, wp, lp uintptr) (uintptr, bool) {
 	w := c.w
 	if hwnd == c.snap {
 		return handleSnap(c, m, lp)
-	}
-	if hwnd == c.edge {
-		switch m {
-		case wmNCHitTest:
-			pt := point{getXParam(lp), getYParam(lp)}
-			procScreenToClient.Call(hwnd, uintptr(unsafe.Pointer(&pt)))
-			if pt.X < toPx(resizeCornerSize, dpiOf(w.hwnd)) {
-				return htTopLeft, true
-			}
-			return htTop, true
-		case wmNCLButtonDown, wmNCLButtonDblClk:
-			// The window resizes from its top edge, or a double click
-			// stretches it to the height of the screen, as from a caption.
-			r, _, _ := procSendMessageW.Call(w.hwnd, uintptr(m), wp, lp)
-			return r, true
-		}
-		return 0, false
 	}
 	switch m {
 	case wmNCHitTest:
@@ -463,7 +410,7 @@ func (c *captionBar) paint() {
 	procSelectObject.Call(mask.dc, old)
 	procGdiFlush.Call()
 
-	dark := w.b.isDark()
+	dark := w.buttonsDark()
 	for i, b := range c.shown {
 		back, fore := c.colors(i, b, dark, face.fluent)
 		for y := int32(0); y < height; y++ {

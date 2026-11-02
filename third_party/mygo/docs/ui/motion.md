@@ -267,6 +267,8 @@ disablesAnimations: for a change that should not show as motion, as
 restoring a window's state or jumping to a search result. Call it before
 building what changes. `Keyframes` and timelines play on their own rather
 than towards a target, and go on as they were; seek a timeline to jump it.
+`c.Instant()` reports whether the frame does, for a view that moves a
+value of its own, so that it settles in the same frames.
 
 ## Keyframes
 

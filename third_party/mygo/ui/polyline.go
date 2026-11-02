@@ -20,8 +20,7 @@ func (p *Painter) StrokePolyline(points [][2]float32, width float32, c Color) {
 		return
 	}
 	f := &p.rt.paths.flat
-	f.pts, f.starts, f.closed = f.pts[:0], f.starts[:0], f.closed[:0]
-	f.trimmed, f.kept = false, 0
+	f.reset()
 	from := 0
 	flush := func() {
 		if len(f.pts)-from > 1 {

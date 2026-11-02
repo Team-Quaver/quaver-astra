@@ -14,6 +14,7 @@ package gl
 
 import (
 	_ "embed"
+	"errors"
 	"fmt"
 	"image"
 	"os"
@@ -171,12 +172,12 @@ type Renderer struct {
 	// pipelines what the ops draw with; held tells that the framebuffer
 	// holds the last frame drawn. redrew is how much of it was drawn, for
 	// FrameInfo.
-	Partial    bool
-	diff       scene.Differ
-	pipelines  gpu.Pipelines
-	held       bool
-	redrew     redrawn
-	redrewPart gpu.Scissor
+	Partial   bool
+	diff      scene.Differ
+	pipelines gpu.Pipelines
+	held      bool
+	redrew    redrawn
+	part      gpu.Part
 }
 
 // redrawn is how much of a frame was drawn.
@@ -219,6 +220,12 @@ func New() (*Renderer, error) {
 	if err := load(); err != nil {
 		return nil, err
 	}
+	// GDK knows which context is current, and GTK's render callbacks may
+	// arrive after another context, or none, was left current: drawing then
+	// would call into whatever libepoxy finds, or abort. Refuse instead.
+	if currentGDKContext != nil && currentContext() == 0 {
+		return nil, errors.New("gl: no current OpenGL context")
+	}
 	r := &Renderer{images: map[uint64]*texture{}, context: currentContext()}
 	// Quads reach a pixel out of their shapes, glyphs half a pixel more, as
 	// they draw at whole pixels.
@@ -232,6 +239,11 @@ func New() (*Renderer, error) {
 
 // init creates the program, buffers and textures in the current context.
 func (r *Renderer) init() error {
+	if !hasContext() {
+		// OpenGL tells no version without a context, and libepoxy may
+		// abort asking for one.
+		return errNoContext
+	}
 	version, es := contextVersion()
 	r.es = es
 	if r.es && version < 30 || !r.es && version < 33 {
@@ -535,18 +547,29 @@ func (r *Renderer) imageTexture(img *scene.Image) uintptr {
 	}
 	t := r.images[img.ID()]
 	if t == nil {
-		t = &texture{tex: newTexture(glRGBA8, glRGBA, img.W, img.H, img.Pix, img.W*4), w: img.W, h: img.H, ver: img.Version()}
+		pix := img.Pixels()
+		if pix == nil {
+			return 0
+		}
+		t = &texture{tex: newTexture(glRGBA8, glRGBA, img.W, img.H, pix, img.W*4), w: img.W, h: img.H, ver: img.Version()}
 		r.images[img.ID()] = t
+		img.Uploaded()
 	} else if t.w != img.W || t.h != img.H {
-		glDeleteTextures(1, &t.tex)
-		t.tex = newTexture(glRGBA8, glRGBA, img.W, img.H, img.Pix, img.W*4)
-		t.w, t.h, t.ver = img.W, img.H, img.Version()
+		if pix := img.Pixels(); pix != nil {
+			glDeleteTextures(1, &t.tex)
+			t.tex = newTexture(glRGBA8, glRGBA, img.W, img.H, pix, img.W*4)
+			t.w, t.h, t.ver = img.W, img.H, img.Version()
+			img.Uploaded()
+		}
 	} else if t.ver != img.Version() {
-		glBindTexture(glTexture2D, t.tex)
-		unpack(img.W*4, glRGBA8)
-		glTexSubImage2D(glTexture2D, 0, 0, 0, int32(img.W), int32(img.H), glRGBA, glUnsignedByte, unsafe.Pointer(&img.Pix[0]))
-		unpackReset()
-		t.ver = img.Version()
+		if pix := img.Pixels(); pix != nil {
+			glBindTexture(glTexture2D, t.tex)
+			unpack(img.W*4, glRGBA8)
+			glTexSubImage2D(glTexture2D, 0, 0, 0, int32(img.W), int32(img.H), glRGBA, glUnsignedByte, unsafe.Pointer(&pix[0]))
+			unpackReset()
+			t.ver = img.Version()
+			img.Uploaded()
+		}
 	}
 	t.lastFrame = r.frame
 	return uintptr(t.tex)
@@ -560,7 +583,7 @@ func (r *Renderer) Render(s *scene.Scene) error {
 	}
 	c := currentContext()
 	if currentGDKContext != nil && c == 0 {
-		return fmt.Errorf("gl: no current OpenGL context")
+		return errors.New("gl: no current OpenGL context")
 	}
 	if c != r.context {
 		// GTK realized the area again, with a new context: the old one
@@ -622,16 +645,10 @@ func (r *Renderer) drawFrame(s *scene.Scene) error {
 		return err
 	}
 	damage = r.pipelines.Damage(&r.b, r.batchKey, &r.diff, damage, known)
-	var part *gpu.Scissor
+	var part *gpu.Part
 	r.redrew = redrewWhole
-	if known {
-		var changed image.Rectangle
-		for _, d := range damage {
-			changed = changed.Union(d)
-		}
-		if area, ok := gpu.Partial(changed, s.Width, s.Height, func(d []image.Rectangle) []image.Rectangle { return r.diff.AddBackdrops(s, d) }); ok {
-			part, r.redrew, r.redrewPart = &area, redrewPart, area
-		}
+	if known && r.part.Set(damage, s.Width, s.Height, func(d []image.Rectangle) []image.Rectangle { return r.diff.AddBackdrops(s, d) }) {
+		part, r.redrew = &r.part, redrewPart
 	}
 	r.held = false
 	if err := r.drawBuilt(built, &r.b, part); err != nil {
@@ -763,9 +780,9 @@ func (r *Renderer) buildScene(s *scene.Scene, b *gpu.Builder) (*scene.Scene, err
 }
 
 // drawBuilt draws s, built with b (buildScene), into the framebuffer
-// bound, whole or, unless part is nil, only within part, keeping what the
-// framebuffer holds elsewhere.
-func (r *Renderer) drawBuilt(s *scene.Scene, b *gpu.Builder, part *gpu.Scissor) error {
+// bound, whole or, unless part is nil, only within its rectangles, keeping
+// what the framebuffer holds elsewhere.
+func (r *Renderer) drawBuilt(s *scene.Scene, b *gpu.Builder, part *gpu.Part) error {
 	// The framebuffer drawn into, GTK's, which the passes computing
 	// backdrops leave for their own.
 	var fb int32
@@ -775,15 +792,21 @@ func (r *Renderer) drawBuilt(s *scene.Scene, b *gpu.Builder, part *gpu.Scissor) 
 	glDisable(glScissorTest)
 	c := s.Clear.Premul(1)
 	glClearColor(c[0], c[1], c[2], c[3])
+	areas := []gpu.Scissor{{Right: int32(s.Width), Bottom: int32(s.Height)}}
 	if part != nil {
-		if part.Empty() {
+		if len(part.Rects) == 0 {
 			return nil
 		}
-		// GL's scissor rectangles start at the bottom.
+		areas = part.Rects
 		glEnable(glScissorTest)
-		glScissor(part.Left, int32(s.Height)-part.Bottom, part.Right-part.Left, part.Bottom-part.Top)
+		for _, a := range areas {
+			// GL's scissor rectangles start at the bottom.
+			glScissor(a.Left, int32(s.Height)-a.Bottom, a.Right-a.Left, a.Bottom-a.Top)
+			glClear(glColorBufferBit)
+		}
+	} else {
+		glClear(glColorBufferBit)
 	}
-	glClear(glColorBufferBit)
 	glDisable(glScissorTest)
 	if len(b.Instances) == 0 {
 		return nil
@@ -796,10 +819,7 @@ func (r *Renderer) drawBuilt(s *scene.Scene, b *gpu.Builder, part *gpu.Scissor) 
 		sc := bt.Scissor
 		sc.Left, sc.Top = max(sc.Left, 0), max(sc.Top, 0)
 		sc.Right, sc.Bottom = min(sc.Right, int32(s.Width)), min(sc.Bottom, int32(s.Height))
-		if part != nil {
-			sc = sc.Intersect(*part)
-		}
-		if bt.Count == 0 || sc.Empty() {
+		if bt.Count == 0 || !meets(sc, areas) {
 			continue
 		}
 		want := r.program
@@ -848,9 +868,15 @@ func (r *Renderer) drawBuilt(s *scene.Scene, b *gpu.Builder, part *gpu.Scissor) 
 		for i := range uint32(attributes) {
 			glVertexAttribPointer(i, 4, glFloat, false, int32(gpu.InstanceSize), offset+uintptr(i)*16)
 		}
-		// GL's scissor rectangles start at the bottom.
-		glScissor(sc.Left, int32(s.Height)-sc.Bottom, sc.Right-sc.Left, sc.Bottom-sc.Top)
-		glDrawArraysInstanced(glTriangleStrip, 0, 4, int32(bt.Count))
+		// Drawn once in each rectangle of the part it meets, which are
+		// apart from each other.
+		for _, a := range areas {
+			if in := sc.Intersect(a); !in.Empty() {
+				// GL's scissor rectangles start at the bottom.
+				glScissor(in.Left, int32(s.Height)-in.Bottom, in.Right-in.Left, in.Bottom-in.Top)
+				glDrawArraysInstanced(glTriangleStrip, 0, 4, int32(bt.Count))
+			}
+		}
 	}
 	// Leave the state as GTK, which draws the area with the same context,
 	// expects it.
@@ -1238,8 +1264,7 @@ func (r *Renderer) Release() {
 func (r *Renderer) FrameInfo() string {
 	switch r.redrew {
 	case redrewPart:
-		a := r.redrewPart
-		return fmt.Sprintf("redrew %d×%d at %d,%d, %s", a.Right-a.Left, a.Bottom-a.Top, a.Left, a.Top, r.b.Summary())
+		return fmt.Sprintf("redrew %s, %s", r.part.String(), r.b.Summary())
 	case redrewNothing:
 		return "unchanged"
 	}
@@ -1262,4 +1287,14 @@ func (r *Renderer) sweep() {
 			delete(r.canvases, key)
 		}
 	}
+}
+
+// meets reports whether sc meets one of areas.
+func meets(sc gpu.Scissor, areas []gpu.Scissor) bool {
+	for _, a := range areas {
+		if !sc.Intersect(a).Empty() {
+			return true
+		}
+	}
+	return false
 }

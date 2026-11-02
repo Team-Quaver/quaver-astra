@@ -189,6 +189,45 @@ func TestThemeOverrides(t *testing.T) {
 	}
 }
 
+// TestThemeLinkSpans checks that Theme.LinkWeight lifts link text, code
+// in a link too, which keeps the code face and wash, and leaves text
+// outside links alone.
+func TestThemeLinkSpans(t *testing.T) {
+	o := &Options{Theme: &Theme{LinkWeight: 500}}
+	th := resolve(o.Theme, DefaultTheme(ui.LightTheme()))
+	var st *viewState
+	ui.NewTester(func(c *ui.Context) {
+		st = *ui.Local(View(c, "Read [the `x.go` docs](https://example.com) and `y.go`.", o), stateKey{}, newState)
+	}, 400, 100)
+	var link, linkCode, code *ui.Span
+	for i := range st.paras {
+		for _, pc := range st.paras[i].p.pieces {
+			for k := range pc.spans {
+				switch s := &pc.spans[k]; s.Text {
+				case "the ":
+					link = s
+				case "x.go":
+					linkCode = s
+				case "y.go":
+					code = s
+				}
+			}
+		}
+	}
+	if link == nil || linkCode == nil || code == nil {
+		t.Fatalf("link or code span missing in %+v", st.paras)
+	}
+	if link.Weight != th.LinkWeight {
+		t.Errorf("link text weighs %d, want %d", link.Weight, th.LinkWeight)
+	}
+	if linkCode.Font != th.CodeFont || linkCode.Background != th.CodeBackground || linkCode.Weight != th.LinkWeight {
+		t.Errorf("code in a link shows %+v, want the code face and wash at %d", *linkCode, th.LinkWeight)
+	}
+	if code.Font != th.CodeFont || code.Background != th.CodeBackground || code.Weight == th.LinkWeight {
+		t.Errorf("code outside a link shows %+v, want the code face and wash at its own weight", *code)
+	}
+}
+
 // TestThemeLink checks that links draw in Theme.Link, not the window
 // theme's accent.
 func TestThemeLink(t *testing.T) {
@@ -293,6 +332,58 @@ func TestSentenceEnds(t *testing.T) {
 
 // TestRevealBySentence checks that Stream by sentence shows only the
 // sentences complete while more is coming, and all once done.
+func TestSnapByWordCJK(t *testing.T) {
+	src := "Go语言 is 今日は。"
+	for _, c := range []struct{ i, want int }{
+		{0, 2},  // "Go", up to 语
+		{1, 2},  // in "Go"
+		{2, 5},  // 语
+		{3, 5},  // inside 语
+		{5, 9},  // 言 and the space after it
+		{9, 12}, // "is "
+		{12, 15},
+		{15, 18},
+		{18, 21},
+		{21, 24}, // 。
+	} {
+		if got := snap(src, c.i, len(src), ByWord); got != c.want {
+			t.Errorf("snap(%d) = %d, want %d", c.i, got, c.want)
+		}
+	}
+}
+
+// TestRevealCJKByWord streams Chinese in bursts, as a model's replies
+// come over a network: ByWord shows it a character or two at a time, not
+// each burst at once, as it shows English a word at a time (#668).
+func TestRevealCJKByWord(t *testing.T) {
+	zh := []rune(strings.Repeat("今天天气很好，我们去公园散步，看到了很多鸟在树上唱歌。", 4))
+	const burst = 30
+	text := ""
+	tt := ui.NewTester(func(c *ui.Context) {
+		ui.Column(c).Fill().Padding(10).Children(func() { Stream(c, text, &Options{}) })
+	}, 600, 400)
+	tt.Frame()
+	shown, steps, biggest := 0, 0, 0
+	for fed, frame := 0, 0; shown < len(zh) && frame < 600; frame++ {
+		if frame%12 == 0 && fed < len(zh) { // a burst every 12 frames
+			fed = min(fed+burst, len(zh))
+			text = string(zh[:fed])
+			tt.Frame()
+		}
+		tt.Advance(16 * time.Millisecond)
+		if n := utf8.RuneCountInString(strings.Join(tt.Texts(), "")); n != shown {
+			steps, biggest, shown = steps+1, max(biggest, n-shown), n
+		}
+	}
+	if shown != len(zh) {
+		t.Fatalf("showed %d of %d runes", shown, len(zh))
+	}
+	t.Logf("%d visible changes, the largest %d runes", steps, biggest)
+	if biggest > 4 || steps < len(zh)/4 {
+		t.Errorf("%d visible changes, the largest %d runes: CJK came in bursts", steps, biggest)
+	}
+}
+
 func TestRevealBySentence(t *testing.T) {
 	text, done := "", false
 	o := &Options{Reveal: &Reveal{Unit: BySentence, CatchUp: time.Millisecond}}

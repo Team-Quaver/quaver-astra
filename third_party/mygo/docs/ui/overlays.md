@@ -3,8 +3,15 @@
 Overlays show above the window's content: [dialogs](dialog.md) over the
 dimmed window, [alert dialogs](alert-dialog.md), [popovers](popover.md)
 below an element, the popups of [selects](select.md) and
-[comboboxes](combobox.md), [tooltips](tooltip.md) and [toasts](toast.md).
-They share how they treat the keyboard and what is behind them.
+[comboboxes](combobox.md), menus drawn in the window
+([`PopoverMenu`](context-menu.md#drawn-in-the-window) and
+[`PopoverMenuButton`](menu-button.md#drawn-in-the-window)),
+[tooltips](tooltip.md) and [toasts](toast.md).
+They share how they treat the keyboard and what is behind them. Though
+they show above the window, they take the theme of where they were asked
+for: opened inside [`Themed`](styling.md#a-theme-for-part-of-the-window),
+its theme, as `ui.Overlay`'s elements built there do; toasts are the
+window's.
 
 ```go
 more := ui.Button(c, "More ▾")
@@ -68,7 +75,9 @@ menus, are built from what those are made of:
   scrolls. Its margins keep it apart from the target. It is the target's popover: its elements follow
   the target as Tab moves.
 - `PressedOutside` reports a press outside an element, its target and the
-  popovers of what is inside it, as a popover closes for.
+  popovers of what is inside it, as a popover closes for. A press before
+  the element showed is not outside it: an overlay that a right-click
+  opens stays open, the press opening it in the same frame.
 - `OverlayShortcut` takes the keys the focused element and those around it
   leave, wherever the focus is, the overlay built last first, as Escape
   closing the one on top.

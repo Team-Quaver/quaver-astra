@@ -1,7 +1,6 @@
 package editor
 
 import (
-	"math"
 	"slices"
 	"time"
 
@@ -156,7 +155,7 @@ func (ed *editor) regionAt(x, y float32) region {
 	if vertical && x >= ed.r.W-scrollbarWidth {
 		return regionVScroll
 	}
-	if horizontal && y >= ed.viewH-scrollbarWidth {
+	if horizontal && y >= ed.hbarY && y < ed.hbarY+scrollbarWidth {
 		return regionHScroll
 	}
 	if x < ed.gutterW {
@@ -429,13 +428,18 @@ func (ed *editor) trackWidth() float32 {
 
 // scrollbars reports which scroll bars the editor shows, and takes
 // presses on: the vertical one while it scrolls, as it does past the end
-// of a short text, and the horizontal one while a line runs under the
-// vertical one or beyond.
+// of a short text, and never for an editor as high as its content or the
+// old side of a split diff; the horizontal one while a line runs under
+// the vertical one's track or beyond.
 func (ed *editor) scrollbars() (vertical, horizontal bool) {
-	if ed.o.noScrollbar || ed.o.fitContent {
-		return false, false
-	}
-	return ed.scrollMax() > 0, !ed.view.wrap && ed.view.maxLine > ed.r.W-ed.textX-scrollbarWidth
+	vertical = !ed.o.noScrollbar && !ed.o.fitContent && ed.scrollMax() > 0
+	return vertical, !ed.view.wrap && ed.view.maxLine > ed.hTrack()
+}
+
+// hTrack is the length of the horizontal scroll bar's track: the text's
+// width, short of the vertical one's.
+func (ed *editor) hTrack() float32 {
+	return ed.r.W - ed.textX - ed.trackWidth()
 }
 
 func (ed *editor) maxScrollX() float32 {
@@ -444,36 +448,31 @@ func (ed *editor) maxScrollX() float32 {
 
 // scrollbarPress grabs a thumb, or jumps to where the track was pressed.
 func (ed *editor) scrollbarPress(ev ui.InputEvent, horizontal bool) bool {
-	t0, t1 := ed.thumb(horizontal)
+	t0, n := ed.bar(horizontal).Thumb()
 	pos := ev.Y
 	if horizontal {
-		pos = ev.X - ed.textX
+		pos = ev.X
 	}
 	ed.scrollbar = scrollbarDrag{active: true, horizontal: horizontal}
-	if pos >= t0 && pos <= t1 {
+	if pos >= t0 && pos <= t0+n {
 		ed.scrollbar.grab = pos - t0
 	} else {
-		ed.scrollbar.grab = (t1 - t0) / 2
+		ed.scrollbar.grab = n / 2
 		ed.dragScrollbar(ev)
 	}
 	return true
 }
 
 func (ed *editor) dragScrollbar(ev ui.InputEvent) {
-	t0, t1 := ed.thumb(ed.scrollbar.horizontal)
-	size := t1 - t0
+	bar := ed.bar(ed.scrollbar.horizontal)
 	if ed.scrollbar.horizontal {
-		track := ed.r.W - ed.textX - scrollbarWidth
-		f := (ev.X - ed.textX - ed.scrollbar.grab) / max(1, track-size)
-		ed.scrollX = max(0, min(f*ed.maxScrollX(), ed.maxScrollX()))
+		ed.scrollX = bar.OffsetAt(ev.X - ed.scrollbar.grab)
 		if s := ed.o.sharedScroll; s != nil {
 			s.setX(ed.scrollX)
 		}
 		return
 	}
-	track := ed.viewH
-	f := float64(ev.Y-ed.scrollbar.grab) / float64(max(1, track-size))
-	ed.setScrollShared(f * ed.scrollMax())
+	ed.setScrollShared(float64(bar.OffsetAt(ev.Y - ed.scrollbar.grab)))
 }
 
 // setScrollShared scrolls, through the owner when it shares the scroll
@@ -486,26 +485,21 @@ func (ed *editor) setScrollShared(y float64) {
 	ed.setScroll(y)
 }
 
-// thumb returns where the scroll bar's thumb is along its track.
-func (ed *editor) thumb(horizontal bool) (float32, float32) {
+// bar returns a scroll bar, in the element's coordinates: the vertical
+// one along its right edge, the horizontal one under the text, at the
+// bottom of what shows (hbarY), short of the vertical one's track.
+func (ed *editor) bar(horizontal bool) ui.Scrollbar {
 	if horizontal {
-		track := ed.r.W - ed.textX - scrollbarWidth
-		content := ed.view.maxLine + ed.view.charWidth*4
-		size := max(24, track*track/max(content, track))
-		f := float32(0)
-		if m := ed.maxScrollX(); m > 0 {
-			f = ed.scrollX / m
+		return ui.Scrollbar{
+			Box:        ui.Rect{X: ed.textX, W: ed.hTrack(), H: ed.hbarY + scrollbarWidth},
+			Horizontal: true,
+			View:       ed.r.W - ed.textX, Content: ed.view.maxLine + ed.view.charWidth*4, Offset: ed.scrollX,
 		}
-		return f * (track - size), f*(track-size) + size
 	}
-	track := ed.viewH
-	content := float32(ed.scrollMax()) + ed.viewH
-	size := max(24, track*track/max(content, track))
-	f := float32(0)
-	if m := ed.scrollMax(); m > 0 {
-		f = float32(ed.scrollY / m)
+	return ui.Scrollbar{
+		Box:  ui.Rect{W: ed.r.W, H: ed.viewH},
+		View: ed.viewH, Content: float32(ed.scrollMax()) + ed.viewH, Offset: float32(ed.scrollY),
 	}
-	return f * (track - size), f*(track-size) + size
 }
 
 // gutterPress folds at a fold marker, selects lines at a number, or
@@ -807,27 +801,33 @@ func (ed *editor) IndexForPoint(p ui.Point) (int, bool) {
 	return ed.view.text.UTF16(off), true
 }
 
-// autoscroll scrolls while a drag goes past the top or the bottom, and
-// reports whether it did.
+// autoscroll scrolls while a drag goes past the top or the bottom, or,
+// without wrapping, past the text's left or right edge, and reports
+// whether it did.
 func (ed *editor) autoscroll() bool {
 	if !ed.gesture.active {
 		return false
 	}
-	y := ed.pointer.Y
-	var dy float32
-	switch {
-	case y < 0:
-		dy = y
-	case y > ed.viewH:
-		dy = y - ed.viewH
-	default:
+	dy := past(ed.pointer.Y, 0, ed.viewH)
+	before := ed.scrollX
+	if !ed.view.wrap {
+		// The vertical scroll bar's column counts as past the right edge, so
+		// that an editor at the screen's edge still scrolls right.
+		if dx := past(ed.pointer.X, ed.textX, ed.r.W-ed.trackWidth()); dx != 0 {
+			x := ed.scrollX + edgeSpeed(dx)
+			if s := ed.o.sharedScroll; s != nil {
+				s.setX(x)
+			} else {
+				ed.scrollX = max(0, min(x, ed.maxScrollX()))
+			}
+		}
+	}
+	if dy == 0 && ed.scrollX == before {
 		return false
 	}
-	speed := float32(math.Min(float64(abs(dy)), 300)) / 4
-	if dy < 0 {
-		speed = -speed
+	if dy != 0 {
+		ed.setScrollShared(ed.scrollY + float64(edgeSpeed(dy)))
 	}
-	ed.setScrollShared(ed.scrollY + float64(speed))
 	cx, cy := ed.toContent(ed.pointer.X, ed.pointer.Y)
 	if ed.gesture.mode == 3 {
 		ed.columnSelect(cx, cy)
@@ -835,6 +835,28 @@ func (ed *editor) autoscroll() bool {
 		ed.extendGesture(ed.offsetAt(cx, cy))
 	}
 	return true
+}
+
+// past returns how far v lies outside [lo, hi]: negative below lo,
+// positive above hi, and 0 within.
+func past(v, lo, hi float32) float32 {
+	switch {
+	case v < lo:
+		return v - lo
+	case v > hi:
+		return v - hi
+	}
+	return 0
+}
+
+// edgeSpeed returns how far a frame of autoscroll moves for a pointer
+// d past the edge.
+func edgeSpeed(d float32) float32 {
+	s := min(abs(d), 300) / 4
+	if d < 0 {
+		return -s
+	}
+	return s
 }
 
 func abs(f float32) float32 {

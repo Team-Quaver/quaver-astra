@@ -61,6 +61,10 @@ type window struct {
 	// controls are the title buttons over the page of a window with a
 	// hidden title bar (titlebar.go), in an overlay with the web view.
 	controls *windowControls
+	// csd tells that GTK decorates a frameless window or one with a hidden
+	// title bar itself, with an empty title bar: it draws the shadow and
+	// the border, and resizes the window at its edges (see useCSD).
+	csd bool
 
 	// flyout is how a flyout (WindowOptions.Flyout) was placed last, at
 	// flyoutSize, once placed is set. grabbed tells that a focusable one
@@ -78,6 +82,12 @@ type window struct {
 	closed       bool
 	programmatic bool
 	keepAbove    bool
+	// hiding tells that the window hides once the frame that asked for
+	// that returns (Hide), unless it shows again first.
+	hiding bool
+	// tlsRetry is the page to load again once WebKit finished its load
+	// that failed with a certificate the app allowed (auth.go).
+	tlsRetry string
 	// requested holds bounds set with SetBounds until the window manager
 	// answers: GTK resizes and moves asynchronously. requestFrame is the
 	// window manager's frame they were asked for with, and requestInside
@@ -108,6 +118,12 @@ type window struct {
 	activationResize   *platform.Rect
 	activationPrevious [2]int32
 	resizeIdle         uint32
+
+	// captureMuted tells, by platform.CaptureKind, the capture that
+	// SetCaptureState muted, until it stops, which SetAudioMuted mutes
+	// again. WebKit's own changes, which may be SetAudioMuted's on their
+	// way, don't change it.
+	captureMuted [3]bool
 
 	// dragged holds the paths of the files dragged over the page, dropped
 	// those of the files dropped on it, for DroppedFiles.
@@ -176,7 +192,11 @@ func (b *Backend) NewWindow(o *platform.WindowOptions, h platform.WindowHandler)
 	gtkWindowSetResizable(w.win, o.Resizable)
 	gtkWindowSetDeletable(w.win, o.Closable)
 	if w.undecorated() {
-		gtkWindowSetDecorated(w.win, false)
+		if w.useCSD() {
+			w.decorate()
+		} else {
+			gtkWindowSetDecorated(w.win, false)
+		}
 	}
 	if o.AlwaysOnTop {
 		w.SetAlwaysOnTop(true)
@@ -258,7 +278,7 @@ func (b *Backend) NewWindow(o *platform.WindowOptions, h platform.WindowHandler)
 	if w.web != 0 {
 		b.byWebView[w.web] = w
 	}
-	if o.Frameless && o.Flyout == nil && !w.layer && b.announceCSD != nil {
+	if o.Frameless && !w.csd && o.Flyout == nil && !w.layer && b.announceCSD != nil {
 		// GTK asks a Wayland compositor that speaks
 		// org_kde_kwin_server_decoration (KWin, COSMIC, Sway…) to decorate
 		// every window it does not decorate itself, an undecorated one
@@ -291,10 +311,7 @@ func (w *window) createWebView() {
 		w.b.webLanguages = true
 		w.b.applyWebLanguages()
 	}
-	for _, s := range o.Schemes {
-		w.b.registerScheme(s)
-	}
-	w.web = webkitWebViewNewWithUserContentManager(w.ucm)
+	w.web = w.newWebView()
 	webkitUserContentManagerRegisterHandler(w.ucm, cs("mygo"))
 	connect(w.ucm, "script-message-received::mygo", cbScriptMessage, data)
 	w.addUserScripts()
@@ -308,8 +325,17 @@ func (w *window) createWebView() {
 	} else if o.UserAgentSuffix != "" {
 		webkitSettingsSetUserAgentSuffix(settings, o.UserAgentSuffix)
 	}
+	if o.NoBackgroundThrottling {
+		disableBackgroundThrottling(settings)
+	}
 	if o.Zoom > 0 && o.Zoom != 1 {
 		webkitWebViewSetZoomLevel(w.web, o.Zoom)
+	}
+	if o.SwipeNavigation { // off by default
+		gObjectSetBool(settings, cs("enable-back-forward-navigation-gestures"), true, 0)
+	}
+	if !o.PinchZoom {
+		stopPinchZoom(w.web)
 	}
 	switch {
 	case o.Transparent:
@@ -321,6 +347,14 @@ func (w *window) createWebView() {
 	connect(w.web, "load-changed", cbLoadChanged, data)
 	connect(w.web, "load-failed", cbLoadFailed, data)
 	connect(w.web, "notify::title", cbTitle, data)
+	if webkitWebViewIsPlayingAudio != nil {
+		connect(w.web, "notify::is-playing-audio", cbPlayingAudio, data)
+	}
+	for kind, property := range captureProperties {
+		if webkitWebViewGetCaptureState[kind] != nil {
+			connect(w.web, "notify::"+property, cbCaptureState, data)
+		}
+	}
 	connect(w.web, "decide-policy", cbDecidePolicy, data)
 	connect(w.web, "create", cbCreate, data)
 	connect(w.web, "close", cbClose, data)
@@ -332,7 +366,27 @@ func (w *window) createWebView() {
 	connect(w.web, "drag-data-received", cbDragData, data)
 	connect(w.web, "drag-drop", cbDragDrop, data)
 	connect(w.web, "permission-request", cbPermission, data)
+	connect(w.web, "context-menu", cbContextMenu, data)
+	w.connectAuth(data)
 	hookDownloads()
+}
+
+// zoomGesture is the GtkGestureZoom through which WebKitGTK magnifies the
+// page as a touchscreen's or a touchpad's pinch does, with no setting to
+// turn it off; WebKitGTK keeps it in its web view's data under this key
+// from 2.38 on.
+const zoomGesture = "wk-view-zoom-gesture"
+
+// stopPinchZoom keeps pinches from magnifying a web view's page: its zoom
+// gesture takes no more events. It does nothing on WebKitGTK older than
+// 2.38, whose zoom gesture can't be reached.
+func stopPinchZoom(web ptr) {
+	if gObjectGetData == nil || gtkEventControllerSetPropagationPhase == nil {
+		return
+	}
+	if g := gObjectGetData(web, cs(zoomGesture)); g != 0 {
+		gtkEventControllerSetPropagationPhase(g, 0) // GTK_PHASE_NONE
+	}
 }
 
 func (w *window) applyGeometry() {
@@ -646,12 +700,14 @@ func (w *window) ShowInactive() {
 // willShow makes Bounds report where GTK asks for a window about to show
 // until the window manager put it there. Until then, X has the window where
 // GTK created it or where it was, and a reparenting window manager has its
-// frame where it created that.
+// frame where it created that. A window that shows again before a Hide
+// its frame asked for stays shown.
 func (w *window) willShow() {
 	// Hide takes the GL content out of the tree; put it back with the window.
 	if w.surface != nil {
 		w.surface.startDrawing()
 	}
+	w.hiding = false
 	if gtkWidgetGetVisible(w.win) {
 		return
 	}
@@ -672,28 +728,26 @@ func (w *window) Hide() {
 		w.hideFlyout()
 		return
 	}
-	// A click inside native UI is handled while its GtkGLArea render signal
-	// is on the stack. Hiding the window there withdraws the Wayland surface
-	// under the paint in flight; wait for the frame to finish.
-	if w.surface != nil && w.surface.rendering {
-		theBackend.postIdle(func() {
-			if !w.closed {
-				w.hideNow()
-			}
-		})
+	if s := w.surface; s != nil && s.drawing() {
+		// Hiding releases the GL context of the area, which GTK still
+		// paints once the frame returns (#680): hide the window after,
+		// before the next events (G_PRIORITY_HIGH), as Close destroys it.
+		if !w.hiding {
+			w.hiding = true
+			gIdleAddFull(-100, cbHideLater, ptr(w.id), 0)
+		}
 		return
 	}
-	w.hideNow()
-}
-
-func (w *window) hideNow() {
+	w.hiding = false
+	// Out of the widget tree, a pending frame clock cannot have GtkGLArea
+	// draw into a window whose Wayland surface is gone (stopDrawing).
 	if w.surface != nil {
 		w.surface.stopDrawing()
 	}
 	gtkWidgetHide(w.win)
 }
 
-func (w *window) IsVisible() bool { return gtkWidgetGetVisible(w.win) }
+func (w *window) IsVisible() bool { return gtkWidgetGetVisible(w.win) && !w.hiding }
 
 func (w *window) Focus() {
 	if w.host != nil {
@@ -803,11 +857,14 @@ func (w *window) SetBackgroundColor(c platform.Color) {
 
 func (w *window) SetOpacity(v float64)      { gtkWidgetSetOpacity(w.win, v) }
 func (w *window) Opacity() float64          { return gtkWidgetGetOpacity(w.win) }
-func (w *window) SetHasShadow(bool)         {}
-func (w *window) HasShadow() bool           { return true }
 func (w *window) SetIgnoreMouseEvents(bool) {}
 func (w *window) SetContentProtection(bool) {}
 func (w *window) SetVibrancy(string)        {}
+func (w *window) SetActiveAppearance(bool)  {}
+
+// SetWindowButtonsTheme does nothing: GTK's title buttons follow the
+// theme, which is the application's.
+func (w *window) SetWindowButtonsTheme(string) {}
 
 // StartDrag begins moving the window with the last button press. On an
 // undecorated window the compositor takes the pointer once the move
@@ -847,7 +904,8 @@ func (w *window) checkDragStart(event ptr) {
 }
 
 // GTK gives windows without decorations no resize edges, so the outer
-// pixels of the page resize frameless windows, as in Electron.
+// pixels of the page resize frameless windows, as in Electron. Those GTK
+// decorates itself (useCSD) resize at its edges, around the page.
 const (
 	resizeInset  = 5  // pixels of the page along the edges
 	resizeCorner = 16 // pixels along the edges from a corner that resize it
@@ -873,7 +931,7 @@ var resizeEdges = [8]struct {
 // GdkEventMotion or GdkEventButton) would resize, or -1.
 func (w *window) resizeEdge(event ptr) int32 {
 	// GdkEventMotion and GdkEventButton: window 8, x 24, y 32.
-	if !w.undecorated() || w.state&(stateMaximized|stateFullscreen) != 0 ||
+	if !w.undecorated() || w.csd || w.state&(stateMaximized|stateFullscreen) != 0 ||
 		field[ptr](event, 8) != w.contentWindow() || !gtkWindowGetResizable(w.win) {
 		return -1
 	}
@@ -971,8 +1029,53 @@ func (w *window) hiddenTitleBar() bool {
 }
 
 // undecorated reports a window without the window manager's decorations,
-// whose page's outer pixels resize it.
+// whose page's outer pixels resize it unless GTK decorates it (useCSD).
 func (w *window) undecorated() bool { return w.opts.Frameless || w.hiddenTitleBar() }
+
+// useCSD reports whether GTK decorates an undecorated window itself, as it
+// does the windows of GNOME's apps: its client-side decorations, with an
+// empty title bar, draw the shadow and the border around the page, and
+// resize the window at its edges, where they are. That is on Wayland,
+// whose compositors leave windows that decorate themselves without either.
+// GTK sizes the window without them, so that the page keeps the size asked
+// for, and drops them while the window is maximized or in full screen.
+//
+// Not decorated:
+//   - Windows without a shadow (DisableShadow), as before.
+//   - Transparent windows: the decorations would outline the window's
+//     rectangle around a page that shows its own shape.
+//   - Flyouts and panels: popups take no decorations, a panel on Wayland
+//     is a layer surface, which the compositor sizes and puts without
+//     them, and both have a look of their own (Flyout.Shadow).
+//   - A hidden title bar where the compositor decorates windows itself
+//     (KWin): it keeps the compositor's title bar, with the buttons.
+//   - X11, where Mutter puts its shadow around opaque undecorated windows
+//     as it composites, and where a window that decorates itself has its
+//     shadow inside its X window, which Bounds, SetBounds and the frame
+//     extents of the window manager (frameExtents) do not count.
+func (w *window) useCSD() bool {
+	o := w.opts
+	return !w.b.onX11 && o.HasShadow && !o.Transparent && o.Flyout == nil && !o.Panel &&
+		!(w.hiddenTitleBar() && w.b.compositorDecorates)
+}
+
+// decorate has GTK decorate the window itself, before it is realized, with
+// a title bar that never shows: GtkWindow lays out and draws no title bar
+// that is not visible, and keeps its decorations.
+func (w *window) decorate() {
+	gtkWindowSetTitlebar(w.win, gtkBoxNew(0, 0))
+	w.csd = true
+}
+
+// The shadow comes with the window (useCSD): GTK styles the decorations
+// of a window that shows once, so that a style taking them away later
+// changes nothing until the window is hidden and shown again, and then
+// leaves the page smaller.
+func (w *window) SetHasShadow(bool) {}
+
+// HasShadow reports whether the window manager decorates the window, or GTK
+// draws a shadow around it.
+func (w *window) HasShadow() bool { return !w.undecorated() || w.csd }
 
 func (w *window) TitleBarDoubleClicked() {
 	if w.IsMaximized() {
@@ -988,18 +1091,14 @@ func (w *window) Close() {
 		return
 	}
 	if !w.closed {
+		if s := w.surface; s != nil && s.drawing() {
+			// GTK uses the window once the frame returns: destroy it after,
+			// before the next events (G_PRIORITY_HIGH).
+			gIdleAddFull(-100, cbCloseLater, ptr(w.id), 0)
+			return
+		}
 		if w.opts.Flyout != nil {
 			w.ungrab()
-		}
-		// As Hide: destroying the window mid-frame unrealizes the GL area
-		// while its render signal is still on the stack.
-		if w.surface != nil && w.surface.rendering {
-			theBackend.postIdle(func() {
-				if !w.closed {
-					gtkWidgetDestroy(w.win)
-				}
-			})
-			return
 		}
 		gtkWidgetDestroy(w.win)
 	}
@@ -1120,6 +1219,56 @@ func (w *window) SetUserAgent(ua string) {
 	webkitSettingsSetUserAgent(settings, cs(userAgentWithSuffix(ua, suffix)))
 }
 
+// backgroundFeatures are the WebKit features that slow down a page whose
+// web view is hidden: its timers fire at most once a second, and its CSS
+// animations stop.
+var backgroundFeatures = [...]string{"HiddenPageDOMTimerThrottling", "HiddenPageCSSAnimationSuspension"}
+
+// WebKitGTK's features API (2.42+), bound the first time a page asks for
+// it (webkitFeaturesOnce); webkitFeatures tells it is there.
+var (
+	webkitFeaturesOnce              sync.Once
+	webkitFeatures                  bool
+	webkitSettingsGetAllFeatures    func() ptr
+	webkitFeatureListGetLength      func(list ptr) uintptr
+	webkitFeatureListGet            func(list ptr, i uintptr) ptr
+	webkitFeatureListUnref          func(list ptr)
+	webkitFeatureGetIdentifier      func(f ptr) ptr
+	webkitSettingsSetFeatureEnabled func(settings, f ptr, enabled bool)
+)
+
+// eachBackgroundFeature calls fn with each of backgroundFeatures that
+// WebKitGTK has.
+func eachBackgroundFeature(fn func(f ptr)) {
+	webkitFeaturesOnce.Do(func() {
+		webkitFeatures = bind(libWebKit, &webkitSettingsGetAllFeatures, "webkit_settings_get_all_features") &&
+			bind(libWebKit, &webkitFeatureListGetLength, "webkit_feature_list_get_length") &&
+			bind(libWebKit, &webkitFeatureListGet, "webkit_feature_list_get") &&
+			bind(libWebKit, &webkitFeatureListUnref, "webkit_feature_list_unref") &&
+			bind(libWebKit, &webkitFeatureGetIdentifier, "webkit_feature_get_identifier") &&
+			bind(libWebKit, &webkitSettingsSetFeatureEnabled, "webkit_settings_set_feature_enabled")
+	})
+	if !webkitFeatures {
+		return
+	}
+	list := webkitSettingsGetAllFeatures()
+	defer webkitFeatureListUnref(list)
+	for i := range webkitFeatureListGetLength(list) {
+		f := webkitFeatureListGet(list, i)
+		if slices.Contains(backgroundFeatures[:], goStr(webkitFeatureGetIdentifier(f))) {
+			fn(f)
+		}
+	}
+}
+
+// disableBackgroundThrottling turns backgroundFeatures off in a web
+// view's settings (PageOptions.BackgroundThrottling). The page still
+// goes hidden with its window: it draws no frames, so that
+// requestAnimationFrame waits, but its timers keep their rate.
+func disableBackgroundThrottling(settings ptr) {
+	eachBackgroundFeature(func(f ptr) { webkitSettingsSetFeatureEnabled(settings, f, false) })
+}
+
 // userAgentWithSuffix appends the suffix the options set, after a space.
 func userAgentWithSuffix(ua, suffix string) string {
 	if suffix == "" {
@@ -1141,6 +1290,73 @@ func webkitSettingsSetUserAgentSuffix(settings ptr, suffix string) {
 func (w *window) UserAgent() string {
 	return goStr(webkitSettingsGetUserAgent(webkitWebViewGetSettings(w.web)))
 }
+
+// ProcessID is 0: WebKitGTK has no public API for the web process of a
+// view (webkit_web_view_get_page_id is WebKit's own page identifier).
+func (w *window) ProcessID() int { return 0 }
+
+// IsAudible reports webkit_web_view_is_playing_audio, which
+// notify::is-playing-audio tells the changes of.
+func (w *window) IsAudible() bool {
+	return webkitWebViewIsPlayingAudio != nil && webkitWebViewIsPlayingAudio(w.web)
+}
+
+// SetAudioMuted mutes the web view (webkit_web_view_set_is_muted,
+// WebKitGTK 2.30+); older versions can't. webkit_web_view_set_is_muted
+// sets the page's muted state to the sound's alone, which unmutes its
+// capture too, so the capture that was muted (captureMuted) is muted
+// again.
+func (w *window) SetAudioMuted(v bool) {
+	if webkitWebViewSetIsMuted == nil {
+		return
+	}
+	webkitWebViewSetIsMuted(w.web, v)
+	for kind, muted := range w.captureMuted {
+		if muted {
+			w.SetCaptureState(platform.CaptureKind(kind), platform.CaptureMuted)
+		}
+	}
+}
+
+func (w *window) IsAudioMuted() bool {
+	return webkitWebViewGetIsMuted != nil && webkitWebViewGetIsMuted(w.web)
+}
+
+// captureProperties are the web view's properties of its capture, by
+// platform.CaptureKind (WebKitGTK 2.34+). Their values are
+// WebKitMediaCaptureState's, none, active and muted, as
+// platform.CaptureState's.
+var captureProperties = [...]string{"camera-capture-state", "microphone-capture-state", "display-capture-state"}
+
+// CaptureState reports webkit_web_view_get_camera_capture_state, or its
+// microphone or display sibling (WebKitGTK 2.34+), whose notify signals
+// tell the changes of; CaptureNone on older versions.
+func (w *window) CaptureState(kind platform.CaptureKind) platform.CaptureState {
+	if get := webkitWebViewGetCaptureState[kind]; get != nil {
+		return platform.CaptureState(get(w.web))
+	}
+	return platform.CaptureNone
+}
+
+// SetCaptureState calls webkit_web_view_set_camera_capture_state, or its
+// microphone or display sibling (WebKitGTK 2.34+), which do nothing while
+// the page captures no such device.
+func (w *window) SetCaptureState(kind platform.CaptureKind, state platform.CaptureState) {
+	set := webkitWebViewSetCaptureState[kind]
+	if set == nil || w.CaptureState(kind) == platform.CaptureNone {
+		return
+	}
+	w.captureMuted[kind] = state == platform.CaptureMuted
+	set(w.web, int32(state))
+}
+
+// TogglePictureInPicture does nothing: WebKitGTK has no picture in
+// picture.
+func (w *window) TogglePictureInPicture() {}
+
+// PictureInPictureActive is always false: WebKitGTK has no picture in
+// picture.
+func (w *window) PictureInPictureActive(cb func(bool)) { cb(false) }
 
 func (w *window) OpenDevTools() {
 	if w.opts.DevTools {
@@ -1167,6 +1383,35 @@ func (w *window) CapturePage(cb func([]byte, error)) {
 		cb(png, err)
 	})
 	webkitWebViewGetSnapshot(w.web, 0, 0, 0, cbAsyncReady, id)
+}
+
+// webkitAutoplayAllow is WEBKIT_AUTOPLAY_ALLOW of WebKitAutoplayPolicy.
+const webkitAutoplayAllow = 0
+
+// useWithAutoplay takes a main-frame navigation with website policies
+// that let its page play audible media without a user gesture
+// (PageOptions.Autoplay), and reports whether it could: WebKitGTK decides
+// autoplay from the policies of the navigation, by default
+// WEBKIT_AUTOPLAY_ALLOW_WITHOUT_SOUND, and its
+// media-playback-requires-user-gesture setting, off by default, does not
+// lift them. WebKitGTK before 2.30 has no website policies.
+//
+// webkit_website_policies_new_with_policies is variadic, NULL-terminated
+// name/value pairs, and is bound for the one pair as g_object_set is:
+// x86-64 and arm64 Linux pass a variadic function's integer and pointer
+// arguments as a fixed one's, and purego zeroes AL, the count of vector
+// registers an x86-64 variadic callee reads.
+func (w *window) useWithAutoplay(decision ptr) bool {
+	if webkitPolicyDecisionUseWithPolicies == nil || webkitWebsitePoliciesNewWithPolicies == nil {
+		return false
+	}
+	policies := webkitWebsitePoliciesNewWithPolicies(cs("autoplay"), webkitAutoplayAllow, 0)
+	if policies == 0 {
+		return false
+	}
+	webkitPolicyDecisionUseWithPolicies(decision, policies)
+	gObjectUnref(policies)
+	return true
 }
 
 // decideResponse makes attachments, and what WebKit cannot show,
@@ -1320,6 +1565,7 @@ var (
 	cbCreate, cbClose, cbCrashed, cbButtonPress, cbAsyncReady, cbPNGWrite       ptr
 	cbDragData, cbDragDrop, cbPrintFinished, cbPrintFailed, cbPermission        ptr
 	cbMotion, cbControlsAllocated, cbDecorationLayout, cbActivationResize       ptr
+	cbCloseLater, cbHideLater, cbPlayingAudio, cbCaptureState                   ptr
 )
 
 func field[T any](p ptr, offset uintptr) T {
@@ -1339,6 +1585,19 @@ func initWindowCallbacks() {
 			w.cleanup()
 			w.h.Closed()
 		}
+	})
+	cbCloseLater = purego.NewCallback(func(data ptr) int32 {
+		if w := b().window(data); w != nil {
+			w.Close()
+		}
+		return 0 // G_SOURCE_REMOVE
+	})
+	cbHideLater = purego.NewCallback(func(data ptr) int32 {
+		if w := b().window(data); w != nil && w.hiding {
+			w.hiding = false
+			w.Hide()
+		}
+		return 0 // G_SOURCE_REMOVE
 	})
 	cbFocusIn = purego.NewCallback(func(widget, event, data ptr) bool {
 		if w := b().window(data); w != nil {
@@ -1615,6 +1874,28 @@ func initWindowCallbacks() {
 			w.h.TitleChanged(goStr(webkitWebViewGetTitle(w.web)))
 		}
 	})
+	cbPlayingAudio = purego.NewCallback(func(web, pspec, data ptr) {
+		if w := b().window(data); w != nil {
+			w.h.AudibleChanged(webkitWebViewIsPlayingAudio(w.web))
+		}
+	})
+	// The notify signal of each of captureProperties, whose name is the
+	// second field of the GParamSpec.
+	cbCaptureState = purego.NewCallback(func(web, pspec, data ptr) {
+		w := b().window(data)
+		if w == nil {
+			return
+		}
+		kind := platform.CaptureKind(slices.Index(captureProperties[:], goStr(field[ptr](pspec, 8))))
+		if kind < 0 {
+			return
+		}
+		state := w.CaptureState(kind)
+		if state == platform.CaptureNone {
+			w.captureMuted[kind] = false
+		}
+		w.h.CaptureStateChanged(kind, state)
+	})
 	cbDecidePolicy = purego.NewCallback(func(web, decision ptr, kind int32, data ptr) bool {
 		w := b().window(data)
 		if w == nil {
@@ -1645,6 +1926,9 @@ func initWindowCallbacks() {
 			nav.Unasked = true
 		}
 		if w.h.WillNavigate(nav) {
+			if nav.IsMainFrame && w.opts.Autoplay && w.useWithAutoplay(decision) {
+				return true
+			}
 			webkitPolicyDecisionUse(decision)
 		} else {
 			webkitPolicyDecisionIgnore(decision)
@@ -1660,7 +1944,8 @@ func initWindowCallbacks() {
 		// manager, which would route the new window's IPC to the opener.
 		// Open an independent window instead; its page has no opener.
 		url := goStr(webkitURIRequestGetURI(webkitNavigationActionGetRequest(action)))
-		if child, ok := w.h.NewWindow(platform.NewWindowRequest{URL: url}).(*window); ok && child != nil {
+		req := platform.NewWindowRequest{URL: url, UserInitiated: webkitNavigationActionIsUserGesture(action)}
+		if child, ok := w.h.NewWindow(req).(*window); ok && child != nil {
 			child.LoadURL(url)
 		}
 		return 0

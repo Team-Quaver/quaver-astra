@@ -151,7 +151,8 @@ type view struct {
 
 	// The grid, in device pixels: the cells, the baseline in a cell, and
 	// the origin of the grid relative to the element; scale is device
-	// pixels per DIP.
+	// pixels per DIP, and size the element's in DIPs.
+	size                   [2]float32
 	font                   fontKey
 	fonts                  [4]ui.Font
 	scale                  float32
@@ -169,6 +170,9 @@ type view struct {
 	// images' (readImages).
 	images  []shownImage
 	bitmaps map[uint32]*cachedImage
+	// virtual are the virtual placements, by their images' ids, which
+	// placeholder cells show.
+	virtual map[uint32][]virtualImage
 
 	keys    *vt.KeyEncoder
 	mouse   *vt.MouseEncoder
@@ -186,7 +190,15 @@ type view struct {
 	// selecting tells that the primary button selects; reporting that a
 	// press went to the program, which gets the release too.
 	selecting, reporting bool
-	pointer              [2]float32
+	// extending keeps a Shift-click drag anchored to the existing selection.
+	extending bool
+	pointer   [2]float32
+	// barHeld tells that the primary button drags the scroll bar, held
+	// barGrab DIPs below the thumb's top; overBar that the pointer is over
+	// the bar, as of its last move, and barHover as of the last build;
+	// inView that the pointer was over the terminal, which shows the bar.
+	barHeld, overBar, barHover, inView bool
+	barGrab                            float32
 	// hover is the link Command is held over, which a click opens and
 	// which shows underlined, hoverLink what it opens and hoverPath
 	// whether that is a file path (HoveredLink); linkPress: the primary
@@ -215,6 +227,7 @@ type view struct {
 	rightClick RightClickAction
 	scrolled   float32 // scrolling not yet a whole row
 	zoomed     float32 // wheel with the zoom modifier not yet a notch
+	scrollZoom bool    // a touchpad scroll gesture zooms, from how it began
 	ticking    bool    // an autoscroll tick is due
 
 	// reads are the program's reads of the clipboard waiting to be
@@ -280,6 +293,11 @@ func (v *view) build(c *ui.Context, e ui.Element) {
 			v.hoverLink, v.hoverPath, v.hover = v.linkUnder(c.Modifiers(), v.pointer[0], v.pointer[1])
 		}
 		v.pointerAt = v.pointerShape(t.term, c.Modifiers())
+		v.inView = e.Hovered()
+		v.barHover = v.inView && v.overScrollbar(v.pointer[0], v.pointer[1])
+		if v.barHover || v.barHeld {
+			v.pointerAt = ui.CursorDefault // the bar's, not the text's
+		}
 		// Input methods compose where the cursor is now, which the last
 		// frame may not show yet.
 		v.caretCell = [2]int{v.cursor.X, v.cursor.Y}
@@ -991,6 +1009,9 @@ func (v *view) pointerEvent(ev ui.InputEvent) bool {
 		v.linkPress = ev.Kind != ui.InputPointerUp
 		return true
 	}
+	if v.scrollbarEvent(ev) {
+		return true
+	}
 	// Command over a link: a hand, and a click opens it, before a
 	// program that takes the mouse sees it.
 	link, path, hover := v.linkUnder(ev.Mods, ev.X, ev.Y)
@@ -1030,6 +1051,11 @@ func (v *view) pointerEvent(ev ui.InputEvent) bool {
 			return false
 		}
 		v.selecting = true
+		v.extending = ev.Mods&ui.Shift != 0 && t.term.ExtendSelection(ref)
+		if v.extending {
+			v.gesture.Reset(t.term)
+			return true
+		}
 		if s, ok := v.gesture.Press(t.term, ref, px, py, uint64(time.Now().UnixNano())); ok {
 			t.term.SetSelection(&s)
 		} else {
@@ -1044,6 +1070,11 @@ func (v *view) pointerEvent(ev ui.InputEvent) bool {
 		if !ok {
 			return true
 		}
+		if v.extending {
+			t.term.ExtendSelection(ref)
+			v.ticking = v.selectionScrollDirection() != 0
+			return true
+		}
 		if s, ok := v.gesture.Drag(t.term, ref, px, py, v.geometry(), ev.Mods&ui.Alt != 0); ok {
 			t.term.SetSelection(&s)
 		}
@@ -1055,7 +1086,9 @@ func (v *view) pointerEvent(ev ui.InputEvent) bool {
 		}
 		v.selecting, v.ticking = false, false
 		ref, ok := t.term.CellAt(col, row)
-		if ok {
+		if v.extending {
+			v.extending = false
+		} else if ok {
 			v.gesture.Release(t.term, &ref)
 		} else {
 			v.gesture.Release(t.term, nil)
@@ -1103,10 +1136,73 @@ func (t *Terminal) HoveredLink() (link string, path bool, at ui.Rect) {
 // a file path, and its cells: none without Command, or while the primary
 // button selects or the program has a press; t.mu is held.
 func (v *view) linkUnder(mods ui.Modifiers, x, y float32) (link string, path bool, at linkSpan) {
-	if mods&ui.Cmd == 0 || v.selecting || v.reporting || v.cellW == 0 {
+	if mods&ui.Cmd == 0 || v.selecting || v.reporting || v.cellW == 0 || v.overScrollbar(x, y) {
 		return "", false, linkSpan{}
 	}
 	return v.linkAt(v.cellAt(x, y))
+}
+
+// scrollbarStrip is how wide the strip at the right edge is over which the
+// scroll bar takes the pointer, in DIPs.
+const scrollbarStrip = 12
+
+// overScrollbar reports whether the scroll bar takes the pointer at (x, y):
+// over its strip while there is a scrollback, which shows the bar, or
+// while it is dragged; t.mu is held.
+func (v *view) overScrollbar(x, y float32) bool {
+	if v.barHeld {
+		return true
+	}
+	w, h := v.size[0], v.size[1]
+	if x < w-scrollbarStrip || x >= w || y < 0 || y >= h {
+		return false
+	}
+	sb := v.t.term.Scrollbar()
+	return sb.Total > sb.Len
+}
+
+// scrollbarEvent drags the scroll bar, and reports whether it took the
+// event: a press on the thumb holds it where it is pressed, and one on the
+// rest of the strip by its middle, which comes to the pointer; the moves
+// until the release scroll the scrollback along. t.mu is held.
+func (v *view) scrollbarEvent(ev ui.InputEvent) bool {
+	if over := v.overScrollbar(ev.X, ev.Y); over != v.overBar {
+		v.overBar = over
+		v.services.Invalidate() // the pointer's shape
+	}
+	switch {
+	case v.barHeld && ev.Kind == ui.InputPointerUp && ev.Button == 0:
+		v.barHeld = false
+		v.services.Invalidate()
+	case v.barHeld:
+		v.dragScrollbar(ev.Y)
+	case v.overBar && ev.Kind == ui.InputPointerDown && ev.Button == 0:
+		y, h := bar(v.t.term.Scrollbar(), ui.Rect{H: v.size[1]}).Thumb()
+		v.barGrab = h / 2
+		if ev.Y >= y && ev.Y < y+h {
+			v.barGrab = ev.Y - y
+		}
+		v.barHeld = true
+		v.dragScrollbar(ev.Y)
+	default:
+		return false
+	}
+	return true
+}
+
+// dragScrollbar scrolls the scrollback so that the thumb's top is barGrab
+// above y; t.mu is held.
+func (v *view) dragScrollbar(y float32) {
+	term := v.t.term
+	sb := term.Scrollbar()
+	if sb.Total <= sb.Len {
+		return
+	}
+	to := int(math.Round(float64(bar(sb, ui.Rect{H: v.size[1]}).OffsetAt(y - v.barGrab))))
+	if d := to - int(sb.Offset); d != 0 {
+		term.ScrollBy(d)
+		v.services.Invalidate()
+	}
 }
 
 // linkAt is the link at the cell: a hyperlink (OSC 8), a URL printed as
@@ -1154,16 +1250,39 @@ func (v *view) geometry() vt.Geometry {
 // is held.
 func (v *view) autoscroll() {
 	t := v.t
-	dir := v.gesture.Autoscroll(t.term)
+	dir := 0
+	if v.extending {
+		dir = v.selectionScrollDirection()
+	} else {
+		dir = v.gesture.Autoscroll(t.term)
+	}
 	if dir == 0 || !v.selecting {
 		v.ticking = false
 		return
 	}
 	t.term.ScrollBy(dir)
 	col, row := v.cellAt(v.pointer[0], v.pointer[1])
+	if v.extending {
+		if ref, ok := t.term.CellAt(col, row); ok {
+			t.term.ExtendSelection(ref)
+		}
+		return
+	}
 	if s, ok := v.gesture.Tick(t.term, col, row, float64(v.pointer[0]*v.scale), float64(v.pointer[1]*v.scale), v.geometry(), false); ok {
 		t.term.SetSelection(&s)
 	}
+}
+
+// selectionScrollDirection follows a Shift-click drag past either edge.
+func (v *view) selectionScrollDirection() int {
+	y := v.pointer[1] * v.scale
+	if y < float32(v.oy) {
+		return -1
+	}
+	if y >= float32(v.oy+v.rows*v.cellH) {
+		return 1
+	}
+	return 0
 }
 
 // report reports the pointer to the program; t.mu is held.
@@ -1201,13 +1320,39 @@ func (v *view) report(ev ui.InputEvent) bool {
 	return ev.Kind != ui.InputPointerMove || len(out) > 0
 }
 
+// wheelRows turns dy DIPs of a mouse wheel's notches (scrolling that is
+// not Precise) on goos into the rows the terminal scrolls. A notch scrolls
+// three rows on macOS and Linux, and on Windows as many as its "lines to
+// scroll" setting asks, 3 unless changed, as Windows Terminal does. The
+// DIPs are what the backends send: 40 a line on macOS (internal/darwin),
+// 50 a step on Linux (internal/linux), and 33 a line of the setting on
+// Windows (internal/windows), where a notch sends that many lines.
+func wheelRows(dy float32, goos string) float32 {
+	switch goos {
+	case "windows":
+		return dy / 33
+	case "linux":
+		return dy / 50 * 3
+	}
+	return dy / 40 * 3
+}
+
 // scroll scrolls the scrollback, or reports the wheel to the program.
 func (v *view) scroll(ev ui.InputEvent) bool {
 	t := v.t
 	if v.cellH == 0 {
 		return false
 	}
-	if ev.Mods&ui.Cmd != 0 {
+	zooming := ev.Mods&ui.Cmd != 0
+	if ev.Precise {
+		// A touchpad gesture keeps what it began as, even if Command comes
+		// down while its momentum still runs.
+		if !ev.Momentum {
+			v.scrollZoom = zooming
+		}
+		zooming = v.scrollZoom
+	}
+	if zooming {
 		// Rolling up is a step up. DY is the scroll offset's change, so up
 		// comes negative; a wheel's event is a notch, a trackpad's many
 		// small moves, which add up to a step by 40.
@@ -1228,11 +1373,10 @@ func (v *view) scroll(ev ui.InputEvent) bool {
 		return true
 	}
 	ch := float32(v.cellH) / v.scale
-	dy := ev.DY
-	if !ev.Precise {
-		dy = dy / 40 * 3 * ch // a notch scrolls three rows
-	}
-	v.scrolled += dy
+	t.mu.Lock()
+	m := t.opts.ScrollMultiplier
+	t.mu.Unlock()
+	v.scrolled += m.rows(ev.DY, ch, ev.Precise, runtime.GOOS) * ch
 	rows := int(v.scrolled / ch)
 	v.scrolled -= float32(rows) * ch
 	if rows == 0 {

@@ -105,3 +105,27 @@ func TestStrokePolylineOutline(t *testing.T) {
 		}
 	}
 }
+
+// TestStrokePolylineAfterAStyledPath strokes a polyline right after a path
+// with butt caps, miter joins and dashes, which shares its flattened form:
+// the polyline draws round and whole, as it does alone.
+func TestStrokePolylineAfterAStyledPath(t *testing.T) {
+	points := [][2]float32{{10, 20}, {30, 70}, {60, 20}, {float32(math.NaN()), 0}, {110, 25}, {170, 60}}
+	draw := func(styled bool) []byte {
+		tt := coreNewTester(func(c *context) {
+			coreBox(c).Fill().Draw(func(p *Painter, r Rect) {
+				if styled {
+					var path Path
+					path.MoveTo(20, 90).LineTo(180, 90).Cap(ButtCap).Join(MiterJoin).Dash(0, 4, 4)
+					p.StrokePath(&path, 0.5, RGBA(0, 0, 0, 0.01))
+				}
+				p.StrokePolyline(points, 3, RGB(20, 60, 230))
+			})
+		}, 200, 100)
+		img := tt.Image()
+		return img.Pix[:img.Stride*80]
+	}
+	if !bytes.Equal(draw(true), draw(false)) {
+		t.Fatal("the polyline takes the style of the path stroked before it")
+	}
+}

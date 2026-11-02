@@ -18,6 +18,7 @@ type imageKey struct {
 	cols, rows                 int
 	srcX, srcY, srcW, srcH, gr int
 	z                          int32
+	virtual                    bool
 }
 
 // mirroredImages are the images a Mirror sent of a screen, by id, at
@@ -45,7 +46,16 @@ func (m *Mirror) images(out *bytes.Buffer, term *vt.Terminal, alt bool, top, row
 	seen := map[imageKey]bool{}
 	var place []imageKey
 	term.Placements(func(pl vt.Placement) {
-		if pl.Virtual || !pl.Visible {
+		if pl.Virtual {
+			// Placed by its id, which the placeholder cells name.
+			k := imageKey{img: pl.ImageID, id: pl.ID, cols: pl.ParamCols, rows: pl.ParamRows, z: pl.Z, virtual: true}
+			seen[k] = true
+			if _, ok := st.placed[k]; !ok {
+				place = append(place, k)
+			}
+			return
+		}
+		if !pl.Visible {
 			return
 		}
 		k := imageKey{
@@ -72,7 +82,7 @@ func (m *Mirror) images(out *bytes.Buffer, term *vt.Terminal, alt bool, top, row
 		for k := range st.placed {
 			if k.img == id {
 				delete(st.placed, k)
-				if g != 0 && seen[k] && k.row >= top {
+				if g != 0 && seen[k] && (k.virtual || k.row >= top) {
 					place = append(place, k)
 				}
 			}
@@ -81,7 +91,7 @@ func (m *Mirror) images(out *bytes.Buffer, term *vt.Terminal, alt bool, top, row
 	// Placements gone from where they would show; those that scrolled off
 	// stay, as they do here.
 	for k, id := range st.placed {
-		if !seen[k] && k.row+k.gr > top && k.row < top+rows {
+		if !seen[k] && (k.virtual || k.row+k.gr > top && k.row < top+rows) {
 			fmt.Fprintf(out, "\x1b_Ga=d,d=i,i=%d,p=%d,q=2\x1b\\", k.img, id)
 			delete(st.placed, k)
 		}
@@ -99,10 +109,23 @@ func (m *Mirror) images(out *bytes.Buffer, term *vt.Terminal, alt bool, top, row
 			sendImage(out, img)
 			st.gens[k.img] = gen
 		}
+		if k.virtual {
+			fmt.Fprintf(out, "\x1b_Ga=p,U=1,i=%d,p=%d,c=%d,r=%d,z=%d,q=2\x1b\\", k.img, k.id, k.cols, k.rows, k.z)
+			st.placed[k] = k.id
+			continue
+		}
 		m.placement++
 		fmt.Fprintf(out, "\x1b[%d;%dH\x1b_Ga=p,i=%d,p=%d,X=%d,Y=%d,x=%d,y=%d,w=%d,h=%d,c=%d,r=%d,z=%d,C=1,q=2\x1b\\",
 			k.row-top+1, k.col+1, k.img, m.placement, k.xoff, k.yoff, k.srcX, k.srcY, k.srcW, k.srcH, k.cols, k.rows, k.z)
 		st.placed[k] = m.placement
+	}
+}
+
+// deleteImages deletes from the other terminal the images sent of a
+// screen, with their placements, wherever they are.
+func (m *Mirror) deleteImages(out *bytes.Buffer, st *mirroredImages) {
+	for id := range st.gens {
+		fmt.Fprintf(out, "\x1b_Ga=d,d=I,i=%d,q=2\x1b\\", id)
 	}
 }
 

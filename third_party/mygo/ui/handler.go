@@ -38,7 +38,8 @@ const (
 	InputPointerMove
 	// InputScroll scrolls by DX, DY DIPs at X, Y; Precise marks
 	// touchpads, which scroll by pixels rather than by lines. One the
-	// element leaves scrolls the scroll containers around it.
+	// element leaves scrolls the scroll containers around it. Momentum
+	// marks scrolling that continues after the fingers leave a touchpad.
 	InputScroll
 	// InputSelect selects runes Start to End of the text an element
 	// describes to assistive technology (Element.Access), as a screen
@@ -75,8 +76,9 @@ type InputEvent struct {
 	Clicks int
 	// DX and DY are what InputScroll scrolls by, in local axes; positive DY moves the view
 	// down the content.
-	DX, DY  float32
-	Precise bool
+	DX, DY   float32
+	Precise  bool
+	Momentum bool
 	// Scale is what InputZoom zooms by.
 	Scale float32
 	// Start and End are the runes InputSelect selects.

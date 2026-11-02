@@ -28,6 +28,10 @@ func (e *node) inlineText() {
 	b.WriteString(e.ownText)
 	n := utf8.RuneCountInString(e.ownText)
 	for ch := e.first; ch != nil; ch = ch.next {
+		if ch.hidden {
+			ch.runes = [2]int{n, n} // no text in the paragraph
+			continue
+		}
 		m := utf8.RuneCountInString(ch.text)
 		ch.runes = [2]int{n, n + m}
 		n += m
@@ -47,6 +51,9 @@ func (e *node) inlineSpans() []Span {
 		out = append(out, Span{Text: e.ownText})
 	}
 	for ch := e.first; ch != nil; ch = ch.next {
+		if ch.hidden {
+			continue
+		}
 		spans := ch.spans
 		switch {
 		case ch.first != nil:
@@ -83,7 +90,9 @@ func (e *node) spanStyle() Span {
 		s.Color = t.color
 	}
 	if t.set&setUnderline != 0 {
-		s.Underline, s.WavyUnderline = t.underline && !t.wavy, t.underline && t.wavy
+		s.Underline = t.underline && !t.wavy && !t.dotted
+		s.WavyUnderline = t.underline && t.wavy
+		s.DottedUnderline = t.underline && t.dotted
 	}
 	if t.set&setStrike != 0 {
 		s.Strikethrough = t.strike
@@ -159,6 +168,7 @@ func over(s, base Span) Span {
 	s.Italic = s.Italic || base.Italic
 	s.Underline = s.Underline || base.Underline
 	s.WavyUnderline = s.WavyUnderline || base.WavyUnderline
+	s.DottedUnderline = s.DottedUnderline || base.DottedUnderline
 	s.Strikethrough = s.Strikethrough || base.Strikethrough
 	return s
 }
@@ -205,7 +215,7 @@ func (p *Painter) paintInline(e *node) {
 		}
 	}
 	for ch := e.first; ch != nil; ch = ch.next {
-		if ch.flags&flagInvisible == 0 {
+		if ch.flags&flagInvisible == 0 && !ch.hidden {
 			p.element(ch)
 		}
 	}
@@ -223,7 +233,7 @@ func (e *node) ringShown() bool {
 // parent: the text itself already reads theirs.
 func (rt *engine) accessInline(t *platform.AccessTree, e *node, parent int) {
 	for ch := e.first; ch != nil; ch = ch.next {
-		if ch.flags&flagInvisible != 0 || len(ch.frags) == 0 {
+		if ch.flags&flagInvisible != 0 || ch.hidden || len(ch.frags) == 0 {
 			continue
 		}
 		role, ok := ch.accessRole()
@@ -231,11 +241,10 @@ func (rt *engine) accessInline(t *platform.AccessTree, e *node, parent int) {
 			rt.accessInline(t, ch, parent)
 			continue
 		}
-		n := platform.AccessNode{
+		t.Nodes = append(t.Nodes, platform.AccessNode{
 			ID: ch.id, Parent: parent, Role: role, Label: ch.label,
 			Bounds: accessBounds(ch),
-		}
-		rt.accessDetails(ch, &n)
-		t.Nodes = append(t.Nodes, n)
+		})
+		rt.accessDetails(ch, &t.Nodes[len(t.Nodes)-1])
 	}
 }

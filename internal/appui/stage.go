@@ -114,19 +114,10 @@ func (a *App) foliaStage(c *ui.Context, t *ui.Theme, cur player.Song, hasCur boo
 	}
 
 	a.foliaAtmosphere(c, t, cur)
-	content := ui.Column(c).Absolute().Fill().Padding(34, 54, 30, 54).Gap(12)
+	// The pane tabs live at the page's top edge (npTopControls); the stage
+	// starts below them, so the two do not draw over each other.
+	content := ui.Column(c).Absolute().Fill().Padding(62, 54, 26, 54).Gap(12)
 	content.Children(func() {
-		ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(10).Children(func() {
-			ui.Text(c, "辞曲").FontSize(fz(12)).FontWeight(800).TextColor(ui.Hex("#ffffff"))
-			ui.Box(c).Width(22).Height(1).Background(ui.RGBA(255, 255, 255, 0.34))
-			ui.Text(c, "LYRIC STAGE").FontSize(fz(9.5)).FontWeight(700).
-				TextColor(ui.RGBA(255, 255, 255, 0.45)).Font("monospace")
-			ui.Spacer(c)
-			if data.source != "" {
-				a.stageSourceBadge(c, data.source, t)
-			}
-		})
-
 		switch {
 		case data.state == "loading":
 			ui.Column(c).Grow(1).Center().Children(func() { ui.Spinner(c) })

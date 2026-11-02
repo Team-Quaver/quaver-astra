@@ -4,7 +4,7 @@ go 1.27.3
 
 require (
 	github.com/ebitengine/purego v0.11.1
-	github.com/egoist/mygo v0.6.3
+	github.com/egoist/mygo v0.7.4
 	github.com/godbus/dbus/v5 v5.2.2
 	github.com/jixunmoe-go/qrc v0.0.0-20230917162828-866e996416b0
 	github.com/team-quaver/liino v0.0.0-00010101000000-000000000000

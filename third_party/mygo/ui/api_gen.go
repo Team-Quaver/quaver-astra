@@ -325,6 +325,17 @@ func (_handle *Context) DisableAnimations() {
 	_ctx.DisableAnimations()
 }
 
+// Instant reports whether this frame shows animated values at once
+// (DisableAnimations). Views read it to render a change settled in the same
+// frames where its animations are disabled.
+func (_handle *Context) Instant() bool {
+	_ctx := _handle.build()
+	if _ctx == nil {
+		return false
+	}
+	return _ctx.Instant()
+}
+
 // Locale returns the language the app shows (mygo.App.Locale), a BCP 47
 // tag such as "en" or "zh-Hans", for what the view says in it. Text is in
 // it unless an element says otherwise (Element.Lang). A frame follows its
@@ -451,13 +462,36 @@ func (_handle *Context) Router() *Router {
 }
 
 // SetTheme makes the frame use t, for the window's root and the widgets
-// created after the call.
+// created after the call. Inside the children of a Themed, which keep its
+// theme, t is for the root and the widgets after the Themed.
 func (_handle *Context) SetTheme(t *Theme) {
 	_ctx := _handle.build()
 	if _ctx == nil {
 		return
 	}
 	_ctx.SetTheme(t)
+}
+
+// SetZoom zooms the window's content by z, as a browser zooms a page: the
+// view is laid out in a window 1/z its size and shown z times larger,
+// drawn at the screen's resolution times z, so that text, icons, vectors
+// and images stay as sharp as at that size natively, not a picture of
+// the window scaled up. 1 shows the content at its size; the zoom
+// stays until set again, and is clamped to between 0.25 and 5. A frame
+// that sets another builds again at the new size before it shows.
+//
+// What the view sees is zoomed: Size, TitleBar, Bounds and every length
+// are in the content's DIPs, z of them to the window's. The pointer, text
+// input, input methods, accessibility, context menus, drags and web views
+// follow it.
+//
+//	c.SetZoom(app.zoom) // 1.25 for 125%
+func (_handle *Context) SetZoom(z float32) {
+	_ctx := _handle.build()
+	if _ctx == nil {
+		return
+	}
+	_ctx.SetZoom(z)
 }
 
 // Shortcut reports whether the key with exactly the modifiers mods was
@@ -484,7 +518,8 @@ func (_handle *Context) Size() (float32, float32) {
 }
 
 // Theme returns the theme of the frame: the light or dark theme following
-// the system's appearance, unless SetTheme replaced it.
+// the system's appearance, unless SetTheme replaced it. While the children
+// of a Themed build, it is the Themed's theme.
 func (_handle *Context) Theme() *Theme {
 	_ctx := _handle.build()
 	if _ctx == nil {
@@ -576,6 +611,15 @@ func (_handle *Context) WriteClipboard(s string) {
 		return
 	}
 	_ctx.WriteClipboard(s)
+}
+
+// Zoom returns the zoom SetZoom set, 1 for none.
+func (_handle *Context) Zoom() float32 {
+	_ctx := _handle.build()
+	if _ctx == nil {
+		return 0
+	}
+	return _ctx.Zoom()
 }
 
 // Accordion creates sections, one above the other in a bordered box, that
@@ -774,6 +818,7 @@ func ButtonBase(c *Context) Element {
 // months, and Home and End go to the first and the last day of the month.
 // Changed reports a new date, which keeps the time of day and location of
 // *date. Assistive technology reads the day chosen as the arrows move.
+// Browse makes the keys and the buttons move without choosing.
 func Calendar(c *Context, date *time.Time) Element {
 	_ctx := c.build()
 	if _ctx == nil {
@@ -995,6 +1040,31 @@ func DateInput(c *Context, date *time.Time) Element {
 	}
 	_ctx.rt.beginBuild()
 	_e := coreDateInput(_ctx, date)
+	_ctx.rt.endBuild()
+	return wrapElement(_e)
+}
+
+// DecimalInput creates a text input editing *value as an exact decimal
+// between lo and hi, which the arrows Up and Down, and the buttons beside
+// it, step by step: a NumberInput for amounts of money, which it never
+// rounds. *value is written with exactly the decimals of step, as
+// "1234.50"; lo and hi are written the same way, "" for no limit. What is
+// typed applies as soon as it is a number in range, with '.' before its
+// decimals and ',' between groups of three digits: "1,234.5" sets
+// "1234.50", and shows so once the input loses the focus. Text with more
+// decimals than step's (other than zeros), out of range or not a number
+// leaves *value as it was and marks the input with Error, whose message
+// an enclosing Field shows, until it is corrected. A value the app sets
+// replaces what was typed. Changed reports a new value.
+//
+//	ui.DecimalInput(c, &app.amount, "0", "", "0.01")
+func DecimalInput(c *Context, value *string, lo string, hi string, step string) Element {
+	_ctx := c.build()
+	if _ctx == nil {
+		return Element{}
+	}
+	_ctx.rt.beginBuild()
+	_e := coreDecimalInput(_ctx, value, lo, hi, step)
 	_ctx.rt.endBuild()
 	return wrapElement(_e)
 }
@@ -1317,6 +1387,8 @@ func Local[T any](e Element, key any, init func() T) *T {
 //			}
 //		}
 //	})
+//
+// PopoverMenuButton draws its menu in the window, with the theme's look.
 func MenuButton(c *Context, label string, build func(m *Menu)) Element {
 	_ctx := c.build()
 	if _ctx == nil {
@@ -1442,7 +1514,8 @@ func OutlineTable[K comparable](c *Context, s *OutlineState[K], columns []TableC
 // Overlay builds fn's elements above the rest of the window. Place them
 // with Absolute, Left and Top, in DIPs relative to the window, or beside
 // another element with AttachTo. Each, as it goes with the focus in it,
-// gives the focus back to the element that had it as it came.
+// gives the focus back to the element that had it as it came. Built inside
+// the children of a Themed, they take its theme.
 func Overlay(c *Context, fn func()) {
 	_ctx := c.build()
 	if _ctx == nil {
@@ -1486,6 +1559,28 @@ func PopoverBase(c *Context, anchor Element, open *bool, fn func(panel Element))
 	}
 	_ctx.rt.beginBuild()
 	_e := corePopoverBase(_ctx, anchor.nodeFor(_ctx.rt), open, func(panel *node) { fn(wrapElement(panel)) })
+	_ctx.rt.endBuild()
+	return wrapElement(_e)
+}
+
+// PopoverMenuButton creates a button showing label and an arrow, as
+// MenuButton does, whose menu MyGo draws in the window with the theme's
+// look, as PopoverMenu draws a context menu (Element.PopoverMenuButton):
+//
+//	ui.PopoverMenuButton(c, "Sort by", func(m *ui.Menu) {
+//		for _, by := range []string{"Name", "Date", "Size"} {
+//			if m.Item(by).Radio(app.sort == by).Chosen() {
+//				app.sort = by
+//			}
+//		}
+//	})
+func PopoverMenuButton(c *Context, label string, build func(m *Menu)) Element {
+	_ctx := c.build()
+	if _ctx == nil {
+		return Element{}
+	}
+	_ctx.rt.beginBuild()
+	_e := corePopoverMenuButton(_ctx, label, build)
 	_ctx.rt.endBuild()
 	return wrapElement(_e)
 }
@@ -1699,8 +1794,8 @@ func ScrollHorizontal(c *Context) Element {
 // SearchField creates a field for searching, editing *query: a magnifying
 // glass, the text, and a button clearing it while it holds any, as Escape
 // does then. Enter is its Submitted, and Changed reports a change. It
-// shows Search while empty, and assistive technology sees a search field;
-// name it with Label.
+// shows Search while empty, or what Placeholder sets, and assistive
+// technology sees a search field; name it with Label.
 //
 //	if ui.SearchField(c, &app.query).Label("Search mail").Changed() {
 //		app.filter()
@@ -2259,6 +2354,38 @@ func Textf(c *Context, format string, args ...any) Element {
 	return wrapElement(_e)
 }
 
+// Themed creates a column whose children build with t, as SetTheme has
+// the whole window build: the widgets inside take their colors and metrics
+// (Spacing, Radius, FontSize) from t, Context.Theme returns t while they
+// build and Painter.Theme while they paint, and the popovers, menus,
+// tooltips and dialogs they open take t too. The column paints t's
+// Background, and the text inside takes t's Text color, FontSize and Font,
+// as the root has the window's theme's; Background(ui.Transparent) keeps
+// what is behind it instead. The root, and what is built after the column,
+// keep the window's theme. Light beside dark, as a theme picker previews
+// them:
+//
+//	ui.Row(c).Fill().AlignItems(ui.Stretch).Children(func() {
+//		for _, t := range []*ui.Theme{ui.LightTheme(), ui.DarkTheme()} {
+//			ui.Themed(c, t).Grow(1).Padding(16).Gap(8).Children(func() {
+//				ui.Text(c, "Preview")
+//				ui.Button(c, "OK")
+//			})
+//		}
+//	})
+//
+// A nil t makes it a Column.
+func Themed(c *Context, t *Theme) Element {
+	_ctx := c.build()
+	if _ctx == nil {
+		return Element{}
+	}
+	_ctx.rt.beginBuild()
+	_e := coreThemed(_ctx, t)
+	_ctx.rt.endBuild()
+	return wrapElement(_e)
+}
+
 // TimeInput creates a field of the time of day of *tm, in the hour cycle
 // of the user's regional formats (Context.Region): 15:04, or 3:04 PM with
 // the window's language's names of the halves of the day, before the
@@ -2502,6 +2629,37 @@ func TreeItem(c *Context, label string, open *bool, children func()) Element {
 	}
 	_ctx.rt.beginBuild()
 	_e := coreTreeItem(_ctx, label, open, children)
+	_ctx.rt.endBuild()
+	return wrapElement(_e)
+}
+
+// Video creates an element showing a player's video, by default at its
+// size as DIPs, scaled to fit when given another size, as Image shows a
+// bitmap:
+//
+//	//go:embed waves.gif
+//	var wavesGIF []byte
+//
+//	d, err := ui.NewGIFDecoder(wavesGIF)
+//	...
+//	app.waves, err = ui.NewVideoPlayer(d)
+//	app.waves.SetLoop(true)
+//
+//	ui.Video(c, app.waves).Fill().Fit(ui.Cover)
+//
+// The video moves on only while the view builds it and some of the window
+// shows: one that went out of the view, or a window out of sight, goes on
+// from where it stood. Each frame of the video is a frame of the window,
+// which After asks for as it comes due. While the desktop asks for less
+// motion (Preferences.ReduceMotion), it shows its first frame and does
+// not play.
+func Video(c *Context, p *VideoPlayer) Element {
+	_ctx := c.build()
+	if _ctx == nil {
+		return Element{}
+	}
+	_ctx.rt.beginBuild()
+	_e := coreVideo(_ctx, p)
 	_ctx.rt.endBuild()
 	return wrapElement(_e)
 }
@@ -2991,7 +3149,8 @@ func (_handle Element) BottomPercent(p float32) Element {
 }
 
 // Bounds returns the previous frame's transformed bounding rectangle in
-// window DIPs; it is empty for an element the previous frame lacked.
+// window DIPs, the content's when zoomed (Context.SetZoom); it is empty
+// for an element the previous frame lacked.
 // LayoutBounds returns its box before visual transforms.
 func (_handle Element) Bounds() Rect {
 	_node := _handle.node()
@@ -3001,6 +3160,74 @@ func (_handle Element) Bounds() Rect {
 	_ctx := _node.c
 	_ = _ctx
 	return _node.Bounds()
+}
+
+// Browse lets the user move about a Calendar without choosing a day: its
+// buttons and Page Up and Page Down only show other months, and the
+// arrows, Home and End only move among the days, until a click, Enter or
+// Space chooses one, as in a date input's calendar. Changed then reports
+// only a day chosen, as a calendar in a popover that closes when the
+// user picks a day needs. The calendar goes back to *date as the app
+// sets another.
+func (_handle Element) Browse() Element {
+	_node := _handle.node()
+	if _node == nil {
+		return Element{}
+	}
+	_ctx := _node.c
+	_ = _ctx
+	return wrapElement(_node.Browse())
+}
+
+// Cache keeps what the element paints, with its children, in a bitmap of
+// the GPU that frames draw as one image, as Flutter's RepaintBoundary and
+// SwiftUI's drawingGroup do: for a still subtree that costs much to draw,
+// as a card of gradients, blurred images and large shadows, under or
+// around a drawing that moves. A frame redrawing where something above or
+// next to it changed then draws the bitmap there, not each of its layers,
+// and moving, scaling or rotating the element (Translate, Scale, Rotate,
+// AnimatePose) moves the bitmap, not what it holds.
+//
+// The bitmap is the size of the element's box at the window's scale, and
+// of what it and those inside it paint around it: shadows, focus rings,
+// and children beyond the box that it does not clip, as Draw callbacks
+// paint (within the box and the shadows' reach). It is drawn again when
+// what the subtree paints changes: built anew with other content, laid
+// out at another size, at another scale or in another theme, or as
+// something inside it moves on its own (Painter.AnimationFrame, a pose,
+// a transition), as then it is every frame. Painting the window still
+// paints the subtree, to tell; frames that only paint the drawings that
+// asked for them (Painter.AnimationFrame, Painter.After) do not.
+//
+// As in an effect's bitmap (Effect), its text is smoothed in grayscale
+// where the subtree paints no opaque background under it, web views
+// inside it do not show, and a subtree larger than 8192 pixels across is
+// drawn as it is. The bitmap is drawn at the window's scale, so that
+// turned, or scaled up by a transform, it shows a little softer than the
+// shapes it holds would.
+func (_handle Element) Cache() Element {
+	_node := _handle.node()
+	if _node == nil {
+		return Element{}
+	}
+	_ctx := _node.c
+	_ = _ctx
+	return wrapElement(_node.Cache())
+}
+
+// CaretWidth sets this input's painted caret width in DIPs for this build.
+// It defaults to one DIP. Positive widths are rounded to device pixels,
+// at least one pixel wide; zero and negative widths hide the caret. It does
+// not change text layout, input-method candidate bounds or caret blinking.
+// Other elements are unaffected.
+func (_handle Element) CaretWidth(width float32) Element {
+	_node := _handle.node()
+	if _node == nil {
+		return Element{}
+	}
+	_ctx := _node.c
+	_ = _ctx
+	return wrapElement(_node.CaretWidth(width))
 }
 
 // Center centers the children along and across the main axis.
@@ -3247,6 +3474,8 @@ func (_handle Element) ContentTransition(t ContentTransition) Element {
 //		m.Separator()
 //		m.EditItems()
 //	})
+//
+// PopoverMenu draws the same menu in the window, with the theme's look.
 func (_handle Element) ContextMenu(build func(m *Menu)) Element {
 	_node := _handle.node()
 	if _node == nil {
@@ -3397,6 +3626,18 @@ func (_handle Element) Dividers(width float32, c Color) Element {
 	_ctx := _node.c
 	_ = _ctx
 	return wrapElement(_node.Dividers(width, c))
+}
+
+// DottedUnderline underlines text with a line of dots, as links mark
+// hover.
+func (_handle Element) DottedUnderline() Element {
+	_node := _handle.node()
+	if _node == nil {
+		return Element{}
+	}
+	_ctx := _node.c
+	_ = _ctx
+	return wrapElement(_node.DottedUnderline())
 }
 
 // DoubleClicked reports a double click on the element.
@@ -3576,6 +3817,25 @@ func (_handle Element) Draw(fn func(p *Painter, r Rect)) Element {
 	return wrapElement(_node.Draw(fn))
 }
 
+// DrawObjects paints the inline objects of a text (Span.ObjectWidth)
+// with p, after its glyphs: fn gets each one that shows, its rune in
+// the text, the text elements' inside it included, and its box, in
+// window DIPs, ObjectHeight above the baseline and ObjectDescent below.
+// It paints in the text's clip and in the transform of the element
+// holding the object. fn only paints: it may run more than once a frame.
+//
+//	ui.RichText(c, ui.Span{Text: "area "}, ui.Span{Text: "\uFFFC", ObjectWidth: w, ObjectHeight: h, ObjectDescent: d}).
+//		DrawObjects(func(p *ui.Painter, at int, r ui.Rect) { formula.Draw(p, r) })
+func (_handle Element) DrawObjects(fn func(p *Painter, at int, r Rect)) Element {
+	_node := _handle.node()
+	if _node == nil {
+		return Element{}
+	}
+	_ctx := _node.c
+	_ = _ctx
+	return wrapElement(_node.DrawObjects(fn))
+}
+
 // DrawOver paints on the element with p after its children.
 func (_handle Element) DrawOver(fn func(p *Painter, r Rect)) Element {
 	_node := _handle.node()
@@ -3752,7 +4012,8 @@ func (_handle Element) FixedLineHeight(v float32) Element {
 }
 
 // Focus gives the element the keyboard focus. Called in every frame, it
-// keeps it there; AutoFocus gives it once.
+// keeps it there; AutoFocus gives it once. A field around an input, as
+// SearchField's, gives it to its input, where typing goes.
 func (_handle Element) Focus() Element {
 	_node := _handle.node()
 	if _node == nil {
@@ -3831,7 +4092,8 @@ func (_handle Element) Focusable() Element {
 	return wrapElement(_node.Focusable())
 }
 
-// Focused reports whether the element has the keyboard focus.
+// Focused reports whether the element has the keyboard focus: for a field
+// around an input, as SearchField's, whether its input has it.
 func (_handle Element) Focused() bool {
 	_node := _handle.node()
 	if _node == nil {
@@ -4040,6 +4302,29 @@ func (_handle Element) HeightPercent(p float32) Element {
 	return wrapElement(_node.HeightPercent(p))
 }
 
+// Hidden hides the element and its children when hide is true, as CSS's
+// display: none does: unlike an Invisible element, it takes no room in
+// the layout, nor a gap between its siblings, and draws nothing, takes
+// neither the pointer nor the focus, and is not read by assistive
+// technology. It is still built, so that what is inside it keeps its
+// state (scroll offsets, text being edited, animations) while it is
+// hidden, and shows as it was once hide is false again:
+//
+//	ui.Column(c).Hidden(!app.showDetails).Children(func() { ... })
+//
+// The focus leaves it as it hides, and what is attached to it
+// (AttachTo) hides with it. A List's rows are built as the list lays out,
+// so a hidden List builds none.
+func (_handle Element) Hidden(hide bool) Element {
+	_node := _handle.node()
+	if _node == nil {
+		return Element{}
+	}
+	_ctx := _node.c
+	_ = _ctx
+	return wrapElement(_node.Hidden(hide))
+}
+
 // Highlighted reports whether an option of a select is the one the pointer
 // or the arrows are on.
 func (_handle Element) Highlighted() bool {
@@ -4077,6 +4362,46 @@ func (_handle Element) ID() uint64 {
 	_ctx := _node.c
 	_ = _ctx
 	return _node.ID()
+}
+
+// IgnoreInput makes the element and those inside it ignore the pointer
+// and the keyboard when ignore is true, while they still show and read to
+// assistive technology. The pointer goes through to what is under them,
+// as PassThrough lets it: hovering, pressing, scrolling, dragging and the
+// cursor are those of what is under them. Neither Tab nor a click gives
+// them the focus, and they lose it as they start ignoring input. Assistive
+// technology still finds them, with their roles and names, and presses
+// them, which Clicked reports; it can neither focus them nor move a
+// slider among them with its keys. A WebView inside them still takes the
+// pointer, which the system gives its view.
+//
+// A control a row shows while it is hovered, as a button deleting it, can
+// stay built and described at rest, without taking a press meant for the
+// row:
+//
+//	row := ui.Row(c).Padding(8)
+//	hovered := row.Hovered()
+//	row.Children(func() {
+//		ui.Text(c, item.Title).Grow(1)
+//		del := ui.Button(c, "Delete").IgnoreInput(!hovered)
+//		if !hovered {
+//			del.Opacity(0)
+//		}
+//		if del.Clicked() {
+//			removed = item.ID
+//		}
+//	})
+//
+// Unlike HTML's inert, it leaves them to assistive technology. Invisible
+// and Hidden hide them from it too, and Disabled takes their press away.
+func (_handle Element) IgnoreInput(ignore bool) Element {
+	_node := _handle.node()
+	if _node == nil {
+		return Element{}
+	}
+	_ctx := _node.c
+	_ = _ctx
+	return wrapElement(_node.IgnoreInput(ignore))
 }
 
 // InView reports whether some of the element showed in the window in the
@@ -4127,7 +4452,7 @@ func (_handle Element) InsetShadow(x float32, y float32, blur float32, spread fl
 
 // Invisible hides the element and its children, which keep their room in
 // the layout but draw nothing and take neither the pointer nor the focus,
-// as CSS's visibility: hidden does.
+// as CSS's visibility: hidden does. Hidden takes the room away too.
 func (_handle Element) Invisible() Element {
 	_node := _handle.node()
 	if _node == nil {
@@ -4533,6 +4858,9 @@ func (_handle Element) MaximizeButton() Element {
 //			app.duplicate()
 //		}
 //	})
+//
+// PopoverMenuButton draws the same menu in the window, with the theme's
+// look.
 func (_handle Element) Menu(build func(m *Menu)) Element {
 	_node := _handle.node()
 	if _node == nil {
@@ -4810,7 +5138,9 @@ func (_handle Element) Perspective(distance float32) Element {
 	return wrapElement(_node.Perspective(distance))
 }
 
-// Placeholder shows s in an empty text input.
+// Placeholder shows s in an empty text input. On a field around an input,
+// as SearchField, TokenField and Combobox, it shows in the field's input,
+// in place of the field's own: SearchField shows Search without one.
 func (_handle Element) Placeholder(s string) Element {
 	_node := _handle.node()
 	if _node == nil {
@@ -4819,6 +5149,19 @@ func (_handle Element) Placeholder(s string) Element {
 	_ctx := _node.c
 	_ = _ctx
 	return wrapElement(_node.Placeholder(s))
+}
+
+// PlaceholderColor sets the color of this input's placeholder for this build.
+// When unset it uses the theme's TextMuted. It does not change entered text,
+// other inputs or the theme. A transparent color hides the placeholder.
+func (_handle Element) PlaceholderColor(color Color) Element {
+	_node := _handle.node()
+	if _node == nil {
+		return Element{}
+	}
+	_ctx := _node.c
+	_ = _ctx
+	return wrapElement(_node.PlaceholderColor(color))
 }
 
 // PointerPosition returns the pointer's position relative to the
@@ -4832,6 +5175,84 @@ func (_handle Element) PointerPosition() (float32, float32, bool) {
 	_ctx := _node.c
 	_ = _ctx
 	return _node.PointerPosition()
+}
+
+// PopoverMenu gives the element a context menu, as ContextMenu does, which
+// MyGo draws in the window with the theme's look, as a popover, rather
+// than the system showing one of its own. It opens where the element is
+// clicked with the secondary button, or Control-clicked on macOS, and,
+// while the element or one inside it has the focus, below it when the
+// menu key or Shift+F10 is pressed. build fills it with the items
+// ContextMenu's function takes, and the item chosen reports Chosen as
+// there:
+//
+//	row.PopoverMenu(func(m *ui.Menu) {
+//		if m.Item("Rename").Shortcut(0, ui.KeyF2).Chosen() {
+//			app.renaming = i
+//		}
+//		if m.Item("Pinned").Checked(note.pinned).Chosen() {
+//			note.pinned = !note.pinned
+//		}
+//		m.Separator()
+//		if m.Item("Delete").Disabled(note.locked).Chosen() {
+//			app.delete(i)
+//		}
+//	})
+//
+// The menu takes the focus as it opens and gives it back as it closes, to
+// the element that had it. Up and Down move among its items, past those
+// disabled, as do Home, End and typing the first letters of an item;
+// Right opens a submenu and Left closes it, the other way round right to
+// left (Direction); Enter and Space choose an item, Escape closes the
+// submenu on top, and a press outside the menu closes it. It shows below
+// and after where it opened, and on the other side where the window has
+// no room. Assistive technology sees a menu of items, check box items and
+// radio items, as the system's.
+//
+// PopoverMenuButton draws the menu of a menu button so.
+func (_handle Element) PopoverMenu(build func(m *Menu)) Element {
+	_node := _handle.node()
+	if _node == nil {
+		return Element{}
+	}
+	_ctx := _node.c
+	_ = _ctx
+	return wrapElement(_node.PopoverMenu(build))
+}
+
+// PopoverMenuButton makes the element a menu button, as Menu does, whose
+// menu MyGo draws in the window with the theme's look, as PopoverMenu
+// draws a context menu, rather than the system showing one of its own. It
+// opens below the element, or above it where the window has no room, as
+// the pointer goes down on it, and for Enter, Space or Down while it has
+// the focus, which it takes. build fills it with the items Menu's
+// function takes, and the item chosen reports Chosen as there:
+//
+//	more := ui.ButtonBase(c).Label("More").Padding(4).Radius(6)
+//	more.Children(func() { ui.Icon(c, moreIcon).Size(16, 16) })
+//	more.PopoverMenuButton(func(m *ui.Menu) {
+//		if m.Item("Duplicate").Chosen() {
+//			app.duplicate()
+//		}
+//		if m.Item("Delete").Disabled(app.locked).Chosen() {
+//			app.delete()
+//		}
+//	})
+//
+// The menu has the keys of PopoverMenu's, and takes the focus as it opens
+// and gives it back as it closes, as there; a press on the element closes
+// it too. Opened by the keyboard, it starts on its first item. Assistive
+// technology sees a menu button, expanded while its menu shows, and the
+// menu as PopoverMenu's. The function PopoverMenuButton is a button with
+// such a menu, as MenuButton is one with a menu of the system's.
+func (_handle Element) PopoverMenuButton(build func(m *Menu)) Element {
+	_node := _handle.node()
+	if _node == nil {
+		return Element{}
+	}
+	_ctx := _node.c
+	_ = _ctx
+	return wrapElement(_node.PopoverMenuButton(build))
 }
 
 // Pressed reports whether the element is being pressed with the pointer,
@@ -4853,7 +5274,8 @@ func (_handle Element) Pressed() bool {
 // closes then, the press going on to what is under the pointer, as
 // PopoverBase does. The last press decides: one on the button opening a
 // popover after a press elsewhere, as on a web view's page, in the same
-// frame, keeps it open.
+// frame, keeps it open. A press before the element showed, as the one
+// opening it, is not outside it: an Overlay opened by a press stays.
 func (_handle Element) PressedOutside() bool {
 	_node := _handle.node()
 	if _node == nil {
@@ -4862,6 +5284,22 @@ func (_handle Element) PressedOutside() bool {
 	_ctx := _node.c
 	_ = _ctx
 	return _node.PressedOutside()
+}
+
+// RadialGradient fills the element with a radial gradient, its colors
+// spreading out from a point (CSS's radial-gradient()), as a glow:
+//
+//	ui.Box(c).Size(160, 100).Radius(16).RadialGradient(ui.RadialGradient{
+//		Stops: []ui.GradientStop{{ui.RGBA(99, 102, 241, 0.6), 0}, {ui.Transparent, 1}},
+//	})
+func (_handle Element) RadialGradient(g RadialGradient) Element {
+	_node := _handle.node()
+	if _node == nil {
+		return Element{}
+	}
+	_ctx := _node.c
+	_ = _ctx
+	return wrapElement(_node.RadialGradient(g))
 }
 
 // Radius rounds the corners: one radius for all, or top-left, top-right,
@@ -5162,6 +5600,21 @@ func (_handle Element) ScrollbarInsets(v ...float32) Element {
 	_ctx := _node.c
 	_ = _ctx
 	return wrapElement(_node.ScrollbarInsets(v...))
+}
+
+// Scrollbars controls the overlay indicators and their pointer hit targets on
+// this scroll container. They show on hover by default. With false, scrolling
+// by wheel, TrackScroll, keyboard focus and accessibility remains available.
+// It applies to Scroll, ScrollHorizontal, ScrollBoth and List, not the internal
+// indicators of custom controls such as a code editor, and is not inherited.
+func (_handle Element) Scrollbars(visible bool) Element {
+	_node := _handle.node()
+	if _node == nil {
+		return Element{}
+	}
+	_ctx := _node.c
+	_ = _ctx
+	return wrapElement(_node.Scrollbars(visible))
 }
 
 // Selectable lets the user select and copy text by dragging, double-clicking

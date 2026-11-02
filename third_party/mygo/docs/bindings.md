@@ -368,6 +368,9 @@ it in windows that show content you do not control. Frames embedded in a
 page never call Go, whatever their origin; only the top-level page of a
 window does.
 
+What else a trusted page may do, and how to show content that is not the
+app's: see [trust](frontend.md#trust).
+
 ## From Go to the page
 
 Events are the way to tell pages about changes. To run code in a page,

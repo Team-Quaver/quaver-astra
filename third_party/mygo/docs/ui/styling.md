@@ -37,9 +37,22 @@ ui.Column(c).Padding(18).Gap(12).Radius(10).
   `GradientStop{Color, At}` at its place from 0 to 1. `ConicGradient` turns
   its stops around a point instead, as CSS's `conic-gradient()` (SwiftUI's
   `AngularGradient`): from `Angle`, in degrees clockwise from upwards,
-  around `Center`, the middle unless set. `BorderLinearGradient` and
-  `BorderConicGradient` paint the border with one in place of its color,
-  as SwiftUI's `strokeBorder` with a gradient:
+  around `Center`, the middle unless set. `RadialGradient` spreads them
+  out from `Center` in circles, as CSS's `radial-gradient()` (SwiftUI's
+  and Flutter's `RadialGradient`): from 0 there to 1 at `Radius` DIPs
+  away, or at the farthest corner of the box without one, as CSS's
+  `farthest-corner`, its first color before the center and its last past
+  the radius, for glows, spotlights and vignettes:
+
+  ```go
+  ui.Box(c).Size(240, 140).Radius(16).RadialGradient(ui.RadialGradient{
+  	Center: ui.Point{X: 0.3, Y: 0.2}, Oklab: true,
+  	Stops:  []ui.GradientStop{{ui.Hex("#a5b4fc"), 0}, {ui.Hex("#312e81"), 1}},
+  })
+  ```
+
+  `BorderLinearGradient` and `BorderConicGradient` paint the border with
+  one in place of its color, as SwiftUI's `strokeBorder` with a gradient:
 
   ```go
   rainbow := []ui.GradientStop{{red, 0}, {yellow, 0.33}, {blue, 0.66}, {red, 1}}
@@ -49,8 +62,8 @@ ui.Column(c).Padding(18).Gap(12).Radius(10).
 
   `Stripes(c, width, gap, angle)` draws stripes over the background, as on
   what is unavailable. A painter fills rectangles and paths with the same
-  gradients (`FillGradient`, `FillConicGradient`, `FillPathGradient`,
-  `FillPathConicGradient`, `StrokePathConicGradient`).
+  gradients (`FillGradient`, `FillConicGradient`, `FillRadialGradient`,
+  `FillPathGradient`, `FillPathConicGradient`, `StrokePathConicGradient`).
 - **Blur.** `Blur(sigma)` blurs the element and its children, as CSS's
   `filter: blur()`: what they draw spreads about 3 sigma DIPs around,
   transparent beyond, on the GPU. They render into a bitmap first, as an
@@ -63,6 +76,22 @@ ui.Column(c).Padding(18).Gap(12).Radius(10).
   	ui.Box(c).Absolute().Top(0).Left(0).Right(0).Bottom(0).PassThrough().
   		Radius(16).Border(l.width, ui.Color{}).BorderConicGradient(glow).Blur(l.blur)
   }
+  ```
+- **Caching.** `Cache()` keeps what the element and its children paint in
+  a bitmap of the GPU, as Flutter's `RepaintBoundary` and SwiftUI's
+  `drawingGroup()` do, drawn again only when what they paint changes:
+  other content, another size, the window's scale or theme. A still card
+  of gradients, blurred images and large shadows around a drawing that
+  moves then costs one image wherever a frame redraws over it, and
+  turning or scaling the element with a transform moves the bitmap
+  without drawing it again. The bitmap holds the box, its shadows and
+  children beyond it that it does not clip; text over no opaque
+  background of the subtree's own is smoothed in grayscale, as in a blur.
+  With `Blur` or an effect, their bitmap is the one kept.
+
+  ```go
+  ui.Box(c).Size(900, 212).Radius(16).Gradient(from, to, 30).
+  	Shadow(0, 10, 40, 0, shade).Cache().Children(func() { /* … */ })
   ```
 - **Materials.** `Material(m)` fills the box with a material a package
   paints, in place of a background, as the [glass
@@ -143,6 +172,38 @@ rather keep them dark sets both:
 ```go
 t.Inverse, t.InverseText = ui.Hex("#3f3f46"), ui.Hex("#fafafa")
 ```
+
+## A theme for part of the window
+
+`SetTheme` themes the whole window: the root, its background and its text,
+and the widgets built after the call. `ui.Themed(c, t)` themes a part of
+it instead: a column whose children build with `t`, as a theme picker
+previewing light beside dark, or a light preview pane inside dark chrome:
+
+```go
+ui.Row(c).Fill().AlignItems(ui.Stretch).Children(func() {
+	for _, t := range []*ui.Theme{ui.LightTheme(), ui.DarkTheme()} {
+		ui.Themed(c, t).Grow(1).Padding(16).Gap(8).Children(func() {
+			ui.Text(c, "Preview")
+			ui.Button(c, "OK")
+		})
+	}
+})
+```
+
+Inside, everything is as in a window of `t`: `c.Theme()` returns it while
+the children build, and `Painter.Theme()` while they paint, so widgets of
+your own follow too; the widgets take its colors and its metrics
+(`Spacing`, `Radius`, `FontSize`, `ScrollbarWidth`, so `t.Space` and
+`t.Rem`); and the popovers, menus, tooltips and dialogs opened from inside
+take it, though they show above the window. The column paints `t`'s
+`Background`, and its text takes `t`'s `Text` color, `FontSize` and
+`Font`, as the root does the window's theme's; `.Background(ui.Transparent)`
+leaves what is behind it showing instead, as for the root. The root, and
+what is built after the column, keep the window's theme; toasts are the
+window's, and keep it too. Themes nest, and a nil theme makes it a plain
+column. `SetTheme` called inside still themes the window, from the root to
+what follows the column, while the column's children keep `t`.
 
 ## The desktop's preferences
 

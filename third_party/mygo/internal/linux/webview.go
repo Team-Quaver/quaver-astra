@@ -19,8 +19,11 @@ import (
 // with a new GL context). The area keeps an alpha channel from then on:
 // its frames are transparent where the content shows a web view (holes),
 // so that what the content paints after it shows over the page, and an
-// input shape lets the pointer through to the page there. Its signals
-// find it by its id in Backend.webViews, apart from the windows.
+// input shape lets the pointer through to the page there. A drawing area
+// (frames drawn in memory) has a GdkWindow of its own, which X11 shows
+// over the page whatever its frames leave transparent: the same region
+// shapes it, so that the page shows in the holes. Its signals find it by
+// its id in Backend.webViews, apart from the windows.
 
 var (
 	gtkLayoutNew                     func(h, v ptr) ptr
@@ -29,6 +32,7 @@ var (
 	gtkWidgetGetParent               func(w ptr) ptr
 	gtkWidgetGetParentWindow         func(w ptr) ptr
 	gdkWindowInputShapeCombineRegion func(w, region ptr, x, y int32)
+	gdkWindowShapeCombineRegion      func(w, region ptr, x, y int32)
 	cairoRegionCreateRectangle       func(r *gdkRectangle) ptr
 	cairoRegionSubtractRectangle     func(region ptr, r *gdkRectangle) int32
 	cairoRegionUnion                 func(region, other ptr) int32
@@ -37,8 +41,9 @@ var (
 	gtkContainerGetFocusChild        func(c ptr) ptr
 	webViewsLoaded                   bool
 
-	// cbWebViewFocus handles a web view's focus signal.
-	cbWebViewFocus ptr
+	// cbWebViewFocus handles a web view's focus signal, and
+	// cbWebViewScroll the scroll-event of one that scrolls its container.
+	cbWebViewFocus, cbWebViewScroll ptr
 )
 
 func loadWebViews() {
@@ -52,6 +57,7 @@ func loadWebViews() {
 	mustBind(libGTK, &gtkWidgetGetParent, "gtk_widget_get_parent")
 	mustBind(libGTK, &gtkWidgetGetParentWindow, "gtk_widget_get_parent_window")
 	mustBind(libGDK, &gdkWindowInputShapeCombineRegion, "gdk_window_input_shape_combine_region")
+	mustBind(libGDK, &gdkWindowShapeCombineRegion, "gdk_window_shape_combine_region")
 	mustBind(libCairo, &cairoRegionCreateRectangle, "cairo_region_create_rectangle")
 	mustBind(libCairo, &cairoRegionSubtractRectangle, "cairo_region_subtract_rectangle")
 	mustBind(libCairo, &cairoRegionUnion, "cairo_region_union")
@@ -83,6 +89,21 @@ func loadWebViews() {
 		}
 		return true
 	})
+	// The wheel and the touchpad over a web view with ScrollToContainer
+	// scroll the content around it, as over the content itself, and never
+	// reach WebKit, whose handler of the signal runs last.
+	cbWebViewScroll = purego.NewCallback(func(widget, event, data ptr) bool {
+		w := theBackend.window(data)
+		if w == nil || w.host == nil || w.host.closed || w.host.surface == nil {
+			return false
+		}
+		// The event is in the web view's window, at its allocation in the
+		// layout, which is where the area is.
+		var a gdkRectangle
+		gtkWidgetGetAllocation(w.web, &a)
+		w.host.surface.send(scrollEvent(event, float64(a.X), float64(a.Y)))
+		return true
+	})
 }
 
 func (s *surface) NewWebView(o *platform.WindowOptions, h platform.WindowHandler) (platform.WebView, error) {
@@ -100,6 +121,9 @@ func (s *surface) NewWebView(o *platform.WindowOptions, h platform.WindowHandler
 	b.webViews[v.id] = v
 	v.createWebView()
 	connect(v.web, "focus", cbWebViewFocus, ptr(v.id))
+	if o.ScrollToContainer {
+		connect(v.web, "scroll-event", cbWebViewScroll, ptr(v.id))
+	}
 	gtkWidgetSetNoShowAll(v.web, true) // hidden until placed
 	gtkLayoutPut(s.web, v.web, 0, 0)
 	b.byWebView[v.web] = v
@@ -144,7 +168,7 @@ func (s *surface) makeLayers() {
 
 // PlaceWebViews shows the window's web views where the content shows
 // them, in its paint order under the surface, and hides the others; the
-// area's input shape lets the pointer through to them.
+// area's shapes show them and let the pointer through to them.
 func (s *surface) PlaceWebViews(views []platform.WebViewPlacement) {
 	host := s.w
 	if host.closed || s.layers == 0 {
@@ -176,39 +200,68 @@ func (s *surface) PlaceWebViews(views []platform.WebViewPlacement) {
 			gtkWidgetHide(v.web)
 		}
 	}
-	s.shapeInput()
+	s.shape()
 }
 
-// shapeInput lets the pointer through the area where the web views take
-// it: in their clips but where the content painted over them.
-func (s *surface) shapeInput() {
-	win := gtkWidgetGetParentWindow(s.area) // the overlay's window of the area
-	if win == 0 || win == gtkWidgetGetWindow(s.w.win) {
-		return
-	}
+// shape lets the pointer through the area where the web views take it:
+// in their clips but where the content painted over them. A drawing area
+// (frames drawn in memory) is shaped by the same region, as only its
+// shape lets the pages show through its own GdkWindow (#693). A GtkGLArea
+// has no window of its own: it draws in its parent's, with an alpha
+// channel whose holes show the pages, and is left unshaped. The shapes
+// follow the area's size (cbSurfaceSize) and new windows
+// (cbSurfaceRealize), and go once no web view is placed.
+func (s *surface) shape() {
 	var all gdkRectangle
 	gtkWidgetGetAllocation(s.area, &all)
-	region := cairoRegionCreateRectangle(&gdkRectangle{Width: all.Width, Height: all.Height})
-	for _, p := range s.placed {
+	region := shapeRegion(all.Width, all.Height, s.placed) // none: no shape
+	// The overlay's window of the area.
+	if win := gtkWidgetGetParentWindow(s.area); win != 0 && win != gtkWidgetGetWindow(s.w.win) {
+		gdkWindowInputShapeCombineRegion(win, region, 0, 0)
+	}
+	if gtkWidgetGetHasWindow(s.area) {
+		if win := gtkWidgetGetWindow(s.area); win != 0 {
+			gdkWindowShapeCombineRegion(win, region, 0, 0)
+		}
+	}
+	if region != 0 {
+		cairoRegionDestroy(region)
+	}
+}
+
+// shapeRegion returns the region, in an area width by height, that shows
+// the content and takes the pointer with web views placed there: all of
+// it but their clips, save what the content painted over them; 0 without
+// web views. Clips leave out the pixels they cover only in part, covers
+// put back those they cover in part.
+func shapeRegion(width, height int32, placed []platform.WebViewPlacement) ptr {
+	if len(placed) == 0 {
+		return 0
+	}
+	region := cairoRegionCreateRectangle(&gdkRectangle{Width: width, Height: height})
+	for _, p := range placed {
 		cairoRegionSubtractRectangle(region, gdkRect(p.Clip))
-		// Unless what the content painted over it takes the pointer:
-		// put back by a second region, as cairo has no union of a
-		// difference.
+		// Unless what the content painted over it: put back by a second
+		// region, as cairo has no union of a difference.
 		for _, c := range p.Covers {
-			r := gdkRect(c)
-			cover := cairoRegionCreateRectangle(r)
+			cover := cairoRegionCreateRectangle(gdkRectOut(c))
 			cairoRegionUnion(region, cover)
 			cairoRegionDestroy(cover)
 		}
 	}
-	gdkWindowInputShapeCombineRegion(win, region, 0, 0)
-	cairoRegionDestroy(region)
+	return region
 }
 
 // gdkRect returns the pixels of r, in DIPs, that it covers wholly.
 func gdkRect(r platform.RectF) *gdkRectangle {
 	x, y := int32(math.Ceil(r.X)), int32(math.Ceil(r.Y))
 	return &gdkRectangle{X: x, Y: y, Width: max(int32(math.Floor(r.X+r.W))-x, 0), Height: max(int32(math.Floor(r.Y+r.H))-y, 0)}
+}
+
+// gdkRectOut returns the pixels of r, in DIPs, that it covers at all.
+func gdkRectOut(r platform.RectF) *gdkRectangle {
+	x, y := int32(math.Floor(r.X)), int32(math.Floor(r.Y))
+	return &gdkRectangle{X: x, Y: y, Width: max(int32(math.Ceil(r.X+r.W))-x, 0), Height: max(int32(math.Ceil(r.Y+r.H))-y, 0)}
 }
 
 // webViewAt returns the web view that takes the pointer at x, y in the
@@ -318,7 +371,7 @@ func (w *window) closeWebView() {
 	if s := h.surface; s != nil {
 		s.placed = slices.DeleteFunc(s.placed, func(p platform.WebViewPlacement) bool { return p.WebView == platform.WebView(w) })
 		if !h.closed {
-			s.shapeInput()
+			s.shape()
 		}
 	}
 }

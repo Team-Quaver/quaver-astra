@@ -157,6 +157,8 @@ func New(base string, store *conf.Store, v *vault.Vault, version string) *App {
 	}
 	pl := player.New(newAPIAdapter(api, a.localCacheSeed), eng, store)
 	a.PL = pl
+	// 缓存上限只存在内嵌后端的内存里，启动后按用户设置重推一次。
+	a.applyLocalCacheLimit()
 	// Wayland 会话下整列全局快捷键交给桌面持有，Astra 不注册（见 hotkeys.go）。
 	a.hotkeys.blocked = waylandSession()
 	a.initMedia()

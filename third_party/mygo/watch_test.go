@@ -567,6 +567,35 @@ func TestFileWatchDiff(t *testing.T) {
 	}
 }
 
+// A file replaced at its path by another file, as an atomic save replaces
+// it, is written, whatever its size and time: not removed and created.
+// What isn't a file replaced by a file stays a removal and a creation, and
+// the file that replaced it, gone from where it was, a removal there.
+func TestFileWatchDiffReplacedFile(t *testing.T) {
+	file := func(i uint64) fileWatchEntry {
+		return fileWatchEntry{id: fileWatchID{volume: 1, index: i}, mode: 0600, size: 3}
+	}
+	dir := fileWatchEntry{id: fileWatchID{volume: 1, index: 9, typ: fs.ModeDir}, mode: fs.ModeDir | 0700}
+	for _, tt := range []struct {
+		name          string
+		before, after map[string]fileWatchEntry
+		want          []FileEvent
+	}{
+		{"replaced", map[string]fileWatchEntry{"a": file(1)}, map[string]fileWatchEntry{"a": file(2)},
+			[]FileEvent{{Op: FileWrite, Path: "a"}}},
+		{"from a temporary file", map[string]fileWatchEntry{"a": file(1), "a.tmp": file(2)}, map[string]fileWatchEntry{"a": file(2)},
+			[]FileEvent{{Op: FileWrite, Path: "a"}, {Op: FileRemove, Path: "a.tmp"}}},
+		{"kept beside", map[string]fileWatchEntry{"a": file(1)}, map[string]fileWatchEntry{"a": file(2), "a~": file(1)},
+			[]FileEvent{{Op: FileWrite, Path: "a"}, {Op: FileCreate, Path: "a~"}}},
+		{"by a directory", map[string]fileWatchEntry{"a": file(1)}, map[string]fileWatchEntry{"a": dir},
+			[]FileEvent{{Op: FileRemove, Path: "a"}, {Op: FileCreate, Path: "a", IsDir: true}}},
+	} {
+		if events := fileWatchTestDiff(tt.before, tt.after, nil); !slices.Equal(events, tt.want) {
+			t.Errorf("%s: events = %+v, want %+v", tt.name, events, tt.want)
+		}
+	}
+}
+
 // A file system such as ext4 gives a freed inode to the next file
 // created: a directory replaced by a symlink with its inode is a removal
 // and a creation, not a write.
@@ -1081,7 +1110,7 @@ func TestFileWatchNoFiles(t *testing.T) {
 	if batch := fileWatchTestBatch(t, w); !slices.Equal(batch, []FileEvent{{Op: FileWrite, Path: "a/b/h"}}) {
 		t.Fatalf("batch = %+v", batch)
 	}
-	// A file replaced, as editors save, is a new file at its path.
+	// A file replaced, as editors save, is written.
 	if err := os.WriteFile(filepath.Join(dir, "a", "g.tmp"), []byte("new"), 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -1089,7 +1118,7 @@ func TestFileWatchNoFiles(t *testing.T) {
 		t.Fatal(err)
 	}
 	fileWatchTestNotice(t, w, "a", platform.FileWatchNotice{Name: "g", Kind: platform.FileWatchMoveTo})
-	if batch := fileWatchTestBatch(t, w); !slices.Equal(batch, []FileEvent{{Op: FileRemove, Path: "a/g"}, {Op: FileCreate, Path: "a/g"}}) {
+	if batch := fileWatchTestBatch(t, w); !slices.Equal(batch, []FileEvent{{Op: FileWrite, Path: "a/g"}}) {
 		t.Fatalf("batch = %+v", batch)
 	}
 	// A watched file: only its directory is enrolled, and a replacement

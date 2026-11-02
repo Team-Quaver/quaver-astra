@@ -2,7 +2,8 @@
 
 `Draw` paints on an element after its background, and `DrawOver` after its
 children, with a `*ui.Painter` in DIPs of the window: rectangles with
-`Fill`, `FillGradient`, `Stroke` and `StrokeDashed`, `Shadow`, `Line`,
+`Fill`, `FillGradient`, `FillConicGradient` and `FillRadialGradient`,
+`Stroke` and `StrokeDashed`, `Shadow`, `Line` (horizontal or vertical),
 `Image`, `Clip`, paths of lines and curves with `FillPath` and
 `StrokePath`, or in a gradient with `FillPathGradient` and
 `StrokePathGradient`, and text with `Text`, or `RichText` in spans of any
@@ -32,6 +33,12 @@ ui.Box(c).Size(200, 40).Draw(func(p *ui.Painter, r ui.Rect) {
 })
 ```
 
+Paragraphs a view lays out itself, as the pages of a book reader, are
+shaped once with `ui.ShapeRichTextWith`, justified and indented if need
+be, and drawn with `Painter.TextLayout`; their `Lines` tell where each
+line is, to break pages between them (see [retained text
+geometry](text-input-client.md#retained-text-geometry)).
+
 Draw functions only paint: MyGo may call them more than once a frame.
 `Painter.Icon` and `Painter.Image` draw SVGs and bitmaps,
 `Painter.ImageRegion` parts of bitmaps (see [Parts of
@@ -52,6 +59,21 @@ drawn = box.AnimateTo("check", drawn, ui.Smooth)
 box.Draw(func(p *ui.Painter, r ui.Rect) {
 	check := (&ui.Path{}).MoveTo(r.X+4, r.Y+12).LineTo(r.X+10, r.Y+18).LineTo(r.X+20, r.Y+6)
 	p.StrokePath(check.Trim(0, drawn), 2, c.Theme().Accent)
+})
+```
+
+A stroke has round ends and corners unless its path sets them, as SVG's
+`stroke-linecap`, `stroke-linejoin` and `stroke-miterlimit` do:
+`Path.Cap` ends it flat (`ui.ButtCap`) or square (`ui.SquareCap`), and
+`Path.Join` turns its corners in points (`ui.MiterJoin`, bevelled past
+`Path.MiterLimit`) or cuts them (`ui.BevelJoin`). `Path.Dash` strokes it
+in dashes, as `stroke-dasharray` and `stroke-dashoffset` do, and they stay
+where they are as `Trim` draws the path in:
+
+```go
+box.Draw(func(p *ui.Painter, r ui.Rect) {
+	edge := (&ui.Path{}).MoveTo(r.X, r.Y+r.H/2).LineTo(r.X+r.W, r.Y+r.H/2)
+	p.StrokePath(edge.Cap(ui.ButtCap).Dash(0, 6, 4), 1.5, c.Theme().TextMuted)
 })
 ```
 
@@ -214,6 +236,19 @@ ui.Box(c).Height(4).Draw(func(p *ui.Painter, r ui.Rect) {
 	p.Fill(ui.Rect{X: x, Y: r.Y, W: 20, H: r.H}, c.Theme().Accent, 2)
 })
 ```
+
+A drawing that looks as smooth at fewer frames, as a record turning, a
+slow wave or a level meter, can ask for them with
+`p.AnimationFrameRate(fps)` in place of `p.AnimationFrame()`: the window
+paints it again that often, rather than at each of the display's
+refreshes (120 a second on ProMotion displays), and on macOS has the
+display refresh as often, which saves power. The rate rounds up to one the
+display shows evenly, a whole number of refreshes a frame: 60, 40 or 30
+frames a second on a 120 Hz display, 60 or 30 on a 60 Hz one. The window
+draws at the fastest rate anything in it asks for, so a drawing asking for
+`AnimationFrame` or a view that animates still draws at the display's.
+Pacing with `p.After(time.Second / 60)` instead draws unevenly: a frame
+asked for later than a refresh waits for the next.
 
 Such a `Draw` sees the state as the view last ran: what it reads that
 changes otherwise is the view's to build anew, after `Window.Update`.

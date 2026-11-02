@@ -49,3 +49,17 @@ func TestContentPolylineFrames(t *testing.T) {
 	w.Invalidate()
 	eventually(t, "frames after idle", func() bool { return frames.Load() >= before+10 })
 }
+
+// TestContentWindowAnimationFrames checks that frames a frame asks for as
+// it is drawn keep coming. Named for the CI step that draws native UI with
+// OpenGL: on Linux the GtkGLArea renders them, and a render asked for
+// within its render signal used to be lost after the first.
+func TestContentWindowAnimationFrames(t *testing.T) {
+	var frames atomic.Int32
+	newWindow(t, mygo.WindowOptions{Title: "Animation frames", Width: 400, Height: 300, Content: ui.View(func(c *ui.Context) {
+		c.AnimationFrame()
+		frames.Add(1)
+		ui.Box(c).Fill().Background(ui.RGB(255, 255, 255))
+	})})
+	eventually(t, "frames while animating", func() bool { return frames.Load() >= 30 })
+}

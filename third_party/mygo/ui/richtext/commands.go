@@ -84,9 +84,11 @@ func (d *Document) formatting() Formatting {
 	}
 	pa, pz := d.text.paragraphSpan(a, z)
 	seqEach(d.text.seq(), pa, func(i int, p *richPara) bool {
+		st := p.style
 		if i == pa {
-			f.Paragraph = p.style
-		} else if p.style != f.Paragraph {
+			f.Paragraph = st
+		} else if st.ID = f.Paragraph.ID; st != f.Paragraph {
+			// Paragraphs of other IDs look the same.
 			f.ParagraphsMixed = true
 		}
 		return i < pz

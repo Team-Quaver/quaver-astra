@@ -134,6 +134,73 @@ func TestGrid(t *testing.T) {
 	})
 }
 
+// Percentages of a grid's children are of their cells, and count as
+// automatic sizes while the tracks are sized (#906).
+func TestGridPercentages(t *testing.T) {
+	check := func(t *testing.T, b, want map[string]Rect) {
+		t.Helper()
+		for k, w := range want {
+			if !nearRect(b[k], w) {
+				t.Errorf("%s at %v, want %v", k, b[k], w)
+			}
+		}
+	}
+	t.Run("fill width", func(t *testing.T) {
+		b := boxes(t, func(c *context) {
+			coreGrid(c).Columns(2).Gap(12).Children(func() {
+				coreButtonBase(c).FillWidth().Padding(12).Label("a").Children(func() { coreText(c, "card-a") })
+				coreButtonBase(c).Padding(12).Label("b").Children(func() { coreText(c, "card-b") })
+			})
+		}, 600, 400, "a", "b")
+		// Two columns of 294 and a gap of 12.
+		if a, bb := b["a"], b["b"]; !near(a.X, 0) || !near(a.W, 294) || !near(bb.X, 306) || !near(bb.W, 294) {
+			t.Errorf("a at %v and b at %v, want both 294 wide, b at 306", a, bb)
+		}
+	})
+	t.Run("fill height in definite rows", func(t *testing.T) {
+		b := boxes(t, func(c *context) {
+			coreGrid(c).Columns(2).RowTracks(Fixed(100), Fixed(100)).GapY(10).Height(300).AlignItems(Start).Children(func() {
+				coreBox(c).FillHeight().Label("a")
+				coreBox(c).HeightPercent(50).Label("b")
+				coreBox(c).Height(10).Label("c")
+			})
+		}, 400, 400, "a", "b", "c")
+		check(t, b, map[string]Rect{"a": {0, 0, 200, 100}, "b": {200, 0, 200, 50}, "c": {0, 110, 200, 10}})
+	})
+	t.Run("fill height in rows fitting their content", func(t *testing.T) {
+		b := boxes(t, func(c *context) {
+			coreGrid(c).Columns(1).Height(300).Children(func() {
+				coreBox(c).FillHeight().Label("a").Children(func() { coreBox(c).Height(40) })
+				coreBox(c).Height(20).Label("b")
+			})
+		}, 400, 400, "a", "b")
+		// Rows of 40 and 20 share the 240 DIPs left: a fills its row, not
+		// the grid.
+		check(t, b, map[string]Rect{"a": {0, 0, 400, 160}, "b": {0, 160, 400, 20}})
+	})
+	t.Run("in columns fitting their content", func(t *testing.T) {
+		b := boxes(t, func(c *context) {
+			coreGrid(c).ColumnTracks(FitContent(), FitContent(), Fr(1)).Width(400).Children(func() {
+				coreBox(c).FillWidth().Height(10).Label("a").Children(func() { coreBox(c).Width(80) })
+				coreBox(c).WidthPercent(50).Height(10).Label("b").Children(func() { coreBox(c).Width(60) })
+				coreBox(c).Height(10).Label("c")
+			})
+		}, 500, 100, "a", "b", "c")
+		// The columns fit the content, 80 and 60; the percentages are of
+		// them.
+		check(t, b, map[string]Rect{"a": {0, 0, 80, 10}, "b": {80, 0, 30, 10}, "c": {140, 0, 260, 10}})
+	})
+	t.Run("min and max sizes and insets", func(t *testing.T) {
+		b := boxes(t, func(c *context) {
+			coreGrid(c).Columns(2).RowTracks(Fixed(100)).Width(600).Height(300).Children(func() {
+				coreBox(c).MaxWidthPercent(50).MaxHeightPercent(50).Label("a")
+				coreBox(c).Size(10, 10).MinWidthPercent(100).MinHeightPercent(100).LeftPercent(10).TopPercent(10).Label("b")
+			})
+		}, 700, 400, "a", "b")
+		check(t, b, map[string]Rect{"a": {0, 0, 150, 50}, "b": {330, 10, 300, 100}})
+	})
+}
+
 func TestFlexOptions(t *testing.T) {
 	t.Run("gaps and align content", func(t *testing.T) {
 		b := boxes(t, func(c *context) {

@@ -5,6 +5,7 @@ package d3d11
 import (
 	"runtime"
 	"testing"
+	"time"
 
 	"github.com/egoist/mygo/internal/gpu/gputest"
 	"github.com/egoist/mygo/internal/wait"
@@ -66,6 +67,43 @@ func TestFrameLatencyTokens(t *testing.T) {
 	}
 	l.take()
 	// Every success taken: the count is back to none.
+	if l.waitObject(0) {
+		t.Fatal("the object's count drifted")
+	}
+}
+
+// TestLapsedWaitPresentsAtOnce checks that a present whose goroutine's
+// wait on the object timed out, as it does while the window shows
+// nowhere, takes no token and does not wait for one again on the main
+// thread, which would stall it a whole timeout more for each such frame.
+func TestLapsedWaitPresentsAtOnce(t *testing.T) {
+	defer func(ms uintptr) { latencyTimeout = ms }(latencyTimeout)
+	latencyTimeout = 400
+	h, _, err := procCreateSemaphore.Call(0, 0, 8, 0)
+	if h == 0 {
+		t.Fatal(err)
+	}
+	l := latency{handle: h}
+	defer l.release()
+
+	woke := make(chan struct{}, 1)
+	l.waitThen(func() { woke <- struct{}{} })
+	wait.For(t, "the wait's timeout", woke)
+	start := time.Now()
+	l.take()
+	if d := time.Since(start); d >= 200*time.Millisecond {
+		t.Fatalf("the present waited %v again after a lapsed wait", d)
+	}
+	if l.token || l.lapsed {
+		t.Fatalf("after the present: token %v, lapsed %v", l.token, l.lapsed)
+	}
+	// The next present that the screen has room for takes its token as
+	// before.
+	procReleaseSemaphore.Call(h, 1, 0)
+	if !l.ready() {
+		t.Fatal("not ready when signaled")
+	}
+	l.take()
 	if l.waitObject(0) {
 		t.Fatal("the object's count drifted")
 	}

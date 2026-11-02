@@ -112,8 +112,7 @@ func partialFrames(t *testing.T, r *Renderer, s *scene.Scene, wide bool, frames 
 			part = "whole"
 			if r.redrew == redrewPart {
 				partial++
-				a := r.redrewPart
-				part = fmt.Sprintf("%d×%d", a.Right-a.Left, a.Bottom-a.Top)
+				part = r.part.String()
 			}
 			send(cb, "commit")
 			send(cb, "waitUntilCompleted")
@@ -158,7 +157,7 @@ func TestPartialFramesOfOneChange(t *testing.T) {
 		if r.redrew != redrewPart {
 			return "whole"
 		}
-		a := r.redrewPart
+		a := r.part.Bounds()
 		return fmt.Sprintf("%d×%d", a.Right-a.Left, a.Bottom-a.Top)
 	}
 	partialFrames(t, r, s, false, 8, func(step int) string {
@@ -176,5 +175,38 @@ func TestPartialFramesOfOneChange(t *testing.T) {
 	want := []string{"whole", "whole", "whole", "6×22", "6×22", "6×22", "6×22", "6×22"}
 	if fmt.Sprint(areas) != fmt.Sprint(want) {
 		t.Errorf("redrew %v, want %v", areas, want)
+	}
+}
+
+// TestPartialFramesApart checks that two changes in opposite corners, a
+// spinner's and a progress bar's, redraw two rectangles once each target
+// was drawn whole, not all between, with the bytes of the frame drawn
+// whole.
+func TestPartialFramesApart(t *testing.T) {
+	r, err := newRenderer()
+	if err != nil {
+		unavailable(t, err)
+	}
+	defer r.Release()
+	s := gputest.NewChanging(5).Scene()
+	s.Ops = append(s.Ops,
+		scene.Op{Kind: scene.OpFill, Rect: scene.Rect{X: 4, Y: 4, W: 12, H: 12}, Radii: scene.Uniform(6), Color: scene.Color{R: 200, A: 255}},
+		scene.Op{Kind: scene.OpFill, Rect: scene.Rect{X: float32(s.Width) - 70, Y: float32(s.Height) - 14, W: 60, H: 6}, Radii: scene.Uniform(3), Color: scene.Color{B: 200, A: 255}})
+	var rects []int
+	partialFrames(t, r, s, false, 7, func(step int) string {
+		if r.redrew == redrewPart {
+			rects = append(rects, len(r.part.Rects))
+		}
+		n := len(s.Ops)
+		s.Ops[n-2].Color.G += 30
+		s.Ops[n-1].Rect.W -= 5
+		return fmt.Sprint("spinner and progress ", step)
+	})
+	if r.redrew == redrewPart {
+		rects = append(rects, len(r.part.Rects))
+	}
+	// The three targets drawn whole, then each two rectangles.
+	if fmt.Sprint(rects) != "[2 2 2 2]" {
+		t.Errorf("redrew rectangles %v, want [2 2 2 2]", rects)
 	}
 }

@@ -42,7 +42,8 @@ func blurImage(img *scene.Image, src scene.Rect, blur float32) *blurredImage {
 	b := scene.ImageBlur(scene.ImageArea(src, img.W, img.H), blur)
 	w, h := b.Size()
 	out := &blurredImage{img: &scene.Image{W: w, H: h}, src: b.ImageSrc(src)}
-	if w <= 0 || h <= 0 || len(img.Pix) < 4*img.W*img.H {
+	pix := img.Pixels()
+	if w <= 0 || h <= 0 || len(pix) < 4*img.W*img.H {
 		out.img.W, out.img.H = 0, 0
 		return out
 	}
@@ -62,7 +63,7 @@ func blurImage(img *scene.Image, src scene.Rect, blur float32) *blurredImage {
 					if x >= b.Area.Max.X {
 						continue
 					}
-					p := img.Pix[4*(y*img.W+x):][:4]
+					p := pix[4*(y*img.W+x):][:4]
 					for ch := range c {
 						c[ch] += float32(p[ch]) / 255
 					}

@@ -3,6 +3,7 @@ package richtext
 import (
 	"sync"
 	"time"
+	"weak"
 )
 
 // Document is what an Editor edits: a Text, its
@@ -34,6 +35,14 @@ type Document struct {
 	// log is what changed since the versions the editor last saw, for it
 	// to lay out only the paragraphs that changed.
 	log []change
+	// newID names the paragraphs edits make (IdentifyParagraphs).
+	newID func() string
+	// shownIn is the editor that last showed the document, for
+	// VisibleParagraphs; read is set as the app reads them, which boxes
+	// holds, for the editor's next paint to tell whether it moved them.
+	shownIn weak.Pointer[view]
+	read    bool
+	boxes   []ParagraphBox
 }
 
 // change is a change of a document: the runes from start to oldEnd
@@ -84,7 +93,7 @@ func (d *Document) SetText(text Text) {
 	d.lock()
 	defer d.mu.Unlock()
 	old := d.text.Len()
-	d.text = text
+	d.text = d.identify(text, 0, text.ParagraphCount()-1)
 	d.undo, d.redo = nil, nil
 	d.coalesce = false
 	d.changed(0, old, text.Len())
@@ -297,6 +306,7 @@ func (e *Edit) FormatParagraphs(start, end int, fn func(p *ParagraphStyle)) {
 // apply makes t, in which the runes from start to start+removed of the text
 // are now start to start+inserted, the document's text, as part of step.
 func (d *Document) apply(step *undoStep, start, removed, inserted int, t Text) {
+	t = d.identify(t, t.paraAt(start), t.paraAt(start+inserted))
 	formatted := t.text == d.text.text // the text is the same: only formats changed
 	d.text = t
 	if step != nil {
@@ -391,6 +401,42 @@ func (d *Document) edit(join bool, fn func(e *Edit)) {
 	d.redo = d.redo[:0]
 	d.coalesce = join
 	d.lastEdit = now
+}
+
+// IdentifyParagraphs has newID give an ID (ParagraphStyle.ID) to each
+// paragraph without one: those of the text now and of SetText, and those
+// edits make, as a paragraph split or text pasted, in the step of undo
+// that makes them, so that undo and redo bring them back with their IDs,
+// and the app finds every paragraph by its ID when it saves:
+//
+//	doc := richtext.NewDocument(chapter)
+//	doc.IdentifyParagraphs(func() string { return rand.Text() })
+//
+// Call it before the document is edited: the steps of undo before it keep
+// their texts. newID runs with the document locked, so it must not call
+// the document's methods. nil stops naming paragraphs.
+func (d *Document) IdentifyParagraphs(newID func() string) {
+	d.lock()
+	defer d.mu.Unlock()
+	d.newID = newID
+	if t := d.identify(d.text, 0, d.text.ParagraphCount()-1); !t.Same(d.text) {
+		d.text = t
+		n := t.Len()
+		d.changed(0, n, n)
+	}
+}
+
+// identify returns t with the paragraphs from pa to pz that have no ID
+// given one, when the document names paragraphs.
+func (d *Document) identify(t Text, pa, pz int) Text {
+	if d.newID == nil {
+		return t
+	}
+	return t.formatParas(pa, pz, func(p *ParagraphStyle) {
+		if p.ID == "" {
+			p.ID = d.newID()
+		}
+	})
 }
 
 // CanUndo and CanRedo report whether there is a step to undo or redo.

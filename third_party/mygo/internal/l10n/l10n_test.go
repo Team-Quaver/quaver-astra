@@ -13,6 +13,7 @@ import (
 	. "github.com/egoist/mygo/internal/l10n"
 
 	// The translations, which apps import for the languages they ship.
+	_ "github.com/egoist/mygo/locales/ja"
 	_ "github.com/egoist/mygo/locales/zh-Hans"
 	_ "github.com/egoist/mygo/locales/zh-Hant"
 )

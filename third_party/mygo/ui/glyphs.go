@@ -20,6 +20,11 @@ type Font struct {
 	// Lang is the language of the text, as for Element.Lang; "" is the
 	// language the app shows.
 	Lang string
+	// LineHeight is the height of a line of text ShapeText and
+	// ShapeRichText lay out, as a multiple of Size, as Element.LineHeight
+	// takes it: 1.8 gives CJK prose its usual leading. 0 takes the font's
+	// own. Metrics and Shape ignore it.
+	LineHeight float32
 	// Thicken draws the glyphs with a thicker stroke, as Ghostty's
 	// font-thicken: on macOS, with Core Text's font smoothing at its
 	// strongest, whatever the color and the user's setting. It changes
@@ -33,7 +38,7 @@ type Font struct {
 }
 
 func (f Font) style() text.Style {
-	return text.Style{Family: f.Family, Size: f.Size, Weight: f.Weight, Italic: f.Italic, Features: f.Features, Lang: f.Lang}
+	return text.Style{Family: f.Family, Size: f.Size, Weight: f.Weight, Italic: f.Italic, Features: f.Features, Lang: f.Lang, LineHeight: f.LineHeight}
 }
 
 // FontMetrics are the vertical metrics of a font, in DIPs: how far its
@@ -45,7 +50,9 @@ type FontMetrics struct {
 
 // Metrics returns the font's metrics.
 func (f Font) Metrics() FontMetrics {
-	a, d, h := text.Shared().Metrics(f.style())
+	style := f.style()
+	style.LineHeight = 0
+	a, d, h := text.Shared().Metrics(style)
 	return FontMetrics{Ascent: a, Descent: d, LineGap: max(h-a-d, 0)}
 }
 

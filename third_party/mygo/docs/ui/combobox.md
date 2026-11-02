@@ -15,6 +15,7 @@ ui.Combobox(c, &app.font, fonts).Label("Font")
 ```
 
 The field keeps the keyboard focus while the user types and picks.
+`Placeholder` shows a text in it while its text is empty.
 
 For a text that may be anything, with suggestions, use
 [autocomplete](autocomplete.md); for a short list without typing, a

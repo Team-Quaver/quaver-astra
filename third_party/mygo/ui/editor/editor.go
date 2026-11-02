@@ -46,6 +46,7 @@ type options struct {
 	bindings      []Binding
 	gutterMarks   []GutterMark
 	backgrounds   []LineBackground
+	textBgs       []TextBackground
 	diffBase      *Buffer
 	onCompletion  func(CompletionRequest)
 	onHover       func(HoverRequest)
@@ -61,8 +62,8 @@ type options struct {
 	renderHover       func(*ui.Context, ui.Element, *HoverCard)
 	// decor shows a diff in the editor.
 	decor decor
-	// noVScroll leaves vertical scrolling to the owner, as the sides of a
-	// split diff share theirs; noScrollbar draws no vertical scroll bar.
+	// noScrollbar draws no vertical scroll bar, as the old side of a split
+	// diff, whose sides share the new one's.
 	noScrollbar bool
 	// minDigits is how many digits the gutter has room for at least.
 	minDigits int
@@ -101,7 +102,7 @@ type decor interface {
 	lineStyle(line int) lineLook
 	words(line int) []diffRange
 	number(line int) int
-	paintBlock(p *ui.Painter, ed *editor, b *block, r ui.Rect)
+	paintBlock(p *ui.Painter, ed *editor, b *block, r ui.Rect, top float64)
 	blockInput(ed *editor, b *block, ev ui.InputEvent, r ui.Rect) bool
 }
 
@@ -152,6 +153,9 @@ type editor struct {
 	gutterW    float32
 	textX      float32
 	viewH      float32
+	// hbarY is the top of the horizontal scroll bar, at the bottom of the
+	// part of the editor the window showed last frame.
+	hbarY      float32
 	shown      [2]int // the first and last lines the last frame showed
 	focused    bool   // the editor and its window have the keyboard
 	blinkStart time.Time
@@ -226,7 +230,7 @@ type gesture struct {
 func (ed *editor) init(buf *Buffer, o options, t *ui.Theme) {
 	ed.o = o
 	ed.theme = o.theme.resolve(t)
-	ed.view.theme = ed.theme
+	ed.view.setTheme(ed.theme)
 	ed.view.readOnly = o.readOnly
 	if ed.view.buf != nil && ed.view.buf != buf {
 		ed.resetForBuffer()

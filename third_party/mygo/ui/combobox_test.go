@@ -349,3 +349,192 @@ func TestSelectBaseScrollsToHighlight(t *testing.T) {
 		t.Errorf("End highlights Size 39 out of view, at %v; Size 01 showed at %v", r, top)
 	}
 }
+
+// TestSearchFieldFocusAndShortcuts builds a palette's field as issue #790
+// does, asking AutoFocus, Focus, Shortcut and Submitted of what SearchField
+// returns, the box around its input: AutoFocus and Focus focus the input,
+// where typing reaches the query, and the box's shortcuts take the keys
+// pressed in it.
+func TestSearchFieldFocusAndShortcuts(t *testing.T) {
+	query, focus := "", false
+	var ups, downs, submits int
+	var focused bool
+	tt := NewTester(func(c *Context) {
+		Button(c, "Other")
+		q := SearchField(c.Key("q"), &query).Label("Search").Width(240).AutoFocus()
+		if focus {
+			q.Focus()
+			focus = false
+		}
+		if q.Shortcut(0, KeyUp) {
+			ups++
+		}
+		if q.Shortcut(0, KeyDown) {
+			downs++
+		}
+		if q.Submitted() {
+			submits++
+		}
+		focused = q.Focused()
+	}, 400, 300)
+	if !focused {
+		t.Fatal("AutoFocus left the field without the focus")
+	}
+	tt.Type("inv")
+	if query != "inv" {
+		t.Fatalf("typing after AutoFocus: %q", query)
+	}
+	tt.Key(0, KeyDown)
+	tt.Key(0, KeyDown)
+	tt.Key(0, KeyUp)
+	if downs != 2 || ups != 1 {
+		t.Fatalf("Down %d, Up %d", downs, ups)
+	}
+	tt.Key(0, KeyEnter)
+	if submits != 1 {
+		t.Fatalf("Enter: %d submitted", submits)
+	}
+	if err := tt.Click("Other"); err != nil {
+		t.Fatal(err)
+	}
+	if focused {
+		t.Fatal("the field kept the focus after a click on Other")
+	}
+	focus = true
+	tt.Frame()
+	if !focused {
+		t.Fatal("Focus left the field without the focus")
+	}
+	tt.Type("oice")
+	if query != "invoice" {
+		t.Fatalf("typing after Focus: %q", query)
+	}
+	tt.Key(0, KeyDown)
+	if downs != 3 {
+		t.Fatalf("Down after Focus: %d", downs)
+	}
+}
+
+// TestComboboxAndTokenFieldFocus asks AutoFocus, Focus and Shortcut of
+// what Combobox and TokenField return, built on the same box as
+// SearchField: they focus the input, and the box's shortcuts take the keys
+// pressed in it.
+func TestComboboxAndTokenFieldFocus(t *testing.T) {
+	t.Run("Combobox", func(t *testing.T) {
+		font, focus, f5 := "Arial", false, 0
+		tt := coreNewTester(func(c *context) {
+			coreButton(c, "Other")
+			e := coreCombobox(c, &font, fonts).Label("Font").Width(200).AutoFocus()
+			if focus {
+				e.Focus()
+				focus = false
+			}
+			if e.Shortcut(0, KeyF5) {
+				f5++
+			}
+		}, 400, 400)
+		tt.Key(Cmd, KeyA)
+		tt.Type("ti")
+		if !tt.HasText("Times") || tt.HasText("Courier") {
+			t.Fatalf("typing after AutoFocus shows %q", tt.Texts())
+		}
+		tt.Key(0, KeyF5)
+		if f5 != 1 {
+			t.Fatalf("F5: %d", f5)
+		}
+		tt.Key(0, KeyEnter)
+		if font != "Times" {
+			t.Fatalf("Enter chose %q", font)
+		}
+		if err := tt.Click("Other"); err != nil {
+			t.Fatal(err)
+		}
+		focus = true
+		tt.Frame()
+		tt.Key(Cmd, KeyA)
+		tt.Type("cour")
+		tt.Key(0, KeyEnter)
+		if font != "Courier" {
+			t.Fatalf("typing after Focus chose %q", font)
+		}
+	})
+	t.Run("TokenField", func(t *testing.T) {
+		var tags []string
+		focus, f5 := false, 0
+		tt := coreNewTester(func(c *context) {
+			coreButton(c, "Other")
+			e := coreTokenField(c, &tags, nil).Label("Tags").Width(360).AutoFocus()
+			if focus {
+				e.Focus()
+				focus = false
+			}
+			if e.Shortcut(0, KeyF5) {
+				f5++
+			}
+		}, 500, 400)
+		tt.Type("go")
+		tt.Key(0, KeyEnter)
+		if !slices.Equal(tags, []string{"go"}) {
+			t.Fatalf("typing after AutoFocus: %q", tags)
+		}
+		tt.Key(0, KeyF5)
+		if f5 != 1 {
+			t.Fatalf("F5: %d", f5)
+		}
+		if err := tt.Click("Other"); err != nil {
+			t.Fatal(err)
+		}
+		focus = true
+		tt.Frame()
+		tt.Type("zig")
+		tt.Key(0, KeyEnter)
+		if !slices.Equal(tags, []string{"go", "zig"}) {
+			t.Fatalf("typing after Focus: %q", tags)
+		}
+	})
+}
+
+// Placeholder on a field around an input, as SearchField's, shows in its
+// input, in place of the field's own; without it, a search field shows
+// Search, and the others none.
+func TestFieldPlaceholder(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		role platform.AccessRole
+		view func(c *Context) Element
+		def  string
+	}{
+		{"SearchField", platform.RoleTextField, func(c *Context) Element {
+			var query string
+			return SearchField(c, &query)
+		}, "Search"},
+		{"TokenField", platform.RoleComboBox, func(c *Context) Element {
+			var tags []string
+			return TokenField(c, &tags, []string{"go"})
+		}, ""},
+		{"Combobox", platform.RoleComboBox, func(c *Context) Element {
+			var font string
+			return Combobox(c, &font, fonts)
+		}, ""},
+		{"Autocomplete", platform.RoleComboBox, func(c *Context) Element {
+			var city string
+			return Autocomplete(c, &city, []string{"Paris"})
+		}, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			for _, want := range []string{tc.def, "Find a thing"} {
+				tt := NewTester(func(c *Context) {
+					e := tc.view(c).Label("Field").Width(240)
+					if want != tc.def {
+						e.Placeholder(want)
+					}
+				}, 400, 300)
+				tt.send(platform.SurfaceEvent{Kind: platform.AccessibilityOn})
+				tt.Frame()
+				if n := accessNode(t, tt.h.access, tc.role, "Field"); n.Placeholder != want {
+					t.Errorf("the input's placeholder is %q, want %q", n.Placeholder, want)
+				}
+			}
+		})
+	}
+}

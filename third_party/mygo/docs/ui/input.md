@@ -30,7 +30,9 @@ held for the last click, as Shift for a Shift-click. `c.Modifiers()` returns the
 keys held now, as one goes down or up on its own too, and the view draws
 again as they change: a list showing each row's Cmd+1–9 while Cmd is held
 reads it. `PassThrough` lets the
-pointer through to what is below.
+pointer through the element to what is below; `IgnoreInput` lets the
+pointer through it and those inside it, and keeps the keyboard focus away
+from them.
 
 Elements that take the pointer give it to the innermost under it: a button
 in a clickable row takes its own clicks.
@@ -57,6 +59,18 @@ row.Children(func() {
 		removed = item.ID
 	}
 })
+```
+
+Built only while the row is hovered, the button is not there for
+assistive technology. `IgnoreInput` keeps it built, transparent and out of
+the pointer's and the keyboard's way at rest, still read and pressed by
+assistive technology (see [Accessibility](accessibility.md#out-of-the-pointers-way)):
+
+```go
+del := ui.Button(c, "Remove").IgnoreInput(!hovered)
+if !hovered {
+	del.Opacity(0)
+}
 ```
 
 ## The keyboard focus
@@ -151,7 +165,12 @@ if c.Shortcut(ui.Cmd, ui.KeyS) {
 `ui.KeyForward` are the back and forward buttons of a mouse and the keys of
 keyboards that have them, which a [router](navigation.md) takes. Shortcuts
 of [menus](../menus.md) still work, and the Edit menu's roles (cut, copy,
-paste, select all, undo, redo) act on the focused text input.
+paste, select all, undo, redo) act on the focused text input. Where the
+focus takes no such command, as a list with nothing editable, the role
+goes to the shortcuts of its key, so `c.Shortcut(ui.Cmd, ui.KeyV)` sees
+Paste on macOS too, where the menu takes Command+V before the window. The
+Edit menu enables a role's item only while the focus, or such a shortcut,
+would take it.
 
 Shortcuts work on layouts that type no Latin letters too: with Cmd, Ctrl,
 Alt or Super held, a key typing a letter of no US key, as ы on a Russian
@@ -220,8 +239,12 @@ tells a touchpad, which scrolls by pixels, from a mouse wheel's notches.
 browsers report pinches; Windows sends them as scrolling with Ctrl held,
 so there a touchpad's scrolling with Ctrl comes as `ui.InputZoom` too,
 while a mouse wheel's notches stay `ui.InputScroll` with `ui.Ctrl` in
-`Mods`. What the element takes no scroll container around it scrolls
-with; what it leaves, by returning false, they do.
+`Mods`. On Linux a touchscreen scrolls and pinches as a touchpad does: a
+finger dragging scrolls the content under it along with it (`Precise`),
+two fingers pinch, between them, and scroll as they move together, a tap
+clicks and a finger held still for half a second right-clicks. What the
+element takes no scroll container around it scrolls with; what it
+leaves, by returning false, they do.
 
 ```go
 ui.Box(c).Fill().HandleInput(func(ev ui.InputEvent) bool {

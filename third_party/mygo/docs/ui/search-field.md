@@ -4,13 +4,16 @@
 
 `ui.SearchField` creates a field for searching, editing a `*string`: a
 magnifying glass, the text, and a button clearing it while it holds any,
-as Escape does then. It shows "Search" while empty. `Changed` reports a
-change, and `Submitted` Enter.
+as Escape does then. It shows "Search" while empty, or what `Placeholder`
+sets to say what it searches. `Changed` reports a change, and `Submitted`
+Enter.
 
 ```go
 if ui.SearchField(c, &app.query).Label("Search mail").Changed() {
 	app.filter()
 }
+
+ui.SearchField(c, &app.pageQuery).Placeholder("Search pages, or #tag to filter")
 ```
 
 To search as the user types, filter on `Changed`; for searches that take

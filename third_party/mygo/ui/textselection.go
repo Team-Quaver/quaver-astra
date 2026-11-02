@@ -98,7 +98,7 @@ func (e *node) prepareSelectable() {
 // (absolute children paint last). Inline children are already in their
 // paragraph's text, and must not be copied a second time.
 func (rt *engine) collectSelectable(e *node, hidden bool) {
-	hidden = hidden || e.flags&(flagInvisible|flagInert) != 0
+	hidden = hidden || e.flags&(flagInvisible|flagInert) != 0 || e.hidden || e.ignoreInput
 	if !hidden && e.kind == kindText && !e.isInline() && e.st.flags&flagDisabled == 0 && e.flags&flagSelectable != 0 {
 		rt.texts = append(rt.texts, e.st)
 	}

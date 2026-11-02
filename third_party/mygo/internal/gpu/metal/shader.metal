@@ -544,10 +544,10 @@ float4 stopsAt(texture2d<float> stops, float4 c2, float t, bool oklab, bool wide
 
 // paint returns the premultiplied color at p of plain color, a gradient
 // mixed in sRGB (1) or Oklab (2), stripes (3), or a gradient of stops,
-// linear (4, 5) or conic (6, 7), mixed in sRGB or in Oklab, as
-// scene.Paint says. In a target that keeps colors outside the sRGB gamut
-// (wide, extended sRGB), an Oklab gradient keeps those its mix has, which
-// others clamp.
+// linear (4, 5), conic (6, 7) or radial (8, 9), mixed in sRGB or in
+// Oklab, as scene.Paint says. In a target that keeps colors outside the
+// sRGB gamut (wide, extended sRGB), an Oklab gradient keeps those its mix
+// has, which others clamp.
 float4 paint(float2 p, float mode, float4 rect, float4 c1, float4 c2, float4 g, bool wide, texture2d<float> stops) {
 	if (mode < 0.5f) {
 		return premul(c1);
@@ -557,12 +557,14 @@ float4 paint(float2 p, float mode, float4 rect, float4 c1, float4 c2, float4 g, 
 		if (mode < 5.5f) {
 			float2 d = g.zw - g.xy;
 			t = dot(p - g.xy, d) / max(dot(d, d), 0.0001f);
-		} else {
+		} else if (mode < 7.5f) {
 			float2 d = p - g.xy;
 			t = (atan2(d.x, -d.y) - g.z) * 0.15915494309189535f;
 			t -= floor(t);
+		} else {
+			t = length(p - g.xy) / max(g.z, 0.0001f);
 		}
-		return stopsAt(stops, c2, t, mode > 4.5f && mode < 5.5f || mode > 6.5f, wide);
+		return stopsAt(stops, c2, t, mode > 4.5f && mode < 5.5f || mode > 6.5f && mode < 7.5f || mode > 8.5f, wide);
 	}
 	if (mode < 2.5f) {
 		float2 d = g.zw - g.xy;

@@ -14,6 +14,9 @@ type formBuild struct {
 // and the texts describe.
 type fieldParts struct {
 	label, content, control *node
+	// errors are those of controls inside that check what is typed, as
+	// DecimalInput, which show below the control (fieldError).
+	errors []string
 }
 
 // Form creates a column of the fields that fn builds (Field, Fieldset),
@@ -46,7 +49,10 @@ func (fb *formBuild) alignLabels() {
 	fb.aligned = true
 	var w float32
 	for _, l := range fb.labels {
-		w = max(w, intrinsic(l, true))
+		if !l.inHidden() {
+			// A Hidden field's label sets no width.
+			w = max(w, intrinsic(l, true))
+		}
 	}
 	for _, l := range fb.labels {
 		l.width = px(w)
@@ -94,6 +100,9 @@ func coreField(c *context, label string, fn func()) *node {
 	})
 	ctrl := fieldControl(fp.content)
 	fp.control = ctrl
+	for _, msg := range fp.errors {
+		f.fieldText(msg, t.Danger)
+	}
 	l := fp.label
 	if ctrl == nil {
 		return f
@@ -221,7 +230,7 @@ func (e *node) Description(s string) *node {
 	if s == "" {
 		return e
 	}
-	target := e.fieldText(s, e.c.theme.TextMuted)
+	target := e.fieldText(s, e.theme().TextMuted)
 	target.description = joinDescription(target.description, s)
 	return e
 }
@@ -234,11 +243,29 @@ func (e *node) Error(msg string) *node {
 	if msg == "" {
 		return e
 	}
-	target := e.fieldText(msg, e.c.theme.Danger)
+	target := e.fieldText(msg, e.theme().Danger)
 	target.invalid = true
 	// The error first, as what to read first.
 	target.description = joinDescription(msg, target.description)
 	return e
+}
+
+// fieldError marks e, a control checking what is typed into it, as not
+// valid for msg, as Error does, and shows msg below the control of the
+// Field around it, as the field's Error would.
+func (e *node) fieldError(msg string) {
+	e.invalid = true
+	e.description = joinDescription(msg, e.description)
+	for p := e.parent; p != nil; p = p.parent {
+		if fp := p.field; fp != nil {
+			if fp.control != nil {
+				p.fieldText(msg, e.theme().Danger) // built once the field was
+			} else {
+				fp.errors = append(fp.errors, msg)
+			}
+			return
+		}
+	}
 }
 
 // fieldText shows s below the control of a field, and returns the element
@@ -326,7 +353,7 @@ func alignBaselines(e *node) {
 // comes before what is drawn beside it, as a status dot or an icon. text
 // reports whether the baseline is that of a text.
 func anchor(e *node, ascent, descent float32) (b float32, text, ok bool) {
-	if e.flags&flagInvisible != 0 {
+	if e.flags&flagInvisible != 0 || e.hidden {
 		return 0, false, false
 	}
 	switch {
@@ -365,7 +392,7 @@ func anchor(e *node, ascent, descent float32) (b float32, text, ok bool) {
 // firstLine returns the first line of text in the element, as last laid
 // out, or nil.
 func firstLine(e *node) *text.Line {
-	if e.flags&flagInvisible != 0 {
+	if e.flags&flagInvisible != 0 || e.hidden {
 		return nil
 	}
 	switch e.kind {
@@ -394,7 +421,7 @@ func firstLine(e *node) *text.Line {
 // its first line of text is, as last laid out, and false for an element
 // without text.
 func firstBaseline(e *node) (float32, bool) {
-	if e.flags&flagInvisible != 0 {
+	if e.flags&flagInvisible != 0 || e.hidden {
 		return 0, false
 	}
 	switch e.kind {

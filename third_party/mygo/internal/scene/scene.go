@@ -200,6 +200,12 @@ const (
 	// CSS's conic-gradient() is; PaintConicOklab mixes them in Oklab.
 	PaintConic
 	PaintConicOklab
+	// PaintRadial is a radial gradient of the op's Stops from (Gradient[0],
+	// Gradient[1]) at 0 to a circle of radius Gradient[2] around it at 1,
+	// mixed in sRGB, as CSS's radial-gradient() is; PaintRadialOklab mixes
+	// them in Oklab.
+	PaintRadial
+	PaintRadialOklab
 )
 
 // Stop is a color of a gradient with stops (Op.Stops), at a place along
@@ -216,7 +222,7 @@ type Stop struct {
 const MaxStops = 32
 
 // HasStops reports whether paint takes its colors from the op's Stops.
-func (p Paint) HasStops() bool { return p >= PaintLinearStops && p <= PaintConicOklab }
+func (p Paint) HasStops() bool { return p >= PaintLinearStops && p <= PaintRadialOklab }
 
 // Uniform returns the widths of a border as wide on every side.
 func Uniform(w float32) [4]float32 { return [4]float32{w, w, w, w} }
@@ -331,13 +337,19 @@ func SubpixelCoverage(a, c [3]float32, contrast, boost float32, g [4]float32) [3
 // Scene is a frame's display list.
 type Scene struct {
 	// Width and Height of the frame in device pixels; Scale is how many
-	// device pixels a DIP is (0 for 1).
+	// device pixels a DIP is (0 for 1). Zoom is how much of Scale the
+	// content's zoom makes (0 for 1): the screen's own scale is
+	// Scale/Zoom.
 	Width, Height int
-	Scale         float32
+	Scale, Zoom   float32
 	// Clear is the color the frame starts with.
-	Clear  Color
-	Ops    []Op
-	Glyphs []Glyph
+	Clear Color
+	// Background is the opaque color the content fills the window with,
+	// or transparent: what the window shows where no frame of its size
+	// shows yet, as while it grows. It draws nothing in the frame.
+	Background Color
+	Ops        []Op
+	Glyphs     []Glyph
 	// Stops holds the stops of gradients (Op.Stops).
 	Stops []Stop
 	// Effects holds the effects of OpEffect operations.
@@ -452,6 +464,12 @@ type Image struct {
 	// frames stop drawing it, rather than once it is collected, which
 	// the little memory it takes of Go's heap may put off for minutes.
 	Transient bool
+	// Restore re-creates Pix when a renderer needs the pixels after an
+	// owner dropped them, to upload or to draw them again, and Dropped
+	// runs after a renderer uploaded them, to drop them again. Both are
+	// nil for images that keep their pixels.
+	Restore func() []byte
+	Dropped func()
 }
 
 // NewCanvas returns a w×h image that renderers draw from a scene of its
@@ -484,6 +502,24 @@ func (m *Image) Version() uint64 { return m.version }
 
 // Changed records that Pix was modified.
 func (m *Image) Changed() { m.version++ }
+
+// Pixels returns the pixels a renderer uploads or draws, re-creating them
+// from Restore when an owner dropped them. The pixels stay then, until
+// the owner drops them again or a renderer's upload does (Uploaded).
+func (m *Image) Pixels() []byte {
+	if m.Pix == nil && m.Restore != nil {
+		m.Pix = m.Restore()
+	}
+	return m.Pix
+}
+
+// Uploaded tells that a renderer uploaded the pixels, which an owner may
+// drop again.
+func (m *Image) Uploaded() {
+	if m.Dropped != nil {
+		m.Dropped()
+	}
+}
 
 // Resize keeps the image's texture-cache identity while changing its size.
 // Renderers replace the backing texture on a size change, so an animated

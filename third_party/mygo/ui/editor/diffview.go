@@ -417,7 +417,7 @@ func DiffView(c *ui.Context, d *DiffState) ui.Element {
 	d.sides[0] = diffSide{d: d, old: true, hide: d.sides[0].hide, blks: d.sides[0].blks}
 	d.sides[1] = diffSide{d: d, unified: d.Layout == DiffUnified, hide: d.sides[1].hide, blks: d.sides[1].blks}
 	if d.Layout == DiffUnified {
-		d.oldView.theme = ct
+		d.oldView.setTheme(ct)
 		d.oldView.setBuffer(d.Old)
 		d.oldView.sync(nil)
 		o := opts(false)

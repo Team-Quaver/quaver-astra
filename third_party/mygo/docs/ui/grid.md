@@ -31,6 +31,14 @@ track to the last, and `ColumnStart` and `RowStart` put it in a given column
 and row, counting from 1. `RowTracks` and `Rows` set the first rows, which
 `Fr` makes share the grid's height.
 
+## Sizing children
+
+A child's percentages, as `FillWidth`, `WidthPercent` and `HeightPercent`,
+their `Percent` minimums and maximums, and `LeftPercent` and the like, are
+of its cell, the tracks it spans, not of the grid, as in CSS. A
+`ui.FitContent()` track sizes to such a child's content as if it had no
+size set, and the child then takes its share of the track.
+
 ## Aligning
 
 Children stretch to fill their cells unless `JustifyItems` (horizontally)

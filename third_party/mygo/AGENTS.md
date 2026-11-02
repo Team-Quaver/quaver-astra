@@ -75,6 +75,7 @@ go run ./examples/loading                  # loading.dev's 29 indicators (plugin
 go generate ./plugins/terminal             # build libghostty-vt for every platform (with Zig), write Ghostty's themes
 go generate ./internal/gpu/d3d11           # recompile the Direct3D shader (on Windows)
 go generate ./internal/gpu/metal           # recompile the Metal shader (on macOS, with Xcode)
+go generate ./cmd/mygo                     # the Mandarin readings of slugs (cmd/mygo/pinyin.bin), from Unicode's Unihan
 go generate ./internal/l10n                # MyGo's own strings: their functions, and the packages of translations in locales/
 go generate ./plugins/glass                # recompile the glass plugin's shaders (on macOS, and on Windows)
 bun run --cwd website dev                  # the website, with docs/ at /docs (see website/README.md)
@@ -113,6 +114,10 @@ Windows GUI tests need Windows with the WebView2 Runtime (a GitHub Actions
   and `plugins/game/gamepad`, which reads controllers. The loading plugin
   is Go only too, loading.dev's indicators drawn with `ui.Painter` on
   ui's public API: keep them as loading-dev draws them in a browser.
+  The automation plugin is Go only too, gated with the inspector
+  (`mygo_noinspector`): a socket (`MYGO_AUTOMATION`) through which
+  other processes drive the app, reaching native UI only through
+  `surface.Automate`, which it sets.
 - The `dist/` of npm packages is not committed: run `bun run build` after
   `bun install` (CI and releases do). Commit `internal/bridge/bridge.js`
   whenever its sources change, and keep the generated clients of examples

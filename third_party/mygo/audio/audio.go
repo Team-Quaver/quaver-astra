@@ -25,6 +25,7 @@ import (
 	"io"
 	"math"
 	"runtime"
+	"slices"
 	"sync"
 	"time"
 )
@@ -318,6 +319,29 @@ func (p *Player) Playing() bool {
 	return p.v.playing
 }
 
+// endListener is a function OnEnd registered.
+type endListener struct {
+	id uint64
+	fn func()
+}
+
+// OnEnd calls fn on a goroutine of its own each time the player plays to
+// its end, which a looping player never does, as a playlist plays the
+// next track then. off removes it.
+func (p *Player) OnEnd(fn func()) (off func()) {
+	mu.Lock()
+	defer mu.Unlock()
+	v := p.v
+	v.nextEnd++
+	id := v.nextEnd
+	v.onEnd = append(v.onEnd, endListener{id, fn})
+	return func() {
+		mu.Lock()
+		defer mu.Unlock()
+		v.onEnd = slices.DeleteFunc(slices.Clone(v.onEnd), func(l endListener) bool { return l.id == id })
+	}
+}
+
 // Seek moves the player to t from the start.
 func (p *Player) Seek(t time.Duration) {
 	mu.Lock()
@@ -334,11 +358,13 @@ func (p *Player) Seek(t time.Duration) {
 	v.reset(f)
 }
 
-// Position returns how far the player is from the start.
+// Position returns how far the player is from the start, in what is heard:
+// the output mixes ahead of it (SetLatency), and the player goes on for
+// as long after a pause, but it is where Seek moved it at once.
 func (p *Player) Position() time.Duration {
 	mu.Lock()
 	defer mu.Unlock()
-	return time.Duration(p.v.position() / p.v.rate * float64(time.Second))
+	return time.Duration(p.v.position(p.v.heardAt()) / p.v.rate * float64(time.Second))
 }
 
 // Duration returns how long the player's audio is, or 0 if unknown.
@@ -458,9 +484,10 @@ func (p *Player) Close() {
 }
 
 var (
-	volume = 1.0
-	outErr error
-	errMu  sync.Mutex
+	volume  = 1.0
+	latency = LatencyInteractive
+	outErr  error
+	errMu   sync.Mutex
 )
 
 // SetVolume sets the volume of everything played, a gain: 1 (the default)
@@ -476,6 +503,49 @@ func Volume() float64 {
 	mu.Lock()
 	defer mu.Unlock()
 	return volume
+}
+
+// Latency is how far ahead of what is heard the output mixes, as Web
+// Audio's latencyHint.
+type Latency int
+
+const (
+	// LatencyInteractive mixes about 40 ms ahead, so that sounds start,
+	// stop and change as soon as they are asked to, as games and
+	// interfaces want. It is the default.
+	LatencyInteractive Latency = iota
+	// LatencyPlayback mixes about 250 ms ahead, for apps that play music
+	// and other long audio: it plays on through the moments the system
+	// keeps an app waiting, as macOS does while its appearance changes,
+	// where the interactive latency runs dry and is heard to stop. Plays,
+	// pauses, seeks and volume changes are heard that much later.
+	LatencyPlayback
+)
+
+// ahead returns how much the output holds before it is heard.
+func (l Latency) ahead() time.Duration {
+	if l == LatencyPlayback {
+		return 250 * time.Millisecond
+	}
+	return 40 * time.Millisecond
+}
+
+// SetLatency sets how far ahead the output mixes. An output already open
+// opens again, which drops what it held.
+func SetLatency(l Latency) {
+	mu.Lock()
+	defer mu.Unlock()
+	if l != LatencyPlayback {
+		l = LatencyInteractive
+	}
+	latency = l
+}
+
+// outputLatency returns the latency set.
+func outputLatency() Latency {
+	mu.Lock()
+	defer mu.Unlock()
+	return latency
 }
 
 // Err returns why the last output to open is not the system's audio

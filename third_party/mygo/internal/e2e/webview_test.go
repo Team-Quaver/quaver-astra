@@ -277,3 +277,73 @@ func TestContentWindowWebViewEditMenu(t *testing.T) {
 		waitForPage(t, v.Page(), "getSelection().toString() === 'hello'")
 	}
 }
+
+// TestContentWindowWebViewScrollToContainer turns the wheel over two web
+// views side by side, each in a scroll container of its own and taller
+// than it, with pages taller still: over the one with ScrollToContainer
+// its container scrolls and its page does not, and over the other one
+// its page scrolls and its container does not.
+func TestContentWindowWebViewScrollToContainer(t *testing.T) {
+	var reader, page *mygo.WebView
+	var readerScroll, pageScroll ui.ScrollState
+	var readerY, pageY atomic.Value // float32: where the containers are
+	readerY.Store(float32(0))
+	pageY.Store(float32(0))
+	w := newWindow(t, mygo.WindowOptions{Title: "Web view wheel", Width: 400, Height: 300, Content: ui.View(func(c *ui.Context) {
+		ui.Row(c).Fill().AlignItems(ui.Stretch).Children(func() {
+			ui.Scroll(c).Grow(1).TrackScroll(&pageScroll).Children(func() {
+				if page != nil {
+					ui.WebView(c, page).Height(600)
+				}
+			})
+			// On the right, where the wheel's point in the web view is
+			// not the same in the window.
+			ui.Scroll(c).Grow(1).TrackScroll(&readerScroll).Children(func() {
+				if reader != nil {
+					ui.WebView(c, reader).Height(600)
+				}
+			})
+		})
+		readerY.Store(readerScroll.Y)
+		pageY.Store(pageScroll.Y)
+	})})
+	r, err := w.NewWebView(mygo.WebViewOptions{ScrollToContainer: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, err := w.NewWebView(mygo.WebViewOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	w.Update(func() { reader, page = r, p })
+	// Ready once the page has drawn: a wheel that comes sooner, while its
+	// first frame is still on the way, can find nothing to scroll yet.
+	const tall = `<body style="margin:0;height:3000px"><script>requestAnimationFrame(() => requestAnimationFrame(() => { window.ready = true }))</script></body>`
+	r.Page().LoadHTML(tall, "")
+	p.Page().LoadHTML(tall, "")
+	waitForPage(t, r.Page(), "window.ready")
+	waitForPage(t, p.Page(), "window.ready")
+	container := func(y *atomic.Value) float32 {
+		w.Invalidate()
+		return y.Load().(float32)
+	}
+	scrolled := func(v *mygo.WebView) float64 {
+		y, _ := mygo.EvalAs[float64](v.Page(), "scrollY")
+		return y
+	}
+
+	if !wheel(w, 300, 150) {
+		t.Skip("wheel automation not available on this platform")
+	}
+	eventually(t, "the wheel over the reader to scroll its container", func() bool { return container(&readerY) > 0 })
+	if !wheel(w, 100, 150) {
+		t.Fatal("the second wheel")
+	}
+	eventually(t, "the wheel over the page to scroll the page", func() bool { return scrolled(p) > 0 })
+	if y := scrolled(r); y != 0 {
+		t.Errorf("the reader's page scrolled to %v, want its container to take the wheel", y)
+	}
+	if y := container(&pageY); y != 0 {
+		t.Errorf("the page's container scrolled to %v, want the page to take the wheel", y)
+	}
+}

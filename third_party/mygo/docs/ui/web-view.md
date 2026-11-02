@@ -48,9 +48,11 @@ func main() {
 `Window.NewWebView` makes a web view of a window showing `Content`, which
 it closes with. Its options are the page's (`Page`, as a window's
 `PageOptions`), the `URL` to load, a `BackgroundColor` to fill it with
-until the page paints, and `Transparent`, which shows what is behind the
+until the page paints, `Transparent`, which shows what is behind the
 web view through the transparent parts of its page: the window's
-background or material, as native UI paints nothing under a web view.
+background or material, as native UI paints nothing under a web view,
+and `ScrollToContainer`, which gives the wheel over the page to the
+native UI around it ([below](#scrolling-the-native-ui-around-it)).
 `WebView.Page` returns its page, whose methods are a window's page's:
 `LoadURL`, `LoadHTML`, `Eval`, `GoBack`, `OnDidNavigate`, `OnWillNavigate`
 and the others. `Focus` gives it the keyboard, `SetBackgroundColor`
@@ -58,6 +60,11 @@ changes the color it fills with, as when the app's own theme changes
 (one given as `light-dark(<light>, <dark>)` follows the appearance by
 itself), `CapturePage` takes a screenshot of its page, and `Destroy`
 closes it.
+
+A web view trusts the app's own pages as a window does, pages of custom
+schemes included: show third-party or user-supplied HTML in an
+[untrusted page](../frontend.md#untrusted-pages) (`PageOptions.Untrusted`),
+or from an origin it does not trust, see [trust](../frontend.md#trust).
 
 Make a web view once, as a window, not in the view: the view only shows
 it. One the view does not build hides and keeps its page, so a view of tabs
@@ -120,6 +127,45 @@ the web view. `Focus` gives the page the keyboard where it had it.
 Assistive technology finds the page inside the web view's element, where
 it is among the native UI: VoiceOver and Orca read and move through it as
 through the controls around it.
+
+## Scrolling the native UI around it
+
+A reader shows a document in a native scroll container: an article
+between a native header and its comments, a message in a mail thread, a
+rendered note among native cards. The web view is as tall as its page,
+which has nothing of its own to scroll, and the wheel over the page should
+scroll the container, as it does over the native elements around it.
+`WebViewOptions.ScrollToContainer` does that: the wheel and the touchpad
+over the web view scroll the native UI under the pointer as over any of
+its elements, by lines for a mouse's wheel and by pixels for a touchpad,
+in the same direction, with the modifier keys held. The page never
+scrolls with them; it still takes the pointer's presses, the keyboard,
+selection and a touchpad's pinch.
+
+```go
+article, _ := win.NewWebView(mygo.WebViewOptions{URL: "/article", ScrollToContainer: true})
+
+// In the view:
+ui.Scroll(c).Fill().Children(func() {
+	header(c)
+	ui.WebView(c, article).Height(app.articleHeight) // the page's height, which it tells the app
+	comments(c)
+})
+```
+
+Without it, which is the default, the page takes the wheel where it
+shows, as a page that scrolls itself needs: docs, a browser's tab, an
+editor.
+
+- **macOS**: the web view's scroll events, a touchpad's momentum
+  included, go to the native UI instead of WebKit.
+- **Windows**: the window keeps the wheel messages over the web view
+  instead of sending them on to WebView2. A touchpad's pinch, which
+  Windows sends as the wheel with Ctrl held, still zooms the page.
+- **Linux**: the web view's scroll events go to the native UI before
+  WebKitGTK sees them.
+- **Browsers** (`GOOS=js`) have no web views, so the option does nothing
+  there.
 
 ## Its page
 

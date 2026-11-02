@@ -39,10 +39,36 @@ func (st *viewState) copyText(parts []ui.SelectedText) string {
 				b.WriteString("\n")
 			}
 		}
-		b.WriteString(runeSlice(p.Text, p.Start, p.End))
+		if ok {
+			st.writeText(&b, inf, p)
+		} else {
+			b.WriteString(runeSlice(p.Text, p.Start, p.End))
+		}
 		prev = inf
 	}
 	return b.String()
+}
+
+// writeText writes the text of a selected part, with the source of the
+// math drawn as objects, as $x_i$, in place of their characters.
+func (st *viewState) writeText(b *strings.Builder, inf elemInfo, p ui.SelectedText) {
+	text := runeSlice(p.Text, p.Start, p.End)
+	if inf.line != -1 || inf.block >= len(st.paras) || !st.paras[inf.block].ok || len(st.paras[inf.block].p.objects) == 0 {
+		b.WriteString(text)
+		return
+	}
+	objects := st.paras[inf.block].p.objects
+	src := st.doc.Source()
+	r := p.Start
+	for _, c := range text {
+		k, found := slices.BinarySearchFunc(objects, r, func(o mathObject, r int) int { return o.rune - r })
+		if found && c == '\uFFFC' && objects[k].end <= len(src) {
+			b.WriteString(src[objects[k].src:objects[k].end])
+		} else {
+			b.WriteRune(c)
+		}
+		r++
+	}
 }
 
 // copyData returns the selection as Copy puts it on the clipboard: as

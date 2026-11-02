@@ -26,6 +26,9 @@ type Config struct {
 	// mygo.locale and mygo.dir from document start.
 	Locale string `json:"locale"`
 	Dir    string `json:"dir"`
+	// Fit is the limits of a window that takes the size of its page's
+	// content (FitContent), nil for other windows.
+	Fit *FitContent `json:"fit,omitempty"`
 }
 
 // Script returns the bridge source configured for one window.
@@ -66,6 +69,36 @@ func NewTitleBar(tb platform.TitleBar, zoom float64) TitleBar {
 		zoom = 1
 	}
 	return TitleBar{Height: float64(tb.Height) / zoom, Left: float64(tb.Left) / zoom, Right: float64(tb.Right) / zoom}
+}
+
+// FitContentEvent tells the page of a window that takes the size of its
+// content (FitContent) the limits of that size, with a FitContent, when
+// the page's zoom changed them. The bridge configuration tells them at
+// document start.
+const FitContentEvent = "mygo:fit-content"
+
+// FitContent is the limits of the size of a window that takes its
+// content's, in CSS pixels; 0 is none. The bridge lays the page's root
+// element out within them.
+type FitContent struct {
+	MinWidth  float64 `json:"minWidth"`
+	MinHeight float64 `json:"minHeight"`
+	MaxWidth  float64 `json:"maxWidth"`
+	MaxHeight float64 `json:"maxHeight"`
+}
+
+// NewFitContent converts the limits of a window's size, in DIPs, to the CSS
+// pixels of a page shown at zoom.
+func NewFitContent(minSize, maxSize platform.Size, zoom float64) FitContent {
+	if zoom <= 0 {
+		zoom = 1
+	}
+	return FitContent{
+		MinWidth:  float64(minSize.Width) / zoom,
+		MinHeight: float64(minSize.Height) / zoom,
+		MaxWidth:  float64(maxSize.Width) / zoom,
+		MaxHeight: float64(maxSize.Height) / zoom,
+	}
 }
 
 // TitleBarScript delivers TitleBarEvent at document start, after the

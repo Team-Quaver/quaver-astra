@@ -44,7 +44,11 @@ func newHiddenWindow(w, h int) (uintptr, error) {
 func destroyWindow(hwnd uintptr) { user32.NewProc("DestroyWindow").Call(hwnd) }
 
 // read copies the back buffer to memory: BGRA rows and their stride.
-func (r *Renderer) read() ([]byte, int, error) {
+func (r *Renderer) read() ([]byte, int, error) { return r.readPart(r.w, r.h) }
+
+// readPart copies the w×h pixels at the top left of the back buffer to
+// memory, as read.
+func (r *Renderer) readPart(w, h int) ([]byte, int, error) {
 	var back, staging uintptr
 	if hr := call(r.swapChain, scGetBuffer, 0, uintptr(unsafe.Pointer(&iidID3D11Texture2D)), uintptr(unsafe.Pointer(&back))); failed(hr) {
 		return nil, 0, fmt.Errorf("d3d11: no back buffer: %#x", uint32(hr))
@@ -63,9 +67,9 @@ func (r *Renderer) read() ([]byte, int, error) {
 		return nil, 0, fmt.Errorf("d3d11: cannot map: %#x", uint32(hr))
 	}
 	defer call(r.ctx, ctxUnmap, staging, 0)
-	pix := make([]byte, r.w*r.h*4)
-	for y := range r.h {
-		copy(pix[y*r.w*4:], unsafe.Slice((*byte)(ptr(m.Data+uintptr(y)*uintptr(m.RowPitch))), r.w*4))
+	pix := make([]byte, w*h*4)
+	for y := range h {
+		copy(pix[y*w*4:], unsafe.Slice((*byte)(ptr(m.Data+uintptr(y)*uintptr(m.RowPitch))), w*4))
 	}
-	return pix, r.w * 4, nil
+	return pix, w * 4, nil
 }

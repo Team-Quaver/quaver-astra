@@ -475,10 +475,10 @@ func TestStrokesAreAsWideAsAsked(t *testing.T) {
 		var f flatPath
 		path.flatten(&f, scale)
 		var z vec.Rasterizer
-		var loop [][2]float32
+		var bufs strokeBufs
 		n := int(50 * scale)
 		z.Reset(n, n)
-		strokeInto(&z, &loop, &f, width*scale/2, 0, 0)
+		strokeInto(&z, &bufs, &f, width*scale/2, 0, 0)
 		pix := make([]byte, n*n)
 		z.Mask(pix, n)
 		var sum float64

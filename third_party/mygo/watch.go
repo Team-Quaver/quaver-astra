@@ -19,9 +19,10 @@ const (
 	// FileCreate is a file or directory that appeared.
 	FileCreate FileOp = "create"
 	// FileWrite is a file whose content may have changed: its size or
-	// modification time changed, or the system said it was written.
-	// Changes of permissions and other metadata are not reported, nor
-	// are directories written, whose changes are their entries'.
+	// modification time changed, the system said it was written, or
+	// another file replaced it at its path, as atomic saves do. Changes
+	// of permissions and other metadata are not reported, nor are
+	// directories written, whose changes are their entries'.
 	FileWrite FileOp = "write"
 	// FileRemove is a file or directory that went away.
 	FileRemove FileOp = "remove"

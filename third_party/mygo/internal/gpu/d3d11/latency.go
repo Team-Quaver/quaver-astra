@@ -25,12 +25,13 @@ var (
 	procCloseHandle   = kernel32.NewProc("CloseHandle")
 )
 
+// latencyTimeout is the longest a wait on the object takes, in
+// milliseconds: the screen takes a frame each refresh, but takes none while
+// the window shows nowhere, when a frame presents without its token.
+var latencyTimeout uintptr = 1000
+
 const (
 	waitObject0 = 0
-	// latencyTimeout is the longest a wait on the object takes: the
-	// screen takes a frame each refresh, but takes none while the window
-	// shows nowhere, when a frame presents without its token.
-	latencyTimeout = 1000 // ms
 	// swapChainWaitable is DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT.
 	swapChainWaitable = 0x40
 )
@@ -42,10 +43,11 @@ type latency struct {
 	mu sync.Mutex
 	// token tells that a wait succeeded that no present took yet; waiting
 	// that a goroutine waits on the object, which done tells the end of,
-	// and then what it calls.
-	token, waiting bool
-	done           chan struct{}
-	then           func()
+	// and then what it calls; lapsed that the goroutine's wait timed out,
+	// so the present it calls on does not wait again, on the main thread.
+	token, waiting, lapsed bool
+	done                   chan struct{}
+	then                   func()
 }
 
 // waitObject waits on the object, at most ms milliseconds, and reports
@@ -83,6 +85,7 @@ func (l *latency) waitThen(then func()) {
 		signaled := l.waitObject(latencyTimeout)
 		l.mu.Lock()
 		l.token = l.token || signaled
+		l.lapsed = !l.token
 		l.waiting = false
 		then := l.then
 		l.then = nil
@@ -96,7 +99,9 @@ func (l *latency) waitThen(then func()) {
 
 // take takes the token a present needs, waiting for it on the calling
 // thread (a resize's frame, one waited for): at most latencyTimeout, after
-// which the frame presents without one.
+// which the frame presents without one. A present whose goroutine's wait
+// timed out already waited as long, while the window shows nowhere, and
+// presents without waiting again.
 func (l *latency) take() {
 	if l.handle == 0 {
 		return
@@ -109,10 +114,10 @@ func (l *latency) take() {
 	}
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	if !l.token {
+	if !l.token && !l.lapsed {
 		l.waitObject(latencyTimeout)
 	}
-	l.token = false
+	l.token, l.lapsed = false, false
 }
 
 // release waits for a goroutine waiting on the object and closes it.

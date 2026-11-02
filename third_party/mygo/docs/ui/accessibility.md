@@ -37,7 +37,9 @@ Besides the roles of MyGo's widgets, `ui.RoleHeading` is the title of a
 section, ranked with `Level`, and `ui.RoleMenu`, `ui.RoleMenuBar`,
 `ui.RoleMenuItem`, `ui.RoleMenuItemCheckBox` and `ui.RoleMenuItemRadio`
 make menus drawn in the window, as a drop-down menu or a menu bar of your
-own:
+own (an element's menu drawn in the window,
+[`PopoverMenu`](context-menu.md#drawn-in-the-window) or
+[`PopoverMenuButton`](menu-button.md#drawn-in-the-window), has them):
 
 ```go
 ui.Text(c, "Appearance").Bold().Role(ui.RoleHeading).Level(2)
@@ -92,6 +94,39 @@ its rows gives assistive technology the focus on the row chosen: Up and
 Down are read as they move the choice, and focusing a row chooses it. A
 screen reader moving out of view asks the list to scroll there, which
 builds the rows it reaches. `Label` names a list or a table.
+
+## Out of the pointer's way
+
+`IgnoreInput(true)` leaves an element, and those inside it, to assistive
+technology alone: the pointer goes through it to what is under it, Tab
+and clicks give it no focus, but assistive technology still finds it, with
+its role and name, and presses it, which `Clicked` reports. A button that
+shows while its row is hovered can so stay built at rest, at `Opacity(0)`,
+where a screen reader finds it and a click on the row is the row's:
+
+```go
+row := ui.Row(c).Padding(8)
+hovered := row.Hovered()
+if row.Clicked() {
+	app.open(item)
+}
+row.Children(func() {
+	ui.Text(c, item.Title).Grow(1)
+	del := ui.Button(c, "Delete").IgnoreInput(!hovered)
+	if !hovered {
+		del.Opacity(0)
+	}
+	if del.Clicked() {
+		app.remove(item)
+	}
+})
+```
+
+Assistive technology can neither focus it nor move a slider inside it, as
+both go through the keyboard focus; it can set a text input's value.
+Unlike HTML's `inert`, which hides an element from assistive technology
+too, it stays in the tree: `Invisible` and `Hidden` take it out of it, and
+`Disabled` keeps it there without its press.
 
 ## Announcements
 

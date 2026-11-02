@@ -213,7 +213,7 @@ func writeArchive(c *Config, stage, target string, entries []string) ([]string, 
 			return nil, err
 		}
 	}
-	name := slugify(c.executableName()) + "-" + c.Version + "-" + target + ".tar.gz"
+	name := c.slug() + "-" + c.Version + "-" + target + ".tar.gz"
 	archive := filepath.Join(stage, name)
 	size, sig, err := writeSigned(archive, key, func(w io.Writer) error {
 		return update.WriteArchive(w, stage, entries)
@@ -314,7 +314,7 @@ func writeDeltas(c *Config, key ed25519.PrivateKey, stage, target string, entrie
 	}
 	var files []string
 	for i, base := range bases {
-		name := slugify(c.executableName()) + "-" + base.Version + "-to-" + c.Version + "-" + target + ".delta"
+		name := c.slug() + "-" + base.Version + "-to-" + c.Version + "-" + target + ".delta"
 		path := filepath.Join(stage, name)
 		d, err := writeDelta(key, base, filepath.Join(work, strconv.Itoa(i)), path, c.Version, newDir, newEntries)
 		switch {

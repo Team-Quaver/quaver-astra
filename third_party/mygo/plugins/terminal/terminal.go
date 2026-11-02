@@ -128,6 +128,9 @@ type Options struct {
 	// Scrollback is about how many bytes of output the terminal keeps above
 	// the screen: 10 MB when zero, none when negative.
 	Scrollback int
+	// ScrollMultiplier scales how far the wheel and the touchpad scroll, as
+	// Ghostty's mouse-scroll-multiplier. SetScrollMultiplier changes it.
+	ScrollMultiplier ScrollMultiplier
 	// OptionAsAlt makes Option on macOS the Alt key of programs (Meta),
 	// rather than the key that types accented letters and symbols.
 	OptionAsAlt bool
@@ -230,7 +233,7 @@ type Options struct {
 	// OpenLink takes what a Command+click (Control+click elsewhere)
 	// opens: a hyperlink (OSC 8), a URL printed as text, or, only with
 	// OpenLink set, a file path printed as text (absolute, ~/, ./ or ../,
-	// one with a slash, or a file name with a :line), as printed, a
+	// one with a slash, or a file name with an extension), as printed, a
 	// :line:col suffix included; a relative one is the program's, as of
 	// Dir. It runs on the main thread and reports whether it opened the
 	// link; a hyperlink or a URL it leaves, or every one when it is nil,
@@ -253,9 +256,11 @@ type Options struct {
 	// it, as does what it sends with Send. A key that only types text may
 	// come as its text alone, as on Linux, which OnKey does not see.
 	OnKey func(mods ui.Modifiers, key ui.Key) bool
-	// OnScroll sees the wheel scroll the view by whole rows, negative up,
-	// before the terminal scrolls its scrollback, on the main thread, and
-	// reports whether it took the scroll; a scroll taken moves nothing. It
+	// OnScroll sees the wheel scroll the view by whole rows, negative up
+	// (a mouse wheel's notch is three, or on Windows as many as its "lines
+	// to scroll" setting asks), before the terminal scrolls its
+	// scrollback, on the main thread, and reports whether it took the
+	// scroll; a scroll taken moves nothing. It
 	// is not asked while a program takes the wheel: as the mouse, unless
 	// Shift is held, or, on a full-screen program's screen, as arrow keys
 	// (alternate scroll, which "\x1b[?1007l" turns off). It suits a Conn
@@ -344,6 +349,34 @@ const (
 	CursorBar
 	CursorUnderline
 )
+
+// ScrollMultiplier scales scrolling (Options.ScrollMultiplier), as
+// Ghostty's mouse-scroll-multiplier = precision:…,discrete:….
+type ScrollMultiplier struct {
+	// Precision scales a touchpad's scrolling, and other scrolling by
+	// distance: 1 when zero.
+	Precision float32
+	// Discrete is how many rows a notch of a mouse wheel scrolls: 3 when
+	// zero. On Windows, which sends notches as lines of its "lines to
+	// scroll" setting, it scales those as 3 would be the setting's.
+	Discrete float32
+}
+
+// rows turns the DIPs a scroll event moved into the rows it scrolls, with
+// cells ch DIPs high, on goos.
+func (m ScrollMultiplier) rows(dy, ch float32, precise bool, goos string) float32 {
+	if precise {
+		if m.Precision > 0 {
+			dy *= m.Precision
+		}
+		return dy / ch
+	}
+	rows := wheelRows(dy, goos)
+	if m.Discrete > 0 {
+		rows *= m.Discrete / 3
+	}
+	return rows
+}
 
 // CopyOnSelect is where a selection is copied as it ends
 // (Options.CopyOnSelect).
@@ -914,6 +947,14 @@ func (t *Terminal) zoom(z Zoom) {
 func (t *Terminal) SetCopyOnSelect(c CopyOnSelect) {
 	t.mu.Lock()
 	t.opts.CopyOnSelect = c
+	t.mu.Unlock()
+}
+
+// SetScrollMultiplier changes how far the wheel and the touchpad scroll,
+// as Options.ScrollMultiplier.
+func (t *Terminal) SetScrollMultiplier(m ScrollMultiplier) {
+	t.mu.Lock()
+	t.opts.ScrollMultiplier = m
 	t.mu.Unlock()
 }
 

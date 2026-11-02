@@ -6,8 +6,10 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 
@@ -198,6 +200,66 @@ func TestFileWatchFile(t *testing.T) {
 	next(mygo.FileEvent{Op: mygo.FileRemove, Path: "."})
 	write(file, "e")
 	next(mygo.FileEvent{Op: mygo.FileCreate, Path: "."})
+}
+
+// A file of a watched directory saved atomically, as editors and apps
+// save, a temporary file renamed over it, is written, again and again:
+// not removed and created, which would have an app close the document.
+// The temporary file is one Ignore leaves out, as apps hide theirs.
+func TestFileWatchAtomicSave(t *testing.T) {
+	dir := t.TempDir()
+	file := filepath.Join(dir, "note.md")
+	if err := os.WriteFile(file, []byte("a"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), wait.Guard)
+	defer cancel()
+	w, err := mygo.WatchFiles(ctx, dir, mygo.FileWatchOptions{
+		Recursive: true,
+		Debounce:  10 * time.Millisecond,
+		Ignore:    func(p string, isDir bool) bool { return strings.HasPrefix(path.Base(p), ".") },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer w.Close()
+	save := func(content string) {
+		t.Helper()
+		tmp := filepath.Join(dir, ".note.md.tmp")
+		if err := os.WriteFile(tmp, []byte(content), 0600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Rename(tmp, file); err != nil {
+			t.Fatal(err)
+		}
+	}
+	written := func() {
+		t.Helper()
+		for {
+			batch, err := w.Next(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, e := range batch {
+				if e.Path != "note.md" {
+					continue
+				}
+				if e.Op != mygo.FileWrite {
+					t.Fatalf("a save came as %+v", e)
+				}
+				return
+			}
+		}
+	}
+	for i := range 5 {
+		save(strings.Repeat("x", i+2))
+		written()
+	}
+	// The file that replaced it is watched in its turn.
+	if err := os.WriteFile(file, []byte("in place"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	written()
 }
 
 // TestFileWatchManyFiles watches a directory with more entries than the

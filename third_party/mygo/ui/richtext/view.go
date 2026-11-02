@@ -6,6 +6,7 @@ import (
 	"unicode/utf16"
 	"unicode/utf8"
 	"unsafe"
+	"weak"
 
 	"github.com/egoist/mygo/internal/l10n"
 	"github.com/egoist/mygo/internal/platform"
@@ -133,6 +134,7 @@ type view struct {
 	// boxes and the scroll bar, a hand over links, an I-beam over text.
 	cursor     ui.Cursor
 	thumb      bool
+	inView     bool // the pointer is over the editor, which shows the scroll bar
 	thumbGrab  float32
 	focused    bool
 	blinkStart time.Time
@@ -143,6 +145,9 @@ type view struct {
 	// text of numbersOf.
 	numbers   map[int]int
 	numbersOf Text
+	// placed is room for the boxes of the paragraphs painted, which moved
+	// compares with those the app read.
+	placed []ParagraphBox
 }
 
 type editMode uint8
@@ -171,6 +176,9 @@ type paraView struct {
 	h            float32
 	// space is the space above and below it, in h.
 	space float32
+	// indent is how far its first line goes in (Theme.FirstLineIndent),
+	// as its layout indents it (ui.TextShape.Indent).
+	indent float32
 }
 
 // look is how the text of an editor looks: its font and the theme's
@@ -198,6 +206,7 @@ func build(c *ui.Context, doc *Document, options []EditorOptions, styled bool) u
 		doc.lock()
 		v.selAnchor, v.caret = doc.anchor, doc.caret
 		v.selVersion = doc.selVersion
+		doc.shownIn = weak.Make(v)
 		doc.mu.Unlock()
 	}
 	v.opts = EditorOptions{}
@@ -207,6 +216,7 @@ func build(c *ui.Context, doc *Document, options []EditorOptions, styled bool) u
 	v.services = c.Services()
 	v.setLook(t, styled)
 	v.sync()
+	v.inView = e.Hovered()
 	focused := e.Focused()
 	if focused != v.focused {
 		v.focused = focused
@@ -426,11 +436,41 @@ func (v *view) insets(st ParagraphStyle) (left, right float32) {
 	return left, right
 }
 
+// body reports whether a paragraph of style st is of the body's text,
+// which Theme.FirstLineIndent and ParagraphSpacing set apart: not a
+// heading, an item of a list or code.
+func body(st ParagraphStyle) bool {
+	return st.Heading == 0 && st.List == NoList && !st.CodeBlock
+}
+
+// firstLine returns how far the first line of paragraph p goes in: a body
+// paragraph aligned at the start after another of the same quotation and
+// level takes Theme.FirstLineIndent, as printed prose indents all but the
+// first paragraph after a heading, a list, a centered scene break or an
+// empty line. It looks at the paragraph before only, so that it costs
+// O(log n) as the paragraph is laid out.
+func (v *view) firstLine(p int, st ParagraphStyle) float32 {
+	if v.look.FirstLineIndent <= 0 || p == 0 || !body(st) || st.Align != ui.Start {
+		return 0
+	}
+	prev := v.para(p - 1)
+	ps := prev.style
+	if prev.n == 0 || !body(ps) || ps.Align != ui.Start || ps.Quote != st.Quote || ps.Indent != st.Indent {
+		return 0
+	}
+	return v.look.size * v.look.FirstLineIndent
+}
+
 // space returns the room above and below paragraph p: a heading's
-// margins, a block of code's padding at its ends.
+// margins, a block of code's padding at its ends, the spacing between
+// body paragraphs, above the second.
 func (v *view) space(p int, st ParagraphStyle) (above, below float32) {
 	look := &v.look
 	switch {
+	case body(st):
+		if look.ParagraphSpacing > 0 && p > 0 && body(v.para(p-1).style) {
+			above = look.size * look.ParagraphSpacing
+		}
 	case st.Heading > 0:
 		h := look.heading(st.Heading)
 		if p > 0 {
@@ -519,9 +559,11 @@ func (v *view) paraLayout(p int) *paraView {
 	if len(para.runs) > 0 {
 		first = unsafe.SliceData(para.runs)
 	}
-	if pv.layout != nil && pv.id == para.id && pv.runs == first && pv.nruns == len(para.runs) && pv.style == para.style && pv.compose == compose && pv.at == at {
+	indent := v.firstLine(p, para.style)
+	if pv.layout != nil && pv.id == para.id && pv.runs == first && pv.nruns == len(para.runs) && pv.style == para.style && pv.compose == compose && pv.at == at && pv.indent == indent {
 		// The space around it follows its neighbours, which may have
-		// changed without it: a code block's last line, the first heading.
+		// changed without it: a code block's last line, the first heading,
+		// a body paragraph after one that became a heading.
 		if above, below := v.space(p, para.style); above+below != pv.space {
 			h := pv.h - pv.space + above + below
 			v.hs.add(p, float64(h-pv.h), 0)
@@ -570,7 +612,9 @@ func (v *view) paraLayout(p int) *paraView {
 	if compose != "" {
 		spans = append(spans, v.look.span(compose, typing, para.style))
 	}
-	shape := ui.TextShape{Width: v.look.width, Align: para.style.Align}
+	// The indent is on the side the paragraph starts at, the right of one
+	// reading right to left.
+	shape := ui.TextShape{Width: v.look.width, Align: para.style.Align, Indent: indent}
 	l := ui.ShapeRichTextWith(spans, v.paraFont(para.style), shape)
 	units := pv.units[:0]
 	units = append(units, 0)
@@ -591,7 +635,7 @@ func (v *view) paraLayout(p int) *paraView {
 		v.hs.add(p, float64(h), -1)
 	}
 	*pv = paraView{layout: l, units: units, id: para.id, runs: first, nruns: len(para.runs), style: para.style,
-		compose: composed, at: at, h: h, space: above + below}
+		compose: composed, at: at, h: h, space: above + below, indent: indent}
 	return pv
 }
 
@@ -771,6 +815,75 @@ func (v *view) place(h float32) {
 		}
 	}
 	v.last = min(p, n-1)
+}
+
+// ParagraphBox is where a paragraph is in an editor, as
+// Document.VisibleParagraphs gives it.
+type ParagraphBox struct {
+	// Index is the paragraph's, from 0, and Start the rune it starts at.
+	Index, Start int
+	// Top and Height are those of its lines, in DIPs from the top of the
+	// editor's element, scrolled: the room above and below the paragraph
+	// (a heading's margins, the spacing between paragraphs) is left out,
+	// so that a mark at Top lines up with its first line. Top is below 0
+	// for a paragraph scrolled partly out at the top.
+	Top, Height float32
+}
+
+// VisibleParagraphs returns the paragraphs in view in the editor showing
+// the document, from the first to the last, those partly in view
+// included, where the editor places them in this frame: an app lines up
+// a gutter beside it with them, as a timeline or the numbers of
+// paragraphs. A frame in which they move from where this said, as the
+// editor scrolls, its width changes or it reveals the caret, builds
+// another, so that what read them follows. It lays out only the
+// paragraphs in view, as painting the editor does.
+//
+// Call it on the main thread, as the view builds. It returns nil until an
+// editor showed the document, as in the first frame.
+func (d *Document) VisibleParagraphs() []ParagraphBox {
+	d.lock()
+	v := d.shownIn.Value()
+	d.mu.Unlock()
+	var boxes []ParagraphBox
+	if v != nil && v.doc == d && v.width > 0 {
+		v.sync()
+		v.layout(v.width, v.viewH)
+		boxes = v.boxes(nil)
+	}
+	d.lock()
+	d.read = true
+	d.boxes = append(d.boxes[:0], boxes...)
+	d.mu.Unlock()
+	return boxes
+}
+
+// boxes appends the boxes of the paragraphs in view to out.
+func (v *view) boxes(out []ParagraphBox) []ParagraphBox {
+	for i := v.first; i <= v.last && i < len(v.paras); i++ {
+		pv := v.paraLayout(i)
+		_, y := v.origin(i)
+		out = append(out, ParagraphBox{Index: i, Start: v.shown.paraStart(i), Top: v.padY + float32(y-v.scroll), Height: pv.h - pv.space})
+	}
+	return out
+}
+
+// moved asks for another frame when the app read the paragraphs in view
+// and they are no longer where it read them, as painting placed them
+// otherwise: the frame after builds the app's view with them again.
+func (v *view) moved() {
+	d := v.doc
+	d.lock()
+	read, was := d.read, d.boxes
+	d.read = false
+	d.mu.Unlock()
+	if !read {
+		return
+	}
+	v.placed = v.boxes(v.placed[:0])
+	if !slices.Equal(v.placed, was) {
+		v.services.Invalidate()
+	}
 }
 
 // forget drops the layouts of the paragraphs far from view, keeping their

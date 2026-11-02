@@ -5,6 +5,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/egoist/mygo/internal/text"
 	"github.com/egoist/mygo/ui"
 )
 
@@ -27,7 +28,9 @@ type Reveal struct {
 type RevealUnit uint8
 
 const (
-	// ByWord shows a word and the spaces after it at a time.
+	// ByWord shows a word and the spaces after it at a time. In Chinese
+	// and Japanese, written without spaces, each ideograph and kana is a
+	// word.
 	ByWord RevealUnit = iota
 	// ByCharacter shows a character at a time.
 	ByCharacter
@@ -134,9 +137,23 @@ func (rs *revealState) step(c *ui.Context, src string, streaming bool, r *Reveal
 func snap(src string, i, target int, u RevealUnit) int {
 	switch u {
 	case ByWord:
-		for i < target && src[i] != ' ' && src[i] != '\n' {
-			i++
+		// Up to a space, or to an ideograph or a kana, each a word: past
+		// the one i is at or inside, else up to the next.
+		at := i
+		for i > 0 && i < len(src) && !utf8.RuneStart(src[i]) {
+			i--
 		}
+		for i < target && src[i] != ' ' && src[i] != '\n' {
+			r, n := utf8.DecodeRuneInString(src[i:])
+			if text.StandsAlone(r) {
+				if i <= at {
+					i += n
+				}
+				break
+			}
+			i += n
+		}
+		i = min(i, target)
 		for i < target && (src[i] == ' ' || src[i] == '\n') {
 			i++
 		}

@@ -145,7 +145,7 @@ func gridPlace(e *node, s *gridScratch) (items []gridItem, nc, nr int) {
 	first := len(s.items)
 	nc = max(len(e.cols), 1)
 	for c := e.first; c != nil; c = c.next {
-		if c.flags&flagAbsolute != 0 {
+		if c.flags&flagAbsolute != 0 || c.hidden {
 			continue
 		}
 		it := gridItem{e: c, col: int(c.cell.col) - 1, row: int(c.cell.row) - 1, colSpan: int(c.cell.colSpan), rowSpan: int(c.cell.rowSpan)}
@@ -417,8 +417,8 @@ func sizeTracks(tracks []Track, n int, avail, gap float32, cs []contrib, minCont
 }
 
 // gridColumns sizes the columns of a grid placed in items, with room avail
-// in a content box cw wide (both inf when unknown), in the scratch.
-func gridColumns(e *node, s *gridScratch, items []gridItem, nc int, avail, cw float32, minContent bool) []float32 {
+// (inf when unknown), in the scratch.
+func gridColumns(e *node, s *gridScratch, items []gridItem, nc int, avail float32, minContent bool) []float32 {
 	first, cfirst := len(s.f), len(s.cs)
 	for range 2 * nc {
 		s.f = append(s.f, 0)
@@ -432,8 +432,11 @@ func gridColumns(e *node, s *gridScratch, items []gridItem, nc int, avail, cw fl
 		it := &items[i]
 		c := it.e
 		cs[i] = contrib{start: it.col, span: it.colSpan}
-		if v, ok := c.width.resolve(base(cw)); ok {
-			w := c.clampW(v, cw) + c.marginX()
+		// Percentages are of the item's cell, which the columns being
+		// sized make: until they are, they count as automatic sizes, as
+		// in CSS.
+		if v, ok := c.width.resolve(-1); ok {
+			w := c.clampW(v, inf) + c.marginX()
 			cs[i].min, cs[i].max = w, w
 		} else if contributes(e.cols, it.col, it.colSpan, avail, minContent) || e.c.rt.noLayoutCache {
 			cs[i].min = intrinsic(c, false) + c.marginX()
@@ -456,7 +459,7 @@ func gridIntrinsic(e *node, maxContent bool) float32 {
 		s.items, s.f = s.items[:firstItem], s.f[:firstF]
 	}()
 	items, nc, _ := gridPlace(e, s)
-	sizes := gridColumns(e, s, items, nc, inf, inf, !maxContent)
+	sizes := gridColumns(e, s, items, nc, inf, !maxContent)
 	w := e.gapX * float32(max(nc-1, 0))
 	for _, v := range sizes {
 		w += v
@@ -476,7 +479,7 @@ func gridLayout(e *node, cw, ch float32, commit bool) (usedW, usedH float32) {
 		s.items, s.f, s.cs = s.items[:firstItem], s.f[:firstF], s.cs[:firstC]
 	}()
 	items, nc, nr := gridPlace(e, s)
-	cols := gridColumns(e, s, items, nc, cw, cw, false)
+	cols := gridColumns(e, s, items, nc, cw, false)
 
 	// The rows, from the heights of the items at the widths their columns
 	// give them.
@@ -511,9 +514,11 @@ func gridLayout(e *node, cw, ch float32, commit bool) (usedW, usedH float32) {
 		for k := it.col; k < it.col+it.colSpan; k++ {
 			area += cols[k]
 		}
-		w, off := gridPlaceIn(c, area, c.width, c.marginX(), ms, me, gridJustify(e, c), cw, func(avail float32) float32 { return fitWidth(c, avail, cw) }, c.clampW)
+		w, off := gridPlaceIn(c, area, c.width, c.marginX(), ms, me, gridJustify(e, c), func(avail float32) float32 { return fitWidth(c, avail, area) }, c.clampW)
 		widths[i], offs[i] = w, off
-		h := heightAt(c, w, ch)
+		// Percentage heights count as automatic ones until the rows are
+		// sized.
+		h := heightAt(c, w, inf)
 		if it.rowSpan == 1 && byBaseline(c, align, e) {
 			layoutBox(c, w, h)
 			it.laidOut = true
@@ -575,16 +580,20 @@ func gridLayout(e *node, cw, ch float32, commit bool) (usedW, usedH float32) {
 		it := &items[i]
 		c := it.e
 		x := colAt[it.col] + offs[i]
+		aw := e.gapX * float32(it.colSpan-1)
+		for k := it.col; k < it.col+it.colSpan; k++ {
+			aw += cols[k]
+		}
 		ah := (e.gapY + betweenY) * float32(it.rowSpan-1)
 		for k := it.row; k < it.row+it.rowSpan; k++ {
 			ah += rows[k]
 		}
 		w := widths[i]
-		h, offY := gridPlaceIn(c, ah, c.height, c.marginY(), 0, 2, selfAlign(c, align), ch, func(float32) float32 {
+		h, offY := gridPlaceIn(c, ah, c.height, c.marginY(), 0, 2, selfAlign(c, align), func(float32) float32 {
 			if c.aspect > 0 {
-				return c.clampH(w/c.aspect, ch)
+				return c.clampH(w/c.aspect, ah)
 			}
-			return heightAt(c, w, ch)
+			return heightAt(c, w, ah)
 		}, c.clampH)
 		if it.laidOut {
 			offY = rowBase[it.row] - it.baseline + c.m(0)
@@ -603,7 +612,7 @@ func gridLayout(e *node, cw, ch float32, commit bool) (usedW, usedH float32) {
 		if !it.laidOut || h != c.h {
 			layoutBox(c, w, h)
 		}
-		dx, dy := c.relative(cw, ch)
+		dx, dy := c.relative(aw, ah)
 		c.x += dx
 		c.y += dy
 	}
@@ -625,14 +634,15 @@ func gridJustify(e, c *node) Align {
 // long, and returns its size and where it starts in the area, margin
 // included: its own size, or the area less its margins when it
 // stretches, placed as a says or as its automatic margins (indexes ms and
-// me of its margins) take the room left.
-func gridPlaceIn(c *node, area float32, size length, margins float32, ms, me int, a Align, cb float32, natural func(avail float32) float32, clamp func(v, cb float32) float32) (float32, float32) {
+// me of its margins) take the room left. Percentages are of the area, as
+// in CSS.
+func gridPlaceIn(c *node, area float32, size length, margins float32, ms, me int, a Align, natural func(avail float32) float32, clamp func(v, cb float32) float32) (float32, float32) {
 	autoS, autoE := isAuto(c.margin[ms]), isAuto(c.margin[me])
 	var v float32
-	if l, ok := size.resolve(base(cb)); ok {
-		v = clamp(l, cb)
+	if l, ok := size.resolve(base(area)); ok {
+		v = clamp(l, area)
 	} else if a == Stretch && !autoS && !autoE && c.kind != kindIcon && (c.aspect == 0 || ms%2 == 1) {
-		v = clamp(area-margins, cb)
+		v = clamp(area-margins, area)
 	} else {
 		v = natural(area - margins)
 	}

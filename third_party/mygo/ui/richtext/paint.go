@@ -62,10 +62,14 @@ func (v *view) paint(p *ui.Painter, r ui.Rect) {
 			p.Fill(ui.Rect{X: ox + cx, Y: oy + float32(cy-v.scroll), W: max(1/scale, 1), H: ch}, look.Caret, 0)
 		}
 	}
-	if total := v.hs.top(len(v.paras)); total > float64(h) {
-		top, size := v.thumbBox()
-		p.Fill(ui.Rect{X: r.X + r.W - 8, Y: r.Y + top, W: 5, H: size}, look.Text.Alpha(0.3), 2.5)
+	// The scroll bar while the pointer is over the editor or drags its
+	// thumb, as a scroll container's.
+	if v.inView || v.thumb {
+		bar := v.bar()
+		bar.Box.X, bar.Box.Y = r.X, r.Y
+		p.Scrollbar(bar, ui.ScrollbarState{Dragging: v.thumb})
 	}
+	v.moved()
 }
 
 // paintBlock paints what a paragraph of style st shows behind its text:
@@ -90,6 +94,12 @@ func (v *view) paintBlock(p *ui.Painter, i int, st ParagraphStyle, x, top, heigh
 		p.Clip(box, 0, func() { p.Fill(fill, look.CodeBlockBackground, radius) })
 	}
 	if st.Quote {
+		if i == 0 || !v.para(i-1).style.Quote {
+			// The spacing above the first paragraph of a quotation is
+			// outside it.
+			above, _ := v.space(i, st)
+			top, height = top+above, height-above
+		}
 		w := look.QuoteBarWidth
 		p.Fill(ui.Rect{X: x + indent, Y: top, W: w, H: height}, look.QuoteBar, w/2)
 	}
@@ -220,10 +230,10 @@ func (v *view) paintAttachments(p *ui.Painter, i int, pv *paraView, x, y float32
 	ps := v.shown.paraStart(i)
 	for _, o := range objects {
 		l := pv.runeOfUnit(o.Index)
-		at := v.shown.AttributesAt(v.global(i, l)).Attachment
 		if v.compose != "" && v.shown.paraAt(v.caret) == i && l >= v.caret-ps && l < v.caret-ps+len([]rune(v.compose)) {
 			continue
 		}
+		at := v.shown.AttributesAt(v.global(i, l)).Attachment
 		r := ui.Rect{X: x + o.Rect.X, Y: y + o.Rect.Y, W: o.Rect.W, H: o.Rect.H}
 		switch {
 		case at == nil:

@@ -389,6 +389,8 @@ func doubleClick() platform.DoubleClick {
 	return platform.DoubleClick{Time: time.Duration(ms) * time.Millisecond, DX: float64(distance), DY: float64(distance)}
 }
 
+// Preferences reads GTK's animations setting, and the accent, contrast
+// and text size the desktop portal gives, as GNOME's and KDE's do.
 // gtkAccentColor reads the symbolic color GTK uses for highlighted controls.
 // Prefer a native UI surface's style context, then a window, then a temporary
 // window; this resolves the theme around the app rather than a generic one.

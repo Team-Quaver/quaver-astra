@@ -521,7 +521,7 @@ func (x *pixels) Begin(op *scene.EffectOp, rect scene.Rect, radii [4]float32) {
 	x.in.Uniforms = op.Uniforms
 	x.in.Images = x.in.Images[:0]
 	for _, img := range op.Images {
-		if img == nil || len(img.Pix) < 4*img.W*img.H {
+		if img == nil || len(img.Pixels()) < 4*img.W*img.H { // a released bitmap's come back
 			x.in.Images = append(x.in.Images, nil)
 		} else {
 			x.in.Images = append(x.in.Images, sceneImage{img})

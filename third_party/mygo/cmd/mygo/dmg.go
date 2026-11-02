@@ -15,15 +15,17 @@ import (
 // finderHasCustomIcon is the Finder flag of folders with a custom icon.
 const finderHasCustomIcon = 0x0400
 
-// dmgFileName is "<Name> <Version> <arch>.dmg", as "My App 1.2.0
-// arm64.dmg", or "<Name> <Version>.dmg" for darwin/universal, which is for
-// every Mac: each architecture's disk image is named apart, so that the
-// builds of two, uploaded to one release or bucket, keep both.
+// dmgFileName is "<slug>-<version>-<arch>.dmg", as
+// "my-app-1.2.0-arm64.dmg", or "<slug>-<version>.dmg" for darwin/universal,
+// which is for every Mac: each architecture's disk image is named apart, so
+// that the builds of two, uploaded to one release or bucket, keep both.
+// The slug keeps the name whole where it is uploaded, as GitHub drops what
+// is not ASCII from the names of a release's files.
 func dmgFileName(c *Config, goarch string) string {
 	if goarch == "universal" {
-		return fsName(c.Name) + " " + fsName(c.Version) + ".dmg"
+		return c.slug() + "-" + fsName(c.Version) + ".dmg"
 	}
-	return fsName(c.Name) + " " + fsName(c.Version) + " " + goarch + ".dmg"
+	return c.slug() + "-" + fsName(c.Version) + "-" + goarch + ".dmg"
 }
 
 // buildDMG packages app, built for goarch, into a compressed, read-only
@@ -105,7 +107,7 @@ func buildDMG(c *Config, app, dir, goarch string, opts buildOptions) (_ string, 
 	// LZMA gives the smallest images; it needs macOS 10.15, below the
 	// minimum MyGo supports.
 	dmg := filepath.Join(dir, file)
-	if err := command("hdiutil", "convert", rw, "-format", "ULMO", "-ov", "-o", dmg); err != nil {
+	if err := convertDMG(rw, dmg); err != nil {
 		return "", err
 	}
 	if opts.sign != "-" {
@@ -126,6 +128,17 @@ func buildDMG(c *Config, app, dir, goarch string, opts buildOptions) (_ string, 
 		}
 	}
 	return dmg, nil
+}
+
+// convertDMG writes rw as a compressed read-only image. macOS 27 fails
+// "hdiutil convert" with "Resource temporarily unavailable", and asks for
+// "diskutil image create from" instead, which overwrites dmg as -ov does;
+// older systems, whose diskutil has no image verb, use hdiutil.
+func convertDMG(rw, dmg string) error {
+	if exec.Command("diskutil", "image", "create", "from", "-h").Run() == nil {
+		return command("diskutil", "image", "create", "from", "--format", "ULMO", rw, dmg)
+	}
+	return command("hdiutil", "convert", rw, "-format", "ULMO", "-ov", "-o", dmg)
 }
 
 // hdiutilCreateArgs creates a writable HFS+ image of src, as large as its

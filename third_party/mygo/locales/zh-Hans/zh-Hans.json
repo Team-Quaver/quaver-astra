@@ -182,5 +182,11 @@
   "clipboardRead": "某程序想要读取剪贴板",
   "clipboardReadAllow": "允许",
   "clipboardReadDeny": "拒绝",
-  "clipboardReadEmpty": "剪贴板中没有文本。"
+  "clipboardReadEmpty": "剪贴板中没有文本。",
+  "decimalInvalid": "请输入数字",
+  "decimalWhole": "请输入整数",
+  "decimalPlaces": "{n, plural, other {最多保留 # 位小数}}",
+  "decimalAtLeast": "请输入不小于 {min} 的值",
+  "decimalAtMost": "请输入不大于 {max} 的值",
+  "desktopShortcut": "创建桌面快捷方式"
 }
