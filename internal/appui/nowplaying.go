@@ -90,8 +90,9 @@ func npCoverSize(c *ui.Context) float32 {
 // 动效（对齐主项目 .np）：整体上滑 + 淡入，.34s cubic-bezier(.32,.72,.24,1)；
 // 关闭时同样滑回下方（MyGo 的 Exit 会给退场元素留一份副本，兄弟不为它留位）。
 func (a *App) nowPlaying(c *ui.Context, t *ui.Theme) {
-	a.advanceLyricFollow(c)
 	cur, hasCur := a.PL.Current()
+	a.resetLyricFollowOnSongChange(cur.Mid)
+	a.advanceLyricFollow(c)
 	coverLarge := ""
 	if hasCur {
 		coverLarge = coverURL(cur.AlbumPmid, cur.AlbumMid, 500)
@@ -433,7 +434,10 @@ func (a *App) lyricColumn(c *ui.Context, t *ui.Theme) {
 
 	if state == "ok" && cur >= 0 && cur != a.lastLyricLine {
 		a.lastLyricLine = cur
-		a.followLyricLine(cur)
+		// 用户滚动后的静默期里只记当前句，不把列表拽回去。
+		if !a.lyricFollowPaused(c.Now()) {
+			a.followLyricLine(cur)
+		}
 	}
 
 	ui.Column(c).Grow(1).Fill().Gap(8).Children(func() {
@@ -471,10 +475,34 @@ func (a *App) lyricList(c *ui.Context, n, cur int, row func(int)) ui.Element {
 	pad := npListPadding(c)
 	el := ui.List(c, &a.npList, n, row).Grow(1).Padding(pad, 0, pad, 0).
 		TrackScroll(&a.npScroll)
+	// 滚轮（含触控板）在这里先记一笔：事件返回 false，列表照常滚。拖动
+	// 滚动条不经过元素事件，靠 advanceLyricFollow 的偏移差兜住。
+	el.HandleInput(func(ev ui.InputEvent) bool {
+		if ev.Kind == ui.InputScroll {
+			a.pauseLyricFollow(ev.Time)
+		}
+		return false
+	})
 	a.npListRect = el.LayoutBounds()
 	if f := &a.npFollow; f.pending && f.line == cur {
 		f.pending = false
 		a.npList.ScrollTo(cur, ui.Center)
+		// 这次居中是我们自己滚的，下一帧的偏移差不是用户滚动。
+		a.npScrollAbsorb, a.npScrollAbsorbAt = true, c.Now()
+		// 用户滚远后静默期结束：当前句可能根本不在已建的行里，只能瞬移
+		// 过去。瞬移用一次淡入兜住，别让歌词硬切一下。
+		if a.npResume {
+			a.npResume, a.npSnapAt = false, c.Now()
+		}
+	}
+	if !a.npSnapAt.IsZero() {
+		k, moving := motion{start: a.npSnapAt, dur: 220 * time.Millisecond, ease: ui.EaseOut}.at(c.Now())
+		el.Opacity(k)
+		if moving {
+			c.AnimationFrame()
+		} else {
+			a.npSnapAt = time.Time{}
+		}
 	}
 	return el
 }
@@ -487,7 +515,9 @@ func (a *App) lyricColumnAMLL(c *ui.Context, t *ui.Theme, data stageLyricData) {
 	cur := stageIndexAt(data.lines, a.PL.Position())
 	if cur >= 0 && cur != a.lastLyricLine {
 		a.lastLyricLine = cur
-		a.followLyricLine(cur)
+		if !a.lyricFollowPaused(c.Now()) {
+			a.followLyricLine(cur)
+		}
 	}
 	ui.Column(c).Grow(1).Fill().Gap(8).Children(func() {
 		a.npList.Label = func(i int) string { return data.lines[i].Text }

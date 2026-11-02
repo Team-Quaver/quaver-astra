@@ -94,8 +94,29 @@ type App struct {
 	// 实际偏移，和 LayoutBounds 同口径，用来算居中目标。
 	npScroll   ui.ScrollState
 	npListRect ui.Rect
-	npShown    float32
+	npShown    float32 // npRowRect 这份几何对应的列表偏移
+	npPassOff  float32 // 本趟 build 开始时 npScroll.Y（即上一次布局的偏移）
+	npRowLine  int     // npRowRect 是哪一句的行号
+	npRowRect  ui.Rect // 上一次算目标时当前句的 LayoutBounds
 	npFollow   lyricFollow
+	// npFollowPause 是用户滚过歌词列表后的静默截止时间：在它之前换行不
+	// 自动把列表拽回当前句，好让用户找歌词、点歌词。见 lyricfollow.go。
+	npFollowPause time.Time
+	// npScrollSeen 是上一帧结束时列表的偏移，用来认出帧与帧之间由用户
+	// （滚轮、拖动滚动条）造成的位移；npScrollAbsorb 是「下一帧的偏移
+	// 是我们自己滚的」，不计为用户滚动。
+	npScrollSeen     float32
+	npScrollSeenOK   bool
+	npScrollAbsorb   bool
+	npScrollAbsorbAt time.Time
+	npWrote          bool // 上一帧的偏移是跟随动画写的
+	// npResume/npSnapAt：静默期结束、当前句又不在已建的行里时，列表只能
+	// 瞬间跳过去；npSnapAt 让这一跳淡入，而不是硬切。
+	npResume bool
+	npSnapAt time.Time
+	// npSongKey 是歌词跟随所属的曲目（Mid）。换曲时清掉上一首的偏移与
+	// 动画，新歌从第一句重新开始。
+	npSongKey string
 
 	// media 是系统媒体控制中心会话（Linux MPRIS / Windows SMTC），
 	// 在 New 建立会话，Attach 时补窗口句柄，Close 时注销。

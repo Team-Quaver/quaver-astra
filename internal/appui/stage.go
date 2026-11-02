@@ -110,7 +110,9 @@ func (a *App) foliaStage(c *ui.Context, t *ui.Theme, cur player.Song, hasCur boo
 	curLine := stageIndexAt(data.lines, pos)
 	if data.state == "ok" && curLine >= 0 && curLine != a.lastLyricLine {
 		a.lastLyricLine = curLine
-		a.followLyricLine(curLine)
+		if !a.lyricFollowPaused(c.Now()) {
+			a.followLyricLine(curLine)
+		}
 	}
 
 	a.foliaAtmosphere(c, t, cur)

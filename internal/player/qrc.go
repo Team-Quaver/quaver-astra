@@ -123,8 +123,6 @@ func (l QrcLine) WordFills(t float64, out []float32) []float32 {
 }
 
 var (
-	// XML 信封里的歌词属性：老版本是 LyricContent，新版本是 Lyrics。
-	reQrcXMLAttr = regexp.MustCompile(`(?:LyricContent|Lyrics)="([^"]*)"`)
 	// 行：[start,dur]正文
 	reQrcLine = regexp.MustCompile(`^\[(\d+),(\d+)\](.*)$`)
 	// 词：正文(start,dur)——括号里必须是两个整数，才不会把歌词里的
@@ -178,8 +176,8 @@ func HasWordTiming(lines []QrcLine) bool {
 // extractQRCContent 从 XML 信封里抽出歌词正文并还原实体；不是信封时
 // 原样返回。&#10; / 字面 \n 都还原成换行。
 func extractQRCContent(s string) string {
-	if m := reQrcXMLAttr.FindStringSubmatch(s); m != nil {
-		s = m[1]
+	if v, ok := qrcEnvelopeValue(s); ok {
+		s = v
 	}
 	s = decodeXMLEntities(s)
 	// 有些来源把换行写成字面量 \n（两个字符）。
@@ -187,6 +185,60 @@ func extractQRCContent(s string) string {
 		s = strings.ReplaceAll(s, `\n`, "\n")
 	}
 	return s
+}
+
+// qrcEnvelopeValue 取出 Lyrics / LyricContent 属性的值。
+//
+// 不能按「到下一个双引号为止」取：上游偶尔没把歌词正文里的双引号转义
+// （例如 He told me "don't worry"），那样会在第一个引号处截断，后面整段
+// 歌词都消失。这里只把「后面到标签结束前只剩空白和 /」的引号当成属性的
+// 收尾，正文里的引号不受影响。
+func qrcEnvelopeValue(s string) (string, bool) {
+	for _, name := range []string{"Lyrics", "LyricContent"} {
+		start, ok := qrcAttrValueStart(s, name)
+		if !ok {
+			continue
+		}
+		for i := start; i < len(s); i++ {
+			if s[i] != '"' {
+				continue
+			}
+			j := i + 1
+			for j < len(s) && (s[j] == ' ' || s[j] == '\t' || s[j] == '\r' || s[j] == '\n' || s[j] == '/') {
+				j++
+			}
+			if j < len(s) && s[j] == '>' {
+				return s[start:i], true
+			}
+		}
+	}
+	return "", false
+}
+
+// qrcAttrValueStart 找到 name=" 之后正文开始的位置。
+func qrcAttrValueStart(s, name string) (int, bool) {
+	at := strings.Index(s, name)
+	for at >= 0 {
+		i := at + len(name)
+		for i < len(s) && (s[i] == ' ' || s[i] == '\t' || s[i] == '\r' || s[i] == '\n') {
+			i++
+		}
+		if i < len(s) && s[i] == '=' {
+			i++
+			for i < len(s) && (s[i] == ' ' || s[i] == '\t' || s[i] == '\r' || s[i] == '\n') {
+				i++
+			}
+			if i < len(s) && s[i] == '"' {
+				return i + 1, true
+			}
+		}
+		next := strings.Index(s[at+len(name):], name)
+		if next < 0 {
+			break
+		}
+		at += len(name) + next
+	}
+	return 0, false
 }
 
 // decodeXMLEntities 还原 XML 属性值里的实体。&amp; 最后替换，避免二次解码。
