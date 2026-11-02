@@ -21,7 +21,6 @@ client, named after the directory (src/locales.ts).`)
 	}
 	if *out != "" {
 		c.Bindings = *out
-		c.frontend = true
 	}
 	if c.Bindings == "" && c.I18n == nil {
 		return fmt.Errorf("the project has no frontend to write a client for: set bindings in %s, or pass -o", c.configName())

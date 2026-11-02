@@ -21,13 +21,15 @@ type Stroke struct{ X0, X1, Top, Bottom float32 }
 
 // decoRange is what an engine decorates: glyphs [i, j) of a line of a
 // layout whose origin is at (x, y) DIPs, runes of one style whose font is
-// font, at scale pixels per DIP, with decoration d.
+// font, shift DIPs above the line's baseline (Span.BaselineShift), at
+// scale pixels per DIP, with decoration d.
 type decoRange struct {
 	l     *Layout
 	line  *Line
 	i, j  int
 	font  *Font
 	x, y  float32
+	shift float32
 	scale float32
 	d     Decoration
 }
@@ -51,11 +53,12 @@ func (s *System) Decorate(l *Layout, li, i, j int, x, y, scale float32, d Decora
 		return nil
 	}
 	style := l.Params.Style
+	var shift float32
 	if l.Params.Spans != "" {
 		r := line.Glyphs[i].Cluster
 		for _, sp := range DecodeSpans(l.Params.Spans) {
 			if r < sp.End {
-				style = sp.style(style)
+				style, shift = sp.style(style), sp.BaselineShift
 				break
 			}
 		}
@@ -64,7 +67,7 @@ func (s *System) Decorate(l *Layout, li, i, j int, x, y, scale float32, d Decora
 	if f == nil {
 		return nil
 	}
-	strokes := s.engine().decorate(decoRange{l: l, line: line, i: i, j: j, font: f, x: x, y: y, scale: scale, d: d})
+	strokes := s.engine().decorate(decoRange{l: l, line: line, i: i, j: j, font: f, x: x, y: y, shift: shift, scale: scale, d: d})
 	if thick > 0 {
 		h := max(float32(math.Round(float64(thick*scale))), 1)
 		for k := range strokes {
@@ -109,9 +112,9 @@ func (r *decoRange) rune(k int) rune {
 	return 0
 }
 
-// baseline returns the baseline of the line, in DIPs from the top, as
-// laid out.
-func (r *decoRange) baseline() float32 { return r.y + r.line.Baseline }
+// baseline returns the baseline of the range's glyphs, in DIPs from the
+// top, as laid out: the line's, unless their span shifts them.
+func (r *decoRange) baseline() float32 { return r.y + r.line.Baseline - r.shift }
 
 // cut returns [x0, x1] less the intervals of cuts, leaving out pieces no
 // longer than min.

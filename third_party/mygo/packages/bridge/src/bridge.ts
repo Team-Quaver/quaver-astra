@@ -1,7 +1,10 @@
 // Entry point of the script MyGo injects at document start into every page.
 // The Go side wraps the bundle in a function that defines __MYGO_CONFIG__.
+import { contextTarget } from "./context-menu";
 import { find, stopFind } from "./find";
+import { type FitLimits, fitContent } from "./fit-content";
 import { createRuntime } from "./runtime";
+import { watchThemeColor } from "./theme-color";
 import type { BridgeConfig, ThemePreferences } from "./types";
 
 declare const __MYGO_CONFIG__: BridgeConfig;
@@ -9,6 +12,14 @@ declare const __MYGO_CONFIG__: BridgeConfig;
 // Elements that keep receiving clicks inside a drag region.
 const INTERACTIVE =
   'input,textarea,select,button,a[href],summary,label,[contenteditable]:not([contenteditable="false"]),video[controls],audio[controls]';
+
+// MyGo's own style sheet, declared before the bridge starts, which sets it.
+/** The MyGo CSS variables of :root, kept from every source that sets one. */
+const rootVars: Record<string, string | null> = {};
+/** The rule of FitContent, which lays the root out at its content's size. */
+let fitCSS = "";
+let rootSheet: CSSStyleSheet | null = null;
+let rootStyle: HTMLStyleElement | null = null;
 
 (() => {
   const w = window as any;
@@ -52,10 +63,37 @@ const INTERACTIVE =
     }
   };
 
-  if (document.readyState === "loading") {
-    document.addEventListener("DOMContentLoaded", () => notify("dom-ready"), { once: true });
-  } else {
+  // The page's theme color, for Page.ThemeColor; told before dom-ready, so
+  // that Go knows it once the DOM is.
+  const themeColorReady = watchThemeColor((v) => {
+    try {
+      post(JSON.stringify({ t: "theme-color", v }));
+    } catch {
+      // The page is being torn down.
+    }
+  });
+  // A window that takes its content's size (FitContent): told before
+  // dom-ready too, so that a window that shows once its DOM is ready shows
+  // at its size.
+  const fit =
+    __MYGO_CONFIG__.fit &&
+    fitContent(__MYGO_CONFIG__.fit, setFitRule, (size) => {
+      try {
+        post(JSON.stringify({ t: "content-size", ...size }));
+      } catch {
+        // The page is being torn down.
+      }
+    });
+  if (fit) runtime.on<FitLimits>("mygo:fit-content", fit.setLimits);
+  const domReady = () => {
+    themeColorReady();
+    if (fit) fit.start();
     notify("dom-ready");
+  };
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", domReady, { once: true });
+  } else {
+    domReady();
   }
 
   const nativeRegion = typeof CSS !== "undefined" && CSS.supports("-webkit-app-region", "drag");
@@ -115,6 +153,24 @@ const INTERACTIVE =
     });
   });
 
+  // What a context menu opens on (Page.OnContextMenu), told as the event
+  // starts, ahead of the page's own handlers: Go hears it before the web
+  // view asks about its menu, which a handler that cancels the event
+  // keeps from opening. The element is the innermost, inside shadow roots.
+  w.addEventListener(
+    "contextmenu",
+    (e: MouseEvent) => {
+      const el = e.composedPath()[0];
+      const target = contextTarget(el instanceof Element ? el : null, getSelection()?.toString() ?? "");
+      try {
+        post(JSON.stringify({ t: "context-menu", x: e.clientX, y: e.clientY, ...target }));
+      } catch {
+        // The page is being torn down.
+      }
+    },
+    true,
+  );
+
   // Frameless windows: `--app-region: drag` (or `-webkit-app-region: drag`
   // where the engine supports it) turns an element into a window handle.
   w.addEventListener(
@@ -136,23 +192,26 @@ interface TitleBar {
   right: number;
 }
 
-/** The MyGo CSS variables of :root, kept from every source that sets one. */
-const rootVars: Record<string, string | null> = {};
-
 /** Sets MyGo's CSS variables of :root, keeping the ones already set. A null
  * value removes a variable, so a page's `var(--mygo-accent, AccentColor)`
  * fallback applies. */
 function setRootVars(vars: Record<string, string | null>): void {
   Object.assign(rootVars, vars);
+  updateRootStyle();
+}
+
+function setFitRule(css: string): void {
+  fitCSS = css;
+  updateRootStyle();
+}
+
+function updateRootStyle(): void {
   const decls = Object.entries(rootVars)
     .filter(([, v]) => v !== null)
     .map(([k, v]) => `${k}:${v}`)
     .join(";");
-  setRootStyle(decls ? `:root{${decls}}` : "");
+  setRootStyle((decls ? `:root{${decls}}` : "") + fitCSS);
 }
-
-let rootSheet: CSSStyleSheet | null = null;
-let rootStyle: HTMLStyleElement | null = null;
 
 /** Sets the rules of MyGo's own style sheet, which a Content Security Policy
  * allows as a constructed sheet. Engines without them get a style element. */

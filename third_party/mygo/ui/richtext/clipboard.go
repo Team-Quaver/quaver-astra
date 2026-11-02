@@ -82,6 +82,11 @@ func encodeClip(t Text) []byte {
 	lastCopy.Store(name)
 	c := clipOf(t)
 	c.Copy = name
+	for i := range c.Paragraphs {
+		// IDs are the app's, of paragraphs where they are: a paste
+		// makes new ones (Text.Replace).
+		c.Paragraphs[i].Style.ID = ""
+	}
 	b, _ := json.Marshal(c)
 	return b
 }

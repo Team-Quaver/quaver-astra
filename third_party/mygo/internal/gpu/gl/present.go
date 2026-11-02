@@ -8,6 +8,9 @@ import (
 	"unsafe"
 )
 
+// errNoContext is the error of drawing without a current context.
+var errNoContext = errors.New("gl: no current context")
+
 // Presenter shows frames drawn in memory in the bound framebuffer: what a
 // GtkGLArea shows when its content draws on the CPU after all, as when the
 // GL renderer fails. GTK shows only what OpenGL draws into a GtkGLArea.
@@ -27,13 +30,13 @@ func (p *Presenter) Present(pix []byte, stride, width, height int) error {
 	}
 	c := currentContext()
 	if currentGDKContext != nil && c == 0 {
-		return fmt.Errorf("gl: no current OpenGL context")
+		return errors.New("gl: no current OpenGL context")
 	}
 	if width <= 0 || height <= 0 || len(pix) < stride*(height-1)+4*width {
 		return nil
 	}
 	if !hasContext() {
-		return errors.New("gl: no current context")
+		return errNoContext
 	}
 	if c != p.context {
 		// A new context: the old one took the texture with it.

@@ -164,7 +164,7 @@ func TestResourceErrors(t *testing.T) {
 	if got := names("darwin"); !slices.Equal(got, []string{"AppIcon.icns"}) {
 		t.Errorf("darwin reserved %q", got)
 	}
-	if got := names("windows"); !slices.Equal(got, []string{"My App.exe"}) {
+	if got := names("windows"); !slices.Equal(got, []string{"My App.exe", "install.ps1"}) {
 		t.Errorf("windows reserved %q", got)
 	}
 	if got := names("linux"); !slices.Equal(got, []string{"my-app", "my-app.desktop", "my-app.png", "my-app.xml", "install.sh"}) {

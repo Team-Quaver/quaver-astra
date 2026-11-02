@@ -643,6 +643,21 @@ func (c *Client) MusicCacheStatus() (MusicCacheStatus, error) {
 	return out, err
 }
 
+// ClearMusicCache 清空本地音乐缓存（索引、所有分片与正在使用的读取句柄）。
+func (c *Client) ClearMusicCache() (MusicCacheStatus, error) {
+	var out MusicCacheStatus
+	err := c.postJSONInto("/cache/music/clear", map[string]any{}, &out)
+	return out, err
+}
+
+// SetMusicCacheLimit 设置缓存上限（字节）；0 表示回到后端默认上限。
+// 超限时后端按最近最少使用（按写入时间）淘汰到上限以内。
+func (c *Client) SetMusicCacheLimit(bytes int64) (MusicCacheStatus, error) {
+	var out MusicCacheStatus
+	err := c.postJSONInto("/cache/music/limit", map[string]any{"bytes": bytes}, &out)
+	return out, err
+}
+
 // ReportListenTime 提交 QQ 音乐音响力物理流水。确定性失败（未登录、
 // 参数无效、上游明确拒绝）返回 ok=false，调用方不应重试。
 func (c *Client) ReportListenTime(report SoundPowerReport) (SoundPowerResult, error) {

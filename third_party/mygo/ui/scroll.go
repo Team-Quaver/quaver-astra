@@ -217,6 +217,9 @@ func revealAll(root *node, ids []uint64) {
 	found := make([]*node, len(ids))
 	var walk func(e *node)
 	walk = func(e *node) {
+		if e.hidden {
+			return // it has no box to show
+		}
 		if i := slices.Index(ids, e.id); i >= 0 && found[i] == nil {
 			found[i] = e
 		}
@@ -240,6 +243,11 @@ func reveal(e *node) {
 		e = e.parent
 	}
 	x, y, w, h := e.x, e.y, e.w, e.h
+	if r, ok := clientCaret(e); ok {
+		// An app's text field shows its caret: the text it edits may be
+		// taller than the view, as a code editor as high as its lines.
+		x, y, w, h = x+r.X, y+r.Y, max(r.W, 1), r.H
+	}
 	frame := e.c.rt.frame
 	for ch, p := e, e.parent; p != nil; ch, p = p, p.parent {
 		if p.scrolls() && ch.flags&flagAbsolute == 0 {
@@ -279,6 +287,23 @@ func reveal(e *node) {
 		x += p.x
 		y += p.y
 	}
+}
+
+// clientCaret returns the box of the caret of an element with an app's
+// TextInputClient, relative to the element, as the client places it.
+// TextInput and TextArea reveal their whole box, and scroll their caret
+// into view themselves.
+func clientCaret(e *node) (Rect, bool) {
+	if e.textClient == nil || e.st == nil || e.st.editor != nil {
+		return Rect{}, false
+	}
+	sel := e.textClient.Selection()
+	at := sel.Range.End
+	if sel.Reversed {
+		at = sel.Range.Start
+	}
+	r, _, ok := e.textClient.BoundsForRange(TextInputRange{Start: at, End: at})
+	return r, ok && r.H > 0
 }
 
 // nearest returns the offset that shows what spans [pos, pos+size) of a

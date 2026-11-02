@@ -11,7 +11,8 @@ does. A notch of a mouse wheel glides over a short ease out, as browsers
 scroll it, and notches in a row add up, until the app scrolls the
 container (a `ScrollState`, a `ListState`'s `ScrollTo`, `ScrollIntoView`
 and `ScrollToEnd`, or `ScrollIntoView` of an element in it), which takes
-over; a touchpad follows the fingers, and while the desktop asks for less
+over; a touchpad follows the fingers, as a finger dragged on a
+touchscreen does on Linux, and while the desktop asks for less
 motion, a notch scrolls at once.
 
 ```go
@@ -73,7 +74,11 @@ if app.added {
 }
 ```
 
-The keyboard focus scrolls into view as it moves.
+The keyboard focus scrolls into view as it moves. An element with a
+`TextInputClient` of the app's ([text input clients](text-input-client.md))
+scrolls its caret into view, where `BoundsForRange` places it, rather than
+its whole box: a code editor as high as its lines shows the line being
+edited as it takes the focus, not its first.
 
 ## Scroll bars
 
@@ -93,6 +98,25 @@ and UIKit's do:
 ui.Scroll(c).Fill().Padding(64, 16, 16).ScrollbarInsets(64, 0, 0).Children(func() { /* ... */ })
 // The toolbar floats over the top 64 DIPs.
 ui.Row(c).Absolute().Top(0).Left(0).Right(0).Height(64).Children(func() { /* ... */ })
+```
+
+`Scrollbars(false)` takes the bars away, and the presses on them, from a
+container that draws its own chrome or shows where it is by itself, as a
+carousel or a map: the wheel, `TrackScroll`, the keyboard and assistive
+technology still scroll it.
+
+An element that scrolls itself rather than through a container, as the
+code editor and the terminal do, draws its bars with `ui.Scrollbar`, so
+that they look as the containers' do and follow the theme: `Painter.Scrollbar`
+paints the thumb, and `Thumb` and `OffsetAt` map a drag of it to an
+offset. Show it as a container does, while the
+pointer is over the element or drags the thumb:
+
+```go
+bar := ui.Scrollbar{Box: r, View: r.H, Content: contentH, Offset: scrollY}
+if hovered || dragging {
+	p.Scrollbar(bar, ui.ScrollbarState{Dragging: dragging})
+}
 ```
 
 An element inside that zooms or pans with the wheel, the touchpad and

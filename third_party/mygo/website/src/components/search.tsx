@@ -91,13 +91,13 @@ export function Search() {
         variant="outline"
         onClick={() => setOpen(true)}
         onPointerEnter={() => void loadIndex().catch(() => {})}
-        className="hidden h-8 w-56 justify-start gap-2 bg-muted/40 px-2.5 font-normal text-muted-foreground shadow-none hover:bg-muted md:flex dark:bg-muted/30"
+        className="hidden h-8 w-56 justify-start gap-2 bg-muted/40 px-2.5 font-normal text-muted-foreground shadow-none hover:bg-muted lg:flex dark:bg-muted/30"
       >
         <SearchIcon />
         Search docs…
         <Kbd className="ml-auto border bg-background">{mac ? "⌘K" : "Ctrl K"}</Kbd>
       </Button>
-      <Button variant="ghost" size="icon" onClick={() => setOpen(true)} className="md:hidden" aria-label="Search docs">
+      <Button variant="ghost" size="icon" onClick={() => setOpen(true)} className="lg:hidden" aria-label="Search docs">
         <SearchIcon />
       </Button>
       <Dialog open={open} onOpenChange={setOpen}>

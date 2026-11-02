@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/egoist/mygo/ui"
 )
@@ -20,6 +21,8 @@ type frame struct {
 	first, last int
 	matches     []diffRange
 	current     diffRange
+	// texts are the app's text backgrounds in the lines in view.
+	texts       []TextBackground
 	occurrence  string
 	brackets    [2]Range
 	bracketsOK  bool
@@ -104,6 +107,9 @@ func (ed *editor) paint(p *ui.Painter, r ui.Rect) {
 	clip := p.Visible()
 	y0 := ed.scrollY + float64(max(0, clip.Y-r.Y))
 	y1 := ed.scrollY + float64(min(r.H, clip.Y+clip.H-r.Y))
+	// The horizontal scroll bar at the bottom of what shows, as an editor
+	// as high as its content may run far below the window's.
+	ed.hbarY = max(0, min(r.H, clip.Y+clip.H-r.Y)) - scrollbarWidth
 	var f frame
 	f.first, f.last = ed.visibleLines(y0, y1)
 	ed.shown = [2]int{f.first, f.last}
@@ -152,6 +158,11 @@ func (ed *editor) prepare(f *frame) {
 		f.matches = m[i:j]
 		if ed.find.current < len(m) {
 			f.current = m[ed.find.current]
+		}
+	}
+	for _, b := range ed.o.textBgs {
+		if b.Start < b.End && b.End > a && b.Start < z && b.Color.A > 0 {
+			f.texts = append(f.texts, b)
 		}
 	}
 	p := ed.primary()
@@ -297,7 +308,7 @@ func (ed *editor) paintBlock(p *ui.Painter, r ui.Rect, b *block, top float64) {
 	if br.Y > p.Visible().Y+p.Visible().H || br.Y+br.H < p.Visible().Y {
 		return
 	}
-	ed.o.decor.paintBlock(p, ed, b, br)
+	ed.o.decor.paintBlock(p, ed, b, br, top)
 }
 
 // paintLine paints the rows of a line.
@@ -337,6 +348,14 @@ func (ed *editor) paintLine(p *ui.Painter, r ui.Rect, f *frame, line int, g line
 		}
 		if active && !lineSelected {
 			p.Fill(ui.Rect{X: textRect.X, Y: y, W: textRect.W, H: lh}, ct.ActiveLine, 0)
+		}
+		// The app's ranges of text, at characters' edges.
+		for _, b := range f.texts {
+			if b.End <= l.start || b.Start >= l.start+len(l.text) {
+				continue
+			}
+			a, z := runeAt(l.text, max(b.Start-l.start, 0)), runeAt(l.text, min(b.End-l.start, len(l.text)))
+			ed.fillRange(p, f, l, row, ox, y, l.toDisp(a, false), l.toDisp(z, false), b.Color, 0)
 		}
 		// Words a diff changed.
 		if ed.o.decor != nil {
@@ -485,6 +504,14 @@ func (s lineLook) word(ct *Theme, ed *editor) ui.Color {
 		return ct.Occurrence
 	}
 	return s.bar.Alpha(0.22)
+}
+
+// runeAt returns i, or the start of the character holding byte i of s.
+func runeAt(s string, i int) int {
+	for i > 0 && i < len(s) && !utf8.RuneStart(s[i]) {
+		i--
+	}
+	return i
 }
 
 // fillRange fills displayed bytes a to b of a row.
@@ -717,17 +744,39 @@ func (ed *editor) paintGutter(p *ui.Painter, r ui.Rect, f *frame) {
 }
 
 // paintBar draws a diff's change bar: solid for additions, striped for
-// deletions, as Pierre's, so the two differ without their colors.
+// deletions, as Pierre's, so the two differ without their colors. The
+// stripes keep to the content, not to r, so those of consecutive lines
+// make one pattern, which scrolls with them.
 func (ed *editor) paintBar(p *ui.Painter, r ui.Rect, s lineLook) {
 	if !s.stripes {
 		p.Fill(r, s.bar, 0)
 		return
 	}
-	p.Clip(r, 0, func() {
-		for y := r.Y; y < r.Y+r.H; y += 4 {
-			p.Fill(ui.Rect{X: r.X, Y: y, W: r.W, H: 2}, s.bar, 0)
+	barStripes(r, float64(r.Y-ed.r.Y)+ed.scrollY, func(sr ui.Rect) { p.Fill(sr, s.bar, 0) })
+}
+
+// barStripes calls fn with the stripes of a deletion bar r whose top is
+// at top in the content: 2 DIPs every 4 from the content's top, cut to r.
+func barStripes(r ui.Rect, top float64, fn func(ui.Rect)) {
+	const period, width = 4, 2
+	phase := math.Mod(top, period)
+	if phase < 0 {
+		phase += period
+	}
+	for y := r.Y - float32(phase); y < r.Y+r.H; y += period {
+		y0, y1 := max(y, r.Y), min(y+width, r.Y+r.H)
+		if y1 > y0 {
+			fn(ui.Rect{X: r.X, Y: y0, W: r.W, H: y1 - y0})
 		}
-	})
+	}
+}
+
+// barIn returns a scroll bar in the window, the element at r.
+func (ed *editor) barIn(r ui.Rect, horizontal bool) ui.Scrollbar {
+	b := ed.bar(horizontal)
+	b.Box.X += r.X
+	b.Box.Y += r.Y
+	return b
 }
 
 // paintScrollbars draws the scroll bars, the vertical one with markers
@@ -735,15 +784,13 @@ func (ed *editor) paintBar(p *ui.Painter, r ui.Rect, s lineLook) {
 func (ed *editor) paintScrollbars(p *ui.Painter, r ui.Rect, f *frame) {
 	v := &ed.view
 	ct := ed.theme
-	t := p.Theme()
 	vertical, horizontal := ed.scrollbars()
+	// The thumbs and the carets' marks show while the pointer is over the
+	// editor, or drags a thumb, as a scroll container's do; the marks of
+	// changes, matches and diagnostics always.
+	shown := ed.pointerIn || ed.scrollbar.active
 	if vertical {
 		x := r.X + r.W - scrollbarWidth
-		track := ui.Rect{X: x, Y: r.Y, W: scrollbarWidth, H: r.H}
-		hovered := ed.pointerIn && ed.region == regionVScroll
-		if hovered || ed.scrollbar.active {
-			p.Fill(track, t.Scrollbar.Alpha(0.15), 0)
-		}
 		span := float32(ed.scrollMax()) + ed.viewH
 		mark := func(y float64, h float32, x0, w float32, c ui.Color) {
 			yy := r.Y + float32(y/float64(span))*r.H
@@ -802,27 +849,18 @@ func (ed *editor) paintScrollbars(p *ui.Painter, r ui.Rect, f *frame) {
 			}
 			mark(h.top(v.text.LineOf(d.Start)), v.lineHeight, 7, 3, ct.SeverityColor(d.Severity))
 		}
+		if !shown {
+			return
+		}
 		// Carets.
 		if len(ed.sels) <= 100 {
 			for _, s := range ed.sels {
 				mark(h.top(v.text.LineOf(s.head)), 2, 0, scrollbarWidth, ct.Text.Alpha(0.5))
 			}
 		}
-		t0, t1 := ed.thumb(false)
-		thumb := ui.Rect{X: x + 2, Y: r.Y + t0, W: scrollbarWidth - 4, H: t1 - t0}
-		alpha := float32(0.5)
-		if hovered || ed.scrollbar.active {
-			alpha = 0.9
-		}
-		p.Fill(thumb, t.Scrollbar.Alpha(alpha), (scrollbarWidth-4)/2)
+		p.Scrollbar(ed.barIn(r, false), ui.ScrollbarState{Dragging: ed.scrollbar.active && !ed.scrollbar.horizontal})
 	}
-	if horizontal {
-		t0, t1 := ed.thumb(true)
-		y := r.Y + r.H - scrollbarWidth
-		alpha := float32(0.4)
-		if ed.pointerIn && ed.region == regionHScroll || ed.scrollbar.active {
-			alpha = 0.9
-		}
-		p.Fill(ui.Rect{X: r.X + ed.textX + t0, Y: y + 2, W: t1 - t0, H: scrollbarWidth - 4}, t.Scrollbar.Alpha(alpha), (scrollbarWidth-4)/2)
+	if horizontal && shown {
+		p.Scrollbar(ed.barIn(r, true), ui.ScrollbarState{Dragging: ed.scrollbar.active && ed.scrollbar.horizontal})
 	}
 }

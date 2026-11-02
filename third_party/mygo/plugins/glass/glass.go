@@ -35,6 +35,14 @@ type Glass struct {
 	// Interactive makes the glass grow a little while the element is
 	// pressed, as AppKit's interactive glass does.
 	Interactive bool
+	// Clarity, from 0 to 1, makes panes as large as sidebars clearer,
+	// the content under them reading through: 0, the default, is
+	// macOS's material, as frosty as a control's; 0.5 blurs half as much
+	// and lightens (or darkens) less; 1 is nearly clear. Panes up to 100
+	// DIPs keep their material whatever it is; it takes full effect from
+	// 200. On Clear glass, which barely tones already, it only lights the
+	// rim and curves the bezel.
+	Clarity float32
 }
 
 // Style is the material of Glass.
@@ -106,6 +114,9 @@ func (g Glass) String() string {
 	if g.Interactive {
 		s += " interactive"
 	}
+	if g.Clarity > 0 {
+		s += fmt.Sprintf(" clarity(%g)", g.Clarity)
+	}
 	return s
 }
 
@@ -124,32 +135,14 @@ func Paint(p *ui.Painter, r ui.Rect, radius float32, g Glass) {
 // pane, at most half of it, and bends what shows through by up to 1.6
 // times that, mirroring what is inside it, as AppKit's do; light comes
 // from above and below, along a rim a pixel wide, and the pane casts no
-// shadow, as NSGlassEffectView's and the glass bezel's do not.
+// shadow, as NSGlassEffectView's and the glass bezel's do not. Panes
+// large as sidebars and inspectors are clearer by the glass's Clarity
+// (paneMaterial).
 func paint(p *ui.Painter, box ui.Rect, radii [4]float32, g Glass) {
 	if box.W <= 0 || box.H <= 0 {
 		return
 	}
-	s := p.Scale()
-	m := min(box.W, box.H)
-	bezel := min(36, m/2)
-	mat := material{
-		bezel:      bezel * s,
-		refraction: 1.6 * bezel * s,
-		rim:        0.35,
-		rimWidth:   1,
-		light:      math.Pi / 2,
-	}
-	switch {
-	case g.Style == Clear:
-		mat.blur = s
-		mat.low, mat.high, mat.curve, mat.saturation = 0.125, 1.082, 1, 1
-	case p.Theme().Dark:
-		mat.blur = min(max(m*0.035, 1), 10) * s
-		mat.low, mat.high, mat.curve, mat.saturation = 0.15, 0.51, 2, 2.2
-	default:
-		mat.blur = min(max(m*0.035, 1), 10) * s
-		mat.low, mat.high, mat.curve, mat.saturation = 0.541, 1, 1.2, 1
-	}
+	mat := paneMaterial(min(box.W, box.H), p.Scale(), g.Clarity, g.Style == Clear, p.Theme().Dark)
 	if g.Tint.A > 0 {
 		mat.tint, mat.wideTint = p.EffectColor(g.Tint)
 		mat.tint[3] *= 0.88
@@ -157,3 +150,68 @@ func paint(p *ui.Painter, box ui.Rect, radii [4]float32, g Glass) {
 	}
 	p.Effect(Effect, box, radii, mat.blur, mat.params())
 }
+
+// paneMaterial is the material of a pane whose shorter side is m DIPs,
+// at scale s, of clarity k from 0 to 1, clear or regular, in dark mode or
+// light. Panes up to 100 DIPs, as controls, keep the measured material;
+// from 200, as sidebars and inspectors, theirs is clarity's; between, it
+// eases from one to the other. Clarity goes in two straight steps, each
+// half of it, from the measured material (frost) to a clearer one (mid),
+// the content under the pane reading through, and on to one nearly clear
+// (clear): see paneTone.
+func paneMaterial(m, s, k float32, clear, dark bool) material {
+	f := min(max((m-100)/100, 0), 1)
+	f = f * f * (3 - 2*f) // smoothstep
+	k = min(max(k, 0), 1)
+	if k != k { // NaN
+		k = 0
+	}
+	at := func(v paneTone) float32 { return v.frost + (v.at(k)-v.frost)*f }
+	bezel := min(at(paneBezel), m/2)
+	mat := material{
+		bezel:      bezel * s,
+		refraction: 1.6 * bezel * s,
+		rim:        at(paneRim),
+		rimWidth:   1,
+		light:      math.Pi / 2,
+	}
+	switch {
+	case clear:
+		mat.blur = s
+		mat.low, mat.high, mat.curve, mat.saturation = 0.125, 1.082, 1, 1
+	case dark:
+		mat.blur = min(max(m*0.035, 1), at(paneBlur)) * s
+		mat.low, mat.high, mat.curve, mat.saturation = at(paneDarkLow), at(paneDarkHigh), 2, 2.2
+	default:
+		mat.blur = min(max(m*0.035, 1), at(paneBlur)) * s
+		mat.low, mat.high, mat.curve, mat.saturation = at(paneLightLow), 1, 1.2, 1
+	}
+	return mat
+}
+
+// paneTone is a parameter of a large pane's material at clarity 0
+// (frost, the measured material's), 0.5 (mid) and 1 (clear).
+type paneTone struct{ frost, mid, clear float32 }
+
+// at is the parameter at clarity k, from 0 to 1.
+func (v paneTone) at(k float32) float32 {
+	if k <= 0.5 {
+		return v.frost + (v.mid-v.frost)*k*2
+	}
+	return v.mid + (v.clear-v.mid)*(k-0.5)*2
+}
+
+var (
+	// paneBlur is the most the pane blurs, in DIPs.
+	paneBlur = paneTone{10, 5, 2}
+	// paneLightLow is what black maps to in light mode, white to 1.
+	paneLightLow = paneTone{0.541, 0.35, 0.2}
+	// paneDarkLow and paneDarkHigh are what black and white map to in
+	// dark mode.
+	paneDarkLow  = paneTone{0.15, 0.15, 0.1}
+	paneDarkHigh = paneTone{0.51, 0.6, 0.85}
+	// paneRim is how bright the rim is lit.
+	paneRim = paneTone{0.35, 0.5, 0.5}
+	// paneBezel is how wide the bezel curves, in DIPs.
+	paneBezel = paneTone{36, 48, 48}
+)

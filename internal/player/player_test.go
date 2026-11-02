@@ -26,6 +26,59 @@ func TestParseLrc(t *testing.T) {
 	}
 }
 
+// 主歌词里的制作名单（没有翻译）不能抢走下一句正文的翻译。
+// 真实形状来自《起死回生》的 QQ 歌词：Mastering 行在 10.05s，
+// 正文在 11.08s，翻译在 11.07s——名单行与翻译只差 1.02s。
+func TestParseLrcAuxSkipsUntranslatedCredits(t *testing.T) {
+	lrc := "[00:10.05]Mastering：Akihiro Shiba (TEMAS)\n" +
+		"[00:11.08]The sun light shines on battered body\n" +
+		"[00:13.64]This pain a living evidence\n"
+	trans := "[00:11.07]阳光洒在伤痕累累的身躯上\n" +
+		"[00:13.64]这般苦楚 正是鲜活生命的象征\n"
+	lines := ParseLrc(lrc, trans, "")
+	if len(lines) != 3 {
+		t.Fatalf("want 3 lines, got %d: %+v", len(lines), lines)
+	}
+	if lines[0].Trans != "" {
+		t.Errorf("制作名单行不应带翻译，实得 %q", lines[0].Trans)
+	}
+	if lines[1].Trans != "阳光洒在伤痕累累的身躯上" {
+		t.Errorf("正文翻译错位：%q", lines[1].Trans)
+	}
+	if lines[2].Trans != "这般苦楚 正是鲜活生命的象征" {
+		t.Errorf("后续翻译错位：%q", lines[2].Trans)
+	}
+}
+
+// 制作名单和正文时间戳完全相同（《RUNNING FOR YOUR LIFE》形状）。
+// 翻译文件用 "//" 占位保持逐行对应，占位行不能被丢掉，否则后面的
+// 翻译会整体往前错一行。
+func TestParseLrcAuxKeepsPlaceholderSlots(t *testing.T) {
+	lrc := "[00:00.28]词：Nicholas Chiari\n" +
+		"[00:00.29]编曲：Grabbitz\n" +
+		"[00:00.30]音乐监制：Steven Tang/Grass\n" +
+		"[00:00.30]You can run You can try to hide\n" +
+		"[00:04.59]Just know I'm gonna have you\n"
+	trans := "[00:00.28]//\n" +
+		"[00:00.29]//\n" +
+		"[00:00.30]//\n" +
+		"[00:00.30]逃吧 躲吧\n" +
+		"[00:04.59]亡命败将\n"
+	lines := ParseLrc(lrc, trans, "")
+	if len(lines) != 4 {
+		t.Fatalf("want 4 lines, got %d: %+v", len(lines), lines)
+	}
+	if lines[1].Trans != "" {
+		t.Errorf("制作名单行不应带翻译，实得 %q", lines[1].Trans)
+	}
+	if lines[2].Trans != "逃吧 躲吧" {
+		t.Errorf("正文翻译错位：%q", lines[2].Trans)
+	}
+	if lines[3].Trans != "亡命败将" {
+		t.Errorf("后续翻译错位：%q", lines[3].Trans)
+	}
+}
+
 func TestParseLrcMultiTimestamp(t *testing.T) {
 	lines := ParseLrc("[00:05.00][01:05.00]repeat", "", "")
 	if len(lines) != 2 || lines[0].Time != 5 || lines[1].Time != 65 {

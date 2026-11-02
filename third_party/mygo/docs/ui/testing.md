@@ -38,7 +38,9 @@ panics where the second key was given, as apps only log it.
   `tt.TextCaret` returns where input methods would compose.
 - **Menus.** `tt.RightClick` opens a context menu, which `tt.Menu` lists and
   `tt.ChooseMenuItem("Move to", "Archive")` chooses from.
-- **The window.** `tt.SetSize`, `tt.SetScale`, `tt.SetDark`,
+- **The window.** `tt.SetSize`, `tt.SetScale`, `tt.SetZoom` (the content's
+  [zoom](windows.md#zoom), as `Context.SetZoom`; the tester's coordinates,
+  of `Find`, `ClickAt`, `Move` and `TextCaret`, stay the window's), `tt.SetDark`,
   `tt.SetPreferences` and `tt.SetDirection` (lay it out
   [right to left](right-to-left.md)) change the window and the desktop's
   settings;
@@ -75,3 +77,12 @@ panics where the second key was given, as apps only log it.
   	t.Error("the panel keeps asking for frames")
   }
   ```
+
+## Testing the built app
+
+A tester runs a view inside `go test`. To test the app as built, with its
+real windows, from another process, as an end-to-end test runner or an
+agent does, import the [automation plugin](../plugins/automation.md) into
+a test build: it reads the elements of every window as a tester's
+`Find` does, by their labels or by their `Key`, acts on them, sends
+input, and waits for frames as `FramePending` tells.

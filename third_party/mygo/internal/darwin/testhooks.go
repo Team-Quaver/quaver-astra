@@ -21,28 +21,52 @@ import (
 
 // TestPerformMenuItem activates an item of the application menu, found by
 // the titles along its path, e.g. TestPerformMenuItem("File", "New").
+// plugins/automation's menu request chooses items with it too.
 func TestPerformMenuItem(path ...string) error {
 	var err error
 	withPool(func() {
-		menu := send(theBackend.app, "mainMenu")
-		for i, title := range path {
-			if menu == 0 {
-				err = fmt.Errorf("mygo: menu %q has no submenu", path[i-1])
-				return
-			}
-			index := sendInt(menu, "indexOfItemWithTitle:", uintptr(nsString(title)))
-			if index < 0 {
-				err = fmt.Errorf("mygo: no menu item %q", title)
-				return
-			}
-			if i == len(path)-1 {
-				send(menu, "performActionForItemAtIndex:", uintptr(index))
-				return
-			}
-			menu = send(send(menu, "itemAtIndex:", uintptr(index)), "submenu")
+		var menu id
+		var index int
+		if menu, index, err = menuItemAt(path); err == nil {
+			send(menu, "performActionForItemAtIndex:", uintptr(index))
 		}
 	})
 	return err
+}
+
+// TestMenuItemEnabled reports whether an item of the application menu,
+// found as TestPerformMenuItem finds it, is enabled once its menu
+// validates its items, as before it opens.
+func TestMenuItemEnabled(path ...string) (enabled bool, err error) {
+	withPool(func() {
+		var menu id
+		var index int
+		if menu, index, err = menuItemAt(path); err == nil {
+			send(menu, "update")
+			enabled = sendBool(send(menu, "itemAtIndex:", uintptr(index)), "isEnabled")
+		}
+	})
+	return enabled, err
+}
+
+// menuItemAt finds an item of the application menu by the titles along
+// its path, and returns its menu and its index there.
+func menuItemAt(path []string) (menu id, index int, err error) {
+	menu = send(theBackend.app, "mainMenu")
+	for i, title := range path {
+		if menu == 0 {
+			return 0, 0, fmt.Errorf("mygo: menu %q has no submenu", path[i-1])
+		}
+		index = sendInt(menu, "indexOfItemWithTitle:", uintptr(nsString(title)))
+		if index < 0 {
+			return 0, 0, fmt.Errorf("mygo: no menu item %q", title)
+		}
+		if i == len(path)-1 {
+			return menu, index, nil
+		}
+		menu = send(send(menu, "itemAtIndex:", uintptr(index)), "submenu")
+	}
+	return 0, 0, fmt.Errorf("mygo: no menu item")
 }
 
 // TestPerformKeyEquivalent sends a key press with the Command key (and
@@ -67,6 +91,29 @@ func TestPerformKeyEquivalent(key string, shift bool) bool {
 func TestOnScreen(handle uintptr) bool {
 	const occlusionStateVisible = 1 << 1
 	return sendInt(id(handle), "occlusionState")&occlusionStateVisible != 0
+}
+
+// TestWindowOrder returns the app's windows on screen, panels too, front
+// to back.
+func TestWindowOrder() []uintptr {
+	var order []uintptr
+	withPool(func() {
+		for _, w := range theBackend.windowsFrontToBack() {
+			order = append(order, uintptr(w))
+		}
+	})
+	return order
+}
+
+// TestOnActiveSpace reports whether a window is on the Space that shows,
+// a full-screen window's own when it is in front.
+func TestOnActiveSpace(handle uintptr) bool {
+	return sendBool(id(handle), "isOnActiveSpace")
+}
+
+// TestWindowLevel returns a window's level.
+func TestWindowLevel(handle uintptr) int {
+	return sendInt(id(handle), "level")
 }
 
 // TestEndSheet ends the sheet attached to a window as if its first button
@@ -191,6 +238,51 @@ func TestDrag(handle uintptr, points [][2]float64) {
 	})
 }
 
+// TestMouseStep is a press (Down), drag or release of the left button at
+// a point of the screen, in MyGo's coordinates (top-left origin).
+type TestMouseStep struct {
+	Down, Up bool // neither is a drag
+	X, Y     float64
+}
+
+// TestAppMouseAt posts steps of the left button in a window through the
+// application's queue, where event monitors see them as they see the
+// user's, and handles them before it returns. Each step is placed in the
+// window where it is when the step is made, so a step keeps its place on
+// the screen when the window moves.
+func TestAppMouseAt(handle uintptr, steps ...TestMouseStep) {
+	withPool(func() {
+		win := id(handle)
+		number := sendInt(win, "windowNumber")
+		screen := primaryScreenHeight()
+		for _, st := range steps {
+			typ := uint(6) // NSEventTypeLeftMouseDragged
+			switch {
+			case st.Down:
+				typ = 1 // NSEventTypeLeftMouseDown
+			case st.Up:
+				typ = 2 // NSEventTypeLeftMouseUp
+			}
+			f := msgRect(win, sel("frame"))
+			loc := NSPoint{st.X - f.Origin.X, screen - st.Y - f.Origin.Y}
+			ev := msgMouseEvent(class("NSEvent"), sel("mouseEventWithType:location:modifierFlags:timestamp:windowNumber:context:eventNumber:clickCount:pressure:"),
+				typ, loc, 0, 0, number, 0, 0, 1, 1)
+			send(theBackend.app, "postEvent:atStart:", uintptr(ev), 0)
+		}
+	})
+	handlePosted()
+}
+
+// TestWindowDrag tells where the press stands in moving a window
+// (StartDrag): "idle", "pressed", "native", "manual" or "server"; "idle"
+// for a window no press is down in.
+func TestWindowDrag(handle uintptr) string {
+	if theDrag.win != id(handle) {
+		return dragIdle.String()
+	}
+	return theDrag.phase.String()
+}
+
 // TestControlClick Control-clicks (x, y), in points from the top-left
 // corner of a window's content.
 func TestControlClick(handle uintptr, x, y float64) {
@@ -250,7 +342,6 @@ var (
 	testPinchOnce              sync.Once
 	cgEventSetType             func(event uintptr, typ uint32)
 	cgEventSetDoubleValueField func(event uintptr, field uint32, value float64)
-	cgEventGetLocation         func(event uintptr) NSPoint
 	cgEventSetLocation         func(event uintptr, p NSPoint)
 )
 
@@ -269,7 +360,6 @@ func TestPinch(handle uintptr, x, y, magnification float64) (ok bool) {
 	testPinchOnce.Do(func() {
 		purego.RegisterLibFunc(&cgEventSetType, libCG, "CGEventSetType")
 		purego.RegisterLibFunc(&cgEventSetDoubleValueField, libCG, "CGEventSetDoubleValueField")
-		purego.RegisterLibFunc(&cgEventGetLocation, libCG, "CGEventGetLocation")
 		purego.RegisterLibFunc(&cgEventSetLocation, libCG, "CGEventSetLocation")
 	})
 	withPool(func() {
@@ -299,6 +389,51 @@ func TestPinch(handle uintptr, x, y, magnification float64) (ok bool) {
 			}
 		}
 		send(w.surface.view, "magnifyWithEvent:", uintptr(ev))
+		ok = true
+	})
+	return ok
+}
+
+// TestSwipe swipes left (back) or right (forward) in a window showing
+// native UI, as a touchpad swiping between pages and the side buttons of
+// mice through their makers' software do. It reports false when the event
+// it makes is not a swipe.
+func TestSwipe(handle uintptr, back bool) (ok bool) {
+	w := theBackend.byNSWindow[id(handle)]
+	if w == nil || w.surface == nil {
+		return false
+	}
+	testSideOnce.Do(func() {
+		purego.RegisterLibFunc(&cgEventSetIntegerValueField, libCG, "CGEventSetIntegerValueField")
+	})
+	testPinchOnce.Do(func() {
+		purego.RegisterLibFunc(&cgEventSetType, libCG, "CGEventSetType")
+		purego.RegisterLibFunc(&cgEventSetDoubleValueField, libCG, "CGEventSetDoubleValueField")
+		purego.RegisterLibFunc(&cgEventSetLocation, libCG, "CGEventSetLocation")
+	})
+	withPool(func() {
+		content := msgRect(send(w.win, "contentView"), sel("frame"))
+		ev := msgMouseEvent(class("NSEvent"), sel("mouseEventWithType:location:modifierFlags:timestamp:windowNumber:context:eventNumber:clickCount:pressure:"),
+			5, NSPoint{10, content.Size.Height - 10}, 0, 0, sendInt(w.win, "windowNumber"), 0, 0, 0, 0) // NSEventTypeMouseMoved
+		// A gesture event of the window server, of the HID system's swipe
+		// type, which AppKit makes a swipe event of: the direction a mask
+		// of kIOHIDSwipeLeft and kIOHIDSwipeRight.
+		cg := uintptr(send(ev, "CGEvent"))
+		direction := int64(1 << 3) // kIOHIDSwipeRight
+		if back {
+			direction = 1 << 2 // kIOHIDSwipeLeft
+		}
+		cgEventSetType(cg, 29)                          // kCGSEventGesture
+		cgEventSetIntegerValueField(cg, 110, 16)        // gesture type: kIOHIDEventTypeSwipe
+		cgEventSetIntegerValueField(cg, 115, direction) // swipe direction
+		ev = send(class("NSEvent"), "eventWithCGEvent:", cg)
+		if ev == 0 || sendInt(ev, "type") != 31 { // NSEventTypeSwipe
+			return
+		}
+		if got, _ := swipeBack(msgFloat(ev, sel("deltaX"))); got != back {
+			return
+		}
+		send(w.surface.view, "swipeWithEvent:", uintptr(ev))
 		ok = true
 	})
 	return ok
@@ -342,6 +477,103 @@ func TestTabFocusesLinks(handle uintptr) bool {
 	return w != nil && w.web != 0 && sendBool(send(send(w.web, "configuration"), "preferences"), "tabFocusesLinks")
 }
 
+// TestBackgroundThrottlingOff reports whether the page of a window, or of
+// its first web view, keeps running while it can't be seen: every one of
+// throttlingPrefs WebKit has at its value for that, and the web view's
+// window occlusion detection off where WebKit has it; and how many of
+// those settings WebKit has.
+func TestBackgroundThrottlingOff(handle uintptr, webView bool) (off bool, settings int) {
+	w := theBackend.byNSWindow[id(handle)]
+	if w != nil && webView {
+		if len(w.webViews) == 0 {
+			return false, 0
+		}
+		w = w.webViews[0]
+	}
+	if w == nil || w.web == 0 {
+		return false, 0
+	}
+	off = true
+	withPool(func() {
+		prefs := send(send(w.web, "configuration"), "preferences")
+		for _, p := range throttlingPrefs {
+			if respondsTo(prefs, p.get) {
+				settings++
+				v := uintptr(send(prefs, p.get))
+				if p.boolean {
+					v = boolArg(byte(v) != 0)
+				}
+				off = off && v == p.off
+			}
+		}
+		if respondsTo(w.web, "_windowOcclusionDetectionEnabled") {
+			settings++
+			off = off && !sendBool(w.web, "_windowOcclusionDetectionEnabled")
+		}
+	})
+	return off, settings
+}
+
+// TestMockCaptureDevices gives a window's page WebKit's mock camera and
+// microphone, which getUserMedia() captures without devices or the
+// system's permission (private -[WKPreferences
+// _setMockCaptureDevicesEnabled:]), even while the page is not focused
+// (_setGetUserMediaRequiresFocus:), for the pages it loads from then on;
+// false when WebKit doesn't answer them.
+func TestMockCaptureDevices(handle uintptr) bool {
+	w := theBackend.byNSWindow[id(handle)]
+	if w == nil || w.web == 0 {
+		return false
+	}
+	prefs := send(send(w.web, "configuration"), "preferences")
+	if !respondsTo(prefs, "_setMockCaptureDevicesEnabled:") {
+		return false
+	}
+	send(prefs, "_setMockCaptureDevicesEnabled:", boolArg(true))
+	if respondsTo(prefs, "_setMediaDevicesEnabled:") {
+		send(prefs, "_setMediaDevicesEnabled:", boolArg(true))
+	}
+	if respondsTo(prefs, "_setMockCaptureDevicesPromptEnabled:") {
+		send(prefs, "_setMockCaptureDevicesPromptEnabled:", boolArg(false))
+	}
+	if respondsTo(prefs, "_setGetUserMediaRequiresFocus:") {
+		send(prefs, "_setGetUserMediaRequiresFocus:", boolArg(false))
+	}
+	return true
+}
+
+// TestAllowsPictureInPicture reports whether a window's page lets its
+// videos go into picture in picture, and false for supported when WebKit
+// doesn't answer its private _allowsPictureInPictureMediaPlayback.
+func TestAllowsPictureInPicture(handle uintptr) (allowed, supported bool) {
+	w := theBackend.byNSWindow[id(handle)]
+	if w == nil || w.web == 0 {
+		return false, false
+	}
+	prefs := send(send(w.web, "configuration"), "preferences")
+	if !respondsTo(prefs, "_allowsPictureInPictureMediaPlayback") {
+		return false, false
+	}
+	return sendBool(prefs, "_allowsPictureInPictureMediaPlayback"), true
+}
+
+// TestPageGestures reports whether a swipe navigates and a pinch magnifies
+// the page of a window, or with webView 0 or more, of its web view of that
+// index, as WKWebView's properties say. ok is false without that page.
+func TestPageGestures(handle uintptr, webView int) (swipe, pinch, ok bool) {
+	w := theBackend.byNSWindow[id(handle)]
+	if w != nil && webView >= 0 {
+		if webView >= len(w.webViews) {
+			return false, false, false
+		}
+		w = w.webViews[webView]
+	}
+	if w == nil || w.web == 0 {
+		return false, false, false
+	}
+	return sendBool(w.web, "allowsBackForwardNavigationGestures"), sendBool(w.web, "allowsMagnification"), true
+}
+
 // TestIsFrontmost reports whether the application is the frontmost one,
 // which NSApp's isActive does not tell while a nonactivating panel is the
 // key window: it reports the app active then.
@@ -357,6 +589,52 @@ func TestIsFrontmost() bool {
 // TestCollectionBehavior returns a window's NSWindowCollectionBehavior.
 func TestCollectionBehavior(handle uintptr) uint {
 	return uint(sendInt(id(handle), "collectionBehavior"))
+}
+
+// TestMaterial returns the class of a window's material (Vibrancy), its
+// style when glass, the corners its content view is cut to, and whether
+// the window draws as active.
+func TestMaterial(handle uintptr) (class string, style int, radius float64, active bool) {
+	w := theBackend.byNSWindow[id(handle)]
+	if w == nil {
+		return "", 0, 0, false
+	}
+	if w.effect != 0 {
+		class = goString(send(w.effect, "className"))
+		if w.glass {
+			style = sendInt(w.effect, "style")
+		}
+	}
+	if layer := send(w.view, "layer"); layer != 0 {
+		radius = msgFloat(layer, sel("cornerRadius"))
+	}
+	if respondsTo(w.win, "_hasActiveAppearance") {
+		active = sendBool(w.win, "_hasActiveAppearance")
+	}
+	return class, style, radius, active
+}
+
+// TestRoundedBacking reports whether a window is opaque, and the alpha and
+// red, in sRGB, of its content view's background, which fills its rounded
+// corners' inside.
+func TestRoundedBacking(handle uintptr) (opaque bool, alpha, red float64) {
+	w := theBackend.byNSWindow[id(handle)]
+	if w == nil {
+		return false, 0, 0
+	}
+	opaque = sendBool(w.win, "isOpaque")
+	withPool(func() {
+		if layer := send(w.view, "layer"); layer != 0 {
+			if c := send(layer, "backgroundColor"); c != 0 {
+				color := send(send(class("NSColor"), "colorWithCGColor:", uintptr(c)), "colorUsingColorSpace:", uintptr(send(class("NSColorSpace"), "sRGBColorSpace")))
+				if color != 0 {
+					alpha = msgFloat(color, sel("alphaComponent"))
+					red = msgFloat(color, sel("redComponent"))
+				}
+			}
+		}
+	})
+	return opaque, alpha, red
 }
 
 // TestDockInspector opens the web inspector of a window docked to it, and
@@ -951,4 +1229,150 @@ func TestEndSheetButton(handle uintptr, i int) bool {
 	}
 	send(id(handle), "endSheet:returnCode:", uintptr(sheet), uintptr(nsAlertFirstButtonReturn+i))
 	return true
+}
+
+// TestSheetDestructive reports whether each button of the alert attached
+// to a window as a sheet, in the order the alert was given them, has a
+// destructive action.
+func TestSheetDestructive(handle uintptr) (destructive []bool, ok bool) {
+	withPool(func() {
+		sheet := send(id(handle), "attachedSheet")
+		if sheet == 0 {
+			return
+		}
+		ok = true
+		tagged := map[int]id{}
+		var walk func(v id)
+		walk = func(v id) {
+			if sendBool(v, "isKindOfClass:", uintptr(class("NSButton"))) {
+				if i := sendInt(v, "tag") - nsAlertFirstButtonReturn; i >= 0 {
+					tagged[i] = v
+				}
+			}
+			for _, sub := range arrayItems(send(v, "subviews")) {
+				walk(sub)
+			}
+		}
+		walk(send(sheet, "contentView"))
+		for i := 0; i < len(tagged); i++ {
+			destructive = append(destructive, respondsTo(tagged[i], "hasDestructiveAction") && sendBool(tagged[i], "hasDestructiveAction"))
+		}
+	})
+	return
+}
+
+// TestSheetKey presses and releases a key in the sheet attached to a
+// window, with Command held when cmd is set, through the application's
+// event queue as the keyboard's keys go. It reports whether there was a
+// sheet.
+func TestSheetKey(handle uintptr, code uint16, chars string, cmd bool) bool {
+	sheet := send(id(handle), "attachedSheet")
+	if sheet == 0 {
+		return false
+	}
+	var flags uint
+	if cmd {
+		flags = 1 << 20 // NSEventModifierFlagCommand
+	}
+	withPool(func() {
+		number := sendInt(sheet, "windowNumber")
+		s := nsString(chars)
+		for _, typ := range []uint{10, 11} { // NSEventTypeKeyDown, KeyUp
+			ev := msgKeyEvent(class("NSEvent"), sel("keyEventWithType:location:modifierFlags:timestamp:windowNumber:context:characters:charactersIgnoringModifiers:isARepeat:keyCode:"),
+				typ, NSPoint{}, flags, 0, number, 0, s, s, false, code)
+			send(theBackend.app, "postEvent:atStart:", uintptr(ev), 0)
+		}
+	})
+	handlePosted()
+	return true
+}
+
+// TestModal reports whether a dialog runs for a window, as its sheet or
+// application modal (runModal), and whether it shows: AppKit ordered it
+// in, and the window server put it on screen.
+func TestModal(handle uintptr) (running, shows bool) {
+	panel := send(id(handle), "attachedSheet")
+	if panel == 0 {
+		panel = send(theBackend.app, "modalWindow")
+	}
+	if panel == 0 {
+		return false, false
+	}
+	return true, sendBool(panel, "isVisible") && TestOnScreen(uintptr(panel))
+}
+
+// TestCancelModal dismisses the dialog TestModal finds, as its Cancel
+// button or Escape would, and reports whether there was one.
+func TestCancelModal(handle uintptr) bool {
+	sheet := send(id(handle), "attachedSheet")
+	panel := sheet
+	if panel == 0 {
+		panel = send(theBackend.app, "modalWindow")
+	}
+	switch {
+	case panel == 0:
+		return false
+	case sendBool(panel, "isKindOfClass:", uintptr(class("NSSavePanel"))):
+		send(panel, "cancel:", 0)
+	case sheet != 0:
+		send(id(handle), "endSheet:returnCode:", uintptr(sheet), 0) // NSModalResponseCancel
+	default:
+		send(theBackend.app, "abortModal")
+	}
+	return true
+}
+
+// TestRightClickPage right-clicks (x, y), in points from the top-left
+// corner of a window's content, as TestClick clicks. WebKit opens the
+// page's context menu once the page heard the click, later.
+func TestRightClickPage(handle uintptr, x, y float64) {
+	testMouse(handle, x, y, false, 3, 4) // NSEventTypeRightMouseDown, RightMouseUp
+}
+
+// TestPageMenu returns the titles of the items of the page's context menu
+// being shown, "-" for separators, and false when none is.
+func TestPageMenu() ([]string, bool) {
+	menu := openContextMenu
+	if menu == 0 {
+		return nil, false
+	}
+	labels := []string{}
+	for i := range sendInt(menu, "numberOfItems") {
+		item := send(menu, "itemAtIndex:", uintptr(i))
+		switch {
+		case sendBool(item, "isHidden"):
+		case sendBool(item, "isSeparatorItem"):
+			labels = append(labels, "-")
+		default:
+			labels = append(labels, goString(send(item, "title")))
+		}
+	}
+	return labels, true
+}
+
+// TestChoosePageMenuItem chooses the item titled label of the page's
+// context menu being shown, as a click on it does, closes the menu, and
+// reports whether it has one.
+func TestChoosePageMenuItem(label string) bool {
+	menu := openContextMenu
+	if menu == 0 {
+		return false
+	}
+	for i := range sendInt(menu, "numberOfItems") {
+		item := send(menu, "itemAtIndex:", uintptr(i))
+		if !sendBool(item, "isHidden") && !sendBool(item, "isSeparatorItem") && goString(send(item, "title")) == label {
+			send(menu, "performActionForItemAtIndex:", uintptr(i))
+			send(menu, "cancelTracking")
+			return true
+		}
+	}
+	return false
+}
+
+// TestDismissPageMenu closes the page's context menu being shown, if one
+// is.
+func TestDismissPageMenu() {
+	if openContextMenu != 0 {
+		send(openContextMenu, "cancelTracking")
+	}
 }

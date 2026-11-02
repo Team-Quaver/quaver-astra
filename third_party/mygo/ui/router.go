@@ -630,6 +630,11 @@ func (r *Router) show(c *context, box *node, v *routeView, parent *Route, cur *r
 		v.focusing, v.announcing = false, true
 	}
 	v.leaving, v.dir, v.start = nil, 0, c.now
+	// The colors of the page that comes show at once: the state of an
+	// element that comes back may have been painted for the element that
+	// took its place while it was away, and easing from that element's
+	// color is not its own.
+	rt.forgetColors()
 	if r.Transition == TransitionNone || rt.instant() {
 		return
 	}

@@ -427,8 +427,8 @@ func outset(rc Rect, d float32) image.Rectangle {
 }
 
 // moved reports whether op of s draws under a transform, which only
-// translating draws without (TranslationFolder), but for clips, effects
-// and holes.
+// translating draws without (TranslationFolder), but for effects and
+// holes.
 func (d *Differ) moved(s *Scene, op *Op) bool {
 	if op.Kind == OpGlyphs && op.Start >= 0 && op.Start <= op.End && int(op.End) <= len(s.Glyphs) {
 		for _, g := range s.Glyphs[op.Start:op.End] {

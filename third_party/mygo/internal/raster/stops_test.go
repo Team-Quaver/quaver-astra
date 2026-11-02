@@ -59,6 +59,51 @@ func TestConic(t *testing.T) {
 	}
 }
 
+// A radial gradient spreads from its center, its stops at their fractions
+// of its radius: its first color at the center, its last past the radius,
+// and between them the sRGB mix, or the Oklab one, which is lighter.
+func TestRadial(t *testing.T) {
+	s := &scene.Scene{Width: 100, Height: 100}
+	s.Stops = []scene.Stop{{Color: red, At: 0}, {Color: blue, At: 1}}
+	s.Ops = []scene.Op{{Kind: scene.OpFill, Rect: scene.Rect{W: 100, H: 100}, Paint: scene.PaintRadial,
+		Gradient: [4]float32{50, 50, 40, 0}, Stops: [2]int32{0, 2}}}
+	img := NewImage(100, 100)
+	Render(img, s)
+	for _, c := range []struct {
+		x, y int
+		want [4]byte
+	}{
+		{50, 50, [4]byte{251, 0, 4, 255}},   // the center
+		{70, 50, [4]byte{125, 0, 130, 255}}, // halfway out, to the right
+		{50, 29, [4]byte{125, 0, 130, 255}}, // and up: a circle
+		{95, 50, [4]byte{0, 0, 255, 255}},   // past the radius
+		{2, 2, [4]byte{0, 0, 255, 255}},     // the corner
+	} {
+		if got := at(img, c.x, c.y); !nearRGBA(got, c.want, 4) {
+			t.Errorf("(%d, %d) = %v, want %v", c.x, c.y, got, c.want)
+		}
+	}
+	// Off center, with the radius as far as the right edge.
+	s.Ops[0].Gradient = [4]float32{20, 50, 80, 0}
+	Render(img, s)
+	if got := at(img, 20, 50); !nearRGBA(got, [4]byte{253, 0, 2, 255}, 4) {
+		t.Errorf("the center moved left %v, want red", got)
+	}
+	if got := at(img, 59, 50); !nearRGBA(got, [4]byte{128, 0, 127, 255}, 4) {
+		t.Errorf("halfway to the right edge %v, want the mix", got)
+	}
+	mid := at(img, 59, 50)
+	s.Ops[0].Paint = scene.PaintRadialOklab
+	Render(img, s)
+	ok := at(img, 59, 50)
+	if int(ok[0])+int(ok[1])+int(ok[2]) <= int(mid[0])+int(mid[1])+int(mid[2]) {
+		t.Errorf("the Oklab mix %v is no lighter than the sRGB one %v", ok, mid)
+	}
+	if got := at(img, 20, 50); got[0] < 245 || got[1] > 20 || got[2] > 20 || got[3] != 255 {
+		t.Errorf("the Oklab center %v, want red", got)
+	}
+}
+
 // A linear gradient with stops shows its first color before its first
 // stop and its last after its last, and mixes in sRGB, or in Oklab, whose
 // middle between red and blue is lighter.

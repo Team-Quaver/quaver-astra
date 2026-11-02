@@ -11,17 +11,18 @@ import (
 
 // Span is a run of a RichText with a style of its own. What it leaves
 // zero takes the style of the text around it, and Italic, Underline,
-// WavyUnderline and Strikethrough only turn those on.
+// WavyUnderline, DottedUnderline and Strikethrough only turn those on.
 type Span struct {
-	Text          string
-	Font          string // a family, as for Element.Font
-	Size          float32
-	Weight        int
-	Italic        bool
-	Color         Color
-	Underline     bool
-	WavyUnderline bool
-	Strikethrough bool
+	Text            string
+	Font            string // a family, as for Element.Font
+	Size            float32
+	Weight          int
+	Italic          bool
+	Color           Color
+	Underline       bool
+	WavyUnderline   bool
+	DottedUnderline bool
+	Strikethrough   bool
 	// DecorationColor and DecorationThickness are those of the span's
 	// underline and strikethrough, as for Element.DecorationColor.
 	DecorationColor     Color
@@ -39,8 +40,17 @@ type Span struct {
 	// rune of the span, an object replacement character (U+FFFC), an
 	// inline object: a box of that size in DIPs standing on the baseline,
 	// which lines break around and which draws nothing, where a rich text
-	// editor draws an image (TextLayout.Objects).
-	ObjectWidth, ObjectHeight float32
+	// editor draws an image (TextLayout.Objects) and a text what
+	// Element.DrawObjects draws. ObjectDescent extends the box that far
+	// below the baseline, as math's subscripts and fractions go: the line
+	// makes room for it.
+	ObjectWidth, ObjectHeight, ObjectDescent float32
+	// BaselineShift raises the span's text, or its objects, that many
+	// DIPs above the baseline, or lowers it when negative, as superscripts
+	// and subscripts with a smaller Size: footnote references, exponents,
+	// chemical formulas. The line makes room for it, and its underline
+	// and strikethrough go with it.
+	BaselineShift float32
 }
 
 // RichText creates a text whose spans differ in style, over the style of
@@ -149,7 +159,7 @@ func (sc *spanCache) update(spans []Span) {
 	paints := false
 	for i, s := range spans {
 		end += utf8.RuneCountInString(s.Text)
-		paints = paints || s.Color.A > 0 || s.Underline || s.WavyUnderline || s.Strikethrough || s.Background.A > 0
+		paints = paints || s.Color.A > 0 || s.Underline || s.WavyUnderline || s.DottedUnderline || s.Strikethrough || s.Background.A > 0
 		same = same && sc.styles[i] == spanStyle(s, end)
 	}
 	sc.paints = paints
@@ -169,7 +179,7 @@ func (sc *spanCache) update(spans []Span) {
 // layout.
 func spanStyle(s Span, end int) text.Span {
 	return text.Span{End: end, Family: s.Font, Size: s.Size, Weight: s.Weight, Italic: s.Italic, LetterSpacing: s.LetterSpacing, Features: s.Features, Lang: s.Lang,
-		ObjectWidth: s.ObjectWidth, ObjectHeight: s.ObjectHeight}
+		ObjectWidth: s.ObjectWidth, ObjectHeight: s.ObjectHeight, ObjectDescent: s.ObjectDescent, BaselineShift: s.BaselineShift}
 }
 
 // encodeSpans encodes the styles of spans for a layout.
@@ -183,10 +193,9 @@ func encodeSpans(spans []Span) string {
 	return text.EncodeSpans(ts)
 }
 
-// richParams returns how to lay out spans over the theme's text style,
+// richParams returns how to lay out spans over the text style of theme t,
 // wrapping lines at width (none for 0).
-func (rt *engine) richParams(width float32, spans []Span) text.Params {
-	t := rt.c.theme
+func (rt *engine) richParams(t *Theme, width float32, spans []Span) text.Params {
 	style := text.Style{Family: t.Font, Size: t.FontSize, Lang: rt.lang}
 	// Views measure the same spans frame after frame.
 	for i := range rt.measured {
@@ -225,8 +234,8 @@ type measuredSpans struct {
 //	w, _ := p.MeasureText(0, label)
 //	p.RichText(r.X+(r.W-w)/2, r.Y, 0, label)
 func (p *Painter) RichText(x, y, width float32, spans ...Span) (w, h float32) {
-	l := p.rt.text.Layout(p.rt.richParams(width, spans))
-	t := p.rt.c.theme
+	t := p.Theme()
+	l := p.rt.text.Layout(p.rt.richParams(t, width, spans))
 	p.textLayout(l, x, y, t.Text, textStyle{size: t.FontSize}, newSpanPaint(spans))
 	return l.Width, l.Height
 }
@@ -234,7 +243,7 @@ func (p *Painter) RichText(x, y, width float32, spans ...Span) (w, h float32) {
 // MeasureText returns the size spans of text take as Painter.RichText draws
 // them, wrapping lines at width DIPs (none for 0).
 func (p *Painter) MeasureText(width float32, spans ...Span) (w, h float32) {
-	l := p.rt.text.Layout(p.rt.richParams(width, spans))
+	l := p.rt.text.Layout(p.rt.richParams(p.Theme(), width, spans))
 	return l.Width, l.Height
 }
 
@@ -242,7 +251,7 @@ func (p *Painter) MeasureText(width float32, spans ...Span) (w, h float32) {
 // them, wrapping lines at width DIPs (none for 0), to lay out what depends
 // on it while building.
 func (c *context) MeasureText(width float32, spans ...Span) (w, h float32) {
-	l := c.rt.text.Layout(c.rt.richParams(width, spans))
+	l := c.rt.text.Layout(c.rt.richParams(c.theme, width, spans))
 	return l.Width, l.Height
 }
 
@@ -336,7 +345,8 @@ func (sp *spanPaint) backgrounds(p *Painter, line *text.Line, x, y float32) {
 		if r := sp.spans[k].Radius; r > 0 {
 			size := line.Glyphs[i].Size
 			px := min(size*0.22, r)
-			p.Fill(Rect{x + x0 - px, y + line.Baseline - size*0.98, x1 - x0 + 2*px, size * 1.32}, sp.spans[k].Background, r)
+			base := line.Baseline - sp.spans[k].BaselineShift
+			p.Fill(Rect{x + x0 - px, y + base - size*0.98, x1 - x0 + 2*px, size * 1.32}, sp.spans[k].Background, r)
 			return
 		}
 		p.Fill(Rect{x + x0, y + line.Y, x1 - x0, line.Height}, sp.spans[k].Background, 0)
@@ -352,7 +362,7 @@ func (sp *spanPaint) lines(p *Painter, l *text.Layout, li int, x, y float32, col
 			return
 		}
 		span := &sp.spans[k]
-		d := decoration{underline: span.Underline || span.WavyUnderline, wavy: span.WavyUnderline, strike: span.Strikethrough, color: base.color, thick: base.thick}
+		d := decoration{underline: span.Underline || span.WavyUnderline || span.DottedUnderline, wavy: span.WavyUnderline, dotted: span.DottedUnderline, strike: span.Strikethrough, color: base.color, thick: base.thick}
 		if !d.underline && !d.strike {
 			return
 		}

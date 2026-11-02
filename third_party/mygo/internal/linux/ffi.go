@@ -253,6 +253,7 @@ var (
 	gtkWindowSetResizable               func(w ptr, v bool)
 	gtkWindowGetResizable               func(w ptr) bool
 	gtkWindowSetDecorated               func(w ptr, v bool)
+	gtkWindowSetTitlebar                func(w, titlebar ptr)
 	gtkWindowSetDeletable               func(w ptr, v bool)
 	gtkWindowGetDeletable               func(w ptr) bool
 	gtkWindowSetKeepAbove               func(w ptr, v bool)
@@ -439,6 +440,11 @@ var (
 	webkitWebViewSetZoomLevel                         func(wv ptr, z float64)
 	webkitWebViewGetZoomLevel                         func(wv ptr) float64
 	webkitWebViewSetBackgroundColor                   func(wv ptr, rgba *gdkRGBA)
+	webkitWebViewIsPlayingAudio                       func(wv ptr) bool
+	webkitWebViewSetIsMuted                           func(wv ptr, muted bool) // 2.30+
+	webkitWebViewGetIsMuted                           func(wv ptr) bool        // 2.30+
+	webkitWebViewGetCaptureState                      [3]func(wv ptr) int32
+	webkitWebViewSetCaptureState                      [3]func(wv ptr, state int32)
 	webkitWebViewEvaluateJavascript                   func(wv ptr, script *byte, length int, world, sourceURI *byte, cancellable, cb, data ptr)
 	webkitWebViewRunJavascript                        func(wv ptr, script *byte, cancellable, cb, data ptr)
 	webkitWebViewCallAsyncJavascriptFunction          func(wv ptr, body *byte, length int, args ptr, world, sourceURI *byte, cancellable, cb, data ptr)
@@ -456,6 +462,8 @@ var (
 	webkitPrintOperationSetPageSetup                  func(op, setup ptr)
 	webkitPrintOperationPrint                         func(op ptr)
 	webkitSettingsGetPrintBackgrounds                 func(s ptr) bool
+	gObjectGetData                                    func(obj ptr, key *byte) ptr
+	gtkEventControllerSetPropagationPhase             func(c ptr, phase int32)
 	webkitSettingsSetPrintBackgrounds                 func(s ptr, v bool)
 	webkitUserMediaPermissionRequestGetType           func() uintptr
 	webkitGeolocationPermissionRequestGetType         func() uintptr
@@ -493,6 +501,8 @@ var (
 	webkitNavigationActionIsUserGesture               func(a ptr) bool
 	webkitURIRequestGetURI                            func(r ptr) ptr
 	webkitPolicyDecisionUse                           func(d ptr)
+	webkitPolicyDecisionUseWithPolicies               func(d ptr, p ptr)
+	webkitWebsitePoliciesNewWithPolicies              func(name *byte, value int32, end ptr) ptr
 	webkitPolicyDecisionIgnore                        func(d ptr)
 	webkitURISchemeRequestGetURI                      func(r ptr) ptr
 	webkitURISchemeRequestGetHTTPMethod               func(r ptr) ptr
@@ -684,6 +694,7 @@ func load() error {
 	mustBind(t, &gtkWindowSetResizable, "gtk_window_set_resizable")
 	mustBind(t, &gtkWindowGetResizable, "gtk_window_get_resizable")
 	mustBind(t, &gtkWindowSetDecorated, "gtk_window_set_decorated")
+	mustBind(t, &gtkWindowSetTitlebar, "gtk_window_set_titlebar")
 	mustBind(t, &gtkWindowSetDeletable, "gtk_window_set_deletable")
 	mustBind(t, &gtkWindowGetDeletable, "gtk_window_get_deletable")
 	mustBind(t, &gtkWindowSetKeepAbove, "gtk_window_set_keep_above")
@@ -892,6 +903,7 @@ func loadWebKit() error {
 		return err
 	}
 	bindCookies()
+	bindAuth()
 
 	w := libWebKit
 	mustBind(w, &webkitWebContextGetDefault, "webkit_web_context_get_default")
@@ -942,6 +954,20 @@ func loadWebKit() error {
 	mustBind(w, &webkitWebViewSetZoomLevel, "webkit_web_view_set_zoom_level")
 	mustBind(w, &webkitWebViewGetZoomLevel, "webkit_web_view_get_zoom_level")
 	mustBind(w, &webkitWebViewSetBackgroundColor, "webkit_web_view_set_background_color")
+	bind(w, &webkitWebViewIsPlayingAudio, "webkit_web_view_is_playing_audio")
+	// To turn WebKit's zoom gesture off (stopPinchZoom).
+	bind(libGObject, &gObjectGetData, "g_object_get_data")
+	bind(libGTK, &gtkEventControllerSetPropagationPhase, "gtk_event_controller_set_propagation_phase")
+	if bind(w, &webkitWebViewSetIsMuted, "webkit_web_view_set_is_muted") {
+		mustBind(w, &webkitWebViewGetIsMuted, "webkit_web_view_get_is_muted")
+	}
+	// The capture states of the camera, the microphone and the display
+	// (2.34+), in the order of platform.CaptureKind.
+	for kind, device := range [...]string{"camera", "microphone", "display"} {
+		if bind(w, &webkitWebViewGetCaptureState[kind], "webkit_web_view_get_"+device+"_capture_state") {
+			mustBind(w, &webkitWebViewSetCaptureState[kind], "webkit_web_view_set_"+device+"_capture_state")
+		}
+	}
 	bind(w, &webkitWebViewEvaluateJavascript, "webkit_web_view_evaluate_javascript")
 	bind(w, &webkitWebViewRunJavascript, "webkit_web_view_run_javascript")
 	bind(w, &webkitWebViewCallAsyncJavascriptFunction, "webkit_web_view_call_async_javascript_function")
@@ -975,6 +1001,8 @@ func loadWebKit() error {
 	mustBind(w, &webkitNavigationActionIsUserGesture, "webkit_navigation_action_is_user_gesture")
 	mustBind(w, &webkitURIRequestGetURI, "webkit_uri_request_get_uri")
 	mustBind(w, &webkitPolicyDecisionUse, "webkit_policy_decision_use")
+	bind(w, &webkitPolicyDecisionUseWithPolicies, "webkit_policy_decision_use_with_policies")
+	bind(w, &webkitWebsitePoliciesNewWithPolicies, "webkit_website_policies_new_with_policies")
 	mustBind(w, &webkitPolicyDecisionIgnore, "webkit_policy_decision_ignore")
 	mustBind(w, &webkitURISchemeRequestGetURI, "webkit_uri_scheme_request_get_uri")
 	mustBind(w, &webkitURISchemeRequestGetWebView, "webkit_uri_scheme_request_get_web_view")

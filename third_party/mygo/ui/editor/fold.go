@@ -8,7 +8,8 @@ import (
 // Folding, as Zed falls back to without a syntax tree and VS Code does:
 // a line ending with an opening bracket folds the lines up to the one
 // with its closing bracket, which stays; another folds the lines
-// indented more than it after it, but blank lines at the end.
+// indented more than it after it, but blank lines at the end. A run of
+// imports, as the language's Imports finds them, folds as one.
 
 // foldEnd returns the last line folding line hides, and whether line
 // starts a fold.
@@ -20,6 +21,9 @@ func (ed *editor) foldEnd(line int) (int, bool) {
 	n := r.LineCount()
 	if line >= n-1 {
 		return 0, false
+	}
+	if end, ok := ed.importsEnd(line); ok {
+		return end, true
 	}
 	s := r.Line(line)
 	if strings.TrimSpace(s) == "" {
@@ -57,7 +61,7 @@ func (ed *editor) foldEnd(line int) (int, bool) {
 }
 
 // foldable reports whether line starts a fold, cheaply, for the gutter:
-// by indentation, or an opening bracket at its end.
+// by indentation, an opening bracket at its end, or a run of imports.
 func (ed *editor) foldable(line int) bool {
 	if f, ok := ed.view.hl.(Folder); ok {
 		_, ok := f.FoldEnd(line)
@@ -72,6 +76,9 @@ func (ed *editor) foldable(line int) bool {
 	if strings.TrimSpace(s) == "" {
 		return false
 	}
+	if _, ok := ed.importsEnd(line); ok {
+		return true
+	}
 	tab := ed.tabSize()
 	in := indentWidth(s, tab)
 	for i := line + 1; i < min(n, line+50); i++ {
@@ -82,6 +89,71 @@ func (ed *editor) foldable(line int) bool {
 		return indentWidth(t, tab) > in
 	}
 	return false
+}
+
+// importsEnd returns the last line of the run of imports line starts,
+// as VS Code folds them: the lines the language's Imports matches, the
+// lines in brackets of each, and the blank lines between; and whether
+// line starts a run of more than one import. One alone, as Go's
+// import (, folds by its brackets.
+func (ed *editor) importsEnd(line int) (int, bool) {
+	l := ed.language()
+	r := &ed.view.text
+	if l == nil || l.Imports == nil || !ed.isImport(l, line) {
+		return 0, false
+	}
+	// Not if an import is before it, ending on that line or before.
+	for p := line - 1; p >= 0; p-- {
+		s := r.Line(p)
+		t := strings.TrimLeft(s, " \t")
+		if t == "" {
+			continue
+		}
+		if ed.isImport(l, p) {
+			return 0, false
+		}
+		if open, _, ok := ed.matchBracket(r.LineStart(p) + len(s) - len(t)); ok && ed.isImport(l, r.LineOf(open)) {
+			return 0, false
+		}
+		break
+	}
+	end := ed.importEnd(line)
+	first := end
+	for i := end + 1; i < r.LineCount(); i++ {
+		if strings.TrimSpace(r.Line(i)) == "" {
+			continue
+		}
+		if !ed.isImport(l, i) {
+			break
+		}
+		end = ed.importEnd(i)
+		i = end
+	}
+	return end, end > first
+}
+
+// isImport reports whether line imports: the language's Imports matches
+// it, and it doesn't start in a string or a comment, as a line of a
+// docstring starting with from.
+func (ed *editor) isImport(l *Language, line int) bool {
+	s := ed.view.text.Line(line)
+	if !l.Imports.MatchString(s) {
+		return false
+	}
+	k := kindAt(ed.view.lineTokens(line, s), 0)
+	return k != TokenString && k != TokenComment
+}
+
+// importEnd returns the last line of the import at line: the line of the
+// bracket closing one that ends it, as Go's import (, or line.
+func (ed *editor) importEnd(line int) int {
+	r := &ed.view.text
+	if open, ok := ed.trailingOpener(line, r.Line(line)); ok {
+		if _, close, ok := ed.matchBracket(r.LineStart(line) + open); ok {
+			return r.LineOf(close)
+		}
+	}
+	return line
 }
 
 // trailingOpener returns the offset in s of an opening bracket ending it,

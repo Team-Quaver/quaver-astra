@@ -57,6 +57,12 @@ type headless struct {
 	// window shows.
 	hz     float32
 	hidden bool
+	// frameRate is what the engine last told of the frames a second that
+	// come while only drawings move (setFrameRate).
+	frameRate float32
+	// atOnce has requestFrame stand for a surface whose frames come at
+	// once rather than at the display's next refresh (framesAtOnce).
+	atOnce bool
 	// material tells that the window shows one (SetVibrancy).
 	material bool
 	// reading runs once as the clipboard is next read, as GTK's nested
@@ -85,6 +91,8 @@ type headless struct {
 
 func (h *headless) size() (float32, float32, float32) { return h.w, h.h, h.scale }
 func (h *headless) refreshRate() float32              { return h.hz }
+func (h *headless) setFrameRate(fps float32)          { h.frameRate = fps }
+func (h *headless) framesAtOnce() bool                { return h.atOnce }
 func (h *headless) occluded() bool                    { return h.hidden }
 func (h *headless) present(s *scene.Scene) {
 	h.last = s
@@ -372,6 +380,14 @@ func (t *Tester) SetScale(scale float32) {
 	t.settle()
 }
 
+// SetZoom zooms the content by z, as the view's Context.SetZoom does. The
+// Tester's coordinates stay the window's: Find, ClickAt, Move, Scroll and
+// TextCaret are in its DIPs, the view's z times smaller.
+func (t *Tester) SetZoom(z float32) {
+	t.rt.setZoom(z)
+	t.settle()
+}
+
 // SetTitleBar sets the room the window controls of a window with a hidden
 // title bar take, which Context.TitleBar returns.
 func (t *Tester) SetTitleBar(bar TitleBar) {
@@ -440,11 +456,13 @@ func (t *Tester) FramePending() bool { return t.asked() }
 // Image returns the last frame.
 func (t *Tester) Image() *image.RGBA { return t.h.image() }
 
-// Find returns the box of the first element showing text s, or labeled s.
+// Find returns the box of the first element showing text s, or labeled s,
+// in the window's DIPs: zoomed (SetZoom), z times the content's.
 func (t *Tester) Find(s string) (Rect, bool) {
 	for _, n := range t.rt.labels {
 		if n.text == s {
-			return n.r, true
+			r, z := n.r, t.rt.zoomFactor()
+			return Rect{r.X * z, r.Y * z, r.W * z, r.H * z}, true
 		}
 	}
 	return Rect{}, false

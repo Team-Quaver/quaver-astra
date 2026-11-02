@@ -24,6 +24,25 @@ much smaller than its pixels, as a photo in a thumbnail, is drawn from a
 copy halved as many times as that keeps it no smaller, made once, so that
 it shows every pixel's part rather than shimmering.
 
+A bitmap keeps its pixels on the CPU as well as on the GPU, which
+applications full of photos notice. Once a bitmap `DecodeBitmap` made has
+shown, `ReleasePixels` drops its CPU copies, of the picture and of the
+halved ones: it draws as before from the GPU, and the pixels are decoded
+again from the data `DecodeBitmap` took, which the bitmap keeps and which
+must stay as it was, when something needs them again, as a GPU that lost
+its textures or let one go after frames without it, the CPU renderer, or a
+halved copy for drawing it smaller, and a GPU's upload drops them again.
+The data costs a fraction of the pixels. A bitmap `NewBitmap` made, a
+canvas's, or one `Update` changed has nothing else to make its pixels
+from, and keeps them. Call `ReleasePixels` on the main thread, as drawing
+does:
+
+```go
+cover, _ := ui.DecodeBitmap(fileData)
+// … once the cover has shown:
+cover.ReleasePixels()
+```
+
 `Update` shows another picture in a bitmap, for one that changes as video
 does. Of the same size, it keeps the bitmap's texture on the GPU, which
 uploads the new pixels, where a new bitmap each frame would make a texture
@@ -39,6 +58,9 @@ go func() {
 	}
 }()
 ```
+
+[`ui.Video`](video.md) plays a video's frames so, decoded ahead and each
+shown as it comes due, with animated GIFs out of the box.
 
 `Pixelated` draws a bitmap shown larger than its pixels as squares of
 their colors, as pixel art and game sprites are drawn, where it would
@@ -96,6 +118,24 @@ leaves out text, embedded images, patterns, markers and filters: convert
 text to paths in your editor before exporting.
 
 In `Draw` callbacks, `Painter.Image` draws bitmaps and SVGs too.
+
+## Pictures of any format
+
+`ui.DecodeImage` decodes a picture whose format isn't known up front, as
+one downloaded from a link: a bitmap when `DecodeBitmap` knows its format,
+else an SVG of a size. `ui.ImageSize` gives the size `Image` shows a
+bitmap or an SVG at by default, in DIPs, to size it to its aspect ratio:
+
+```go
+pic, err := ui.DecodeImage(data) // once, as it arrives, not in the view
+if err != nil {
+	return err
+}
+// … in the view:
+if w, h := ui.ImageSize(pic); w > 0 && h > 0 {
+	ui.Image(c, pic).MaxWidthPercent(100).AspectRatio(w / h)
+}
+```
 
 ## Accessibility
 

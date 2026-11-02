@@ -50,6 +50,12 @@ func TestWatch(t *testing.T) {
 		t.Fatalf("Add = %v", err)
 	}
 	w.Remove(1)
+	// Commands run in order and Add returns once the driver has run it, so
+	// Remove has too before the failure below, which the driver could
+	// otherwise pick over the wake that Remove left.
+	if err := w.Add(platform.FileWatchTarget{ID: 3}); err != nil {
+		t.Fatal(err)
+	}
 	if n := <-notices; n.Target != 1 {
 		t.Fatalf("notice %+v", n)
 	}
@@ -68,7 +74,7 @@ func TestWatch(t *testing.T) {
 		t.Fatal("added to a stopped watch")
 	}
 	w.Close()
-	if !d.closed || len(d.added) != 2 || len(d.removed) != 1 {
+	if !d.closed || len(d.added) != 3 || len(d.removed) != 1 {
 		t.Fatalf("driver %+v", d)
 	}
 }

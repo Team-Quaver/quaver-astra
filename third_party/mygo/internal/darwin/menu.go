@@ -3,6 +3,9 @@
 package darwin
 
 import (
+	"runtime"
+	"slices"
+
 	"github.com/ebitengine/purego/objc"
 
 	"github.com/egoist/mygo/internal/accelerator"
@@ -45,6 +48,12 @@ var (
 	}
 )
 
+// validatesItem reports whether the first responder enables it as it can
+// act on its role, so that its menu has AppKit validate its items.
+func validatesItem(it *platform.MenuItem) bool {
+	return platform.EditCommands[it.Role] || it.Role == "startSpeaking" || it.Role == "stopSpeaking"
+}
+
 func newOwner() int {
 	menuOwners++
 	return menuOwners
@@ -77,6 +86,10 @@ func registerMenuTarget() {
 		method("mygoMenuItemClicked:", func(self id, _ objc.SEL, item id) {
 			theBackend.h.MenuItemClicked(sendInt(item, "tag"))
 		}),
+		method("mygoContextItemClicked:", contextItemClicked),
+		// The app's items keep the state it gave them in a menu that
+		// validates its items.
+		method("validateMenuItem:", func(self id, _ objc.SEL, item id) bool { return sendBool(item, "isEnabled") }),
 	})
 }
 
@@ -94,7 +107,7 @@ func (b *Backend) SetApplicationMenu(m *platform.Menu) {
 // buildMenu creates an autoreleased NSMenu.
 func (b *Backend) buildMenu(m *platform.Menu, title string, owner int) id {
 	menu := autorelease(send(send(class("NSMenu"), "alloc"), "initWithTitle:", uintptr(nsString(title))))
-	send(menu, "setAutoenablesItems:", 0)
+	send(menu, "setAutoenablesItems:", boolArg(slices.ContainsFunc(m.Items, validatesItem)))
 	for _, it := range m.Items {
 		if it.Type == platform.MenuItemSeparator {
 			item := send(class("NSMenuItem"), "separatorItem")
@@ -153,7 +166,26 @@ func (b *Backend) buildItem(it *platform.MenuItem, owner int) id {
 }
 
 func applyItemState(item id, it *platform.MenuItem) {
+	if it.Type != platform.MenuItemSeparator && menuImage != nil {
+		var img id
+		if it.Icon != nil {
+			img = menuImage(it.Icon)
+		}
+		if send(item, "image") != img {
+			send(item, "setImage:", uintptr(img))
+		}
+	}
 	send(item, "setEnabled:", boolArg(it.Enabled))
+	if _, ok := nativeRoleSel[it.Role]; ok {
+		// In a menu validating its items, the first responder would enable
+		// a role's item: disabled, it targets an object without its action,
+		// which its menu disables.
+		var target id
+		if !it.Enabled {
+			target = theBackend.menuTarget
+		}
+		send(item, "setTarget:", uintptr(target))
+	}
 	send(item, "setHidden:", boolArg(!it.Visible))
 	state := uintptr(0)
 	if it.Checked && (it.Type == platform.MenuItemCheckbox || it.Type == platform.MenuItemRadio) {
@@ -163,6 +195,37 @@ func applyItemState(item id, it *platform.MenuItem) {
 	if it.ToolTip != "" {
 		send(item, "setToolTip:", uintptr(nsString(it.ToolTip)))
 	}
+}
+
+// menuImage is iconImage once LinkMenuIcons links it, when the app first
+// gives a menu item an icon.
+var menuImage func(ic *platform.MenuIcon) id
+
+// LinkMenuIcons links the code of the icons of menu items.
+func LinkMenuIcons() { menuImage = iconImage }
+
+// iconImage returns the NSImage of an icon, made once and released once
+// no snapshot holds the icon: AppKit draws it at 16 points, keeping its
+// aspect, from the representation fit for the display (an image of 32
+// pixels for Retina), and tints a template image as the menu's text, white
+// on the highlight. Its menu items show their state (the check) beside it.
+func iconImage(ic *platform.MenuIcon) id {
+	img, _ := ic.Native(func() any {
+		img := send(send(class("NSImage"), "alloc"), "initWithData:", uintptr(nsData(ic.PNG)))
+		if img == 0 {
+			return nil
+		}
+		size := msgSize(img, sel("size"))
+		if box := float64(platform.MenuIconSize); size.Width > 0 && size.Height > 0 {
+			scale := box / max(size.Width, size.Height)
+			msgSetSize(img, sel("setSize:"), NSSize{size.Width * scale, size.Height * scale})
+		}
+		send(img, "setTemplate:", boolArg(ic.Template))
+		// NSImage may be released on any thread.
+		runtime.AddCleanup(ic, func(img id) { release(img) }, img)
+		return img
+	}).(id)
+	return img
 }
 
 func (b *Backend) UpdateMenuItem(it *platform.MenuItem) {
@@ -282,6 +345,25 @@ type tray struct {
 	owner  int
 	// dark is the menu bar's appearance, as last told.
 	dark bool
+	// clicked is where on screen the copy of the item that the user last
+	// clicked is, and of the frame the item's window had then. macOS 26
+	// shows a menu bar item on each display from one window, which is on
+	// one of them, or out of sight on a display whose menu bar has no room
+	// for it; the copies share its size. Zero until a click.
+	clicked, of NSRect
+}
+
+// secondaryClick reports whether a click on a status item, ending with an
+// event of type typ and modifier flags, is a right-click: the right button's,
+// or the primary button's with Control held, as a Control-click is a
+// secondary click across macOS, and in windows of native UI.
+func secondaryClick(typ, flags uint) bool {
+	const (
+		leftMouseUp  = 2       // NSEventTypeLeftMouseUp
+		rightMouseUp = 4       // NSEventTypeRightMouseUp
+		control      = 1 << 18 // NSEventModifierFlagControl
+	)
+	return typ == rightMouseUp || typ == leftMouseUp && flags&control != 0
 }
 
 func registerTrayTarget() {
@@ -292,7 +374,8 @@ func registerTrayTarget() {
 				return
 			}
 			ev := send(theBackend.app, "currentEvent")
-			if ev != 0 && sendInt(ev, "type") == 4 { // NSEventTypeRightMouseUp
+			t.noteClick(ev)
+			if ev != 0 && secondaryClick(uint(sendInt(ev, "type")), uint(send(ev, "modifierFlags"))) {
 				t.h.RightClicked()
 			} else {
 				t.h.Clicked()
@@ -328,6 +411,15 @@ func (b *Backend) NewTray(h platform.TrayHandler) (platform.Tray, error) {
 		send(t.button, "setTarget:", uintptr(trayTarget))
 		send(t.button, "setAction:", uintptr(sel("mygoTrayClicked:")))
 		send(t.button, "sendActionOn:", 1<<2|1<<4) // left and right mouse up
+		// Draw the title's digits at one width, so a changing number
+		// (a rate, a timer) doesn't resize the item and shift the icon and
+		// the items beside it. The menu bar's font at its size and weight,
+		// set on the button rather than in an attributed title, keeps
+		// AppKit's colors for light and dark bars and the highlight.
+		size := msgFloat(msgFloatID(class("NSFont"), sel("menuBarFontOfSize:"), 0), sel("pointSize"))
+		if font := msgFloat2ID(class("NSFont"), sel("monospacedDigitSystemFontOfSize:weight:"), size, 0); font != 0 { // NSFontWeightRegular
+			send(t.button, "setFont:", uintptr(font))
+		}
 		send(t.button, "addObserver:forKeyPath:options:context:", uintptr(trayTarget), uintptr(nsString("effectiveAppearance")), 0, 0)
 	})
 	b.trays[t.button] = t
@@ -395,6 +487,9 @@ func (t *tray) SetMenu(m *platform.Menu) {
 	})
 }
 
+// SetActivatable does nothing: AppKit reports its clicks itself.
+func (t *tray) SetActivatable(bool) {}
+
 func (t *tray) PopUpMenu(m *platform.Menu) {
 	if m == nil || t.item == 0 {
 		return
@@ -418,11 +513,52 @@ func (t *tray) PopUpMenu(m *platform.Menu) {
 }
 
 func (t *tray) Bounds() platform.Rect {
-	win := send(t.button, "window")
-	if win == 0 {
+	if send(t.button, "window") == 0 {
 		return platform.Rect{}
 	}
-	return rectFromMac(msgRect(win, sel("frame")))
+	return rectFromMac(t.frame())
+}
+
+// noteClick keeps where on screen the copy of the item that the click ev was
+// on is: the pointer's place, less the click's place in the item's window,
+// which the copies share. An event in another window, which an action that no
+// click sent leaves current, changes nothing.
+func (t *tray) noteClick(ev id) {
+	win := send(t.button, "window")
+	if ev == 0 || win == 0 || send(ev, "window") != win {
+		return
+	}
+	of := msgRect(win, sel("frame"))
+	t.clicked = clickedCopy(msgPoint(class("NSEvent"), sel("mouseLocation")), msgPoint(ev, sel("locationInWindow")), of.Size)
+	t.of = of
+}
+
+// clickedCopy is the frame on screen of the copy of a menu bar item of size
+// that a click hit at at, a point on screen, and at in, its place in the
+// item's window.
+func clickedCopy(at, in NSPoint, size NSSize) NSRect {
+	return NSRect{Origin: NSPoint{X: at.X - in.X, Y: at.Y - in.Y}, Size: size}
+}
+
+// itemFrame is where a menu bar item shows, given its window's frame: the copy
+// the user last clicked, while the window keeps the frame it had then, or else
+// the window's frame. A window that moved, as the menu bar was laid out again,
+// may have moved its copies too.
+func itemFrame(window, clicked, of NSRect) NSRect {
+	if clicked.Size.Width > 0 && window == of {
+		return clicked
+	}
+	return window
+}
+
+// frame is where the item shows on screen (itemFrame), in Cocoa's
+// coordinates; zero without a window.
+func (t *tray) frame() NSRect {
+	win := send(t.button, "window")
+	if win == 0 {
+		return NSRect{}
+	}
+	return itemFrame(msgRect(win, sel("frame")), t.clicked, t.of)
 }
 
 func (t *tray) Destroy() {

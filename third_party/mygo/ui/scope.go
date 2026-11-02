@@ -21,7 +21,8 @@ type focusScope struct{ modal, anchor, group uint64 }
 // frame is committed, and returns the scope to restore after them.
 func (rt *engine) enterScope(e *node) focusScope {
 	saved := rt.commitScope
-	if e.flags&flagModal != 0 {
+	if e.flags&flagModal != 0 && !rt.commitHidden {
+		// A Hidden dialog scopes nothing.
 		rt.commitScope = focusScope{modal: e.id}
 		rt.modal, rt.modalLayer = e.id, 0
 		for l := e; l.parent != nil; l = l.parent {
@@ -206,9 +207,10 @@ func (e *node) OverlayShortcut(mods Modifiers, key Key) bool {
 // closes then, the press going on to what is under the pointer, as
 // PopoverBase does. The last press decides: one on the button opening a
 // popover after a press elsewhere, as on a web view's page, in the same
-// frame, keeps it open.
+// frame, keeps it open. A press before the element showed, as the one
+// opening it, is not outside it: an Overlay opened by a press stays.
 func (e *node) PressedOutside() bool {
-	if !e.hasState() || len(e.c.rt.downs) == 0 {
+	if !e.hasState() || len(e.c.rt.downs) == 0 || e.st.born == e.c.rt.frame {
 		return false
 	}
 	rt := e.c.rt

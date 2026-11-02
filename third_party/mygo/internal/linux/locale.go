@@ -71,7 +71,8 @@ func (a appController) SetLanguages(tags []string, rtl bool) {
 	}
 }
 
-// applyWebLanguages gives the default web context the app's languages.
+// applyWebLanguages gives the web contexts, the default one and those of
+// sessions, the app's languages.
 func (b *Backend) applyWebLanguages() {
 	if len(b.languages) == 0 || webkitWebContextSetPreferredLanguages == nil {
 		return
@@ -81,6 +82,9 @@ func (b *Backend) applyWebLanguages() {
 		strs[i] = cs(l)
 	}
 	webkitWebContextSetPreferredLanguages(webkitWebContextGetDefault(), &strs[0])
+	for _, s := range b.stores {
+		webkitWebContextSetPreferredLanguages(s.ctx, &strs[0])
+	}
 }
 
 // Region returns the formats of LC_TIME, as glibc has them for the

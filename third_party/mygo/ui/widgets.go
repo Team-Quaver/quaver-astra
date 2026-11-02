@@ -521,6 +521,29 @@ type ImageSource interface {
 	imageSize() (w, h float32)
 }
 
+// ImageSize returns the size Image shows src at by default, in DIPs: a
+// bitmap's pixels, or the size an SVG says it has. It is 0×0 for nil.
+func ImageSize(src ImageSource) (w, h float32) {
+	if src == nil {
+		return 0, 0
+	}
+	return src.imageSize()
+}
+
+// DecodeImage decodes a picture whose format is not known up front, as
+// one downloaded: a bitmap of what DecodeBitmap decodes, else an SVG of a
+// size, else DecodeBitmap's error.
+func DecodeImage(data []byte) (ImageSource, error) {
+	b, err := DecodeBitmap(data)
+	if err == nil {
+		return b, nil
+	}
+	if s, serr := ParseSVG(data); serr == nil && s.w > 0 && s.h > 0 {
+		return s, nil
+	}
+	return nil, err
+}
+
 // Image creates an element showing a bitmap, or an SVG in its own colors
 // (with the text color for its currentColor), by default at its size as
 // DIPs, scaled to fit when given another size.
@@ -565,7 +588,8 @@ func (e *node) Fit(f Fit) *node { e.fit = f; return e }
 // Overlay builds fn's elements above the rest of the window. Place them
 // with Absolute, Left and Top, in DIPs relative to the window, or beside
 // another element with AttachTo. Each, as it goes with the focus in it,
-// gives the focus back to the element that had it as it came.
+// gives the focus back to the element that had it as it came. Built inside
+// the children of a Themed, they take its theme.
 func coreOverlay(c *context, fn func()) {
 	saved := c.parent
 	o := c.overlayRoot()
@@ -574,12 +598,20 @@ func coreOverlay(c *context, fn func()) {
 	// What fn builds reads in the direction of where it was asked for.
 	dir := o.dir
 	o.dir = saved.dir &^ dirSet
+	theme := c.theme
 	fn()
 	o.dir = dir
 	c.parent = saved
 	first := o.first
 	if last != nil {
 		first = last.next
+	}
+	if theme != c.window {
+		// Asked for in a Themed: the layer is the root's, whose text is
+		// the window's theme's, so each takes the Themed's as its own.
+		for e := first; e != nil; e = e.next {
+			e.themeWith(theme)
+		}
 	}
 	if c.inert {
 		return
@@ -676,7 +708,30 @@ func chevron(c *context) {
 //			}
 //		}
 //	})
+//
+// PopoverMenuButton draws its menu in the window, with the theme's look.
 func coreMenuButton(c *context, label string, build func(m *Menu)) *node {
+	return menuButton(c, label).Menu(build)
+}
+
+// PopoverMenuButton creates a button showing label and an arrow, as
+// MenuButton does, whose menu MyGo draws in the window with the theme's
+// look, as PopoverMenu draws a context menu (Element.PopoverMenuButton):
+//
+//	ui.PopoverMenuButton(c, "Sort by", func(m *ui.Menu) {
+//		for _, by := range []string{"Name", "Date", "Size"} {
+//			if m.Item(by).Radio(app.sort == by).Chosen() {
+//				app.sort = by
+//			}
+//		}
+//	})
+func corePopoverMenuButton(c *context, label string, build func(m *Menu)) *node {
+	return menuButton(c, label).PopoverMenuButton(build)
+}
+
+// menuButton creates the button of a MenuButton, showing label and an
+// arrow.
+func menuButton(c *context, label string) *node {
 	b := button(c, "", false)
 	b.Children(func() {
 		if label != "" {
@@ -684,5 +739,5 @@ func coreMenuButton(c *context, label string, build func(m *Menu)) *node {
 		}
 		chevron(c)
 	})
-	return b.Menu(build)
+	return b
 }

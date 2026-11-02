@@ -92,6 +92,38 @@ func TestHiddenWindowShowsAfterCapture(t *testing.T) {
 	}
 }
 
+// firstFrameSurface is an occludedSurface told of the first frame
+// (platform.FirstFrameSurface), with the times the window was ready to
+// show by then.
+type firstFrameSurface struct {
+	occludedSurface
+	o           *occludedHost
+	firstFrames []int
+}
+
+func (s *firstFrameSurface) FirstFrame() { s.firstFrames = append(s.firstFrames, s.o.ready) }
+
+// TestFirstFrameTold checks that a surface waiting for the content's first
+// frame, as Windows' keeps its window out of sight until then, is told
+// once, as the frame reached it, before the window is ready to show: not
+// for a capture's frame, which never reaches it, nor for the frames after.
+func TestFirstFrameTold(t *testing.T) {
+	o := newOccludedHost(t, false)
+	s := &firstFrameSurface{o: o}
+	o.s, o.conn.Surface = &s.occludedSurface, s
+	o.capture()
+	if len(s.firstFrames) != 0 {
+		t.Fatalf("told of the first frame after a capture")
+	}
+	o.frame()
+	o.count = 1
+	o.rt.changed()
+	o.frame()
+	if len(s.firstFrames) != 1 || s.firstFrames[0] != 0 || o.ready != 1 {
+		t.Fatalf("told of the first frame %d times, when ready to show %v times; ready %d times", len(s.firstFrames), s.firstFrames, o.ready)
+	}
+}
+
 // TestOccludedHoldsWithAccessibility checks that a window out of sight
 // holds its frames though assistive technology once read it, as utilities
 // reading every window's accessibility do; and that it builds the frame

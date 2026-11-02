@@ -780,7 +780,7 @@ func (e *coreText) styleSpans(attributed uintptr, style Style, spans []Span, tex
 			// Each rune is an object of its own: a run Core Text sizes by
 			// its delegate.
 			for k := start; k < to; k++ {
-				if d := runDelegates.delegate(objects, sp.ObjectWidth, sp.ObjectHeight); d != 0 {
+				if d := runDelegates.delegate(objects, sp.ObjectWidth, sp.ObjectHeight, sp.ObjectDescent); d != 0 {
 					ct.attributedSet(styled, cfRange{at[k], at[k+1] - at[k]}, runDelegates.attribute, d)
 					ct.release(d)
 				}

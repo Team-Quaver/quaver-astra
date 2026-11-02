@@ -56,6 +56,23 @@ func TestParseQRCXMLEnvelope(t *testing.T) {
 	}
 }
 
+// 上游偶尔没转义歌词正文里的双引号（如 He told me "don't worry"）。
+// 按第一个引号截断会把这一句之后的所有歌词都吞掉，必须容错取完整属性。
+func TestParseQRCEnvelopeUnescapedQuotes(t *testing.T) {
+	src := `<?xml version="1.0" encoding="utf-8"?><QrcInfos><LyricInfo LyricCount="1">` +
+		`<Lyric_1 LyricType="1" Lyrics="[0,1000]He told me "don't worry"&#10;[1000,1000]second line&#10;[2000,1000]third line" /></LyricInfo></QrcInfos>`
+	lines := ParseQRC(src)
+	if len(lines) != 3 {
+		t.Fatalf("含未转义引号的信封应解析出 3 行，实测 %d：%+v", len(lines), lines)
+	}
+	if lines[0].Text != `He told me "don't worry"` {
+		t.Errorf("第一句正文异常: %q", lines[0].Text)
+	}
+	if lines[1].Text != "second line" || lines[2].Text != "third line" {
+		t.Errorf("引号后的歌词丢失: %q / %q", lines[1].Text, lines[2].Text)
+	}
+}
+
 // 行只有行级时间、词时长全是 0 的「假 QRC」不该被当成逐字歌词。
 func TestHasWordTimingRejectsLineOnly(t *testing.T) {
 	lines := ParseQRC("[0,1000]一(0,0)二(0,0)\n[1000,900]三(0,0)")

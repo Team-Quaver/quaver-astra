@@ -6,7 +6,6 @@ import (
 	"bytes"
 	"os/exec"
 	"runtime"
-	"strconv"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -39,10 +38,13 @@ mygo.on("mygo:locale", (p) => window.heard.push(p.locale + " " + p.dir));
 // hear of a language the page did not have only, not as it loads.
 func TestLocaleAtDocumentStart(t *testing.T) {
 	localeLanguages(t, "en", "ar", "ja")
-	start := mygo.App.Locale()
+	// SetLanguages queues its update. Choose the initial language on the
+	// main thread after it, rather than reading the previous locale or
+	// assuming the user's preferred language is written left to right.
+	mygo.RunOnMain(func() { mygo.App.SetLocale("en") })
 	w := newWindow(t, mygo.WindowOptions{Hidden: true})
 	w.Page().LoadHTML(localePage, "app://localhost/")
-	waitFor(t, w, `window.started === `+strconv.Quote(start+" ltr"))
+	waitFor(t, w, `window.started === "en ltr"`)
 
 	mygo.App.SetLocale("ar")
 	waitFor(t, w, `mygo.locale === "ar" && mygo.dir === "rtl" && window.heard.join() === "ar rtl"`)

@@ -59,6 +59,20 @@ func Rotation(degrees float32) Affine {
 // Perspective reports whether m is projective, not affine.
 func (m Affine) Perspective() bool { return m.Set && (m.G != 0 || m.H != 0) }
 
+// MovedClip returns the rectangle of a clip of r under m, and what of m is
+// left to apply to it: nothing when m only moves it, as a pose sliding a
+// panel in or a card lifting under the pointer does. A clip only moved is
+// a rectangle like any other, which renderers cut as they cut those that
+// nothing transforms, rather than with a mask of its transformed shape.
+func MovedClip(r Rect, m Affine) (Rect, Affine) {
+	if !m.Set || m.A != 1 || m.B != 0 || m.C != 0 || m.D != 1 || m.G != 0 || m.H != 0 {
+		return r, m
+	}
+	r.X += m.X
+	r.Y += m.Y
+	return r, Affine{}
+}
+
 // moves reports whether m only moves what it maps, without scaling,
 // turning, skewing it or showing it in perspective.
 func (m Affine) moves() bool {

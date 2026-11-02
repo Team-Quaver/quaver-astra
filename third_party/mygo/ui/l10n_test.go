@@ -7,6 +7,7 @@ import (
 	"github.com/egoist/mygo/internal/platform"
 
 	// MyGo's own strings in the languages the tests show.
+	_ "github.com/egoist/mygo/locales/ja"
 	_ "github.com/egoist/mygo/locales/zh-Hans"
 	_ "github.com/egoist/mygo/locales/zh-Hant"
 )
@@ -25,7 +26,7 @@ func TestControlsSayTheLanguage(t *testing.T) {
 	if !tt.HasText("No matches") || !tt.HasText("Done") {
 		t.Fatalf("in English: %q", tt.Texts())
 	}
-	for _, lang := range []string{"zh-Hans", "zh-Hant"} {
+	for _, lang := range []string{"ja", "zh-Hans", "zh-Hant"} {
 		tt.SetLocale(lang)
 		tx := l10n.In(lang)
 		if !tt.HasText(tx.NoMatches()) || !tt.HasText(tx.Done()) || tt.HasText("Done") {

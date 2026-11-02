@@ -477,11 +477,11 @@ type Renderer struct {
 	// diff finds what changed since the last frame drawn, and ages what
 	// changed since each drawable was (see gpu.Ages); redrew is how much
 	// of the last frame was drawn, for FrameInfo: none of it when its
-	// scene was the last one's, part (redrewPart) or all of it.
-	diff       scene.Differ
-	ages       gpu.Ages
-	redrew     redrawn
-	redrewPart gpu.Scissor
+	// scene was the last one's, part (part) or all of it.
+	diff   scene.Differ
+	ages   gpu.Ages
+	redrew redrawn
+	part   gpu.Part
 	// pipelines has a hash of the pipelines each op draws with (see
 	// pipelineDamage).
 	pipelines gpu.Pipelines
@@ -968,23 +968,34 @@ func (r *Renderer) imageTexture(img *scene.Image) uintptr {
 	}
 	t := r.images[img.ID()]
 	if t == nil {
-		tex := r.newTexture(img.W, img.H, pixelFormatRGBA8Unorm, usageShaderRead, img.Pix, img.W*4)
+		pix := img.Pixels()
+		if pix == nil {
+			return 0
+		}
+		tex := r.newTexture(img.W, img.H, pixelFormatRGBA8Unorm, usageShaderRead, pix, img.W*4)
 		if tex == 0 {
 			return 0
 		}
 		t = &texture{tex: tex, w: img.W, h: img.H, ver: img.Version()}
 		r.images[img.ID()] = t
+		img.Uploaded()
 	} else if t.w != img.W || t.h != img.H {
-		tex := r.newTexture(img.W, img.H, pixelFormatRGBA8Unorm, usageShaderRead, img.Pix, img.W*4)
-		if tex == 0 {
-			return 0
+		if pix := img.Pixels(); pix != nil {
+			tex := r.newTexture(img.W, img.H, pixelFormatRGBA8Unorm, usageShaderRead, pix, img.W*4)
+			if tex == 0 {
+				return 0
+			}
+			release(&t.tex)
+			t.tex, t.w, t.h, t.ver = tex, img.W, img.H, img.Version()
+			img.Uploaded()
 		}
-		release(&t.tex)
-		t.tex, t.w, t.h, t.ver = tex, img.W, img.H, img.Version()
 	} else if t.ver != img.Version() {
-		r.waitLast() // frames in flight read this texture
-		msgReplaceRegion(t.tex, sel("replaceRegion:mipmapLevel:withBytes:bytesPerRow:"), mtlRegion{W: uint(img.W), H: uint(img.H), D: 1}, 0, unsafe.Pointer(&img.Pix[0]), uint(img.W*4))
-		t.ver = img.Version()
+		if pix := img.Pixels(); pix != nil {
+			r.waitLast() // frames in flight read this texture
+			msgReplaceRegion(t.tex, sel("replaceRegion:mipmapLevel:withBytes:bytesPerRow:"), mtlRegion{W: uint(img.W), H: uint(img.H), D: 1}, 0, unsafe.Pointer(&pix[0]), uint(img.W*4))
+			t.ver = img.Version()
+			img.Uploaded()
+		}
 	}
 	t.lastFrame = r.frame
 	return t.tex
@@ -1207,13 +1218,14 @@ func (r *Renderer) batchPipe(b gpu.Batch) id {
 }
 
 // drawBuilt encodes drawing s, built with d (build), into target, whole or,
-// unless part is nil, in part: what target holds elsewhere is kept.
-func (r *Renderer) drawBuilt(cb id, s *scene.Scene, target id, d *drawState, part *gpu.Scissor) error {
+// unless part is nil, in its rectangles: what target holds elsewhere is
+// kept.
+func (r *Renderer) drawBuilt(cb id, s *scene.Scene, target id, d *drawState, part *gpu.Part) error {
 	instBuf := d.instBufs[r.inUse]
 	load := uintptr(loadActionClear)
 	if part != nil {
 		load = loadActionLoad
-		if !part.Empty() {
+		if len(part.Rects) > 0 {
 			r.clearTexel(cb, s)
 		}
 	}
@@ -1227,18 +1239,23 @@ func (r *Renderer) drawBuilt(cb id, s *scene.Scene, target id, d *drawState, par
 	// changed since the last.
 	bindInstances(enc, instBuf)
 	st := passState{pipe: r.cur.pipeline, image: r.empty, scissor: noScissor}
-	if part != nil && !part.Empty() {
-		r.clearArea(enc, *part)
-		st.pipe, st.scissor = r.cur.downPipe, *part
+	if part != nil && len(part.Rects) > 0 {
+		for _, a := range part.Rects {
+			r.clearArea(enc, a)
+			st.scissor = a
+		}
+		st.pipe = r.cur.downPipe
 		send(enc, "setFragmentBuffer:offset:atIndex:", instBuf, 0, 0) // clearArea's bytes took its place
+	}
+	whole := []gpu.Scissor{{Right: int32(s.Width), Bottom: int32(s.Height)}}
+	areas := whole
+	if part != nil {
+		areas = part.Rects
 	}
 	for i, b := range d.b.Batches {
 		sc := frameScissor(b.Scissor, s)
-		if part != nil {
-			sc = sc.Intersect(*part)
-		}
 		want := d.pipes[i]
-		if b.Count == 0 || sc.Empty() || want == 0 {
+		if b.Count == 0 || sc.Empty() || want == 0 || !meets(sc, areas) {
 			continue
 		}
 		if b.Backdrop != 0 {
@@ -1267,14 +1284,32 @@ func (r *Renderer) drawBuilt(cb id, s *scene.Scene, target id, d *drawState, par
 		if b.Shader != nil {
 			r.bindShader(enc, b)
 		}
-		if sc != st.scissor {
-			st.scissor = sc
-			r.setScissor(enc, sc)
+		// Drawn once in each rectangle of the part it meets, which are
+		// apart from each other.
+		for _, a := range areas {
+			in := sc.Intersect(a)
+			if in.Empty() {
+				continue
+			}
+			if in != st.scissor {
+				st.scissor = in
+				r.setScissor(enc, in)
+			}
+			msg5(enc, selDraw, primitiveTriStrip, 0, 4, uintptr(b.Count), uintptr(b.Start))
 		}
-		msg5(enc, selDraw, primitiveTriStrip, 0, 4, uintptr(b.Count), uintptr(b.Start))
 	}
 	send(enc, "endEncoding")
 	return nil
+}
+
+// meets reports whether sc meets one of areas.
+func meets(sc gpu.Scissor, areas []gpu.Scissor) bool {
+	for _, a := range areas {
+		if !sc.Intersect(a).Empty() {
+			return true
+		}
+	}
+	return false
 }
 
 // passState is what a pass bound last: its pipeline, the image (texture
@@ -1581,6 +1616,11 @@ func (r *Renderer) render(s *scene.Scene) error {
 	if scale <= 0 {
 		scale = 1
 	}
+	if s.Zoom > 0 {
+		// The layer's scale is the screen's: zoomed content draws more
+		// pixels a DIP, not more a point.
+		scale /= float64(s.Zoom)
+	}
 	changes := r.layerChanges(s, scale)
 	if r.pending.cb != 0 {
 		// A frame not paced by the display, as a resize's, draws after
@@ -1705,11 +1745,7 @@ func (r *Renderer) drawFrame(s *scene.Scene, damage []image.Rectangle, known boo
 		return 0, err
 	}
 	damage = r.pipelineDamage(damage, known)
-	var frame image.Rectangle
-	for _, d := range damage {
-		frame = frame.Union(d)
-	}
-	r.ages.Add(frame, !known)
+	r.ages.Add(damage, !known)
 	target := acquire()
 	if target == 0 {
 		return cb, nil
@@ -1734,13 +1770,13 @@ func (r *Renderer) pipelineDamage(damage []image.Rectangle, known bool) []image.
 // texture tex, or nil to draw it whole: what changed since tex was drawn
 // (r.ages), the drawables showing in turn, and the backdrops of the
 // effects that meets.
-func (r *Renderer) partOf(s *scene.Scene, tex id) *gpu.Scissor {
+func (r *Renderer) partOf(s *scene.Scene, tex id) *gpu.Part {
 	return r.partIn(s.Width, s.Height, tex, func(d []image.Rectangle) []image.Rectangle { return r.diff.AddBackdrops(s, d) })
 }
 
 // partIn is partOf for a frame of w×h pixels, the backdrops of whose
 // effects backdrops adds; nil draws it whole.
-func (r *Renderer) partIn(w, h int, tex id, backdrops func([]image.Rectangle) []image.Rectangle) *gpu.Scissor {
+func (r *Renderer) partIn(w, h int, tex id, backdrops func([]image.Rectangle) []image.Rectangle) *gpu.Part {
 	if !r.ages.Has(tex) {
 		// Held until forgotten, so that no other texture takes its
 		// place: Core Animation makes drawables anew as it likes.
@@ -1751,12 +1787,11 @@ func (r *Renderer) partIn(w, h int, tex id, backdrops func([]image.Rectangle) []
 	if !ok || noPartial || backdrops == nil {
 		return nil
 	}
-	area, ok := gpu.Partial(since, w, h, backdrops)
-	if !ok {
+	if !r.part.Set(since, w, h, backdrops) {
 		return nil
 	}
-	r.redrew, r.redrewPart = redrewPart, area
-	return &area
+	r.redrew = redrewPart
+	return &r.part
 }
 
 // redrawn is how much of a frame was drawn.
@@ -1974,8 +2009,7 @@ func (r *Renderer) FrameInfo() string {
 	info := r.b.Summary()
 	switch r.redrew {
 	case redrewPart:
-		a := r.redrewPart
-		info = fmt.Sprintf("redrew %d×%d at %d,%d, %s", a.Right-a.Left, a.Bottom-a.Top, a.Left, a.Top, info)
+		info = fmt.Sprintf("redrew %s, %s", r.part.String(), info)
 	case redrewNothing:
 		info = "unchanged"
 	}

@@ -125,6 +125,11 @@ func (rt *engine) lateInput() {
 func place(e *node, x, y float32) {
 	e.x += x
 	e.y += y
+	if e.hidden {
+		// Not laid out: nor is what is inside it placed, whose scroll
+		// offsets stay as they were for when it shows again.
+		return
+	}
 	cx, cy := e.x, e.y
 	if f := e.followX; f != nil {
 		cx -= float32(f.followShift())
@@ -378,7 +383,7 @@ func measureIntrinsic(e *node, maxContent bool) float32 {
 			}
 		}
 		for ch := e.first; ch != nil; ch = ch.next {
-			if ch == more || ch.flags&flagAbsolute != 0 {
+			if ch == more || ch.flags&flagAbsolute != 0 || ch.hidden {
 				continue
 			}
 			cw := intrinsic(ch, maxContent)
@@ -667,7 +672,7 @@ func flexLayout(e *node, cw, ch float32, commit bool) (usedW, usedH float32) {
 		scratch.items, scratch.lines = scratch.items[:firstItem], scratch.lines[:firstLine]
 	}()
 	for c := e.first; c != nil; c = c.next {
-		if c.flags&flagAbsolute != 0 {
+		if c.flags&flagAbsolute != 0 || c.hidden {
 			continue
 		}
 		it := flexItem{e: c}
@@ -1047,7 +1052,7 @@ func boxBaseline(e *node) (float32, bool) {
 	}
 	var first *node
 	for ch := e.first; ch != nil; ch = ch.next {
-		if ch.flags&(flagAbsolute|flagInvisible) != 0 {
+		if ch.flags&(flagAbsolute|flagInvisible) != 0 || ch.hidden {
 			continue
 		}
 		if first == nil {
@@ -1173,11 +1178,16 @@ func justifyOffsets(j Align, free float32, n int) (start, between float32) {
 func layoutAbsolute(e *node) {
 	pw, ph := e.w-e.border[1]-e.border[3], e.h-e.border[0]-e.border[2]
 	for c := e.first; c != nil; c = c.next {
-		if c.flags&flagAbsolute == 0 || c.leaving != 0 {
+		if c.flags&flagAbsolute == 0 || c.leaving != 0 || c.hidden {
 			// Copies of elements leaving are placed by their transitions.
 			continue
 		}
 		if c.attach != 0 {
+			if c.popover != nil && c.popover.inHidden() {
+				// Nowhere to attach to: it hides with its target.
+				c.hidden = true
+				continue
+			}
 			if c.popover != nil {
 				attachTo(c, e, pw, ph)
 			} else {

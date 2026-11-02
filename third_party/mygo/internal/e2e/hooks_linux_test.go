@@ -15,6 +15,11 @@ func activateMenu(w *mygo.Window, path ...string) (err error) {
 	return err
 }
 
+func menuItemEnabled(w *mygo.Window, path ...string) (enabled bool, err error) {
+	mygo.RunOnMain(func() { enabled, err = linux.TestMenuItemEnabled(w.NativeHandle(), path...) })
+	return enabled, err
+}
+
 // Key presses and dialogs need an input device under Xvfb; not covered.
 func pressShortcut(string, bool) (bool, bool) { return false, false }
 
@@ -48,6 +53,11 @@ func click(w *mygo.Window, x, y float64) bool {
 	return fake(func() bool { return linux.TestClickSurface(w.NativeHandle(), x, y) })
 }
 
+// clickPage clicks a window's page, through XTEST.
+func clickPage(w *mygo.Window, x, y float64) bool {
+	return fake(func() bool { return linux.TestClickPage(w.NativeHandle(), x, y) })
+}
+
 // appClick is click, already through XTEST.
 func appClick(w *mygo.Window, x, y float64) bool { return click(w, x, y) }
 
@@ -70,12 +80,19 @@ func drag(w *mygo.Window, points [][2]float64) bool {
 	return fake(func() bool { return linux.TestDragSurface(w.NativeHandle(), points) })
 }
 
+// wheel turns the mouse's wheel a notch down at (x, y), through XTEST.
+func wheel(w *mygo.Window, x, y float64) bool {
+	return fake(func() bool { return linux.TestWheelSurface(w.NativeHandle(), x, y) })
+}
+
 func webViewAttached(*mygo.Window) (bool, bool) { return false, false }
 
 // Collection behaviors and deactivating the app are macOS's.
-func collectionBehavior(*mygo.Window) (uint, bool) { return 0, false }
-func deactivateApp() bool                          { return false }
-func appActive() (bool, bool)                      { return false, false }
+func collectionBehavior(*mygo.Window) (uint, bool)               { return 0, false }
+func deactivateApp() bool                                        { return false }
+func material(*mygo.Window) (string, int, float64, bool, bool)   { return "", 0, 0, false, false }
+func roundedBacking(*mygo.Window) (bool, float64, float64, bool) { return false, 0, 0, false }
+func appActive() (bool, bool)                                    { return false, false }
 
 // WebKitGTK docks the inspector inside the web view.
 func dockDevTools(*mygo.Window) bool { return false }
@@ -199,6 +216,7 @@ func titleButtonColor(*mygo.Window, string) (uint8, uint8, uint8, bool) { return
 
 // Linux shows no material.
 func composition(*mygo.Window) (bool, bool, bool) { return false, false, false }
+func canCompose() bool                            { return false }
 func loseComposition(bool) bool                   { return false }
 
 // WebKitGTK creates web views with their windows.
@@ -299,6 +317,11 @@ func choosePopupItem(label string) (ok bool) {
 	return ok
 }
 
+func popupItemEnabled(label string) (enabled, ok bool) {
+	mygo.RunOnMain(func() { enabled, ok = linux.TestPopupItemEnabled(label) })
+	return enabled, ok
+}
+
 // Only macOS has key-value observing.
 func observe(*mygo.Window) (func(), bool) { return nil, false }
 
@@ -338,3 +361,61 @@ func endSheetButton(*mygo.Window, int) bool               { return false }
 
 // Panels' window styles are Windows'.
 func panelStyles(*mygo.Window) (bool, bool, bool, bool) { return false, false, false, false }
+
+// throttlingOff reports whether the page of w, or of its first web view,
+// is set up to keep running while it can't be seen, and how many of the
+// settings that take the platform has.
+func throttlingOff(w *mygo.Window, webView bool) (off bool, settings int) {
+	mygo.RunOnMain(func() { off, settings = linux.TestBackgroundThrottlingOff(w.NativeHandle(), webView) })
+	return off, settings
+}
+
+// mockCapture gives a window's page WebKit's mock camera and microphone.
+func mockCapture(w *mygo.Window) (ok bool) {
+	mygo.RunOnMain(func() { ok = linux.TestMockCaptureDevices(w.NativeHandle()) })
+	return ok
+}
+
+// pageGestures reports whether a swipe navigates and a pinch zooms the page
+// of a window, or with webView 0 or more, of its web view of that index.
+func pageGestures(w *mygo.Window, webView int) (swipe, pinch, ok bool) {
+	mygo.RunOnMain(func() { swipe, pinch, ok = linux.TestPageGestures(w.NativeHandle(), webView) })
+	return swipe, pinch, ok
+}
+
+// pinchPage pinches the touchpad over the page of a window, or of its web
+// view, from 1 through scales, with GDK's events, which only Wayland
+// makes.
+func pinchPage(w *mygo.Window, webView int, x, y float64, scales ...float64) (ok bool) {
+	mygo.RunOnMain(func() { ok = linux.TestPinchPage(w.NativeHandle(), webView, x, y, scales) })
+	return ok
+}
+
+// pageMenusHooked tells that the tests can right-click a page and read
+// the menu it opens, through rightClickPage, pageMenu, choosePageMenuItem
+// and dismissPageMenu.
+const pageMenusHooked = true
+
+// rightClickPage clicks (x, y) in a window's page with the secondary
+// button, through XTEST.
+func rightClickPage(w *mygo.Window, x, y float64) bool {
+	return fake(func() bool { return linux.TestRightClickPage(w.NativeHandle(), x, y) })
+}
+
+// pageMenu returns the labels of the items of the web view's context menu
+// shown over a page, "-" for separators, and whether one is shown.
+func pageMenu() (labels []string, shown bool) {
+	mygo.RunOnMain(func() { labels, shown = linux.TestPageMenu() })
+	return labels, shown
+}
+
+// choosePageMenuItem chooses an item of that menu by its label.
+func choosePageMenuItem(label string) (ok bool) {
+	mygo.RunOnMain(func() { ok = linux.TestChoosePageMenuItem(label) })
+	return ok
+}
+
+func dismissPageMenu() { mygo.RunOnMain(linux.TestDismissPageMenu) }
+
+// Only Windows' tests start a process that takes the foreground.
+func takeForeground(*mygo.Window) {}

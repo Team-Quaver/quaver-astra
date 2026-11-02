@@ -218,7 +218,7 @@ func TestScrollback(t *testing.T) {
 		return term.term.Scrollbar().Offset
 	}
 	bottom := offset()
-	tt.Wheel(100, 100, 0, -40) // a notch of a mouse wheel up
+	tt.Wheel(100, 100, 0, -hostNotch()) // a notch of a mouse wheel up
 	if got := offset(); got != bottom-3 {
 		t.Errorf("after scrolling a notch up, offset = %d, want %d", got, bottom-3)
 	}
@@ -231,6 +231,107 @@ func TestScrollback(t *testing.T) {
 	tt.Type("x")
 	if got := offset(); got != bottom {
 		t.Errorf("after typing, offset = %d, want %d", got, bottom)
+	}
+}
+
+// TestScrollbarDrag: the scroll bar shows while the pointer is over the
+// terminal, as the code editor's does, and goes as it leaves; over its
+// strip the pointer is the arrow rather than the I-beam. It drags the
+// scrollback along: by the thumb, or from where the track is pressed.
+func TestScrollbarDrag(t *testing.T) {
+	loadLib(t)
+	term, err := New(Options{Conn: newPipe()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer term.Close()
+	tt := ui.NewTester(func(c *ui.Context) { View(c, term).Fill().AutoFocus() }, 400, 200)
+	var b strings.Builder
+	for i := range 100 {
+		b.WriteString("line " + itoa(i) + "\r\n")
+	}
+	term.Feed([]byte(b.String()))
+	tt.Frame()
+	offset := func() uint64 {
+		term.mu.Lock()
+		defer term.mu.Unlock()
+		return term.term.Scrollbar().Offset
+	}
+	// shows reports whether the bar paints at (395, y), by the pixel off
+	// its strip.
+	shows := func(y int) bool {
+		img := tt.Image()
+		s := img.Bounds().Dx() / 400
+		return img.RGBAAt(395*s, y*s) != img.RGBAAt(380*s, y*s)
+	}
+	bottom := offset()
+	if shows(188) {
+		t.Error("the bar shows, the pointer away")
+	}
+	tt.Move(100, 100)
+	tt.Frame()
+	if !shows(188) {
+		t.Error("the bar doesn't show with the pointer over the terminal")
+	}
+	// Over the strip, at the bottom: the bar, and the arrow.
+	tt.Move(395, 100)
+	tt.Frame()
+	if c := tt.Cursor(); c != ui.CursorDefault {
+		t.Errorf("over the bar, the pointer is %v, want the arrow", c)
+	}
+	if !shows(188) {
+		t.Error("the bar doesn't show with the pointer over it")
+	}
+	// The thumb, at the bottom, dragged halfway up and past the top.
+	tt.Press(395, 188)
+	tt.Move(395, 100)
+	if got := offset(); got == 0 || got >= bottom {
+		t.Errorf("halfway up, offset = %d, want between 0 and %d", got, bottom)
+	}
+	// The pointer off the strip: the drag still has it.
+	tt.Move(100, -50)
+	if got := offset(); got != 0 {
+		t.Errorf("dragged past the top, offset = %d, want 0", got)
+	}
+	tt.Release(100, -50)
+	term.mu.Lock()
+	_, sel := term.term.SelectionText()
+	term.mu.Unlock()
+	if sel {
+		t.Error("dragging the bar selected text")
+	}
+	tt.Move(100, 100)
+	tt.Frame()
+	if c := tt.Cursor(); c != ui.CursorText {
+		t.Errorf("over the text, the pointer is %v, want the I-beam", c)
+	}
+	if !shows(12) {
+		t.Error("the bar went with the pointer still over the terminal")
+	}
+	// The pointer away, it goes though the viewport is up, and comes back
+	// with it.
+	tt.Move(100, -50)
+	tt.Frame()
+	if shows(12) {
+		t.Error("the bar stayed with the pointer away")
+	}
+	tt.Wheel(100, 100, 0, 40)
+	tt.Frame()
+	if !shows(15) {
+		t.Error("the bar didn't show with the pointer back")
+	}
+	// A press low on the track brings the thumb there.
+	tt.Press(395, 190)
+	tt.Release(395, 190)
+	if got := offset(); got < bottom/2 {
+		t.Errorf("after a press low on the track, offset = %d, want past %d", got, bottom/2)
+	}
+	// A full-screen program's screen has no scrollback, and no bar.
+	term.Feed([]byte("\x1b[?1049h"))
+	tt.Move(395, 120)
+	tt.Frame()
+	if c := tt.Cursor(); c != ui.CursorText {
+		t.Errorf("over a full-screen program's edge, the pointer is %v, want the I-beam", c)
 	}
 }
 
@@ -1352,6 +1453,41 @@ func TestCommandClickLinks(t *testing.T) {
 	}
 }
 
+// Command-hover underlines the same cells that Command-click opens,
+// including bare filenames and paths to ignored output directories.
+func TestCommandHoverFilePath(t *testing.T) {
+	loadLib(t)
+	for _, path := range []string{"notes.md", ".log-outputs/takumi-session-analysis.md"} {
+		t.Run(path, func(t *testing.T) {
+			term, err := New(Options{Conn: newPipe(), OpenLink: func(string) bool { return true }})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer term.Close()
+			term.Feed([]byte("write(" + path + ")\r\n"))
+			tt := ui.NewTester(func(c *ui.Context) { View(c, term).Fill() }, 800, 200)
+			tt.Frame()
+			x, y := cellCenter(term, 8, 0)
+			tt.Move(x, y)
+			plain := slices.Clone(tt.Image().Pix)
+			tt.HoldModifiers(ui.Cmd)
+			if h := term.v.hover; h != (linkSpan{0, 6, 6 + len(path)}) {
+				t.Fatalf("hovered %+v, want the file path's cells", h)
+			}
+			if tt.Cursor() != ui.CursorPointer {
+				t.Error("hovering a file path with Command did not show a hand")
+			}
+			if bytes.Equal(plain, tt.Image().Pix) {
+				t.Error("hovering a file path with Command did not paint its underline")
+			}
+			tt.HoldModifiers(0)
+			if term.v.hover.on() || !bytes.Equal(plain, tt.Image().Pix) {
+				t.Error("releasing Command did not remove the underline")
+			}
+		})
+	}
+}
+
 // TestCommandClickLinkWithoutOpenLink: without Options.OpenLink, the system
 // opens hyperlinks of any scheme, paths are no links, the pointer is a hand
 // over a link while Command is held, and a click on a link goes before a
@@ -1523,8 +1659,8 @@ func TestOnScrollTakesTheWheel(t *testing.T) {
 		return term.term.Scrollbar().Offset
 	}
 	bottom := offset()
-	tt.Wheel(100, 100, 0, -40) // a notch up
-	tt.Wheel(100, 100, 0, 40)  // and down
+	tt.Wheel(100, 100, 0, -hostNotch()) // a notch up
+	tt.Wheel(100, 100, 0, hostNotch())  // and down
 	if !slices.Equal(seen, []int{-3, 3}) {
 		t.Errorf("OnScroll saw %v, want [-3 3]", seen)
 	}
@@ -1534,7 +1670,7 @@ func TestOnScrollTakesTheWheel(t *testing.T) {
 	// The program takes the mouse: the wheel goes to it.
 	term.Feed([]byte("\x1b[?1002h\x1b[?1006h"))
 	tt.Frame()
-	tt.Wheel(100, 100, 0, -40)
+	tt.Wheel(100, 100, 0, -hostNotch())
 	if len(seen) != 2 {
 		t.Errorf("OnScroll saw %v while the program took the mouse", seen)
 	}
@@ -1544,7 +1680,7 @@ func TestOnScrollTakesTheWheel(t *testing.T) {
 	// A full-screen program gets it as arrows, unless it turns that off.
 	term.Feed([]byte("\x1b[?1002l\x1b[?1006l\x1b[?1049h"))
 	tt.Frame()
-	tt.Wheel(100, 100, 0, -40)
+	tt.Wheel(100, 100, 0, -hostNotch())
 	if len(seen) != 2 {
 		t.Errorf("OnScroll saw %v on a full-screen program's screen", seen)
 	}
@@ -1553,7 +1689,7 @@ func TestOnScrollTakesTheWheel(t *testing.T) {
 	}
 	term.Feed([]byte("\x1b[?1007l"))
 	tt.Frame()
-	tt.Wheel(100, 100, 0, -40)
+	tt.Wheel(100, 100, 0, -hostNotch())
 	if !slices.Equal(seen, []int{-3, 3, -3}) {
 		t.Errorf("OnScroll saw %v without alternate scroll", seen)
 	}
@@ -1674,6 +1810,120 @@ func TestPasteImage(t *testing.T) {
 	}
 }
 
+// hostNotch is the DIPs a notch of a mouse wheel scrolls on this
+// platform at its defaults, as its backend sends them.
+func hostNotch() float32 {
+	switch runtime.GOOS {
+	case "windows":
+		return 3 * 33 // 3 lines to scroll, 33 DIPs a line
+	case "linux":
+		return 50
+	}
+	return 40
+}
+
+// TestWheelRows: a notch of a mouse wheel scrolls three rows on every
+// platform at its defaults, though their backends send it as 40, 50 or 99
+// DIPs, and on Windows follows "lines to scroll": a notch at one line is a
+// row (#783).
+func TestWheelRows(t *testing.T) {
+	for _, c := range []struct {
+		goos string
+		dy   float32
+		want float32
+	}{
+		{"windows", 99, 3},   // a notch at 3 lines
+		{"windows", -99, -3}, // and up
+		{"windows", 33, 1},   // a notch at 1 line
+		{"windows", 66, 2},   // two notches at 1 line, or one at 2
+		{"windows", 165, 5},  // a notch at 5 lines
+		{"darwin", 40, 3},
+		{"darwin", -80, -6}, // a line accelerated to two
+		{"linux", 50, 3},
+		{"linux", -50, -3},
+	} {
+		if got := wheelRows(c.dy, c.goos); got != c.want {
+			t.Errorf("wheelRows(%v, %q) = %v, want %v", c.dy, c.goos, got, c.want)
+		}
+	}
+}
+
+// TestWheelNotchScrollsThreeRows: the view scrolls three whole rows a
+// notch of this platform's wheel, and as many again the next notch, with
+// nothing left over.
+func TestWheelNotchScrollsThreeRows(t *testing.T) {
+	loadLib(t)
+	var seen []int
+	term, err := New(Options{Conn: newPipe(), OnScroll: func(rows int) bool {
+		seen = append(seen, rows)
+		return true
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer term.Close()
+	tt := ui.NewTester(func(c *ui.Context) { View(c, term).Fill().AutoFocus() }, 400, 200)
+	tt.Frame()
+	for _, dy := range []float32{hostNotch(), hostNotch(), -hostNotch()} {
+		term.v.scroll(ui.InputEvent{Kind: ui.InputScroll, DY: dy})
+	}
+	if !slices.Equal(seen, []int{3, 3, -3}) {
+		t.Errorf("notches scrolled %v rows, want [3 3 -3]", seen)
+	}
+}
+
+// TestScrollMultiplier: Options.ScrollMultiplier's Discrete is the rows a
+// notch scrolls, its Precision scales a touchpad's distance, and
+// SetScrollMultiplier changes them in a running terminal, as Ghostty's
+// mouse-scroll-multiplier.
+func TestScrollMultiplier(t *testing.T) {
+	loadLib(t)
+	var seen []int
+	term, err := New(Options{Conn: newPipe(), ScrollMultiplier: ScrollMultiplier{Discrete: 1}, OnScroll: func(rows int) bool {
+		seen = append(seen, rows)
+		return true
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer term.Close()
+	tt := ui.NewTester(func(c *ui.Context) { View(c, term).Fill().AutoFocus() }, 400, 200)
+	tt.Frame()
+	ch := float32(term.v.cellH) / term.v.scale
+	term.v.scroll(ui.InputEvent{Kind: ui.InputScroll, DY: hostNotch()})
+	term.v.scroll(ui.InputEvent{Kind: ui.InputScroll, DY: -hostNotch()})
+	term.SetScrollMultiplier(ScrollMultiplier{Precision: 0.5, Discrete: 6})
+	term.v.scroll(ui.InputEvent{Kind: ui.InputScroll, DY: hostNotch()})
+	term.v.scroll(ui.InputEvent{Kind: ui.InputScroll, DY: 4 * ch, Precise: true})
+	if !slices.Equal(seen, []int{1, -1, 6, 2}) {
+		t.Errorf("scrolled %v rows, want [1 -1 6 2]", seen)
+	}
+}
+
+// TestScrollMultiplierRows: a fraction of a notch's rows carries over, and
+// zero is the default.
+func TestScrollMultiplierRows(t *testing.T) {
+	for _, c := range []struct {
+		m       ScrollMultiplier
+		dy      float32
+		precise bool
+		goos    string
+		want    float32
+	}{
+		{ScrollMultiplier{}, 40, false, "darwin", 3},
+		{ScrollMultiplier{}, 20, true, "darwin", 1},
+		{ScrollMultiplier{Discrete: 1.5}, 40, false, "darwin", 1.5},
+		{ScrollMultiplier{Discrete: 1}, 50, false, "linux", 1},
+		{ScrollMultiplier{Discrete: 6}, 165, false, "windows", 10}, // a notch at 5 lines, doubled
+		{ScrollMultiplier{Precision: 0.5}, 40, true, "darwin", 1},
+		{ScrollMultiplier{Precision: 2}, 40, false, "darwin", 3}, // a wheel's alone
+	} {
+		if got := c.m.rows(c.dy, 20, c.precise, c.goos); got != c.want {
+			t.Errorf("%+v.rows(%v, precise %v, %q) = %v, want %v", c.m, c.dy, c.precise, c.goos, got, c.want)
+		}
+	}
+}
+
 // TestOnZoom: Options.OnZoom takes the wheel with Control (Command on
 // macOS) in notches, rolling up positive, before OnScroll and a program
 // that takes the mouse, and the font size keys.
@@ -1723,7 +1973,7 @@ func TestOnZoom(t *testing.T) {
 	}
 	// Without the modifier the wheel scrolls.
 	zooms = nil
-	wheel(0, -40, false)
+	wheel(0, -hostNotch(), false)
 	if zooms != nil || !slices.Equal(scrolls, []int{-3}) {
 		t.Errorf("a plain notch zoomed %v and scrolled %v", zooms, scrolls)
 	}
@@ -1750,6 +2000,59 @@ func TestOnZoom(t *testing.T) {
 	}
 	if term.v.font.size != 13 {
 		t.Errorf("a zoom OnZoom took changed the font to %v", term.v.font.size)
+	}
+}
+
+// A touchpad scroll that began without Command keeps scrolling, even after
+// the fingers leave it and Command comes down while its momentum runs.
+func TestOnZoomIgnoresMomentum(t *testing.T) {
+	loadLib(t)
+	var zooms []Zoom
+	var scrolls []int
+	term, err := New(Options{
+		Conn:     newPipe(),
+		OnZoom:   func(z Zoom) bool { zooms = append(zooms, z); return true },
+		OnScroll: func(rows int) bool { scrolls = append(scrolls, rows); return true },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer term.Close()
+	tt := ui.NewTester(func(c *ui.Context) { View(c, term).Fill().AutoFocus() }, 400, 200)
+	var b strings.Builder
+	for i := range 100 {
+		b.WriteString("line " + itoa(i) + "\r\n")
+	}
+	term.Feed([]byte(b.String()))
+	tt.Frame()
+	term.v.scroll(ui.InputEvent{Kind: ui.InputScroll, DY: -40, Precise: true})
+	term.v.scroll(ui.InputEvent{Kind: ui.InputScroll, DY: -40, Mods: ui.Cmd, Precise: true, Momentum: true})
+	if zooms != nil {
+		t.Errorf("momentum scrolling zoomed %v", zooms)
+	}
+	if len(scrolls) != 2 || scrolls[0] >= 0 || scrolls[1] >= 0 {
+		t.Errorf("momentum scrolling scrolled %v, want two scrolls up", scrolls)
+	}
+}
+
+// Command at the start of a touchpad scroll zooms through its momentum.
+func TestOnZoomKeepsMomentumOfZoomGesture(t *testing.T) {
+	loadLib(t)
+	var zooms []Zoom
+	term, err := New(Options{
+		Conn:   newPipe(),
+		OnZoom: func(z Zoom) bool { zooms = append(zooms, z); return true },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer term.Close()
+	tt := ui.NewTester(func(c *ui.Context) { View(c, term).Fill().AutoFocus() }, 400, 200)
+	tt.Frame()
+	term.v.scroll(ui.InputEvent{Kind: ui.InputScroll, DY: -40, Mods: ui.Cmd, Precise: true})
+	term.v.scroll(ui.InputEvent{Kind: ui.InputScroll, DY: -40, Mods: ui.Cmd, Precise: true, Momentum: true})
+	if !slices.Equal(zooms, []Zoom{{Steps: 1}, {Steps: 1}}) {
+		t.Errorf("momentum scrolling zoomed %v, want two steps up", zooms)
 	}
 }
 

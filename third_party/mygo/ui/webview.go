@@ -58,7 +58,7 @@ type webPlace struct {
 // within clip, unless none of it shows. Called while committing, before
 // the element's own hit.
 func (rt *engine) noteWebView(e *node, clip Rect, invisible bool) {
-	if e.flags&flagInvisible != 0 {
+	if e.flags&flagInvisible != 0 || rt.commitHidden {
 		return
 	}
 	// The hole the painter makes: the content box on whole pixels. Native
@@ -143,7 +143,7 @@ func (rt *engine) placeWebViews() {
 		return
 	}
 	rt.webShown = len(rt.webPlaces) > 0
-	rt.host.placeWebViews(rt.webViewPlacements())
+	rt.host.placeWebViews(rt.windowWebViews(rt.webViewPlacements()))
 }
 
 // webViewPress handles a press that went to the web view at x, y: the

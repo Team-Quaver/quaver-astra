@@ -73,7 +73,8 @@ MYGO_UPDATER_PRIVATE_KEY="$(cat path/to/mygo-update.key)" go tool mygo build   #
 
 Next to the installers of each platform it writes:
 
-- `my-app-1.2.0-darwin-arm64.tar.gz`, the app as installed,
+- `my-app-1.2.0-darwin-arm64.tar.gz`, the app as installed, named after
+  the app's [`slug`](configuration.md#the-app),
 - [delta updates](#delta-updates) from the versions before, such as
   `my-app-1.1.0-to-1.2.0-darwin-arm64.delta`, and
 - `update-darwin-arm64.json`, the manifest: the version, its release
@@ -104,12 +105,40 @@ Publish the files where `updates` points to:
 - **S3**: `mygo build -upload` uploads them, with the installers, to the
   bucket of `updates.s3`; see [below](#publishing-to-s3).
 - **Your server**: upload the archives, deltas and manifests to the `url`
-  directory, with the Linux `install.sh`, and keep the files of earlier
-  versions there. Upload the manifests last, so apps never see a manifest
+  directory, with `install.sh`, `install.ps1` and `SHA256SUMS` (with the
+  lines of every platform), and keep the files of earlier versions there. Upload the manifests last, so apps never see a manifest
   whose files are missing.
 
 Each platform, such as `darwin-arm64`, `darwin-universal` or
 `windows-amd64`, has its own manifest, and a build only looks at its own.
+
+### Prereleases
+
+A release that GitHub marks a prerelease, such as `1.3.0-beta.1`, is never
+the latest release, so installed apps skip it. Apps with a beta let the
+users who chose it see prereleases with
+`mygo.Updater.SetPrereleases(true)`: their checks then read the release
+of the highest version that is not a draft, through the GitHub API, so
+they get the next prerelease, and the release after it too. Versions
+compare as semantic versioning does, `1.3.0-beta.2` before
+`1.3.0-beta.10` before `1.3.0`. Turning it off installs no older version:
+the app updates again once a release is newer than the prerelease it
+runs. The choice lasts while the app runs; the app keeps it, such as in
+its settings, and calls `SetPrereleases` at launch.
+
+```go
+mygo.Updater.SetPrereleases(settings.Beta)
+```
+
+Publish a prerelease as one, so that it does not become the latest
+release, which every app checks:
+`gh release edit v1.3.0-beta.1 --draft=false --prerelease`, or tick
+"Set as a pre-release". The checks read the releases from the newest down
+to the newest one that is not a prerelease, usually one request within
+the API's 60 an hour for each address, with or without a `tagPrefix`.
+Deltas start from the published release, so an app on a prerelease
+downloads the next one whole. Apps updated from `url` read the manifest
+the server has either way.
 
 ### Publishing to S3
 
@@ -136,7 +165,7 @@ of each platform. It needs no other tool: the credentials come from
 `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` and, for temporary ones,
 `AWS_SESSION_TOKEN`, and the region from `s3.region`, else `AWS_REGION`
 (or `AWS_DEFAULT_REGION`), else `us-east-1`, which R2 accepts. The
-manifests and `install.sh`, whose names stay from version to version, are
+manifests, the install scripts and `SHA256SUMS`, whose names stay from version to version, are
 uploaded with `Cache-Control: no-cache`, so a CDN checks them again.
 
 The bucket is named in the host name of requests on Amazon S3 and in their
@@ -229,10 +258,69 @@ func checkForUpdates(ctx context.Context) {
   checks its signature, and replaces the app. The progress callback gets
   the bytes of the delta, and when the delta fails, starts over with those
   of the archive. The running app is not affected: the new version runs
-  after `App.Relaunch`, or at the next launch.
+  after `App.Relaunch`, or at the next launch. On macOS the new bundle
+  replaces the app's once the app has exited, so that the Dock keeps the
+  app's tile.
 - `Enabled` reports whether the app can update itself: it was built with
   updates, and it can write where it is installed. Development builds
   cannot, and `Check` returns `mygo.ErrUpdatesDisabled` in them.
+- `Check` and `Install` go through the proxy of the system's settings,
+  or of `HTTPS_PROXY` when it is set (see [proxies](native.md#proxies)).
+
+## Your own update service
+
+`mygo.Updater` reads the feed of `updates` in mygo.config.ts. An app that
+has its own update service, an endpoint that needs the user's
+credentials, or a channel the user picks while it runs, gives the updater
+a source instead with `mygo.Updater.SetSource`. The source returns the
+manifest of the platform and the files the manifest names; the updater
+checks them as it checks the feed's, so an archive or delta that is not
+signed with the key of `updates.publicKey` is refused and the app stays as
+it is. A source serves what `mygo build` writes, so the app is still
+built with `updates`: the public key, and `github` or `url`, where the
+files are published.
+
+For example, with the files on a server that serves them to signed-in
+users, set `updates.url` to its directory, so that the manifests name
+its files, and add the user's token to every request:
+
+```go
+// accountUpdates downloads updates with the user's token.
+type accountUpdates struct{ token string }
+
+func (s accountUpdates) Manifest(ctx context.Context, prereleases bool) (io.ReadCloser, error) {
+	// The manifest of the platform the app was built for; a universal
+	// macOS build reads update-darwin-universal.json.
+	return s.Open(ctx, "https://downloads.example.com/my-app/update-"+runtime.GOOS+"-"+runtime.GOARCH+".json")
+}
+
+func (s accountUpdates) Open(ctx context.Context, url string) (io.ReadCloser, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+s.token)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode != http.StatusOK {
+		resp.Body.Close()
+		return nil, fmt.Errorf("GET %s: %s", url, resp.Status)
+	}
+	return resp.Body, nil
+}
+
+// Once the user has signed in:
+mygo.Updater.SetSource(accountUpdates{token: session.Token})
+```
+
+`Check` then reads the manifest from the source, and `Install` downloads
+the archive or delta through its `Open`; `prereleases` is what
+`SetPrereleases` set, for a source with a beta channel. The URLs are the
+manifest's, so a service that writes its own manifests from those of
+`mygo build` may name the files by ids of its own, as long as the sizes
+and signatures stay. `SetSource(nil)` goes back to the feed.
 
 ## Where apps can update
 

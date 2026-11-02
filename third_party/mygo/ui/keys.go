@@ -89,8 +89,8 @@ const (
 	KeyY            = Key(platform.KeyY)
 	KeyZ            = Key(platform.KeyZ)
 	// KeyBack and KeyForward go back and forward in a history: the side
-	// buttons of a mouse, and the keys of keyboards that have them. A
-	// Router takes them.
+	// buttons of a mouse, the keys of keyboards that have them, and on
+	// macOS swipes between pages. A Router takes them.
 	KeyBack    = Key(platform.KeyBack)
 	KeyForward = Key(platform.KeyForward)
 )

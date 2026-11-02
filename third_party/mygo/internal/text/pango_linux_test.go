@@ -3,8 +3,12 @@
 package text
 
 import (
+	"bytes"
 	"fmt"
+	"os"
+	"path/filepath"
 	"reflect"
+	"sync"
 	"testing"
 )
 
@@ -122,6 +126,56 @@ func TestPangoLayoutAtMeasuredWidthWithLetterSpacing(t *testing.T) {
 					}
 				}
 			})
+		}
+	}
+}
+
+// Goroutines that write the same font to the cache at once each find the
+// whole font there afterwards (#682).
+func TestWriteCacheFileConcurrent(t *testing.T) {
+	data := make([]byte, 1<<20)
+	for i := range data {
+		data[i] = byte(i * 7)
+	}
+	for round := range 20 {
+		dir := t.TempDir()
+		path := filepath.Join(dir, "font.font")
+		var wg sync.WaitGroup
+		errs := make([]error, 16)
+		for i := range errs {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				if err := writeCacheFile(dir, path, data); err != nil {
+					errs[i] = err
+					return
+				}
+				got, err := os.ReadFile(path)
+				if err == nil && !bytes.Equal(got, data) {
+					err = fmt.Errorf("read %d bytes, not the font's %d", len(got), len(data))
+				}
+				errs[i] = err
+			}()
+		}
+		wg.Wait()
+		for i, err := range errs {
+			if err != nil {
+				t.Fatalf("round %d, writer %d: %v", round, i, err)
+			}
+		}
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(entries) != 1 {
+			t.Fatalf("round %d: %d files in the cache, want only the font", round, len(entries))
+		}
+		info, err := os.Stat(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if mode := info.Mode().Perm(); mode != 0o644 {
+			t.Fatalf("round %d: font's mode %v, want 0644", round, mode)
 		}
 	}
 }

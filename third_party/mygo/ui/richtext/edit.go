@@ -244,7 +244,7 @@ func (v *view) enter() {
 		if line := v.lineOf(p); strings.HasPrefix(line, "```") && !strings.Contains(line[3:], "`") {
 			v.edit(func(e *Edit) {
 				e.ReplaceString(ps, pe, "", Attributes{})
-				e.FormatParagraphs(ps, ps, func(s *ParagraphStyle) { *s = ParagraphStyle{CodeBlock: true, Indent: s.Indent} })
+				e.FormatParagraphs(ps, ps, func(s *ParagraphStyle) { *s = ParagraphStyle{CodeBlock: true, Indent: s.Indent, ID: s.ID} })
 				e.Select(ps, ps)
 			})
 			return

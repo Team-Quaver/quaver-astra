@@ -534,3 +534,57 @@ func TestRichTextLinkOpensSafely(t *testing.T) {
 		t.Errorf("opened %q", got)
 	}
 }
+
+// TestRichTextCJKWords deletes and moves by words in Chinese and
+// Japanese: a character at a time, as they have no spaces (#668).
+func TestRichTextCJKWords(t *testing.T) {
+	word := ui.Ctrl
+	if runtime.GOOS == "darwin" {
+		word = ui.Alt
+	}
+	doc := NewDocument(TextOf(Paragraph{Runs: []Run{{Text: "Go语言，今日は"}}}))
+	tt, _ := richTester(t, doc)
+	tt.Key(word, ui.KeyBackspace)
+	if got := doc.Text().String(); got != "Go语言，今日" {
+		t.Fatalf("word backspace left %q", got)
+	}
+	for _, want := range []int{6, 5, 3, 2, 0} {
+		tt.Key(word, ui.KeyLeft)
+		if a, c := doc.Selection(); a != want || c != want {
+			t.Fatalf("word left went to %d–%d, want %d", a, c, want)
+		}
+	}
+}
+
+// The scroll bar's thumb shows while the pointer is over the editor, as a
+// scroll container's does, and not otherwise.
+func TestScrollbarOnHover(t *testing.T) {
+	doc := NewDocument(NewText(strings.Repeat("line\n", 200)))
+	tt := ui.NewTester(func(c *ui.Context) { Editor(c, doc).Fill() }, 500, 400)
+	thumb := func() bool {
+		img := tt.Image()
+		s := img.Bounds().Dx() / 500
+		// Clear of the border's rounded corners.
+		for y := 10 * s; y < 390*s; y++ {
+			if img.RGBAAt(494*s, y) != img.RGBAAt(480*s, y) {
+				return true
+			}
+		}
+		return false
+	}
+	tt.Move(-10, -10)
+	tt.Frame()
+	if thumb() {
+		t.Fatal("the thumb shows with the pointer away")
+	}
+	tt.Move(250, 200)
+	tt.Frame()
+	if !thumb() {
+		t.Fatal("the thumb doesn't show with the pointer over the editor")
+	}
+	tt.Move(-10, -10)
+	tt.Frame()
+	if thumb() {
+		t.Fatal("the thumb stayed as the pointer left")
+	}
+}

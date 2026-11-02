@@ -9,6 +9,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/egoist/mygo/internal/wait"
 )
 
 // setup mixes by hand, with nothing playing.
@@ -21,7 +23,16 @@ func setup(t *testing.T) {
 	}
 	voices = nil
 	volume = 1
+	held, unheard = 0, 0
 	mu.Unlock()
+}
+
+// hold makes the output hold n frames ahead of what is heard, as a device
+// that just opened.
+func hold(n int64) {
+	mu.Lock()
+	defer mu.Unlock()
+	held, unheard = n, 0
 }
 
 // render mixes n frames.
@@ -89,6 +100,38 @@ func TestPlayAgainAfterEnd(t *testing.T) {
 	out := render(100)
 	if !near(out[2*50], 0.25) {
 		t.Errorf("frame 50 = %v, want 0.25", out[2*50])
+	}
+}
+
+func TestOnEnd(t *testing.T) {
+	setup(t)
+	p := NewSound(sampleRate, 1, ramp(100)).NewPlayer()
+	ended := make(chan struct{}, 4)
+	off := p.OnEnd(func() { ended <- struct{}{} })
+	p.Play()
+	render(200)
+	wait.For(t, "the end", ended)
+	render(200) // ended once
+	p.Play()
+	render(50)
+	p.Pause()
+	render(200) // paused, not at the end
+	p.Seek(0)
+	off()
+	p.Play()
+	render(200)
+	if n := len(ended); n != 0 {
+		t.Errorf("%d more ends, want 0", n)
+	}
+
+	loop := NewSound(sampleRate, 1, ramp(100)).NewPlayer().SetLoop(true)
+	loop.OnEnd(func() { ended <- struct{}{} })
+	loop.Play()
+	render(350)
+	loop.Stop()
+	render(200)
+	if n := len(ended); n != 0 {
+		t.Errorf("a loop or a stopped player ended %d times", n)
 	}
 }
 
@@ -510,7 +553,7 @@ func TestNullOutput(t *testing.T) {
 		mu.Unlock()
 	}()
 	failure := errors.New("no device here")
-	openOutput = func() (device, int, error) { return nil, 0, failure }
+	openOutput = func(time.Duration) (device, int, error) { return nil, 0, failure }
 	defer func() { openOutput = openDevice }()
 	p := NewSound(sampleRate, 1, make([]float32, sampleRate/10)).Play()
 	// How long it takes is TestNullDeviceKeepsTime's: a minute only
@@ -524,6 +567,43 @@ func TestNullOutput(t *testing.T) {
 		t.Errorf("Err = %v", Err())
 	}
 }
+
+// Setting the latency opens the output again, to hold as far ahead as it
+// says.
+func TestSetLatencyReopens(t *testing.T) {
+	setup(t)
+	opened := make(chan time.Duration, 8)
+	openOutput = func(ahead time.Duration) (device, int, error) {
+		opened <- ahead
+		return pacedDevice{}, nullFrames, nil
+	}
+	defer func() { openOutput = openDevice }()
+	mu.Lock()
+	testMode = false
+	mu.Unlock()
+	defer func() {
+		mu.Lock()
+		testMode = true
+		latency = LatencyInteractive
+		mu.Unlock()
+	}()
+	p := NewSound(sampleRate, 1, make([]float32, sampleRate)).NewPlayer().SetLoop(true)
+	p.Play()
+	defer p.Close()
+	if got := wait.For(t, "the output to open", opened); got != 40*time.Millisecond {
+		t.Errorf("opened %v ahead, want 40ms", got)
+	}
+	SetLatency(LatencyPlayback)
+	if got := wait.For(t, "the output to open again", opened); got != 250*time.Millisecond {
+		t.Errorf("opened again %v ahead, want 250ms", got)
+	}
+}
+
+// A pacedDevice takes what it is given a little at a time.
+type pacedDevice struct{}
+
+func (pacedDevice) write([]float32) error { time.Sleep(time.Millisecond); return nil }
+func (pacedDevice) close()                {}
 
 // A null device takes as long as what it plays would, on a clock of its
 // own here, does not hurry to catch up once behind, and fails after a

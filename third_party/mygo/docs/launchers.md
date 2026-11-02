@@ -61,7 +61,8 @@ panel := mygo.NewWindow(mygo.WindowOptions{
 	Hidden:        true,
 	Frameless:     true,
 	Transparent:   true,
-	Vibrancy:      mygo.VibrancyPopover, // Acrylic on Windows 11
+	Vibrancy:      mygo.VibrancyGlass, // Liquid Glass on macOS 26, Acrylic on Windows 11
+	CornerRadius:  16,
 	Width:         680,
 	Height:        420,
 	DisableResize: true,

@@ -110,23 +110,16 @@ func (a *App) foliaStage(c *ui.Context, t *ui.Theme, cur player.Song, hasCur boo
 	curLine := stageIndexAt(data.lines, pos)
 	if data.state == "ok" && curLine >= 0 && curLine != a.lastLyricLine {
 		a.lastLyricLine = curLine
-		a.npList.ScrollTo(curLine, ui.Center)
+		if !a.lyricFollowPaused(c.Now()) {
+			a.followLyricLine(curLine)
+		}
 	}
 
 	a.foliaAtmosphere(c, t, cur)
-	content := ui.Column(c).Absolute().Fill().Padding(34, 54, 30, 54).Gap(12)
+	// The pane tabs live at the page's top edge (npTopControls); the stage
+	// starts below them, so the two do not draw over each other.
+	content := ui.Column(c).Absolute().Fill().Padding(62, 54, 26, 54).Gap(12)
 	content.Children(func() {
-		ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(10).Children(func() {
-			ui.Text(c, "辞曲").FontSize(fz(12)).FontWeight(800).TextColor(ui.Hex("#ffffff"))
-			ui.Box(c).Width(22).Height(1).Background(ui.RGBA(255, 255, 255, 0.34))
-			ui.Text(c, "LYRIC STAGE").FontSize(fz(9.5)).FontWeight(700).
-				TextColor(ui.RGBA(255, 255, 255, 0.45)).Font("monospace")
-			ui.Spacer(c)
-			if data.source != "" {
-				a.stageSourceBadge(c, data.source, t)
-			}
-		})
-
 		switch {
 		case data.state == "loading":
 			ui.Column(c).Grow(1).Center().Children(func() { ui.Spinner(c) })
@@ -143,12 +136,10 @@ func (a *App) foliaStage(c *ui.Context, t *ui.Theme, cur player.Song, hasCur boo
 					TextColor(ui.RGBA(255, 255, 255, 0.45))
 			})
 		default:
-			a.npList.Key = nil
 			a.npList.Label = func(i int) string { return data.lines[i].Text }
-			pad := npListPadding(c)
-			ui.List(c, &a.npList, len(data.lines), func(i int) {
+			a.lyricList(c, len(data.lines), curLine, func(i int) {
 				a.foliaLyricLine(c, t, data.lines[i], i, i == curLine, data.source)
-			}).Grow(1).Padding(pad, 0, pad, 0)
+			})
 		}
 
 		if hasCur {
@@ -250,6 +241,9 @@ func (a *App) foliaLyricLine(c *ui.Context, t *ui.Theme, line player.TTMLLine, i
 	}
 	row := ui.Column(c).FillWidth().Padding(5, 12).Gap(5).Radius(10).
 		Cursor(ui.CursorPointer).Transition(hoverFade)
+	if current {
+		a.followLyricRow(c, row, index)
+	}
 	row.Children(func() {
 		if !current {
 			ui.Text(c, line.Text).Font(a.lyricFontFamily()).FontSize(fz(17)).
@@ -330,17 +324,6 @@ func (a *App) foliaTrackCard(c *ui.Context, t *ui.Theme, cur player.Song, source
 				TextColor(ui.Hex("#ffffff")).SingleLine().Ellipsis("…")
 			ui.Text(c, cur.Artists).FontSize(fz(11)).TextColor(ui.RGBA(255, 255, 255, 0.56)).
 				SingleLine().Ellipsis("…")
-			progress := ui.Box(c).FillWidth().Height(2).MarginY(3).Radius(1).
-				Background(ui.RGBA(255, 255, 255, 0.14))
-			frac := float32(0)
-			if d := a.PL.Duration(); d > 0 {
-				frac = clampF32(float32(a.PL.Position() / d))
-			}
-			progress.Draw(func(p *ui.Painter, r ui.Rect) {
-				if frac > 0 {
-					p.Fill(ui.Rect{X: r.X, Y: r.Y, W: r.W * frac, H: r.H}, t.Accent, 1)
-				}
-			})
 		})
 		ui.Column(c).AlignItems(ui.End).Gap(4).Children(func() {
 			if source != "" {

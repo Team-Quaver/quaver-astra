@@ -226,6 +226,10 @@ func (t *tray) SetToolTip(tip string) {
 
 func (t *tray) SetMenu(m *platform.Menu) { t.menu = m }
 
+// SetActivatable does nothing: the notification area reports its clicks
+// itself.
+func (t *tray) SetActivatable(bool) {}
+
 func (t *tray) PopUpMenu(m *platform.Menu) {
 	if m == nil {
 		m = t.menu
@@ -235,10 +239,10 @@ func (t *tray) PopUpMenu(m *platform.Menu) {
 	}
 	id := t.b.menus.newOwner()
 	defer t.b.menus.drop(id)
-	menu := t.b.buildMenu(m, false, id, nil)
-	defer procDestroyMenu.Call(menu)
 	var pt point
 	procGetCursorPos.Call(uintptr(unsafe.Pointer(&pt)))
+	menu := t.b.buildMenu(m, false, id, nil, monitorDPI(monitorAt(int(pt.X), int(pt.Y))))
+	defer procDestroyMenu.Call(menu)
 	if cmd := t.b.trackPopup(menu, t.b.appHwnd, pt, 0); cmd != 0 {
 		t.b.menuCommand(cmd, nil)
 	}

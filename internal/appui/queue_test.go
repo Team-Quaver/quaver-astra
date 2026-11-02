@@ -66,9 +66,9 @@ func TestNowPlayingQueueIsOneFloatingPanel(t *testing.T) {
 
 // TestNowPlayingQueueFloatCoversPage：浮窗要画在正在播放页【之上】。
 //
-// 封面是一整块 300px 宽的纯红（落在 x≈628..928）。只扫浮窗压住的那几行：
-// 浮窗在时，纯红只剩封面左边那条约 36px 的缝；浮窗要是被整页压住，穿过
-// 封面的这一行会是一整段 300px 的红。
+// 封面是一整块 300px 宽的纯红。它现在落在页面左侧，与右侧浮窗并不重叠，
+// 所以只扫浮窗自身的横向范围：浮窗里最多只剩 34px 的小封面；浮窗要是被
+// 整页压住，这一带会透出底下 300px 宽的封面纯红。
 func TestNowPlayingQueueFloatCoversPage(t *testing.T) {
 	_, tester := queueNPApp(t)
 
@@ -82,13 +82,15 @@ func TestNowPlayingQueueFloatCoversPage(t *testing.T) {
 		c := at(img, x, y)
 		return c.R >= 200 && c.G <= 32 && c.B <= 32
 	}
+	// 浮窗宽 320、右侧留 16；只看它覆盖的那一段画面。
+	left := testWinW - 320 - 16
 	best := 0
 	for y := int(head.Y) - 4; y <= int(last.Y+last.H)+4 && y < img.Bounds().Dy(); y++ {
 		if y < 0 {
 			continue
 		}
 		run := 0
-		for x := 0; x < img.Bounds().Dx(); x++ {
+		for x := left; x < img.Bounds().Dx(); x++ {
 			if nearRed(x, y) {
 				run++
 				if run > best {
@@ -99,9 +101,9 @@ func TestNowPlayingQueueFloatCoversPage(t *testing.T) {
 			}
 		}
 	}
-	// 队列行里 34px 的小封面、封面露出的一条 36px 左缝，都在这个阈值内。
+	// 队列行里 34px 的小封面在这个阈值内。
 	if best > 80 {
-		t.Errorf("浮窗压住的那几行里最宽的纯红横段有 %dpx——封面（300px）还盖在播放列表浮窗上面", best)
+		t.Errorf("浮窗范围内最宽的纯红横段有 %dpx——封面还盖在播放列表浮窗上面", best)
 	}
 }
 

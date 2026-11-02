@@ -345,13 +345,15 @@ func (d *Document) Streaming() bool { return d.streaming }
 // SetStreaming sets whether the document is text still being written, as
 // a language model's reply: its end then shows what it will most likely
 // become rather than the half-written syntax it is. The last paragraph
-// closes its emphasis, code spans, strikethrough and math, a link whose
-// destination is being written is a link (Inline.Pending), a tag being
-// written is left out, and lines that could still turn into something
-// else are held back: a line of only a few markers, as - or ==, which
-// would make the paragraph above a heading, and a table's header until
-// its delimiter row comes. Finished blocks are never changed. Turn it off
-// once the text is complete, to parse its end exactly as CommonMark does.
+// closes its emphasis, code spans, strikethrough and math (a single $'s
+// too, with ExtDollarMath), within which _ and * open no emphasis; a
+// link whose destination is being written is a link (Inline.Pending), a
+// tag being written is left out, and lines that could still turn into
+// something else are held back: a line of only a few markers, as - or
+// ==, which would make the paragraph above a heading, and a table's
+// header until its delimiter row comes. Finished blocks are never
+// changed. Turn it off once the text is complete, to parse its end
+// exactly as CommonMark does.
 func (d *Document) SetStreaming(on bool) {
 	if d.streaming == on {
 		return

@@ -3,9 +3,9 @@ package richtext
 import "github.com/egoist/mygo/ui"
 
 // Theme is how the editor's text looks: its colors, the font of code, the
-// styles of headings, and the room of lists, quotations and blocks of
-// code. What it leaves zero takes the value of DefaultTheme for the
-// window's theme, so that a theme sets only what it changes:
+// styles of headings, and the room of paragraphs, lists, quotations and
+// blocks of code. What it leaves zero takes the value of DefaultTheme for
+// the window's theme, so that a theme sets only what it changes:
 //
 //	richtext.Editor(c, doc, richtext.EditorOptions{Theme: &richtext.Theme{Link: ui.Hex("#7c3aed")}})
 //
@@ -35,6 +35,18 @@ type Theme struct {
 
 	// Headings are the styles of headings of levels 1 to 6.
 	Headings [6]HeadingStyle
+
+	// FirstLineIndent indents the first line of a body paragraph by that
+	// many ems, as printed prose sets paragraphs apart, but for the first
+	// after a heading, a list, a block of code, a paragraph aligned
+	// otherwise (a centered scene break) or an empty one, or the first of
+	// a quotation, which nothing needs to set apart: 0, none. Only
+	// paragraphs aligned at the start take it.
+	FirstLineIndent float32
+	// ParagraphSpacing is the room between two body paragraphs, in ems, as
+	// prose on screens sets paragraphs apart instead: 0, none. A body
+	// paragraph is one that is not a heading, an item of a list or code.
+	ParagraphSpacing float32
 
 	// Indent is how far a level of a list or of indentation goes, in ems,
 	// a list's markers in that room: 1.7.
@@ -107,7 +119,8 @@ func defaultTheme(t *ui.Theme) Theme {
 }
 
 // resolve returns th with what it leaves zero taken from def; the colors
-// that default to others of th take those.
+// that default to others of th take those. FirstLineIndent and
+// ParagraphSpacing are none by default, as zero.
 func resolve(th *Theme, def *Theme) Theme {
 	if th == nil {
 		return *def

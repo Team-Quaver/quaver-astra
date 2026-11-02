@@ -299,7 +299,7 @@ func (m *mpris) SetPosition(trackId dbus.ObjectPath, position int64) *dbus.Error
 func (m *mpris) OpenUri(string) *dbus.Error { return nil }
 
 // emitSeeked 规范要求 seek 完成后发 Seeked 信号；这里在命令下发时
-// 以目标位置近似（mpv 端回执的位置随后经 Update 刷新到进度条）。
+// 以目标位置近似（引擎时钟的位置随后经 Update 刷新到进度条）。
 func (m *mpris) emitSeeked(posSec float64) {
 	m.conn.Emit(mprisPath, mprisPlyr+".Seeked", int64(posSec*1e6))
 }

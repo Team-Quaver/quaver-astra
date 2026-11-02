@@ -80,3 +80,18 @@ func cornerBounds(m Affine, r Rect) Rect {
 	}
 	return Rect{x0, y0, x1 - x0, y1 - y0}
 }
+
+func TestMovedClip(t *testing.T) {
+	r := Rect{X: 10, Y: 20, W: 100, H: 50}
+	if got, m := MovedClip(r, Translation(5, -8)); got != (Rect{X: 15, Y: 12, W: 100, H: 50}) || m.Set {
+		t.Errorf("moved: %v, left %v", got, m)
+	}
+	if got, m := MovedClip(r, Affine{}); got != r || m.Set {
+		t.Errorf("untransformed: %v, left %v", got, m)
+	}
+	for _, m := range []Affine{Scaling(2, 2), Rotation(10), Translation(5, 5).Mul(Scaling(1.5, 1))} {
+		if got, left := MovedClip(r, m); got != r || left != m {
+			t.Errorf("%v: %v, left %v, want the clip as it was", m, got, left)
+		}
+	}
+}

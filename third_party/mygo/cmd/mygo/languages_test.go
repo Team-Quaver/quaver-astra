@@ -98,15 +98,85 @@ func TestNSISLanguage(t *testing.T) {
 			t.Errorf("nsisLanguage(%q) = %q, %v, want %q, %v", tc.tag, name, ok, tc.name, tc.ok)
 		}
 	}
-	if got, err := nsisLanguageMacros(nil); err != nil || got != "!insertmacro MUI_LANGUAGE \"English\"\n" {
+	if got, err := nsisLanguageMacros(nil); err != nil || got != "!insertmacro MUI_LANGUAGE \"English\"\nLangString MYGO_DESKTOP_SHORTCUT ${LANG_ENGLISH} \"Create a desktop shortcut\"\n" {
 		t.Errorf("an app without languages: %q, %v", got, err)
 	}
-	want := "!insertmacro MUI_LANGUAGE \"English\"\n!insertmacro MUI_LANGUAGE \"SimpChinese\"\n!insertmacro MUI_LANGUAGE \"TradChinese\"\n"
+	want := "!insertmacro MUI_LANGUAGE \"English\"\n!insertmacro MUI_LANGUAGE \"SimpChinese\"\n!insertmacro MUI_LANGUAGE \"TradChinese\"\n" +
+		"LangString MYGO_DESKTOP_SHORTCUT ${LANG_ENGLISH} \"Create a desktop shortcut\"\n" +
+		"LangString MYGO_DESKTOP_SHORTCUT ${LANG_SIMPCHINESE} \"创建桌面快捷方式\"\n" +
+		"LangString MYGO_DESKTOP_SHORTCUT ${LANG_TRADCHINESE} \"建立桌面捷徑\"\n"
 	if got, err := nsisLanguageMacros([]appLanguage{{Tag: "en"}, {Tag: "zh-Hans"}, {Tag: "zh-CN"}, {Tag: "zh-Hant"}}); err != nil || got != want {
 		t.Errorf("the installer's languages are\n%swant\n%s(%v)", got, want, err)
 	}
 	if _, err := nsisLanguageMacros([]appLanguage{{Tag: "en"}, {Tag: "sw"}}); err == nil || !strings.Contains(err.Error(), "sw") || !strings.Contains(err.Error(), "zh-hans") {
 		t.Errorf("a language NSIS has no file of: %v", err)
+	}
+}
+
+// TestNSISDesktopShortcut checks the finish page's label from the app's
+// catalogs, MyGo's translations and the English source, in that order.
+func TestNSISDesktopShortcut(t *testing.T) {
+	for _, tc := range []struct {
+		name, source, english string
+	}{
+		{"translations", `{}`, `"Create a desktop shortcut"`},
+		{"source override", `{"mygo.desktopShortcut": "Put it on my desktop"}`, `"Put it on my desktop"`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c := project(t, `{"name": "Notes", "i18n": {"source": "en"}}`, map[string]string{
+				"en.json":         tc.source,
+				"zh-Hans.json":    `{}`,
+				"zh-Hant-HK.json": `{}`,
+				"de.json":         `{"mygo.desktopShortcut": "Desktop-Verknüpfung \"Notizen\" für $USER erstellen"}`,
+				"fr.json":         `{}`,
+			})
+			langs, err := c.languages()
+			if err != nil {
+				t.Fatal(err)
+			}
+			script, err := nsisLanguageMacros(langs)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, want := range []string{
+				`LangString MYGO_DESKTOP_SHORTCUT ${LANG_ENGLISH} ` + tc.english,
+				`LangString MYGO_DESKTOP_SHORTCUT ${LANG_SIMPCHINESE} "创建桌面快捷方式"`,
+				`LangString MYGO_DESKTOP_SHORTCUT ${LANG_TRADCHINESE} "建立桌面捷徑"`,
+				`LangString MYGO_DESKTOP_SHORTCUT ${LANG_GERMAN} "Desktop-Verknüpfung $\"Notizen$\" für $$USER erstellen"`,
+				`LangString MYGO_DESKTOP_SHORTCUT ${LANG_FRENCH} "Create a desktop shortcut"`,
+			} {
+				if n := strings.Count(script, want+"\n"); n != 1 {
+					t.Errorf("the installer's languages have %d of %q, want one", n, want)
+				}
+			}
+			if strings.Count(script, "LangString MYGO_DESKTOP_SHORTCUT ") != 5 {
+				t.Errorf("the installer's labels:\n%s", script)
+			}
+			// Regional catalogs sharing one NSIS language get one label,
+			// from the first catalog, just as they get one MUI_LANGUAGE.
+			script, err = nsisLanguageMacros(append(append(langs, langs...), appLanguage{Tag: "zh-Hans-CN"}))
+			if err != nil || strings.Count(script, "LangString MYGO_DESKTOP_SHORTCUT ") != 5 || strings.Count(script, "!insertmacro MUI_LANGUAGE ") != 5 {
+				t.Errorf("duplicate languages: %v\n%s", err, script)
+			}
+		})
+	}
+	script, err := nsisLanguageMacros(nil)
+	if err != nil || !strings.Contains(script, `LangString MYGO_DESKTOP_SHORTCUT ${LANG_ENGLISH} "Create a desktop shortcut"`) {
+		t.Errorf("an app without catalogs: %v\n%s", err, script)
+	}
+}
+
+// TestDesktopShortcutCatalog checks that mygo generate takes
+// mygo.desktopShortcut in an app's catalogs, as a key of MyGo's strings.
+func TestDesktopShortcutCatalog(t *testing.T) {
+	dir := testModule(t, map[string]string{
+		"main.go":         "package main\nimport _ \"example.com/app/locales\"\nfunc main() {}\n",
+		"mygo.json":       `{"i18n": {}}`,
+		"locales/en.json": `{"mygo.desktopShortcut": "Put it on my desktop"}`,
+		"locales/de.json": `{"mygo.desktopShortcut": "Desktop-Verknüpfung erstellen"}`,
+	})
+	if err := runGenerate([]string{dir}); err != nil {
+		t.Fatalf("mygo generate must accept mygo.desktopShortcut: %v", err)
 	}
 }
 

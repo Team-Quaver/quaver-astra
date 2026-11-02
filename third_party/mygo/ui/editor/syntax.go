@@ -99,6 +99,10 @@ type Language struct {
 	// bracket typed first on its line takes its opener's indentation.
 	IncreaseIndent *regexp.Regexp
 	DecreaseIndent *regexp.Regexp
+	// Imports matches a line that imports, as one starting with import:
+	// a run of them folds as one, the lines in brackets of each with
+	// them, and State.FoldImports folds the first.
+	Imports *regexp.Regexp
 	// WordChars are characters other than letters, digits and _ that
 	// words hold, as - in CSS.
 	WordChars string

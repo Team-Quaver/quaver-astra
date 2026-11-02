@@ -2,7 +2,6 @@ package text
 
 import (
 	"slices"
-	"unicode"
 
 	"github.com/go-text/typesetting/segmenter"
 )
@@ -266,45 +265,53 @@ func (b *Boundaries) PrevGrapheme(i int) int {
 	return prev
 }
 
-func isWordRune(r rune) bool { return unicode.IsLetter(r) || unicode.IsDigit(r) || r == '_' }
-
 // NextWord returns the end of the word after i, skipping what is between.
+// Each ideograph and kana is a word (see WordBoundary).
 func (b *Boundaries) NextWord(i int) int {
 	n := len(b.runes)
-	for i < n && !isWordRune(b.runes[i]) {
+	for i < n && !IsWordRune(b.runes[i]) {
 		i++
 	}
-	for i < n && isWordRune(b.runes[i]) {
+	if i < n {
 		i++
+		for i < n && !WordBoundary(b.runes[i-1], b.runes[i]) {
+			i++
+		}
 	}
 	return i
 }
 
 // PrevWord returns the start of the word before i.
 func (b *Boundaries) PrevWord(i int) int {
-	for i > 0 && !isWordRune(b.runes[i-1]) {
+	for i > 0 && !IsWordRune(b.runes[i-1]) {
 		i--
 	}
-	for i > 0 && isWordRune(b.runes[i-1]) {
+	if i > 0 {
 		i--
+		for i > 0 && !WordBoundary(b.runes[i-1], b.runes[i]) {
+			i--
+		}
 	}
 	return i
 }
 
-// WordAt returns the word, or the run of other runes, around i.
+// WordAt returns the word, or the run of other runes, around i, within
+// its line: an ideograph or a kana is a word alone.
 func (b *Boundaries) WordAt(i int) (start, end int) {
 	n := len(b.runes)
 	if n == 0 {
 		return 0, 0
 	}
 	i = min(i, n-1)
-	word := isWordRune(b.runes[i])
 	start, end = i, i
-	for start > 0 && isWordRune(b.runes[start-1]) == word && b.runes[start-1] != '\n' {
+	for start > 0 && b.runes[start-1] != '\n' && !WordBoundary(b.runes[start-1], b.runes[start]) {
 		start--
 	}
-	for end < n && isWordRune(b.runes[end]) == word && b.runes[end] != '\n' {
-		end++
+	if b.runes[i] != '\n' {
+		end = i + 1
+		for end < n && b.runes[end] != '\n' && !WordBoundary(b.runes[end-1], b.runes[end]) {
+			end++
+		}
 	}
 	return start, end
 }

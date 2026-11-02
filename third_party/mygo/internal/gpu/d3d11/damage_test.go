@@ -72,7 +72,7 @@ func TestPartialFramesMatchWhole(t *testing.T) {
 		switch r.redrew {
 		case redrewPart:
 			partial++
-			part = fmt.Sprint(r.part)
+			part = r.part.String()
 		case redrewNothing:
 			part = "nothing"
 		}

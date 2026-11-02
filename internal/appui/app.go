@@ -89,6 +89,35 @@ type App struct {
 	queueList    ui.ListState // 播放队列列表
 	reproCloseAt time.Time
 
+	// 歌词跟随：npScroll 接管列表偏移，换行时按 lyricfollow.go 的曲线缓动
+	// 滚到下一句，而不是瞬间跳位。npListRect/npShown 是上一帧的列表视口与
+	// 实际偏移，和 LayoutBounds 同口径，用来算居中目标。
+	npScroll   ui.ScrollState
+	npListRect ui.Rect
+	npShown    float32 // npRowRect 这份几何对应的列表偏移
+	npPassOff  float32 // 本趟 build 开始时 npScroll.Y（即上一次布局的偏移）
+	npRowLine  int     // npRowRect 是哪一句的行号
+	npRowRect  ui.Rect // 上一次算目标时当前句的 LayoutBounds
+	npFollow   lyricFollow
+	// npFollowPause 是用户滚过歌词列表后的静默截止时间：在它之前换行不
+	// 自动把列表拽回当前句，好让用户找歌词、点歌词。见 lyricfollow.go。
+	npFollowPause time.Time
+	// npScrollSeen 是上一帧结束时列表的偏移，用来认出帧与帧之间由用户
+	// （滚轮、拖动滚动条）造成的位移；npScrollAbsorb 是「下一帧的偏移
+	// 是我们自己滚的」，不计为用户滚动。
+	npScrollSeen     float32
+	npScrollSeenOK   bool
+	npScrollAbsorb   bool
+	npScrollAbsorbAt time.Time
+	npWrote          bool // 上一帧的偏移是跟随动画写的
+	// npResume/npSnapAt：静默期结束、当前句又不在已建的行里时，列表只能
+	// 瞬间跳过去；npSnapAt 让这一跳淡入，而不是硬切。
+	npResume bool
+	npSnapAt time.Time
+	// npSongKey 是歌词跟随所属的曲目（Mid）。换曲时清掉上一首的偏移与
+	// 动画，新歌从第一句重新开始。
+	npSongKey string
+
 	// media 是系统媒体控制中心会话（Linux MPRIS / Windows SMTC），
 	// 在 New 建立会话，Attach 时补窗口句柄，Close 时注销。
 	media smedia.Controller
@@ -142,7 +171,7 @@ type App struct {
 // 当前构建版本，用于更新比较）。
 func New(base string, store *conf.Store, v *vault.Vault, version string) *App {
 	api := backend.NewClient(base)
-	eng := audio.NewCompatIf(store.Bool(CompatModeKey, false))
+	eng := audio.New() // Liino 原生模式：进程内解码 + 直连系统音频
 	a := &App{
 		API:           api,
 		Conf:          store,
@@ -157,6 +186,8 @@ func New(base string, store *conf.Store, v *vault.Vault, version string) *App {
 	}
 	pl := player.New(newAPIAdapter(api, a.localCacheSeed), eng, store)
 	a.PL = pl
+	// 缓存上限只存在内嵌后端的内存里，启动后按用户设置重推一次。
+	a.applyLocalCacheLimit()
 	// Wayland 会话下整列全局快捷键交给桌面持有，Astra 不注册（见 hotkeys.go）。
 	a.hotkeys.blocked = waylandSession()
 	a.initMedia()
@@ -179,7 +210,7 @@ func New(base string, store *conf.Store, v *vault.Vault, version string) *App {
 	return a
 }
 
-// Close 应用退出时释放睡眠禁止并终止 mpv。幂等，可同时挂 OnQuit 与 defer。
+// Close 应用退出时释放睡眠禁止并终止音频引擎。幂等，可同时挂 OnQuit 与 defer。
 func (a *App) Close() {
 	a.closeOnce.Do(func() {
 		a.quitStarted.Store(true)
@@ -210,7 +241,7 @@ func (a *App) withAPILimit(fn func()) {
 	fn()
 }
 
-// syncSleep 只在「设置开启 + mpv 实际出声」时持有系统睡眠禁止。
+// syncSleep 只在「设置开启 + 音频引擎实际出声」时持有系统睡眠禁止。
 // 暂停、停止、载入中和关闭开关都会立即释放。
 func (a *App) syncSleep() {
 	want := a.Conf != nil && a.Conf.Bool(sleepInhibitKey, true) && a.PL.PlayingAudio()

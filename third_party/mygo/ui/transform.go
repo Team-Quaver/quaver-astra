@@ -328,7 +328,7 @@ func (rt *engine) contains(s *state, r Rect, x, y float32) bool {
 			break
 		}
 	}
-	w, h, _ := rt.host.size()
+	w, h, _ := rt.size()
 	return x >= 0 && y >= 0 && x < w && y < h
 }
 

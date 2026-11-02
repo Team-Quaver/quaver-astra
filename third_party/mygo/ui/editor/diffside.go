@@ -2,6 +2,7 @@ package editor
 
 import (
 	"fmt"
+	"math"
 	"sort"
 	"strconv"
 
@@ -107,26 +108,53 @@ func (s *diffSide) number(line int) int {
 	return line + 1
 }
 
-// paintBlock paints a block: a filler of rows a side lacks, hatched, or
-// the deleted lines of a unified view. Separators leave their room to
-// the elements over it (buildSeparators).
-func (s *diffSide) paintBlock(p *ui.Painter, ed *editor, b *block, r ui.Rect) {
+// paintBlock paints a block in r, whose top is at top in the content: a
+// filler of rows a side lacks, hatched, or the deleted lines of a unified
+// view. Separators leave their room to the elements over it
+// (buildSeparators).
+func (s *diffSide) paintBlock(p *ui.Painter, ed *editor, b *block, r ui.Rect, top float64) {
 	ct := ed.theme
 	switch b.kind {
 	case blockSpacer:
 		if b.from == 0 {
 			return
 		}
-		// A filler: hatched at -45°, every 8 DIPs, as Pierre's.
+		// A filler: hatched at -45°, every 8 DIPs from its bottom-left
+		// corner, as Pierre's. The corner is in float64: r's float32 is
+		// a DIP off, or more, millions of DIPs down a file, which would
+		// shake the stripes as the view scrolls.
 		text := ui.Rect{X: r.X + ed.gutterW, Y: r.Y, W: r.W - ed.gutterW, H: r.H}
+		corner := [2]float64{float64(text.X), float64(ed.r.Y) + top + float64(b.height) - ed.scrollY}
+		c := ct.Text.Alpha(0.07)
 		p.Clip(text, 0, func() {
-			c := ct.Text.Alpha(0.07)
-			for x := text.X - r.H; x < text.X+text.W; x += 8 {
-				p.Line(x, r.Y+r.H, x+r.H, r.Y, 1, c)
-			}
+			fillerStripes(p.Visible(), corner, func(from, to [2]float32) {
+				p.StrokePolyline([][2]float32{from, to}, 1, c)
+			})
 		})
 	case blockDeleted:
 		s.paintDeleted(p, ed, b, r)
+	}
+}
+
+// fillerStripes calls fn with the stripes of a filler whose bottom-left
+// corner is at corner, from a at v's bottom to b at its top, v being what
+// shows of it: lines at -45°, up to the right, every 8 DIPs along its
+// bottom from the corner. They are those that cross v alone, and their
+// pieces from v's bottom to its top, all of a size so that they share
+// their masks: a filler across a whole file added is millions of DIPs
+// high.
+func fillerStripes(v ui.Rect, corner [2]float64, fn func(a, b [2]float32)) {
+	if v.W <= 0 || v.H <= 0 {
+		return
+	}
+	// A stripe is where x+y is the corner's, give or take 8s: s, crossing
+	// v when s-y1 < x1 and s-y0 > x0.
+	x0, y0 := float64(v.X), float64(v.Y)
+	x1, y1 := x0+float64(v.W), y0+float64(v.H)
+	phase := corner[0] + corner[1]
+	lo, hi := x0+y0, x1+y1
+	for s := phase + 8*(math.Floor((lo-phase)/8)+1); s < hi; s += 8 {
+		fn([2]float32{float32(s - y1), float32(y1)}, [2]float32{float32(s - y0), float32(y0)})
 	}
 }
 
@@ -135,7 +163,7 @@ func (s *diffSide) paintBlock(p *ui.Painter, ed *editor, b *block, r ui.Rect) {
 func (s *diffSide) paintDeleted(p *ui.Painter, ed *editor, b *block, r ui.Rect) {
 	d := s.d
 	ov := &d.oldView
-	ov.theme = ed.theme
+	ov.setTheme(ed.theme)
 	ov.advanceSyntax(b.to, 0)
 	dc := s.colors(ed)
 	lh := ed.view.lineHeight

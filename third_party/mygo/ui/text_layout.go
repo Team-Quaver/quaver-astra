@@ -107,6 +107,21 @@ type TextShape struct {
 	// character, as an empty one, read right to left. The others read in
 	// the direction of their first strong character either way.
 	Direction Direction
+	// Justify stretches every line Width wraps to Width, but the last of
+	// each paragraph, by widening the spaces between its words and the
+	// room after Han characters and kana, as printed prose sets them.
+	// Align places the last lines, and those with nothing to widen, as a
+	// word broken across lines. The whitespace ending a line hangs past
+	// Width.
+	Justify bool
+	// Indent moves the first line of the text this many DIPs in from the
+	// side its paragraph starts at, the left or the right, and wraps it
+	// that much narrower, as CSS's text-indent: a book indents its
+	// paragraphs so. The lines after a newline are not indented.
+	Indent float32
+	// NoBreakWords breaks lines only between words: a word wider than
+	// Width overflows it instead of breaking.
+	NoBreakWords bool
 }
 
 // ShapeRichTextWith shapes spans as ShapeRichText does, laid out as shape
@@ -124,7 +139,11 @@ func shapeText(s string, font Font, width float32, spans []Span) *TextLayout {
 }
 
 func shapeTextAligned(s string, font Font, shape TextShape, spans []Span) *TextLayout {
-	params := text.Params{Text: s, Style: font.style(), Width: shape.Width, KeepSpaces: true, Spans: encodeSpans(spans), RTL: shape.Direction == RightToLeft}
+	params := text.Params{Text: s, Style: font.style(), Width: shape.Width, KeepSpaces: true, Spans: encodeSpans(spans), RTL: shape.Direction == RightToLeft,
+		Justify: shape.Justify, Indent: shape.Indent, NoBreakWords: shape.NoBreakWords}
+	if shape.Justify {
+		text.Shared().UseJustify()
+	}
 	switch {
 	case shape.Align == Center:
 		params.Align = text.Center
@@ -149,7 +168,8 @@ func shapeTextAligned(s string, font Font, shape TextShape, spans []Span) *TextL
 
 // TextObject is an inline object of a TextLayout (Span.ObjectWidth): the
 // UTF-16 offset of its object replacement character, and its box,
-// standing on its line's baseline.
+// standing on its line's baseline, ObjectDescent of it below, or as far
+// off it as its span's BaselineShift.
 type TextObject struct {
 	Index int
 	Rect  Rect
@@ -170,16 +190,54 @@ func (t *TextLayout) Objects() []TextObject {
 			if spans == nil {
 				spans = text.DecodeSpans(t.l.Params.Spans)
 			}
-			h := float32(0)
-			end := 0
-			for _, sp := range spans {
-				end = sp.End
-				if g.Cluster < end {
-					h = sp.ObjectHeight
-					break
-				}
-			}
-			out = append(out, TextObject{Index: t.units[g.Cluster], Rect: Rect{X: g.X, Y: line.Baseline - h, W: g.Advance, H: h}})
+			h, d := objectMetrics(spans, g.Cluster)
+			out = append(out, TextObject{Index: t.units[g.Cluster], Rect: Rect{X: g.X, Y: line.Baseline - h, W: g.Advance, H: h + d}})
+		}
+	}
+	return out
+}
+
+// objectMetrics returns how far above the line's baseline the inline
+// object at rune i of a text of spans reaches, and how far below it: its
+// height and descent, shifted with its span (Span.BaselineShift).
+func objectMetrics(spans []text.Span, i int) (h, d float32) {
+	for _, sp := range spans {
+		if i < sp.End {
+			return sp.ObjectHeight + sp.BaselineShift, sp.ObjectDescent - sp.BaselineShift
+		}
+	}
+	return 0, 0
+}
+
+// TextLine is a line of a TextLayout, in DIPs from the layout's top-left
+// corner and in UTF-16 offsets, as its other methods take them.
+type TextLine struct {
+	// Rect is the line's box: X includes the alignment and the indent,
+	// and W the whitespace ending the line, which the layout keeps.
+	Rect Rect
+	// Baseline is the y of the line's baseline; Ascent and Descent how
+	// far its fonts and objects reach above and below it.
+	Baseline, Ascent, Descent float32
+	// Start and End are the offsets of the text the line holds: a newline
+	// ending it is not included, and End is the next line's Start when the
+	// line wraps.
+	Start, End int
+	// RTL reports a line of a paragraph reading right to left.
+	RTL bool
+}
+
+// Lines returns the lines of the layout, from the top: where a page
+// ends, which line holds an offset, or how many lines fit a height.
+func (t *TextLayout) Lines() []TextLine {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	out := make([]TextLine, len(t.l.Lines))
+	for i, line := range t.l.Lines {
+		out[i] = TextLine{
+			Rect:     Rect{line.X, line.Y, line.Width, line.Height},
+			Baseline: line.Baseline, Ascent: line.Ascent, Descent: line.Descent,
+			Start: t.units[line.Start], End: t.units[line.End],
+			RTL: line.RTL,
 		}
 	}
 	return out

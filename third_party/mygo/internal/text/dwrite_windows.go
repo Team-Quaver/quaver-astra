@@ -768,9 +768,16 @@ func (e *dwrite) shape(text []rune, style Style, spans []Span, width float32, rt
 		return nil
 	}
 	u16, index := utf16Text(text)
+	// A line as wide as the width fits it: the layout that gave the width
+	// summed the same advances, and may come out a rounding under them, which
+	// would wrap the line's last cluster (as canvas_js.go allows too).
+	wrapAt := width
+	if width > 0 {
+		wrapAt = width + 1e-3
+	}
 	var layout uintptr
 	hr := method[func(this uintptr, text *uint16, n uint32, format uintptr, width, height float32, out *uintptr) uintptr](e.factory, factoryCreateTextLayout)(
-		e.factory, &u16[0], uint32(len(u16)), format, width, maxLayoutHeight, &layout)
+		e.factory, &u16[0], uint32(len(u16)), format, wrapAt, maxLayoutHeight, &layout)
 	if failed(hr) {
 		return nil
 	}

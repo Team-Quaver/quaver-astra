@@ -405,6 +405,13 @@ func (rt *engine) animateLayout(root *node, w, h float32) {
 		if e.parent == nil {
 			continue // the root's
 		}
+		if e.inHidden() {
+			// Hidden, it has no box to go from or to, and shows again
+			// where it is then, as it hides, at once.
+			delete(rt.trans, e.id)
+			e.st.trec = nil
+			continue
+		}
 		r := rt.trans[e.id]
 		if r == nil {
 			r = &transition{}
@@ -781,9 +788,14 @@ func ghostOf(e *node) *node {
 	g.parent, g.first, g.last, g.next, g.nchild = nil, nil, nil, nil, 0
 	g.shadows, g.cols, g.rows, g.frags = slices.Clone(e.shadows), slices.Clone(e.cols), slices.Clone(e.rows), slices.Clone(e.frags)
 	g.track, g.popover, g.list, g.rowsOf, g.overflow = nil, nil, nil, nil, nil
-	g.activeDescendant, g.nameFrom, g.field, g.form = nil, nil, nil, nil
+	g.activeDescendant, g.nameFrom, g.focusTo, g.field, g.form = nil, nil, nil, nil, nil
 	g.followX, g.colFit, g.gridFit = nil, nil, nil
 	g.inputFn, g.ghosts = nil, false
+	if g.themed != nil {
+		// The app may change its theme while the copy leaves.
+		t := *g.themed
+		g.themed = &t
+	}
 	g.poseSet = false // it keeps the pose it had
 	g.tl, g.nmeasure, g.leafOK, g.intrOK, g.lay = nil, 0, false, 0, 0
 	g.flags = g.flags&^(flagModal|flagPage|flagFocusTarget) | flagInert
@@ -835,6 +847,15 @@ func (rt *engine) animateColors(e *node, r *transition) {
 		}
 	}
 	e.bg, e.borderC = r.colorShown[0], r.colorShown[1]
+}
+
+// forgetColors shows the colors of the elements at once: a route change is
+// where an element that comes back shows its own colors, not the color of
+// the element that took its place while it was away.
+func (rt *engine) forgetColors() {
+	for _, r := range rt.trans {
+		r.colorSet = false
+	}
 }
 
 // mixPremultiplied returns the color k of the way from a to b, mixed with

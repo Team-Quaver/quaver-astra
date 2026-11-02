@@ -128,7 +128,9 @@ The CPU compositor remains the renderer for machines without a GPU and for
 small resting updates. Active transformed motion uses the GPU where one is
 available. Text bitmaps are sampled bilinearly when transformed, and
 transformed text uses grayscale coverage. GPU antialiasing follows the CPU
-renderer in device-pixel coordinates.
+renderer in device-pixel coordinates. To zoom a whole window, sharp, use
+the content's zoom (`Context.SetZoom`, see
+[Windows](windows.md#zoom)) rather than a transform.
 
 The gallery's **Motion** page shows nested transformed editable controls,
 an anchored popover, springs retargeted and thrown, keyframe sequences, and

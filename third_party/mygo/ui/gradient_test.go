@@ -51,6 +51,81 @@ func TestConicGradient(t *testing.T) {
 	}
 }
 
+// A radial gradient spreads its stops from its center, the middle unless
+// set, to its radius, in DIPs, or to the farthest corner without one, as
+// CSS's radial-gradient(): its first color at the center, its last past
+// the radius.
+func TestRadialGradient(t *testing.T) {
+	stops := []GradientStop{{gRed, 0}, {gBlue, 1}}
+	mid := [4]uint8{128, 0, 127, 255}
+	for _, c := range []struct {
+		g    RadialGradient
+		x, y int
+		want [4]uint8
+	}{
+		{RadialGradient{Stops: stops, Radius: 40}, 50, 50, [4]uint8{255, 0, 0, 255}}, // the center
+		{RadialGradient{Stops: stops, Radius: 40}, 70, 50, mid},                      // halfway out
+		{RadialGradient{Stops: stops, Radius: 40}, 50, 30, mid},                      // as far up
+		{RadialGradient{Stops: stops, Radius: 40}, 95, 50, [4]uint8{0, 0, 255, 255}}, // past the radius
+		{RadialGradient{Stops: stops, Radius: 40}, 5, 95, [4]uint8{0, 0, 255, 255}},
+		// The farthest corner, 50√2 away.
+		{RadialGradient{Stops: stops}, 85, 50, mid},
+		{RadialGradient{Stops: stops}, 99, 99, [4]uint8{3, 0, 252, 255}},
+		// Off center: the farthest corners are on the right, √(80²+50²) away.
+		{RadialGradient{Stops: stops, Center: Point{0.2, 0.5}}, 20, 50, [4]uint8{255, 0, 0, 255}},
+		{RadialGradient{Stops: stops, Center: Point{0.2, 0.5}}, 67, 50, mid},
+		{RadialGradient{Stops: stops, Center: Point{0.2, 0.5}, Radius: 10}, 50, 50, [4]uint8{0, 0, 255, 255}},
+	} {
+		g := c.g
+		tt := NewTester(func(ctx *Context) {
+			Box(ctx).Size(100, 100).RadialGradient(g)
+		}, 100, 100)
+		if got := rgba(tt.Image(), c.x, c.y); !nearRGBA8(got, c.want, 6) {
+			t.Errorf("%+v at (%d, %d) = %v, want %v", g, c.x, c.y, got, c.want)
+		}
+	}
+	// Mixed in Oklab, the middle is lighter than in sRGB.
+	tt := NewTester(func(ctx *Context) {
+		Box(ctx).Size(100, 100).RadialGradient(RadialGradient{Stops: stops, Radius: 40, Oklab: true})
+	}, 100, 100)
+	got := rgba(tt.Image(), 70, 50)
+	if int(got[0])+int(got[1])+int(got[2]) <= int(mid[0])+int(mid[1])+int(mid[2])+20 || got[3] != 255 {
+		t.Errorf("the Oklab middle %v, want lighter than the sRGB one %v", got, mid)
+	}
+	// The radius is in DIPs: twice as many pixels at twice the scale.
+	img := Render(func(ctx *Context) {
+		Box(ctx).Size(100, 100).RadialGradient(RadialGradient{Stops: stops, Radius: 40})
+	}, 100, 100, 2)
+	if got := rgba(img, 140, 100); !nearRGBA8(got, mid, 6) {
+		t.Errorf("halfway out at scale 2 %v, want %v", got, mid)
+	}
+	if got := rgba(img, 190, 100); !nearRGBA8(got, [4]uint8{0, 0, 255, 255}, 6) {
+		t.Errorf("past the radius at scale 2 %v, want blue", got)
+	}
+}
+
+// A painter fills a rounded rectangle with a radial gradient, as an
+// element's.
+func TestFillRadialGradient(t *testing.T) {
+	tt := NewTester(func(c *Context) {
+		Box(c).Size(100, 100).Draw(func(p *Painter, r Rect) {
+			p.FillRadialGradient(Rect{X: 10, Y: 10, W: 80, H: 80}, RadialGradient{
+				Stops: []GradientStop{{gRed, 0.5}, {gBlue, 0.5}}, Center: Point{0.25, 0.25}, Radius: 20,
+			}, 40)
+		})
+	}, 100, 100)
+	img := tt.Image()
+	if got := rgba(img, 32, 30); got != [4]uint8{255, 0, 0, 255} {
+		t.Errorf("inside half the radius %v, want red", got)
+	}
+	if got := rgba(img, 30, 60); got != [4]uint8{0, 0, 255, 255} {
+		t.Errorf("past half the radius %v, want blue", got)
+	}
+	if got := rgba(img, 12, 12); got != [4]uint8{255, 255, 255, 255} {
+		t.Errorf("outside the rounded corner %v, want the background", got)
+	}
+}
+
 // A linear gradient with stops shows each where it lies along the line.
 func TestLinearGradientStops(t *testing.T) {
 	tt := NewTester(func(c *Context) {

@@ -979,12 +979,21 @@ func (s *fileWatchScan) unenroll(p string) {
 // fileWatchDiff turns what an update changed into events: changed holds
 // what it looked at as it was before, entries what is now. An entry whose
 // identity moved to another path is a rename, when nothing else has that
-// identity.
+// identity; a file replaced at its path by another file is a write.
 func fileWatchDiff(changed map[string]fileWatchBefore, entries map[string]fileWatchEntry, writes map[string]bool) []FileEvent {
 	removed := make(map[string]fileWatchEntry)
 	created := make(map[string]fileWatchEntry)
+	// A file replaced at its path by another file, as editors and atomic
+	// saves replace it (a temporary file renamed over it), is written, as a
+	// watched file replaced is: not removed, then created, which would
+	// have an app close a document it still has.
+	replaced := make(map[string]bool)
 	for p, was := range changed {
 		now, ok := entries[p]
+		if was.ok && ok && was.entry.id != now.id && was.entry.mode.IsRegular() && now.mode.IsRegular() {
+			replaced[p] = true
+			continue
+		}
 		if was.ok && (!ok || was.entry.id != now.id) {
 			removed[p] = was.entry
 		}
@@ -1063,7 +1072,7 @@ func fileWatchDiff(changed map[string]fileWatchBefore, entries map[string]fileWa
 		if b, ok := created[p]; ok {
 			events = append(events, FileEvent{Op: FileCreate, Path: p, IsDir: b.isDir()})
 		}
-		if now, ok := entries[p]; was.ok && ok && !now.isDir() && was.entry.id == now.id && (writes[p] || fileWatchChanged(was.entry, now)) {
+		if now, ok := entries[p]; replaced[p] || was.ok && ok && !now.isDir() && was.entry.id == now.id && (writes[p] || fileWatchChanged(was.entry, now)) {
 			events = append(events, FileEvent{Op: FileWrite, Path: p})
 		}
 		if len(events) > 0 {

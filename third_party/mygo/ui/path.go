@@ -5,6 +5,7 @@ import (
 	"hash/maphash"
 	"math"
 	"slices"
+	"sync"
 
 	"github.com/egoist/mygo/internal/scene"
 	"github.com/egoist/mygo/internal/vec"
@@ -17,17 +18,54 @@ type Path struct {
 	// trim is the part of the path's length it keeps (Trim), when trimmed.
 	trim    [2]float32
 	trimmed bool
+	// How a stroke ends and turns, and its dashes, in DIPs (Cap, Join,
+	// MiterLimit, Dash); a miter of 0 is 4.
+	cap        LineCap
+	join       LineJoin
+	miter      float32
+	dash       []float32
+	dashOffset float32
 }
+
+// LineCap is how a stroke ends where its subpath or a dash of it does.
+type LineCap uint8
+
+const (
+	// RoundCap ends a stroke in a half disc as wide as the stroke: the
+	// default.
+	RoundCap LineCap = iota
+	// ButtCap ends a stroke square, where its line ends.
+	ButtCap
+	// SquareCap ends a stroke square, half its width past where its line
+	// ends.
+	SquareCap
+)
+
+// LineJoin is how a stroke turns at a corner of its path.
+type LineJoin uint8
+
+const (
+	// RoundJoin turns a corner in an arc: the default.
+	RoundJoin LineJoin = iota
+	// MiterJoin turns a corner in a point, where the stroke's sides meet,
+	// and bevels it where the point would be farther from the corner than
+	// the miter limit (MiterLimit).
+	MiterJoin
+	// BevelJoin cuts a corner straight across.
+	BevelJoin
+)
 
 type pathCmd struct {
 	op  uint8 // 0 move, 1 line, 2 quad, 3 cubic, 4 close
 	pts [3][2]float32
 }
 
-// Reset empties the path and removes Trim, retaining its command storage.
+// Reset empties the path and removes Trim and the stroke's caps, joins
+// and dashes, retaining its storage.
 func (p *Path) Reset() *Path {
 	p.cmds = p.cmds[:0]
 	p.trim, p.trimmed = [2]float32{}, false
+	p.cap, p.join, p.miter, p.dash, p.dashOffset = RoundCap, RoundJoin, 0, p.dash[:0], 0
 	return p
 }
 
@@ -63,13 +101,73 @@ func (p *Path) Close() *Path {
 	return p
 }
 
+// Cap sets how a Painter strokes the ends of the path's open subpaths and
+// of its dashes, round by default, as SVG's stroke-linecap, and returns
+// the path.
+func (p *Path) Cap(c LineCap) *Path {
+	p.cap = c
+	return p
+}
+
+// Join sets how a Painter strokes the corners of the path, round by
+// default, as SVG's stroke-linejoin, and returns the path.
+func (p *Path) Join(j LineJoin) *Path {
+	if j == MiterJoin {
+		linkMiters.Do(func() { miterReach = mitredReach })
+	}
+	p.join = j
+	return p
+}
+
+// MiterLimit sets how far the point of a MiterJoin may reach from its
+// corner, in half the stroke's width, as SVG's stroke-miterlimit, and
+// returns the path: a corner sharper than that is bevelled. It is 4 by
+// default, which bevels corners sharper than about 29 degrees, and at
+// least 1.
+func (p *Path) MiterLimit(limit float32) *Path {
+	finiteMotion("miter limit", float64(limit))
+	p.miter = max(limit, 1)
+	return p
+}
+
+// Dash sets a Painter to stroke the path in dashes, as SVG's
+// stroke-dasharray and stroke-dashoffset, and returns the path. lengths
+// are those of the dashes and the gaps between them in turn, in DIPs,
+// repeated along the path, and twice over when there is an odd number of
+// them; each subpath starts them anew, offset DIPs into them, and a dash
+// through the start of a closed one turns there as at its other corners.
+// A dash of no length shows its caps alone, as a dot with RoundCap. No
+// lengths, a negative one, or lengths that add up to none stroke the path
+// whole. As Trim trims the path, its dashes stay where they are on it.
+func (p *Path) Dash(offset float32, lengths ...float32) *Path {
+	finiteMotion("dash", float64(offset))
+	p.dash, p.dashOffset = p.dash[:0], offset
+	var total float32
+	for _, l := range lengths {
+		finiteMotion("dash", float64(l))
+		if l < 0 {
+			p.dash = p.dash[:0]
+			return p
+		}
+		total += l
+	}
+	if total > 0 {
+		linkDashes.Do(func() { dashLine, snapPhases = strokeDashes, snapDashPhases })
+		p.dash = append(p.dash, lengths...)
+		if len(lengths)%2 == 1 {
+			p.dash = append(p.dash, lengths...)
+		}
+	}
+	return p
+}
+
 // Trim keeps of the path, as a Painter fills or strokes it, the part of
 // its length from from to to, as fractions of it, its subpaths one after
 // another, and returns the path: 0 to 0.5 draws its first half, and a check
 // mark draws itself as to animates from 0 to 1, as SwiftUI's trim(from:to:)
 // and Motion's pathLength. Trimmed, closed subpaths draw open, and a
 // stroke trimmed shorter than its width fades with its length, rather than
-// its round caps showing a dot that comes or goes at once.
+// its round or square caps showing a dot that comes or goes at once.
 func (p *Path) Trim(from, to float32) *Path {
 	finiteMotion("trim", float64(from), float64(to))
 	p.trim, p.trimmed = [2]float32{max(0, min(from, 1)), max(0, min(to, 1))}, true
@@ -121,6 +219,15 @@ type flatPath struct {
 	keptPts    [][2]float32
 	keptStarts []int
 	keptClosed []bool
+	// The path's stroke in pixels: its caps, joins and miter limit, and
+	// its dashes (none strokes it whole), the length of their pattern, and
+	// where in the pattern each polyline starts (phase).
+	cap    LineCap
+	join   LineJoin
+	miter  float32
+	dash   []float32
+	period float32
+	phase  []float32
 }
 
 func (f *flatPath) polys() int { return len(f.starts) }
@@ -133,10 +240,30 @@ func (f *flatPath) poly(i int) [][2]float32 {
 	return f.pts[f.starts[i]:end]
 }
 
-// flatten sets f to the path's subpaths as polylines in device pixels.
-func (p *Path) flatten(f *flatPath, scale float32) {
+// reset empties f, untrimmed, to be stroked round and whole, retaining
+// its memory: StrokePolyline fills it in as it is, flatten as its path
+// says.
+func (f *flatPath) reset() {
 	f.pts, f.starts, f.closed = f.pts[:0], f.starts[:0], f.closed[:0]
 	f.trimmed, f.kept = false, 0
+	f.cap, f.join, f.miter = RoundCap, RoundJoin, 4
+	f.dash, f.period, f.phase = f.dash[:0], 0, f.phase[:0]
+}
+
+// flatten sets f to the path's subpaths as polylines in device pixels.
+func (p *Path) flatten(f *flatPath, scale float32) {
+	f.reset()
+	f.cap, f.join = p.cap, p.join
+	if p.miter != 0 {
+		f.miter = p.miter
+	}
+	for _, l := range p.dash {
+		f.dash = append(f.dash, l*scale)
+		f.period += l * scale
+	}
+	if !(f.period > 0) {
+		f.dash = f.dash[:0]
+	}
 	begin, isClosed := 0, false
 	var origin, pen [2]float32
 	flush := func() {
@@ -188,14 +315,21 @@ func (p *Path) flatten(f *flatPath, scale float32) {
 		}
 	}
 	flush()
+	offset := p.dashOffset * scale
+	if len(f.dash) > 0 {
+		for range f.polys() {
+			f.phase = append(f.phase, offset)
+		}
+	}
 	if p.trimmed {
-		f.trim(p.trim[0], p.trim[1])
+		f.trim(p.trim[0], p.trim[1], offset)
 	}
 }
 
 // trim keeps the part of f's length from from to to, as fractions of it,
-// as open polylines.
-func (f *flatPath) trim(from, to float32) {
+// as open polylines, each dashed from where it starts on its subpath, its
+// dashes offset by offset.
+func (f *flatPath) trim(from, to, offset float32) {
 	// segments returns how many segments polyline i has, a closed one's
 	// back to its start included.
 	segments := func(i int) int {
@@ -215,9 +349,11 @@ func (f *flatPath) trim(from, to float32) {
 	lo, hi := from*total, to*total
 	f.trimmed, f.kept = true, max(hi-lo, 0)
 	pts, starts, closed := f.keptPts[:0], f.keptStarts[:0], f.keptClosed[:0]
+	f.phase = f.phase[:0]
 	var at float32
 	for i := range f.polys() {
 		poly := f.poly(i)
+		sub := at     // where the subpath starts
 		open := false // a kept polyline goes on to the next segment
 		for j := range segments(i) {
 			a, b := poly[j], poly[(j+1)%len(poly)]
@@ -232,6 +368,9 @@ func (f *flatPath) trim(from, to float32) {
 			if !open {
 				starts, closed = append(starts, len(pts)), append(closed, false)
 				pts = append(pts, [2]float32{a[0] + (b[0]-a[0])*k0, a[1] + (b[1]-a[1])*k0})
+				if len(f.dash) > 0 {
+					f.phase = append(f.phase, offset+s-sub)
+				}
 			}
 			pts = append(pts, [2]float32{a[0] + (b[0]-a[0])*k1, a[1] + (b[1]-a[1])*k1})
 			open = k1 >= 1
@@ -261,7 +400,7 @@ type paths struct {
 	job    pathJob
 	raster vec.Rasterizer
 	pix    []byte
-	loop   [][2]float32 // a polyline there and back, as strokeInto outlines it
+	stroke strokeBufs
 	// What pathTiles finds of a path drawn in tiles: the tiles its edges
 	// reach, and where its edges cross a row of tiles.
 	reached []bool
@@ -306,7 +445,7 @@ type pathCrossing struct {
 
 // drawPath paints a flattened path with c, from a mask cached by the shape:
 // filled (non-zero winding), or with width > 0 stroked that many pixels
-// wide with round joins and caps.
+// wide with its caps, joins and dashes.
 func (p *Painter) drawPath(f *flatPath, width float32, c Color, g *LinearGradient) {
 	p.drawPathPaint(f, width, c, g, nil)
 }
@@ -323,19 +462,35 @@ func (p *Painter) drawPathPaint(f *flatPath, width float32, c Color, g *LinearGr
 		minX, maxX = min(minX, pt[0]), max(maxX, pt[0])
 		minY, maxY = min(minY, pt[1]), max(maxY, pt[1])
 	}
-	x0, y0 := float32(math.Floor(float64(minX-hw))), float32(math.Floor(float64(minY-hw)))
-	wf, hf := math.Ceil(float64(maxX+hw-x0))+1, math.Ceil(float64(maxY+hw-y0))+1
-	if !(wf > 0 && hf > 0 && wf <= pathSpanMax && hf <= pathSpanMax) {
+	// bounds returns the corner and size of the mask of a stroke that
+	// reaches reach pixels from its center line, and whether float32
+	// holds its points (pathSpanMax).
+	bounds := func(reach float32) (x0, y0 float32, w, h int, ok bool) {
+		x0, y0 = float32(math.Floor(float64(minX-reach))), float32(math.Floor(float64(minY-reach)))
+		wf, hf := math.Ceil(float64(maxX+reach-x0))+1, math.Ceil(float64(maxY+reach-y0))+1
+		return x0, y0, int(wf), int(hf), wf > 0 && hf > 0 && wf <= pathSpanMax && hf <= pathSpanMax
+	}
+	x0, y0, _, _, ok := bounds(hw)
+	if !ok {
 		return
 	}
-	w, h := int(wf), int(hf)
 	// The key covers the shape relative to the pixel grid, in quarters of
-	// a pixel; a stroke's is its center line's, and its width. The points
+	// a pixel; a stroke's is its center line's, its width, caps, joins and
+	// dashes, and where each polyline starts in its dashes. The points
 	// move to those quarters, so that the mask of a key is the same
 	// whichever path drew it first: a path looks the same wherever it is
 	// on the grid, whatever drew before it.
 	for i, pt := range f.pts {
 		f.pts[i] = [2]float32{x0 + round((pt[0]-x0)*4)/4, y0 + round((pt[1]-y0)*4)/4}
+	}
+	if hw > 0 && len(f.dash) > 0 {
+		snapPhases(f)
+	}
+	// Square caps and miter joins reach farther, as far as the points
+	// show that the mask draws.
+	x0, y0, w, h, ok := bounds(f.reach(hw))
+	if !ok {
+		return
 	}
 	key := uint64(1)
 	if hw > 0 {
@@ -346,11 +501,31 @@ func (p *Painter) drawPathPaint(f *flatPath, width float32, c Color, g *LinearGr
 	hs.SetSeed(pathSeed)
 	binary.LittleEndian.PutUint64(buf[:], key)
 	hs.Write(buf[:])
+	if hw > 0 {
+		hs.WriteByte(byte(f.cap))
+		hs.WriteByte(byte(f.join))
+		// The miter limit shapes miter joins alone.
+		miter := float32(0)
+		if f.join == MiterJoin {
+			miter = f.miter
+		}
+		binary.LittleEndian.PutUint32(buf[:4], math.Float32bits(miter))
+		binary.LittleEndian.PutUint32(buf[4:], uint32(len(f.dash)))
+		hs.Write(buf[:])
+		for _, l := range f.dash {
+			binary.LittleEndian.PutUint32(buf[:4], math.Float32bits(l))
+			hs.Write(buf[:4])
+		}
+	}
 	for i := range f.polys() {
 		for _, pt := range f.poly(i) {
 			binary.LittleEndian.PutUint32(buf[:4], math.Float32bits(round((pt[0]-x0)*4)))
 			binary.LittleEndian.PutUint32(buf[4:], math.Float32bits(round((pt[1]-y0)*4)))
 			hs.Write(buf[:])
+		}
+		if hw > 0 && len(f.dash) > 0 {
+			binary.LittleEndian.PutUint32(buf[:4], math.Float32bits(f.phase[i]))
+			hs.Write(buf[:4])
 		}
 		end := byte(0xff)
 		if f.closed[i] {
@@ -371,7 +546,9 @@ func (p *Painter) drawPathPaint(f *flatPath, width float32, c Color, g *LinearGr
 	}
 	op := scene.Op{Kind: scene.OpGlyphs, Start: start, End: int32(len(p.s.Glyphs))}
 	if g != nil || cg != nil {
-		// The gradient spans the path's bounds.
+		// The gradient spans the path's bounds, and half a stroke's width
+		// beyond: what square caps and miter joins reach past it takes
+		// the color of its edge, so that they do not move the gradient.
 		op.Rect = scene.Rect{X: minX - hw, Y: minY - hw, W: maxX - minX + 2*hw, H: maxY - minY + 2*hw}
 		op.Opacity = p.opacity
 		if g != nil {
@@ -448,9 +625,10 @@ func (p *Painter) pathTiles(key uint64, f *flatPath, hw, x0, y0 float32, w, h in
 			}
 		}
 	}
-	// Each edge reaches the tiles within m of it: a stroke's half width,
-	// and a pixel of antialiasing and one of rounding.
-	m, size := hw+2, float32(t)
+	// Each edge reaches the tiles within m of it: as far as a stroke
+	// reaches (flatPath.reach), and a pixel of antialiasing and one of
+	// rounding.
+	m, size := f.reach(hw)+2, float32(t)
 	segments(func(ax, ay, bx, by float32) {
 		lo := max(int(math.Floor(float64((min(ay, by)-m)/size))), r0)
 		hi := min(int(math.Floor(float64((max(ay, by)+m)/size))), r1-1)
@@ -559,7 +737,7 @@ func (rt *engine) rasterizePath() (int, int, []byte) {
 	}
 	z.Reset(j.w, j.h)
 	if j.hw > 0 {
-		strokeInto(z, &rt.paths.loop, j.f, j.hw, j.x0, j.y0)
+		strokeInto(z, &rt.paths.stroke, j.f, j.hw, j.x0, j.y0)
 	} else {
 		fillInto(z, j.f, j.x0, j.y0)
 	}
@@ -582,8 +760,9 @@ func (p *Painter) FillPathGradient(path *Path, g LinearGradient) {
 	p.drawPath(f, 0, g.From, &g)
 }
 
-// StrokePath draws the outline of a path, width DIPs wide, with round
-// joins and caps.
+// StrokePath draws the outline of a path, width DIPs wide, with the
+// path's caps, joins and dashes (Path.Cap, Path.Join, Path.Dash): round
+// and whole unless it sets them.
 func (p *Painter) StrokePath(path *Path, width float32, c Color) {
 	f := &p.rt.paths.flat
 	path.flatten(f, p.scale)
@@ -591,13 +770,109 @@ func (p *Painter) StrokePath(path *Path, width float32, c Color) {
 }
 
 // capFade returns how opaque a stroke width pixels wide of f shows:
-// trimmed shorter than its width, which its round caps would show as a
-// dot appearing or going at once, it fades with its length.
+// trimmed shorter than its width, which its round or square caps would
+// show as a dot appearing or going at once, it fades with its length.
+// With butt caps, it shows only what it keeps, and does not fade.
 func (f *flatPath) capFade(width float32) float32 {
-	if !f.trimmed || width <= 0 || f.kept >= width {
+	if !f.trimmed || f.cap == ButtCap || width <= 0 || f.kept >= width {
 		return 1
 	}
 	return f.kept / width
+}
+
+// reach returns how far a stroke hw pixels to each side of f reaches from
+// its center line: hw, √2 hw to the corners of square caps, and to the
+// points of miter joins (mitredReach).
+func (f *flatPath) reach(hw float32) float32 {
+	k := float32(1)
+	if f.cap == SquareCap {
+		k = math.Sqrt2
+	}
+	if f.join != MiterJoin || hw == 0 {
+		return hw * k
+	}
+	return hw * max(k, miterReach(f))
+}
+
+// mitredReach returns how far the points of f's miter joins reach from
+// their corners, in half the stroke's width: 1/cos of half their turn,
+// √(2/(1+dot)) for the dot product of the directions they turn between,
+// where that is within the miter limit. It finds them as offsetLoop does,
+// and a thousandth farther, for dashes, whose corners are those of the
+// polylines but for the rounding of the points that cut them.
+func mitredReach(f *flatPath) float32 {
+	limit := 2 / (f.miter * f.miter) * (1 - 1e-3)
+	least := float32(2) // the least 1+dot of a mitred corner
+	turn := func(d, e [2]float32) {
+		if dot := float32(d[0]*e[0]) + float32(d[1]*e[1]); 1+dot >= limit {
+			least = min(least, 1+dot)
+		}
+	}
+	for i := range f.polys() {
+		poly := f.poly(i)
+		a := poly[0]
+		var first, last [2]float32 // the first direction and the last
+		segs := 0
+		to := func(b [2]float32) {
+			if b == a {
+				return
+			}
+			l := dist(a, b)
+			d := [2]float32{(b[0] - a[0]) / l, (b[1] - a[1]) / l}
+			if segs == 0 {
+				first = d
+			} else {
+				turn(last, d)
+			}
+			a, last = b, d
+			segs++
+		}
+		for _, b := range poly[1:] {
+			to(b)
+		}
+		if f.closed[i] && segs > 1 {
+			to(poly[0])
+			turn(last, first)
+		}
+	}
+	return float32(math.Sqrt(float64(2/least))) * 1.001
+}
+
+// snapDashPhases moves where f's polylines start in their dashes to
+// quarters of a pixel, within one pattern of them, as drawPathPaint moves
+// their points, so that an offset that animates around the pattern draws
+// again what it drew.
+func snapDashPhases(f *flatPath) {
+	for i, ph := range f.phase {
+		ph = round(float32(math.Mod(float64(ph), float64(f.period)))*4) / 4
+		if ph < 0 {
+			ph += f.period
+		}
+		if ph == 0 {
+			ph = 0 // not -0, whose bits differ
+		}
+		f.phase[i] = ph
+	}
+}
+
+// dashAt returns where at pixels along f's dashes, repeated, falls: in
+// dash or gap k, with left pixels of it to go.
+func (f *flatPath) dashAt(at float32) (k int, left float32) {
+	o := float32(math.Mod(float64(at), float64(f.period)))
+	if o < 0 {
+		o += f.period
+	}
+	// A point between a dash and a gap is in the gap, as Skia has it, but
+	// one at a dash of no length is in that dash. Rounded, o may reach the
+	// pattern's end: it goes round it once.
+	for range f.dash {
+		if o < f.dash[k] || o == 0 && f.dash[k] == 0 {
+			break
+		}
+		o -= f.dash[k]
+		k = (k + 1) % len(f.dash)
+	}
+	return k, max(f.dash[k]-o, 0)
 }
 
 // FillPathConicGradient fills a path with a conic gradient around its
@@ -641,57 +916,220 @@ func fillInto(z *vec.Rasterizer, f *flatPath, x0, y0 float32) {
 	}
 }
 
+// strokeBufs is the memory strokeInto reuses: a polyline moved to the
+// mask, and a dash of it, each grown to go there and back, and the first
+// dash of a closed polyline, which waits for its last; and how many dashes
+// and gaps the path is cut into so far (strokeCutsMax), here rather than
+// on the stack, which dashLine, a function value, would move to the heap.
+type strokeBufs struct {
+	line, dash, head [][2]float32
+	cuts             int
+}
+
+// strokeCutsMax is how many dashes and gaps strokeInto cuts a path into,
+// at most, as SVG images are cut: dashes far shorter than a pixel would
+// otherwise take as long as they like. Past them, it strokes the rest of
+// the path whole, as such dashes look. It is a variable so that tests can
+// reach it.
+var strokeCutsMax = 1 << 16
+
 // strokeInto draws a stroke hw pixels to each side of a flattened path,
-// with round joins and caps, as an outline that the rasterizer fills: the
-// side of a polyline, an arc around each outer corner and a turn through
-// the corner on the inside, and back along the other side. Each edge of
-// the stroke is drawn once, so that its antialiasing is exact, as
-// rasterizing a piece per segment and per corner and adding them up is
+// with its caps, joins and dashes, as an outline that the rasterizer
+// fills: the side of a polyline, a turn around each outer corner and one
+// through the corner on the inside, and back along the other side. Each
+// edge of the stroke is drawn once, so that its antialiasing is exact,
+// as rasterizing a piece per segment and per corner and adding them up is
 // not: where their edges meet, as along the outside of curves, their
 // coverage would add up and thicken the stroke.
-func strokeInto(z *vec.Rasterizer, loop *[][2]float32, f *flatPath, hw, x0, y0 float32) {
+func strokeInto(z *vec.Rasterizer, b *strokeBufs, f *flatPath, hw, x0, y0 float32) {
+	b.cuts = 0
 	for i := range f.polys() {
 		// The polyline without repeated points, moved to the mask.
-		pts := (*loop)[:0]
+		pts := b.line[:0]
 		for _, pt := range f.poly(i) {
-			pt = [2]float32{pt[0] - x0, pt[1] - y0}
-			if n := len(pts); n == 0 || pts[n-1] != pt {
-				pts = append(pts, pt)
-			}
+			pts = appendPoint(pts, [2]float32{pt[0] - x0, pt[1] - y0})
 		}
-		if f.closed[i] && len(pts) > 2 && pts[0] == pts[len(pts)-1] {
+		closed := f.closed[i]
+		if closed && len(pts) > 2 && pts[0] == pts[len(pts)-1] {
 			pts = pts[:len(pts)-1]
 		}
-		switch {
-		case len(pts) == 1:
-			disc(z, pts[0][0], pts[0][1], hw)
-		case f.closed[i] && len(pts) > 2:
-			// Each side of a closed polyline is a loop of its own, the
-			// other side going the other way, so that the inside is not
-			// filled.
-			n := len(pts)
-			offsetLoop(z, pts, hw)
-			for k := range n / 2 {
-				pts[k], pts[n-1-k] = pts[n-1-k], pts[k]
-			}
-			offsetLoop(z, pts, hw)
-		default:
-			// An open polyline is outlined as the loop that goes there and
-			// back, whose turns at the ends are its caps.
-			n := len(pts)
-			for k := n - 2; k > 0; k-- {
-				pts = append(pts, pts[k])
-			}
-			offsetLoop(z, pts, hw)
+		if len(f.dash) == 0 || b.cuts >= strokeCutsMax {
+			b.line = strokeLine(z, pts, closed, f, hw, [2]float32{1, 0})
+			continue
 		}
-		*loop = pts[:0]
+		b.line = pts
+		dashLine(z, b, pts, closed, f, hw, f.phase[i])
 	}
 }
 
+// dashLine and snapPhases are strokeDashes and snapDashPhases once a path
+// is dashed (Path.Dash), and miterReach is mitredReach once a path has
+// miter joins (Path.Join): apps that use neither don't link them. Only
+// those methods set them, once, and only a path they set up calls them,
+// after them.
+var (
+	dashLine   func(z *vec.Rasterizer, b *strokeBufs, pts [][2]float32, closed bool, f *flatPath, hw, phase float32)
+	snapPhases func(f *flatPath)
+	miterReach func(f *flatPath) float32
+	linkDashes sync.Once
+	linkMiters sync.Once
+)
+
+// strokeDashes draws the stroke of the dashes of a polyline without
+// repeated points, phase pixels into their pattern where it starts, each
+// an open polyline that goes on around the corners it reaches. A closed
+// polyline's dash that runs through its first point is one dash, which
+// turns there as at its other corners, and one that runs all around it is
+// the polyline whole. It counts the dashes and gaps it cuts in b.cuts, and
+// past strokeCutsMax of them strokes the rest of the polyline whole.
+func strokeDashes(z *vec.Rasterizer, b *strokeBufs, pts [][2]float32, closed bool, f *flatPath, hw, phase float32) {
+	k, left := f.dashAt(phase)
+	on := k%2 == 0
+	n := len(pts)
+	segs := n - 1
+	if closed && n > 1 {
+		segs = n
+	}
+	// first is whether the next dash to end is the first, which a closed
+	// polyline keeps in b.head if it starts on its first point.
+	first, waiting := true, false
+	dash := b.dash[:0]
+	if on {
+		dash = append(dash, pts[0])
+	}
+	dir := [2]float32{1, 0} // the way the line goes, for square caps of dashes of no length
+	for s := range segs {
+		a, c := pts[s], pts[(s+1)%n]
+		l := dist(a, c)
+		dir = [2]float32{(c[0] - a[0]) / l, (c[1] - a[1]) / l}
+		pos := float32(0)
+		for l-pos > left {
+			pos += left
+			t := pos / l
+			pt := [2]float32{a[0] + (c[0]-a[0])*t, a[1] + (c[1]-a[1])*t}
+			if on {
+				dash = appendApart(dash, pt)
+				if first && closed && len(dash) > 0 && dash[0] == pts[0] {
+					b.head, dash = dash, b.head[:0]
+					waiting = true
+				} else {
+					dash = strokeLine(z, dash, false, f, hw, dir)[:0]
+				}
+			} else {
+				dash = append(dash, pt)
+			}
+			first = false
+			if b.cuts++; b.cuts >= strokeCutsMax {
+				// The rest, from here, whole.
+				dash = append(dash[:0], pt)
+				for j := s + 1; j <= segs; j++ {
+					dash = appendApart(dash, pts[j%n])
+				}
+				dash = strokeLine(z, dash, false, f, hw, dir)[:0]
+				if waiting {
+					b.head = strokeLine(z, b.head, false, f, hw, dir)
+				}
+				b.dash = dash
+				return
+			}
+			on, k = !on, (k+1)%len(f.dash)
+			left = f.dash[k]
+		}
+		left -= l - pos
+		if on {
+			dash = appendApart(dash, c)
+		}
+	}
+	switch {
+	case on && first && closed:
+		// No cut: the polyline whole.
+		b.line = strokeLine(z, pts, true, f, hw, dir)
+	case on && waiting:
+		// The last dash ends on the first point, where the first starts.
+		dash = strokeLine(z, append(dash, b.head[1:]...), false, f, hw, dir)
+	default:
+		if on {
+			dash = strokeLine(z, dash, false, f, hw, dir)
+		}
+		if waiting {
+			b.head = strokeLine(z, b.head, false, f, hw, dir)
+		}
+	}
+	b.dash = dash[:0]
+}
+
+// appendApart appends pt to a dash unless it lies within a 64th of a
+// pixel of the dash's last point: a line that short, where a dash was cut
+// next to a corner, would point its cap or its join whichever way the
+// rounding of the cut does.
+func appendApart(dash [][2]float32, pt [2]float32) [][2]float32 {
+	if n := len(dash); n > 0 && dist(dash[n-1], pt) < 1.0/64 {
+		return dash
+	}
+	return append(dash, pt)
+}
+
+// appendPoint appends pt to pts unless pts ends with it.
+func appendPoint(pts [][2]float32, pt [2]float32) [][2]float32 {
+	if n := len(pts); n > 0 && pts[n-1] == pt {
+		return pts
+	}
+	return append(pts, pt)
+}
+
+// strokeLine draws the stroke of a polyline without repeated points, hw
+// pixels to each side, with f's caps and joins, and returns pts, which it
+// grows. A polyline of one point shows its caps alone, square ones turned
+// along dir, around it the way the outline of an open polyline goes, so
+// that where they overlap, as dots on a line do, they add up rather than
+// cancel.
+func strokeLine(z *vec.Rasterizer, pts [][2]float32, closed bool, f *flatPath, hw float32, dir [2]float32) [][2]float32 {
+	n := len(pts)
+	switch {
+	case n == 0:
+	case n == 1:
+		c := pts[0]
+		switch f.cap {
+		case RoundCap:
+			disc(z, c[0], c[1], hw)
+		case SquareCap:
+			ux, uy, nx, ny := dir[0]*hw, dir[1]*hw, -dir[1]*hw, dir[0]*hw
+			z.MoveTo(c[0]-ux+nx, c[1]-uy+ny)
+			z.LineTo(c[0]+ux+nx, c[1]+uy+ny)
+			z.LineTo(c[0]+ux-nx, c[1]+uy-ny)
+			z.LineTo(c[0]-ux-nx, c[1]-uy-ny)
+			z.ClosePath()
+		}
+	case closed && n > 2:
+		// Each side of a closed polyline is a loop of its own, the other
+		// side going the other way, so that the inside is not filled.
+		offsetLoop(z, pts, hw, f, -1)
+		for k := range n / 2 {
+			pts[k], pts[n-1-k] = pts[n-1-k], pts[k]
+		}
+		offsetLoop(z, pts, hw, f, -1)
+	default:
+		// An open polyline is outlined as the loop that goes there and
+		// back, whose turns at the ends are its caps. A closed one of two
+		// points turns at both as at corners.
+		end := n - 1
+		if closed {
+			end = -1
+		}
+		for k := n - 2; k > 0; k-- {
+			pts = append(pts, pts[k])
+		}
+		offsetLoop(z, pts, hw, f, end)
+	}
+	return pts
+}
+
 // offsetLoop draws the side of a closed polyline hw pixels to its left
-// (a segment's normal), turning around the outside of its corners in arcs
-// and through the corners on the inside.
-func offsetLoop(z *vec.Rasterizer, pts [][2]float32, hw float32) {
+// (a segment's normal), turning around the outside of its corners as f's
+// joins do and through the corners on the inside. With end ≥ 0, the
+// polyline goes there and back along an open one, and turns straight back
+// at its points 0 and end, the open one's ends, as f's caps do.
+func offsetLoop(z *vec.Rasterizer, pts [][2]float32, hw float32, f *flatPath, end int) {
 	n := len(pts)
 	normal := func(k int) (float32, float32, float32, float32) {
 		a, b := pts[k], pts[(k+1)%n]
@@ -703,31 +1141,52 @@ func offsetLoop(z *vec.Rasterizer, pts [][2]float32, hw float32) {
 	dx, dy, nx, ny := normal(0)
 	z.MoveTo(pts[0][0]+nx, pts[0][1]+ny)
 	for k := range n {
-		b := pts[(k+1)%n]
+		c := (k + 1) % n
+		b := pts[c]
 		z.LineTo(b[0]+nx, b[1]+ny)
-		ex, ey, mx, my := normal((k + 1) % n)
+		ex, ey, mx, my := normal(c)
 		// Rounded apart, as fused multiply-adds would leave a polyline
 		// turning straight back, a cap's turn, a hair off zero.
 		cross, dot := float32(dx*ey)-float32(dy*ex), float32(dx*ex)+float32(dy*ey)
 		switch {
+		case end >= 0 && (c == 0 || c == end):
+			// An end, where the loop turns straight back: its cap.
+			switch f.cap {
+			case RoundCap:
+				arc(z, b, hw, nx, ny, -math.Pi)
+			case SquareCap:
+				z.LineTo(b[0]+nx+dx*hw, b[1]+ny+dy*hw)
+				z.LineTo(b[0]+mx+dx*hw, b[1]+my+dy*hw)
+				z.LineTo(b[0]+mx, b[1]+my)
+			default:
+				z.LineTo(b[0]+mx, b[1]+my)
+			}
 		case cross > 0:
 			// The inside of the corner: through it, where the stroke
 			// covers itself.
 			z.LineTo(b[0], b[1])
 			z.LineTo(b[0]+mx, b[1]+my)
 		case cross < 0 || dot < 0:
-			// The outside, or the polyline turning back: an arc around
-			// the corner, the shorter way, or the way the segment went.
-			from := math.Atan2(float64(ny), float64(nx))
-			turn := math.Atan2(float64(cross), float64(dot))
-			if cross == 0 {
-				turn = -math.Pi
-			}
-			steps := int(math.Ceil(math.Abs(turn) / (2 * math.Acos(max(1-0.02/float64(hw), -1)))))
-			for s := 1; s <= steps; s++ {
-				a := from + turn*float64(s)/float64(steps)
-				sin, cos := math.Sincos(a)
-				z.LineTo(b[0]+hw*float32(cos), b[1]+hw*float32(sin))
+			// The outside, or the polyline turning back.
+			switch {
+			case f.join == RoundJoin:
+				// An arc around the corner, the shorter way, or the way
+				// the segment went.
+				turn := math.Atan2(float64(cross), float64(dot))
+				if cross == 0 {
+					turn = -math.Pi
+				}
+				arc(z, b, hw, nx, ny, turn)
+			case f.join == MiterJoin && 1+dot >= 2/(f.miter*f.miter):
+				// The point where the sides meet, (n+m)/(1+dot) from the
+				// corner for its normals n and m, 1/cos of half the turn
+				// times hw from it: within the miter limit.
+				q := 1 / (1 + dot)
+				z.LineTo(b[0]+(nx+mx)*q, b[1]+(ny+my)*q)
+				z.LineTo(b[0]+mx, b[1]+my)
+			default:
+				// Bevelled, as a miter too long is.
+				z.LineTo(b[0]+mx, b[1]+my)
 			}
 		}
 		dx, dy, nx, ny = ex, ey, mx, my
@@ -735,13 +1194,26 @@ func offsetLoop(z *vec.Rasterizer, pts [][2]float32, hw float32) {
 	z.ClosePath()
 }
 
-// disc draws a circle of radius r, in four cubic curves.
+// arc draws an arc of radius r around c, from (c[0]+x, c[1]+y) turning
+// turn radians, in lines that stray from it by no more than 0.02 pixels.
+func arc(z *vec.Rasterizer, c [2]float32, r, x, y float32, turn float64) {
+	from := math.Atan2(float64(y), float64(x))
+	steps := int(math.Ceil(math.Abs(turn) / (2 * math.Acos(max(1-0.02/float64(r), -1)))))
+	for s := 1; s <= steps; s++ {
+		a := from + turn*float64(s)/float64(steps)
+		sin, cos := math.Sincos(a)
+		z.LineTo(c[0]+r*float32(cos), c[1]+r*float32(sin))
+	}
+}
+
+// disc draws a circle of radius r, in four cubic curves, around it the
+// way the outline of an open polyline goes.
 func disc(z *vec.Rasterizer, cx, cy, r float32) {
 	const k = 0.5522847498
 	z.MoveTo(cx+r, cy)
-	z.CubeTo(cx+r, cy+r*k, cx+r*k, cy+r, cx, cy+r)
-	z.CubeTo(cx-r*k, cy+r, cx-r, cy+r*k, cx-r, cy)
-	z.CubeTo(cx-r, cy-r*k, cx-r*k, cy-r, cx, cy-r)
-	z.CubeTo(cx+r*k, cy-r, cx+r, cy-r*k, cx+r, cy)
+	z.CubeTo(cx+r, cy-r*k, cx+r*k, cy-r, cx, cy-r)
+	z.CubeTo(cx-r*k, cy-r, cx-r, cy-r*k, cx-r, cy)
+	z.CubeTo(cx-r, cy+r*k, cx-r*k, cy+r, cx, cy+r)
+	z.CubeTo(cx+r*k, cy+r, cx+r, cy+r*k, cx+r, cy)
 	z.ClosePath()
 }

@@ -58,8 +58,10 @@ func coreToolbar(c *context, fn func()) *node {
 				rt := c.rt
 				if s := rt.states[it.id]; s != nil {
 					if it.menu {
+						// Below the overflow button, in the next pass,
+						// which builds the menu button again.
 						x, y := more.st.menuCorner()
-						rt.askMenu(s, x, y, true)
+						rt.askMenuLater(s, x, y)
 					} else {
 						rt.clickLater = append(rt.clickLater, it.id)
 						rt.consumed = true
@@ -102,7 +104,7 @@ func (e *node) layoutToolbar(cw float32) {
 			ch.collapsed = false
 			e.forgetIntrinsic()
 		}
-		if ch.flags&flagAbsolute == 0 {
+		if ch.flags&flagAbsolute == 0 && !ch.hidden {
 			kids = append(kids, ch)
 		}
 	}

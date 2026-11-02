@@ -236,8 +236,11 @@ func (w *window) closeWebView() {
 		if w.hasKeyboard() && w.host.surface != nil {
 			send(w.win, "makeFirstResponder:", uintptr(w.host.surface.view))
 		}
-		send(w.web, "removeObserver:forKeyPath:", uintptr(w.delegate), uintptr(nsString("title")))
+		w.stopObserving()
 		send(w.ucc, "removeScriptMessageHandlerForName:", uintptr(nsString("mygo")))
+		if w.opts.PictureInPicture {
+			send(w.ucc, "removeScriptMessageHandlerForName:", uintptr(nsString(pipHandler)))
+		}
 		send(w.ucc, "removeAllUserScripts")
 		send(w.web, "stopLoading")
 		send(w.web, "setNavigationDelegate:", 0)
@@ -318,6 +321,18 @@ func webViewMethods() []objc.MethodDef {
 		sendSuper(self, "MyGoWebView", cmd, uintptr(ev))
 	}
 	return []objc.MethodDef{
+		// The first click in a window that is not key is the page's, as it
+		// is native UI's (MyGoSurfaceView): WKWebView answers no, which
+		// spends the click on making the window key.
+		method("acceptsFirstMouse:", func(self id, _ objc.SEL, ev id) bool { return true }),
+		method("scrollWheel:", func(self id, cmd objc.SEL, ev id) {
+			w := theBackend.byWebView[self]
+			if w == nil || w.host == nil || w.host.surface == nil || w.opts == nil || !w.opts.ScrollToContainer {
+				sendSuper(self, "MyGoWebView", cmd, uintptr(ev))
+				return
+			}
+			scrollWheel(w.host.surface, ev)
+		}),
 		method("rightMouseDown:", press(1)),
 		method("otherMouseDown:", press(2)),
 		method("mouseMoved:", moved),

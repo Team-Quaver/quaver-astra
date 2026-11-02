@@ -50,7 +50,7 @@ func (a *App) hotkeyGlobalSwitch(c *ui.Context, t *ui.Theme) {
 		ui.Text(c, "全局快捷键").FontSize(fz(14)).FontWeight(700)
 		if a.hotkeys.blocked {
 			// Wayland：这一档整段交给桌面，开关留着只会让人以为它能打开。
-			ui.Text(c, "由桌面持有 · Astra 在 Wayland 会话不注册全局快捷键").
+			ui.Text(c, "由桌面持有 · Wayland 会话下不注册全局快捷键").
 				FontSize(fz(13)).TextColor(t.TextMuted)
 		} else {
 			a.prefRow(c, "启用全局快捷键", a.hotkeyEnabled, func(v bool) {
@@ -68,15 +68,15 @@ func (a *App) hotkeyGlobalSwitch(c *ui.Context, t *ui.Theme) {
 func hotkeyPlatformNote(blocked bool) string {
 	switch runtime.GOOS {
 	case "darwin":
-		return "全局快捷键在 Astra 不在前台时同样生效。macOS 的媒体键由系统直接送给「正在播放」的那个播放器，Astra 已经接住（见「设置 → 关于」的媒体中心），所以全局一列出厂留空；要自己绑一个的话点绑定格按下组合键即可。与系统或其他应用撞车的组合键会在下表标出来。"
+		return "全局快捷键在 Astra 不在前台时同样生效。macOS 的媒体键由系统转交，无需在这里重复绑定；需要自定义时点绑定格按下组合键即可。撞车的组合键会在下表标出。"
 	case "windows":
-		return "全局快捷键走系统 RegisterHotKey，Astra 收进托盘后照样生效。与系统或其他应用撞车的组合键会在下表标出来，换一个即可。"
+		return "全局快捷键在 Astra 收进托盘后依然生效。与系统或其他应用撞车的组合键会在下表标出，换一个即可。"
 	}
 	if blocked {
-		return "Wayland 会话里应用抓不到任何按键，能「后台生效」的快捷键只有桌面自己能持有，所以 Astra 不在这里注册全局快捷键，播放/暂停、上一曲、下一曲与音量都交给桌面的快捷键设置：桌面媒体中心的命令经 MPRIS2 送达 Astra（见「设置 → 关于」的媒体中心）。要改键，请到桌面的快捷键设置里改；下表「全局」一列的绑定在此刻不会生效，窗口内快捷键不受影响。"
+		return "Wayland 会话下，后台快捷键由系统桌面管理，请到桌面的快捷键设置中修改；Astra 内的窗口快捷键不受影响。"
 	}
 	if runtime.GOOS == "linux" {
-		return "X11 会话由 Astra 自己抓取按键。若换到 Wayland 会话，全局快捷键会整段交给桌面持有（Astra 不再注册）。与系统或其他应用撞车的组合键会在下表标出来。"
+		return "X11 会话下全局快捷键由 Astra 直接接管；切换到 Wayland 后将由系统桌面管理。撞车的组合键会在下表标出。"
 	}
 	return ""
 }
@@ -220,12 +220,12 @@ func (a *App) hotkeyHints(c *ui.Context, t *ui.Theme) {
 	ui.Column(c).FillWidth().Gap(10).Children(func() {
 		ui.Column(c).FillWidth().Gap(2).Children(func() {
 			ui.Text(c, "同键时全局优先").FontSize(fz(12)).FontWeight(700)
-			ui.Text(c, "组合键被系统截走之后，窗口就收不到它了。某条窗口内快捷键若与生效中的全局快捷键同键，会在上表标注，并且不会触发。").
+			ui.Text(c, "与生效中的全局快捷键同键时，窗口内绑定不会触发，并会在上表标注。").
 				FontSize(fz(11.5)).TextColor(t.TextMuted).MaxLines(3)
 		})
 		ui.Column(c).FillWidth().Gap(2).Children(func() {
 			ui.Text(c, "媒体键只能作全局快捷键").FontSize(fz(12)).FontWeight(700)
-			ui.Text(c, "播放/暂停、上一曲、下一曲这类媒体键不作为普通按键送进窗口，只能绑到「全局」一列。macOS 上媒体键由系统直接送给「正在播放」的播放器，Astra 走同一套命令回接，因此全局一列出厂留空。").
+			ui.Text(c, "播放/暂停、上一曲、下一曲等媒体键只能绑到「全局」一列。").
 				FontSize(fz(11.5)).TextColor(t.TextMuted).MaxLines(3)
 		})
 	})

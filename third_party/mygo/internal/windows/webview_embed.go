@@ -132,7 +132,7 @@ func clipVisual(visual uintptr, w, h float32) {
 
 func (s *surface) NewWebView(o *platform.WindowOptions, h platform.WindowHandler) (platform.WebView, error) {
 	b := s.w.b
-	if err := b.startEnvironment(); err != nil {
+	if err := b.startEnvironment(o); err != nil {
 		return nil, err
 	}
 	if s.layer == nil {
@@ -168,12 +168,7 @@ func (s *surface) NewWebView(o *platform.WindowOptions, h platform.WindowHandler
 // createEmbedded asks WebView2 for the composition controller of a web
 // view in a window of native UI, through handler.
 func (w *window) createEmbedded(handler uintptr) uintptr {
-	env3 := queryInterface(w.b.env, &iidICoreWebView2Environment3)
-	if env3 == 0 {
-		return 0x80004002 // E_NOINTERFACE: a runtime older than visual hosting
-	}
-	defer release(env3)
-	return comCall(env3, env3CreateCompositionController, w.host.surface.hwnd, handler)
+	return w.b.createController(storeOf(w.opts.DataStore), w.host.surface.hwnd, true, handler)
 }
 
 // setUpEmbedded connects a web view's composition controller to its
@@ -203,7 +198,9 @@ func (w *window) setUpEmbedded(comp uintptr) uintptr {
 		comCall(args, moveFocusGetReason, uintptr(unsafe.Pointer(&reason)))
 		comCall(args, moveFocusPutHandled, 1)
 		w.tabOut(reason == moveFocusPrevious)
-	}, func(h uintptr) uintptr { return comCall(controller, ctlAddMoveFocusRequested, h, uintptr(unsafe.Pointer(&tok))) })
+	}, func(h uintptr) uintptr {
+		return comCall(controller, ctlAddMoveFocusRequested, h, uintptr(unsafe.Pointer(&tok)))
+	})
 	w.comp3 = queryInterface(comp, &iidICoreWebView2CompositionController3)
 	return controller
 }
@@ -304,7 +301,8 @@ func (s *surface) PlaceWebViews(views []platform.WebViewPlacement) {
 const dcompVisualRemoveAllVisuals = 18
 
 // placeEmbedded shows a web view where the content last showed it, or
-// hides it, once it has its controller.
+// hides it, once it has its controller. It stays hidden while its host
+// is.
 func (w *window) placeEmbedded() {
 	s := w.host.surface
 	if s == nil {
@@ -326,7 +324,7 @@ func (w *window) placeEmbedded() {
 	if w.shown {
 		putBounds(w.controller, rect{int32(fx), int32(fy), int32(px(w.frame.X + w.frame.W)), int32(px(w.frame.Y + w.frame.H))})
 	}
-	comCall(w.controller, ctlPutIsVisible, boolArg(w.shown))
+	comCall(w.controller, ctlPutIsVisible, boolArg(w.shown && !w.host.hidden))
 }
 
 // webViewAt returns the web view that takes the pointer at x, y in the
@@ -345,7 +343,10 @@ func (s *surface) webViewAt(x, y float64) *window {
 // forwardMouse sends a mouse message of the surface on to the web view
 // under the pointer, or that took the press, and reports whether it did:
 // the content then hears only that the pointer moved over it, or that a
-// button went down on it.
+// button went down on it. The wheel over a web view with
+// ScrollToContainer stays the content's, which scrolls as it does over
+// its own elements; a pinch still goes to the page, as on the other
+// platforms.
 func (s *surface) forwardMouse(m uint32, wp, lp uintptr) bool {
 	if s.layer == nil {
 		return false
@@ -367,6 +368,9 @@ func (s *surface) forwardMouse(m uint32, wp, lp uintptr) bool {
 	}
 	if v == nil || v.closed {
 		return false
+	}
+	if (m == wmMouseWheel || m == wmMouseHWheel) && v.opts.ScrollToContainer && !pinching(m, wp) {
+		return false // the content around the web view scrolls
 	}
 	var data uint32
 	keys := uintptr(loword(wp))
@@ -418,6 +422,12 @@ func (s *surface) forwardMouse(m uint32, wp, lp uintptr) bool {
 		}
 	}
 	return true
+}
+
+// pinching reports whether a wheel message is a touchpad's pinch, which
+// Windows sends as scrolling by less than a notch with Ctrl held.
+func pinching(m uint32, wp uintptr) bool {
+	return m == wmMouseWheel && int16(hiword(wp))%120 != 0 && loword(wp)&0x0008 != 0 // MK_CONTROL
 }
 
 // mouseLeft tells the web view the pointer was over that it left.

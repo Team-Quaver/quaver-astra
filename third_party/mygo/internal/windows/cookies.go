@@ -43,13 +43,14 @@ const (
 
 var iidICoreWebView2_2 = guid("9e8f0cf8-e670-4b5e-b2bc-73e061e3184c")
 
-// cookieStore gives the cookie calls the cookie manager of the profile
-// the app's web views share. WebView2 has one only through a web view:
-// a call takes that of a window showing a page, or, before there is one,
-// that of a hidden web view of the app's own window, made for it and
-// closed once windows show pages and no call needs it. A window's first
-// navigation waits for the calls under way when its web view is made, so
-// that a cookie set meanwhile goes along. All of it is main-thread only.
+// cookieStore gives the cookie calls the cookie manager of a profile:
+// the one the app's web views share, or a session's (session.go). WebView2
+// has one only through a web view: a call takes that of a window of the
+// profile showing a page, or, before there is one, that of a hidden web
+// view of the app's own window, made for it and closed once windows show
+// pages and no call needs it. A window's first navigation waits for the
+// calls under way when its web view is made, so that a cookie set
+// meanwhile goes along. All of it is main-thread only.
 type cookieStore struct {
 	controller uintptr // the hidden web view's, once made
 	webview    uintptr
@@ -59,6 +60,8 @@ type cookieStore struct {
 	requests   map[*cookieRequest]struct{}
 	next       uint64       // the number of the next request
 	held       []heldWindow // windows waiting for requests to finish
+
+	data *dataStore // the session's profile, nil for the default one
 }
 
 // heldWindow is a window whose first navigation waits for the requests
@@ -73,6 +76,7 @@ type heldWindow struct {
 // window finishes the requests using it.
 type cookieRequest struct {
 	b        *Backend
+	s        *cookieStore
 	n        uint64
 	window   *window // whose web view it uses, or nil for the hidden one
 	webview  uintptr // borrowed while the request runs
@@ -86,7 +90,7 @@ func (r *cookieRequest) finish(c []platform.Cookie, err error) {
 		return
 	}
 	r.finished = true
-	s := &r.b.cookies
+	s := r.s
 	delete(s.requests, r)
 	release(r.manager)
 	r.webview, r.manager = 0, 0
@@ -106,11 +110,20 @@ func (r *cookieRequest) finish(c []platform.Cookie, err error) {
 	for _, w := range ready {
 		w.becomeReady()
 	}
-	r.b.closeCookieView()
+	r.b.closeCookieView(s)
+}
+
+// cookiesOf returns the cookie calls' state of store, nil for the
+// default profile.
+func (b *Backend) cookiesOf(store platform.DataStore) *cookieStore {
+	if s := storeOf(store); s != nil {
+		return &s.cookies
+	}
+	return &b.cookies
 }
 
 func failCookieRequests(w *window, err error) {
-	for r := range w.b.cookies.requests {
+	for r := range w.b.cookiesOf(w.opts.DataStore).requests {
 		if r.window == w {
 			r.finish(nil, err)
 		}
@@ -120,18 +133,20 @@ func failCookieRequests(w *window, err error) {
 // holdForCookies reports whether w's first navigation must wait for the
 // cookie calls under way, which make it ready when they finish.
 func (b *Backend) holdForCookies(w *window) bool {
-	if len(b.cookies.requests) == 0 {
+	s := b.cookiesOf(w.opts.DataStore)
+	if len(s.requests) == 0 {
 		return false
 	}
-	b.cookies.held = append(b.cookies.held, heldWindow{w, b.cookies.next})
+	s.held = append(s.held, heldWindow{w, s.next})
 	return true
 }
 
-// pageWebView returns a window whose web view shows pages, or nil.
-func (b *Backend) pageWebView() *window {
+// pageWebView returns a window whose web view shows pages of the profile
+// of s, or nil.
+func (b *Backend) pageWebView(s *cookieStore) *window {
 	var selected *window
 	for hwnd, w := range b.windows {
-		if w.closed || w.surface != nil || !w.ready || w.webview == 0 {
+		if w.closed || w.surface != nil || !w.ready || w.webview == 0 || b.cookiesOf(w.opts.DataStore) != s {
 			continue
 		}
 		if selected == nil || hwnd < selected.hwnd {
@@ -157,15 +172,16 @@ func cookieManagerOf(webview uintptr) (uintptr, error) {
 }
 
 // withCookieManager starts a request, which start makes with the cookie
-// manager.
-func (a appController) withCookieManager(done func([]platform.Cookie, error), start func(*cookieRequest)) {
+// manager of the profile of store, nil for the default one.
+func (a appController) withCookieManager(store platform.DataStore, done func([]platform.Cookie, error), start func(*cookieRequest)) {
 	b := a.b
-	if b.cookies.requests == nil {
-		b.cookies.requests = map[*cookieRequest]struct{}{}
+	s := b.cookiesOf(store)
+	if s.requests == nil {
+		s.requests = map[*cookieRequest]struct{}{}
 	}
-	r := &cookieRequest{b: b, n: b.cookies.next, done: done}
-	b.cookies.next++
-	b.cookies.requests[r] = struct{}{}
+	r := &cookieRequest{b: b, s: s, n: s.next, done: done}
+	s.next++
+	s.requests[r] = struct{}{}
 	begin := func(webview uintptr) {
 		manager, err := cookieManagerOf(webview)
 		if err != nil {
@@ -175,12 +191,12 @@ func (a appController) withCookieManager(done func([]platform.Cookie, error), st
 		r.webview, r.manager = webview, manager
 		start(r)
 	}
-	if w := b.pageWebView(); w != nil {
+	if w := b.pageWebView(s); w != nil {
 		r.window = w
 		begin(w.webview)
 		return
 	}
-	b.cookieView(func(err error) {
+	b.cookieView(s, func(err error) {
 		if r.finished {
 			return
 		}
@@ -188,14 +204,13 @@ func (a appController) withCookieManager(done func([]platform.Cookie, error), st
 			r.finish(nil, err)
 			return
 		}
-		begin(b.cookies.webview)
+		begin(s.webview)
 	})
 }
 
-// cookieView runs done once the hidden web view exists, or with why it
-// could not be made; a later call tries again.
-func (b *Backend) cookieView(done func(error)) {
-	s := &b.cookies
+// cookieView runs done once the hidden web view of s exists, or with why
+// it could not be made; a later call tries again.
+func (b *Backend) cookieView(s *cookieStore, done func(error)) {
 	if s.webview != 0 {
 		done(nil)
 		return
@@ -213,13 +228,17 @@ func (b *Backend) cookieView(done func(error)) {
 			fn(err)
 		}
 	}
-	if err := b.startEnvironment(); err != nil {
+	if err := b.startEnvironment(nil); err != nil {
 		finish(err)
 		return
 	}
 	b.whenEnvironment(func() {
 		if b.envErr != nil {
 			finish(b.envErr)
+			return
+		}
+		if s.data != nil && !b.hasProfiles() {
+			finish(errNoProfiles)
 			return
 		}
 		hr := withHandler(func(hr, controller uintptr) {
@@ -238,19 +257,19 @@ func (b *Backend) cookieView(done func(error)) {
 			}
 			s.controller, s.webview = controller, webview
 			finish(nil)
-		}, func(h uintptr) uintptr { return comCall(b.env, envCreateController, b.appHwnd, h) })
+		}, func(h uintptr) uintptr { return b.createController(s.data, b.appHwnd, false, h) })
 		if failed(hr) {
 			finish(hresultError("cookies: CreateCoreWebView2Controller", hr))
 		}
 	})
 }
 
-// closeCookieView closes the hidden web view once windows show pages and
-// no call needs it. It does so from the message loop, not here: a call
-// finishes in a completion handler of the hidden web view, and closing the
-// view from inside one crashes the message loop.
-func (b *Backend) closeCookieView() {
-	s := &b.cookies
+// closeCookieView closes the hidden web view of s once windows of its
+// profile show pages, or its session's store closed, and no call needs
+// it. It does so from the message loop, not here: a call finishes in a
+// completion handler of the hidden web view, and closing the view from
+// inside one crashes the message loop.
+func (b *Backend) closeCookieView(s *cookieStore) {
 	if s.controller == 0 || s.closing {
 		return
 	}
@@ -258,12 +277,23 @@ func (b *Backend) closeCookieView() {
 	postMessage(b.appHwnd, wmAppCookieView, 0, 0)
 }
 
-// closeCookieViewNow closes the hidden web view, as closeCookieView asks,
-// if windows show pages and no call needs it by now.
+// closeCookieViewNow closes the hidden web views, as closeCookieView
+// asks, that no call needs by now, of profiles whose windows show pages or
+// whose sessions' stores closed.
 func (b *Backend) closeCookieViewNow() {
-	s := &b.cookies
+	b.closeCookieViewOf(&b.cookies)
+	for _, d := range b.stores {
+		b.closeCookieViewOf(&d.cookies)
+	}
+	b.dropStores()
+}
+
+func (b *Backend) closeCookieViewOf(s *cookieStore) {
+	if !s.closing {
+		return
+	}
 	s.closing = false
-	if s.controller == 0 || len(s.requests) > 0 || b.pageWebView() == nil {
+	if s.controller == 0 || len(s.requests) > 0 || b.pageWebView(s) == nil && (s.data == nil || !s.data.closed) {
 		return
 	}
 	comCall(s.controller, ctlClose)
@@ -368,8 +398,8 @@ func readWindowsCookie(c uintptr) (platform.Cookie, error) {
 	return out, nil
 }
 
-func (a appController) ListCookies(url string, done func([]platform.Cookie, error)) {
-	a.withCookieManager(done, func(r *cookieRequest) {
+func (a appController) ListCookies(store platform.DataStore, url string, done func([]platform.Cookie, error)) {
+	a.withCookieManager(store, done, func(r *cookieRequest) {
 		r.enumerate(url, func(list uintptr) error {
 			result := []platform.Cookie{}
 			err := cookieEach(list, func(c uintptr) error {
@@ -385,8 +415,8 @@ func (a appController) ListCookies(url string, done func([]platform.Cookie, erro
 	})
 }
 
-func (a appController) SetCookie(c platform.Cookie, done func(error)) {
-	a.withCookieManager(func(_ []platform.Cookie, err error) { done(err) }, func(r *cookieRequest) {
+func (a appController) SetCookie(store platform.DataStore, c platform.Cookie, done func(error)) {
+	a.withCookieManager(store, func(_ []platform.Cookie, err error) { done(err) }, func(r *cookieRequest) {
 		var nativeCookie uintptr
 		hr := comCall(r.manager, cookieManagerCreate, uintptr(unsafe.Pointer(u16(c.Name))), uintptr(unsafe.Pointer(u16(c.Value))), uintptr(unsafe.Pointer(u16(c.Domain))), uintptr(unsafe.Pointer(u16(c.Path))), uintptr(unsafe.Pointer(&nativeCookie)))
 		if failed(hr) || nativeCookie == 0 {
@@ -434,8 +464,8 @@ func (a appController) SetCookie(c platform.Cookie, done func(error)) {
 	})
 }
 
-func (a appController) DeleteCookie(key platform.CookieKey, done func(error)) {
-	a.withCookieManager(func(_ []platform.Cookie, err error) { done(err) }, func(r *cookieRequest) {
+func (a appController) DeleteCookie(store platform.DataStore, key platform.CookieKey, done func(error)) {
+	a.withCookieManager(store, func(_ []platform.Cookie, err error) { done(err) }, func(r *cookieRequest) {
 		// The cookies of key there are now, which must go; a page may set
 		// the cookie again meanwhile.
 		r.stored(func(s storedCookie) bool { return s.CookieKey == key }, func(old map[storedCookie]bool) {
@@ -456,8 +486,8 @@ func (a appController) DeleteCookie(key platform.CookieKey, done func(error)) {
 
 // ClearCookies deletes every cookie of the profile: those there now must
 // go, pages may set new ones meanwhile.
-func (a appController) ClearCookies(done func(error)) {
-	a.withCookieManager(func(_ []platform.Cookie, err error) { done(err) }, func(r *cookieRequest) {
+func (a appController) ClearCookies(store platform.DataStore, done func(error)) {
+	a.withCookieManager(store, func(_ []platform.Cookie, err error) { done(err) }, func(r *cookieRequest) {
 		r.stored(func(storedCookie) bool { return true }, func(old map[storedCookie]bool) {
 			if hr := comCall(r.manager, cookieManagerDeleteAll); failed(hr) {
 				r.finish(nil, hresultError("cookies: DeleteAllCookies", hr))

@@ -58,8 +58,37 @@ type window struct {
 	web      id
 	delegate id
 	ucc      id
-	effect   id
-	parent   *window
+	// effect is the material behind the content (Vibrancy): an
+	// NSVisualEffectView, or an NSGlassEffectView when glass is.
+	effect id
+	glass  bool
+	// provisionalURL is the URL of the navigation started last, which a
+	// load failed before it committed is of when its error doesn't tell.
+	provisionalURL string
+	// radius is the corners the content view is cut to (Flyout.Radius,
+	// WindowOptions.CornerRadius), which the material follows.
+	radius int
+	// systemBacking tells that the content view of a rounded window has
+	// the system's window color, which a layer cannot follow: it is
+	// resolved again when the appearance changes (fillSystemBacking).
+	systemBacking bool
+	parent        *window
+	// hiddenWithParent tells that a child window was ordered out as its
+	// parent hid or miniaturized (hideChildren), at hiddenRank among its
+	// siblings, front to back, to show again with it; orderPending that
+	// orderChildrenLater posted the ordering of the window's children.
+	hiddenWithParent bool
+	hiddenRank       int
+	orderPending     bool
+	// onTop is what AlwaysOnTop asked for, which the window's level
+	// follows, or its parent's when higher (applyLevel). attached tells
+	// that a child window is an AppKit child window of its parent, which
+	// is in full screen, and childrenAttached that the window attaches its
+	// child windows, from entering full screen to leaving it
+	// (attachChildren).
+	onTop            bool
+	attached         bool
+	childrenAttached bool
 	// flyout is how a flyout (WindowOptions.Flyout) was placed last, at
 	// flyoutSize.
 	flyout     platform.Flyout
@@ -95,6 +124,25 @@ type window struct {
 	// accessParent is the element of the content showing a web view,
 	// which assistive technology finds its page in.
 	accessParent id
+	// observesAudio tells that the window observes its web view's
+	// _isPlayingAudio, which WebKit answers (IsAudible).
+	observesAudio bool
+	// observesCapture tells, by platform.CaptureKind, that the window
+	// observes its web view's capture state (captureKeys), which WebKit
+	// answers.
+	observesCapture [3]bool
+	// captureMuted tells, by platform.CaptureKind, the capture that
+	// SetCaptureState muted, until it stops, which SetAudioMuted keeps
+	// apart for the camera and the microphone. WebKit's own changes, which
+	// may be SetAudioMuted's on their way, don't change it.
+	captureMuted [3]bool
+	// pageCacheOff tells that the window turned WebKit's back/forward
+	// cache off as its page left with a video in picture in picture
+	// (leavingPage).
+	pageCacheOff bool
+	// pipActive tells that the page's document has a video in picture in
+	// picture, as its pipScript last said.
+	pipActive bool
 }
 
 func (b *Backend) NewWindow(o *platform.WindowOptions, h platform.WindowHandler) (platform.Window, error) {
@@ -187,10 +235,13 @@ func (w *window) create() {
 		send(w.win, "setHidesOnDeactivate:", 0)
 	}
 	send(w.win, "setCollectionBehavior:", uintptr(behavior))
-	if o.AlwaysOnTop {
-		send(w.win, "setLevel:", nsFloatingWindowLevel)
-	}
+	// A child window takes its parent's level when that is higher.
+	w.onTop = o.AlwaysOnTop
+	w.applyLevel()
 	w.fillWindow(content)
+	if o.Frameless {
+		w.roundContent(o.CornerRadius)
+	}
 
 	if o.Center {
 		send(w.win, "center")
@@ -243,31 +294,80 @@ func (w *window) createFlyout() {
 		send(w.win, "setLevel:", nsPopUpMenuWindowLevel)
 	}
 	w.fillWindow(content)
-	w.roundFlyout()
+	w.roundContent(w.flyout.Radius)
 	w.register()
 	w.PlaceFlyout(w.flyout, w.flyoutSize)
 }
 
-// roundFlyout cuts a flyout's content view, and the material in it, to
-// the corners of Flyout.Radius: the window is clear, so its shadow, made
-// from what it draws, follows them.
-func (w *window) roundFlyout() {
-	if w.flyout.Radius <= 0 {
+// roundContent cuts the content view, and the material in it, to corners
+// of radius, a flyout's (Flyout.Radius) or a frameless window's
+// (WindowOptions.CornerRadius). The window is made clear, its color moved
+// to the content view, which is cut to them, so that nothing fills the
+// corners, and its shadow, made from what it draws, follows them.
+func (w *window) roundContent(radius int) {
+	if radius <= 0 {
 		return
 	}
+	w.radius = radius
 	send(w.view, "setWantsLayer:", 1)
 	layer := send(w.view, "layer")
-	msgSetFloat(layer, sel("setCornerRadius:"), float64(w.flyout.Radius))
+	msgSetFloat(layer, sel("setCornerRadius:"), float64(radius))
 	send(layer, "setCornerCurve:", uintptr(nsString("continuous")))
 	send(layer, "setMasksToBounds:", 1)
-	if w.effect != 0 {
-		send(w.effect, "setWantsLayer:", 1)
-		el := send(w.effect, "layer")
-		msgSetFloat(el, sel("setCornerRadius:"), float64(w.flyout.Radius))
-		send(el, "setCornerCurve:", uintptr(nsString("continuous")))
-		send(el, "setMasksToBounds:", 1)
+	if sendBool(w.win, "isOpaque") {
+		if w.opts.BackgroundColor == nil {
+			w.systemBacking = true
+			w.fillSystemBacking()
+		} else {
+			send(layer, "setBackgroundColor:", uintptr(send(send(w.win, "backgroundColor"), "CGColor")))
+		}
+		send(w.win, "setOpaque:", 0)
+		send(w.win, "setBackgroundColor:", uintptr(send(class("NSColor"), "clearColor")))
 	}
+	w.roundEffect()
 	send(w.win, "invalidateShadow")
+}
+
+// fillSystemBacking gives the content view of a rounded window without a
+// BackgroundColor the window color of the system, as the app's appearance
+// draws it. A layer's color is fixed once set, where the window's followed
+// the appearance: refreshSystemBackings sets it again when that changes.
+func (w *window) fillSystemBacking() {
+	withPool(func() {
+		appearance := class("NSAppearance")
+		prev := send(appearance, "currentAppearance")
+		send(appearance, "setCurrentAppearance:", uintptr(send(w.b.app, "effectiveAppearance")))
+		c := send(send(class("NSColor"), "windowBackgroundColor"), "CGColor")
+		send(send(w.view, "layer"), "setBackgroundColor:", uintptr(c))
+		send(appearance, "setCurrentAppearance:", uintptr(prev))
+	})
+}
+
+// refreshSystemBackings resolves the window color of rounded windows
+// anew, once the appearance or the system's colors changed.
+func (b *Backend) refreshSystemBackings() {
+	for _, w := range b.byNSWindow {
+		if w.systemBacking {
+			w.fillSystemBacking()
+		}
+	}
+}
+
+// roundEffect cuts the material to the content view's corners. The glass
+// draws its rim along its own corners, which it rounds itself.
+func (w *window) roundEffect() {
+	if w.effect == 0 || w.radius <= 0 {
+		return
+	}
+	if w.glass {
+		msgSetFloat(w.effect, sel("setCornerRadius:"), float64(w.radius))
+		return
+	}
+	send(w.effect, "setWantsLayer:", 1)
+	el := send(w.effect, "layer")
+	msgSetFloat(el, sel("setCornerRadius:"), float64(w.radius))
+	send(el, "setCornerCurve:", uintptr(nsString("continuous")))
+	send(el, "setMasksToBounds:", 1)
 }
 
 // fillWindow gives a new window its look and its web view or surface.
@@ -361,6 +461,9 @@ func (w *window) createWebView(content NSRect) {
 		for _, s := range o.Schemes {
 			send(cfg, "setURLSchemeHandler:forURLScheme:", uintptr(schemeHandler()), uintptr(nsString(s)))
 		}
+		if o.DataStore != nil { // a session's (session.go)
+			send(cfg, "setWebsiteDataStore:", uintptr(websiteDataStore(o.DataStore)))
+		}
 	}
 	prefs := send(cfg, "preferences")
 	send(prefs, "setValue:forKey:", uintptr(nsBool(o.DevTools)), uintptr(nsString("developerExtrasEnabled")))
@@ -374,11 +477,26 @@ func (w *window) createWebView(content NSRect) {
 	if respondsTo(prefs, "setTabFocusesLinks:") {
 		send(prefs, "setTabFocusesLinks:", boolArg(o.TabFocusesLinks))
 	}
+	if o.NoBackgroundThrottling || o.Native != 0 {
+		setBackgroundThrottling(cfg, prefs, !o.NoBackgroundThrottling, o.Native != 0)
+		// It may have given a window.open window a copy of its opener's.
+		prefs = send(cfg, "preferences")
+	}
+	// Picture in picture, which WKWebView keeps to Safari: the button of
+	// videos' controls, their context menu's item and
+	// requestPictureInPicture().
+	if respondsTo(prefs, "_setAllowsPictureInPictureMediaPlayback:") {
+		send(prefs, "_setAllowsPictureInPictureMediaPlayback:", boolArg(o.PictureInPicture))
+	}
+	setAutoplay(cfg, o.Autoplay, o.Native != 0)
 
 	// Every window gets its own content controller so messages, scripts and
 	// the bridge configuration never leak between windows.
 	w.ucc = alloc("WKUserContentController")
 	send(w.ucc, "addScriptMessageHandler:name:", uintptr(w.delegate), uintptr(nsString("mygo")))
+	if o.PictureInPicture {
+		send(w.ucc, "addScriptMessageHandler:name:", uintptr(w.delegate), uintptr(nsString(pipHandler)))
+	}
 	w.addUserScripts(o.Zoom)
 	send(cfg, "setUserContentController:", uintptr(w.ucc))
 
@@ -409,6 +527,17 @@ func (w *window) createWebView(content NSRect) {
 	if respondsTo(w.web, "setInspectable:") {
 		send(w.web, "setInspectable:", boolArg(o.DevTools))
 	}
+	if o.NoBackgroundThrottling && respondsTo(w.web, "_setWindowOcclusionDetectionEnabled:") {
+		// A window behind others counts as visible.
+		send(w.web, "_setWindowOcclusionDetectionEnabled:", 0)
+	}
+	// Both are off in a new WKWebView.
+	if o.SwipeNavigation {
+		send(w.web, "setAllowsBackForwardNavigationGestures:", 1)
+	}
+	if o.PinchZoom {
+		send(w.web, "setAllowsMagnification:", 1)
+	}
 	if o.UserAgent != "" {
 		ua := o.UserAgent
 		if o.UserAgentSuffix != "" {
@@ -420,6 +549,111 @@ func (w *window) createWebView(content NSRect) {
 		msgSetFloat(w.web, sel("setPageZoom:"), o.Zoom)
 	}
 	send(w.web, "addObserver:forKeyPath:options:context:", uintptr(w.delegate), uintptr(nsString("title")), 1, 0)
+	if respondsTo(w.web, "_isPlayingAudio") {
+		// WebKit tells its changes with willChangeValueForKey: and
+		// didChangeValueForKey:, as Safari's tabs' speaker icons hear.
+		w.observesAudio = true
+		send(w.web, "addObserver:forKeyPath:options:context:", uintptr(w.delegate), uintptr(nsString("_isPlayingAudio")), 0, 0)
+	}
+	// WebKit tells their changes as for _isPlayingAudio.
+	for kind, key := range captureKeys {
+		if respondsTo(w.web, key) {
+			w.observesCapture[kind] = true
+			send(w.web, "addObserver:forKeyPath:options:context:", uintptr(w.delegate), uintptr(nsString(key)), 0, 0)
+		}
+	}
+}
+
+// throttlingPrefs are the preferences with which WebKit slows down a page
+// it can't see, and the value of each that keeps the page running
+// (PageOptions.BackgroundThrottling): the public inactiveSchedulingPolicy,
+// whose WKInactiveSchedulingPolicyNone keeps the web content process of a
+// window behind others from being suspended (macOS 14+), and private
+// ones, looked up with respondsToSelector:, that throttle a hidden page's
+// timers to once a second, suspend its CSS animations and let App Nap
+// slow down its process.
+var throttlingPrefs = [...]struct {
+	get, set string
+	off      uintptr
+	boolean  bool
+}{
+	{"inactiveSchedulingPolicy", "setInactiveSchedulingPolicy:", 2, false},
+	{"_hiddenPageDOMTimerThrottlingEnabled", "_setHiddenPageDOMTimerThrottlingEnabled:", 0, true},
+	{"_hiddenPageCSSAnimationSuspensionEnabled", "_setHiddenPageCSSAnimationSuspensionEnabled:", 0, true},
+	{"_pageVisibilityBasedProcessSuppressionEnabled", "_setPageVisibilityBasedProcessSuppressionEnabled:", 0, true},
+}
+
+// setBackgroundThrottling sets throttlingPrefs in prefs, the preferences
+// of cfg: to WebKit's defaults when throttle, else to the values that keep
+// a hidden page running. The preferences of a configuration window.open()
+// hands over (shared) are the opener's: a window that wants them
+// otherwise gets a copy, which leaves the opener's as they are.
+func setBackgroundThrottling(cfg, prefs id, throttle, shared bool) {
+	var defaults id
+	if throttle {
+		defaults = alloc("WKPreferences")
+		defer release(defaults)
+	}
+	get := func(o id, p int) uintptr {
+		v := uintptr(send(o, throttlingPrefs[p].get))
+		if throttlingPrefs[p].boolean {
+			v = boolArg(byte(v) != 0)
+		}
+		return v
+	}
+	for i, p := range throttlingPrefs {
+		if !respondsTo(prefs, p.set) || !respondsTo(prefs, p.get) {
+			continue
+		}
+		v := p.off
+		if throttle {
+			v = get(defaults, i)
+		}
+		if get(prefs, i) == v {
+			continue
+		}
+		if shared && respondsTo(prefs, "copyWithZone:") {
+			shared = false
+			prefs = send(prefs, "copy")
+			send(cfg, "setPreferences:", uintptr(prefs))
+			release(prefs) // the configuration keeps it
+		}
+		send(prefs, p.set, v)
+	}
+}
+
+// setAutoplay lets the page of cfg play audible media without a user
+// gesture (PageOptions.Autoplay): no media type requires the user's action
+// (WKAudiovisualMediaTypeNone). A configuration window.open() handed over
+// (opened) is a copy of the opener's, which a window that doesn't ask gets
+// WebKit's default back from. The property is macOS 10.12's, and still
+// looked up with respondsToSelector:.
+func setAutoplay(cfg id, allow, opened bool) {
+	const set = "setMediaTypesRequiringUserActionForPlayback:"
+	switch {
+	case !respondsTo(cfg, set):
+	case allow:
+		send(cfg, set, 0)
+	case opened:
+		defaults := alloc("WKWebViewConfiguration")
+		send(cfg, set, uintptr(send(defaults, "mediaTypesRequiringUserActionForPlayback")))
+		release(defaults)
+	}
+}
+
+// stopObserving removes the key-value observers createWebView added.
+func (w *window) stopObserving() {
+	send(w.web, "removeObserver:forKeyPath:", uintptr(w.delegate), uintptr(nsString("title")))
+	if w.observesAudio {
+		w.observesAudio = false
+		send(w.web, "removeObserver:forKeyPath:", uintptr(w.delegate), uintptr(nsString("_isPlayingAudio")))
+	}
+	for kind, key := range captureKeys {
+		if w.observesCapture[kind] {
+			w.observesCapture[kind] = false
+			send(w.web, "removeObserver:forKeyPath:", uintptr(w.delegate), uintptr(nsString(key)))
+		}
+	}
 }
 
 func nsColor(c platform.Color) id {
@@ -434,12 +668,19 @@ func (w *window) cleanup() {
 	}
 	w.closeWebViews()
 	w.closed = true
+	if contextWindow == w {
+		contextWindow = nil
+	}
+	w.releaseChildren()
 	b := w.b
-	send(w.web, "removeObserver:forKeyPath:", uintptr(w.delegate), uintptr(nsString("title")))
+	w.stopObserving()
 	if w.trafficLights != nil {
 		send(w.win, "removeObserver:forKeyPath:", uintptr(w.delegate), uintptr(nsString("effectiveAppearance")))
 	}
 	send(w.ucc, "removeScriptMessageHandlerForName:", uintptr(nsString("mygo")))
+	if w.opts.PictureInPicture {
+		send(w.ucc, "removeScriptMessageHandlerForName:", uintptr(nsString(pipHandler)))
+	}
 	send(w.ucc, "removeAllUserScripts")
 	send(w.web, "stopLoading")
 	send(w.web, "setNavigationDelegate:", 0)
@@ -455,8 +696,7 @@ func (w *window) cleanup() {
 	delete(b.byDelegate, w.delegate)
 	delete(b.byWebView, w.web)
 	delete(b.byNSWindow, w.win)
-	release(w.lastMouseDown)
-	w.lastMouseDown = 0
+	w.forgetDrag()
 	release(w.ucc)
 	for _, j := range printJobs {
 		if j.w == w && j.cb != nil {
@@ -574,14 +814,28 @@ func (w *window) IsMaximizable() bool {
 }
 
 func (w *window) SetAlwaysOnTop(v bool) {
-	level := uintptr(nsNormalWindowLevel)
-	if v {
-		level = nsFloatingWindowLevel
+	w.onTop = v
+	if w.host != nil || w.opts.Flyout != nil {
+		level := uintptr(nsNormalWindowLevel)
+		if v {
+			level = nsFloatingWindowLevel
+		}
+		send(w.win, "setLevel:", level)
+		return
 	}
-	send(w.win, "setLevel:", level)
+	// Its child windows follow it to its level (applyLevel).
+	w.applyLevel()
+	if w.onScreen() {
+		w.orderChildrenLater()
+	}
 }
 
-func (w *window) IsAlwaysOnTop() bool { return sendInt(w.win, "level") != nsNormalWindowLevel }
+func (w *window) IsAlwaysOnTop() bool {
+	if w.isChild() {
+		return w.onTop // its level is its parent's when that is higher
+	}
+	return sendInt(w.win, "level") != nsNormalWindowLevel
+}
 
 func (w *window) Show() {
 	if w.popover != 0 {
@@ -597,10 +851,7 @@ func (w *window) Show() {
 		send(w.parent.win, "beginSheet:completionHandler:", uintptr(w.win), 0)
 		return
 	}
-	send(w.win, "makeKeyAndOrderFront:", 0)
-	if w.parent != nil && !w.parent.closed {
-		send(w.parent.win, "addChildWindow:ordered:", uintptr(w.win), 1)
-	}
+	w.showAboveParent(true)
 	if !w.opts.Panel {
 		send(w.b.app, "activateIgnoringOtherApps:", 1)
 	}
@@ -761,10 +1012,7 @@ func (w *window) ShowInactive() {
 		w.showFlyout(false)
 		return
 	}
-	send(w.win, "orderFrontRegardless")
-	if w.parent != nil && !w.parent.closed {
-		send(w.parent.win, "addChildWindow:ordered:", uintptr(w.win), 1)
-	}
+	w.showAboveParent(false)
 }
 
 func (w *window) Hide() {
@@ -781,7 +1029,11 @@ func (w *window) Hide() {
 		send(w.parent.win, "endSheet:", uintptr(w.win))
 		return
 	}
+	w.hiddenWithParent = false
+	// Attached, AppKit would show it again with its parent.
+	w.detach()
 	send(w.win, "orderOut:", 0)
+	w.hideChildren()
 }
 
 func (w *window) IsVisible() bool {
@@ -802,6 +1054,7 @@ func (w *window) Focus() {
 		w.Show() // the key window only when it takes the keyboard
 		return
 	}
+	w.hiddenWithParent = false
 	send(w.win, "makeKeyAndOrderFront:", 0)
 	if !w.opts.Panel {
 		send(w.b.app, "activateIgnoringOtherApps:", 1)
@@ -846,10 +1099,15 @@ func (w *window) Center()            { send(w.win, "center") }
 
 func (w *window) SetBackgroundColor(c platform.Color) {
 	withPool(func() {
-		if w.host != nil {
+		switch {
+		case w.host != nil:
 			// A web view's window is its host's.
 			w.clipBackground(c)
-		} else {
+		case w.radius > 0:
+			// The window stays clear, its corners cut off (roundContent).
+			w.systemBacking = false
+			send(send(w.view, "layer"), "setBackgroundColor:", uintptr(send(nsColor(c), "CGColor")))
+		default:
 			send(w.win, "setBackgroundColor:", uintptr(nsColor(c)))
 		}
 		send(w.web, "setValue:forKey:", uintptr(nsBool(false)), uintptr(nsString("drawsBackground")))
@@ -914,6 +1172,14 @@ func (w *window) SetContentProtection(v bool) {
 	send(w.win, "setSharingType:", sharing)
 }
 
+// glassStyles maps the Liquid Glass vibrancies to NSGlassEffectViewStyle,
+// and to the NSVisualEffectMaterial closest to each before macOS 26, which
+// has no NSGlassEffectView.
+var glassStyles = map[string]struct{ style, material uintptr }{
+	"glass":       {0, 6},  // regular; popover
+	"glass-clear": {1, 13}, // clear; HUD
+}
+
 // vibrancyMaterials maps mygo.Vibrancy values to NSVisualEffectMaterial.
 var vibrancyMaterials = map[string]uintptr{
 	"titlebar": 3, "selection": 4, "menu": 5, "popover": 6, "sidebar": 7, "header": 10,
@@ -926,40 +1192,76 @@ var vibrancyMaterials = map[string]uintptr{
 func (w *window) SetVibrancy(material string) {
 	withPool(func() {
 		m, ok := vibrancyMaterials[material]
-		if !ok {
+		g, isGlass := glassStyles[material]
+		glass := isGlass && hasClass("NSGlassEffectView")
+		if isGlass && !glass {
+			m, ok = g.material, true
+		}
+		if !ok && !glass {
 			if material != "" {
 				log.Printf("mygo: unknown vibrancy %q", material)
 			}
-			if w.effect != 0 {
-				send(w.effect, "removeFromSuperview")
-				release(w.effect)
-				w.effect = 0
-			}
+			w.removeEffect()
 			return
 		}
+		if w.effect != 0 && w.glass != glass {
+			w.removeEffect()
+		}
 		if w.effect == 0 {
-			w.effect = msgInitRect(send(class("NSVisualEffectView"), "alloc"), sel("initWithFrame:"), msgRect(w.view, sel("bounds")))
-			send(w.effect, "setBlendingMode:", 0) // NSVisualEffectBlendingModeBehindWindow
-			send(w.effect, "setState:", 1)        // NSVisualEffectStateActive
+			cls := "NSVisualEffectView"
+			if glass {
+				cls = "NSGlassEffectView"
+			}
+			w.effect = msgInitRect(send(class(cls), "alloc"), sel("initWithFrame:"), msgRect(w.view, sel("bounds")))
+			w.glass = glass
+			if !glass {
+				send(w.effect, "setBlendingMode:", 0) // NSVisualEffectBlendingModeBehindWindow
+				send(w.effect, "setState:", 1)        // NSVisualEffectStateActive
+			}
 			send(w.effect, "setAutoresizingMask:", nsViewWidthHeightSizable)
 			// Behind the page and a docked inspector.
 			send(w.view, "addSubview:positioned:relativeTo:", uintptr(w.effect), ^uintptr(0), 0) // NSWindowBelow
 			send(w.web, "setValue:forKey:", uintptr(nsBool(false)), uintptr(nsString("drawsBackground")))
+			w.roundEffect()
 		}
-		send(w.effect, "setMaterial:", m)
+		if glass {
+			send(w.effect, "setStyle:", g.style)
+		} else {
+			send(w.effect, "setMaterial:", m)
+		}
 	})
+}
+
+// SetActiveAppearance has the window drawn as the main window of the app
+// in front, whichever is, through AppKit's own, private
+// _setForceMainAppearance:. Without it, a window that is not draws its glass
+// frosted, the clear style too, as a panel floating over another app always
+// is. NSVisualEffectView has a public setting for it (its state, which
+// SetVibrancy sets); NSGlassEffectView has none.
+func (w *window) SetActiveAppearance(v bool) {
+	if respondsTo(w.win, "_setForceMainAppearance:") {
+		send(w.win, "_setForceMainAppearance:", boolArg(v))
+	}
+}
+
+// SetWindowButtonsTheme does nothing: the traffic lights look the same in
+// both appearances, and an appearance of the window's own would change its
+// page's too.
+func (w *window) SetWindowButtonsTheme(string) {}
+
+// removeEffect takes the material out of the window.
+func (w *window) removeEffect() {
+	if w.effect != 0 {
+		send(w.effect, "removeFromSuperview")
+		release(w.effect)
+		w.effect, w.glass = 0, false
+	}
 }
 
 func (w *window) SetMenu(*platform.Menu) {}
 
 // SetAutoHideMenu does nothing: the menu bar belongs to the application.
 func (w *window) SetAutoHideMenu(bool) {}
-
-func (w *window) StartDrag() {
-	if w.lastMouseDown != 0 {
-		send(w.win, "performWindowDragWithEvent:", uintptr(w.lastMouseDown))
-	}
-}
 
 // hiddenTitleBar reports a TitleBarStyle that hides the title bar but keeps
 // the traffic lights.
@@ -1129,6 +1431,9 @@ func (w *window) addUserScripts(zoom float64) {
 		}
 		add(s.Source, injection, !s.AllFrames)
 	}
+	if w.opts.PictureInPicture {
+		add(pipScript, 0, true)
+	}
 	if w.hiddenTitleBar() {
 		// After the bridge, which it tells: the room of the traffic lights.
 		add(bridge.TitleBarScript(w.TitleBar(), zoom), 0, true)
@@ -1200,6 +1505,232 @@ func (w *window) UserAgent() string {
 		}
 	})
 	return s
+}
+
+// ProcessID returns the web content process of the page from WebKit's
+// private -[WKWebView _webProcessIdentifier] (a pid_t), 0 when WebKit
+// doesn't answer it or runs no process for the page yet.
+func (w *window) ProcessID() int {
+	if !respondsTo(w.web, "_webProcessIdentifier") {
+		return 0
+	}
+	return int(int32(send(w.web, "_webProcessIdentifier")))
+}
+
+// IsAudible reports WebKit's private -[WKWebView _isPlayingAudio]
+// (macOS 10.13.4+), false when WebKit doesn't answer it.
+func (w *window) IsAudible() bool {
+	return respondsTo(w.web, "_isPlayingAudio") && sendBool(w.web, "_isPlayingAudio")
+}
+
+// wkMediaAudioMuted is _WKMediaAudioMuted, the bit of _WKMediaMutedState
+// (WKWebViewPrivate.h) that mutes the page's sound; the others mute its
+// capture devices, and are kept as they are.
+const wkMediaAudioMuted = 1 << 0
+
+// canMute reports whether WebKit answers the private selectors that mute
+// a page, as Safari mutes a tab (macOS 10.13+).
+func (w *window) canMute() bool {
+	return respondsTo(w.web, "_mediaMutedState") && respondsTo(w.web, "_setPageMuted:")
+}
+
+// wkMediaCaptureDevicesMuted is _WKMediaCaptureDevicesMuted, the bit of
+// _WKMediaMutedState that _mediaMutedState sets when the camera or the
+// microphone is muted, and with which _setPageMuted: mutes both.
+const wkMediaCaptureDevicesMuted = 1 << 1
+
+// SetAudioMuted sets the _WKMediaAudioMuted bit of the page's
+// _mediaMutedState with _setPageMuted:, or does nothing when WebKit
+// doesn't answer them. The other bits are kept, but one bit stands for
+// the camera and the microphone: when only one of them is muted
+// (captureMuted), the other is unmuted again after _setPageMuted: muted
+// both, so that the muted one is never live in between.
+func (w *window) SetAudioMuted(v bool) {
+	if !w.canMute() {
+		return
+	}
+	state := uintptr(send(w.web, "_mediaMutedState"))
+	if v {
+		state |= wkMediaAudioMuted
+	} else {
+		state &^= wkMediaAudioMuted
+	}
+	send(w.web, "_setPageMuted:", state)
+	camera, microphone := w.captureMuted[platform.CaptureCamera], w.captureMuted[platform.CaptureMicrophone]
+	if state&wkMediaCaptureDevicesMuted != 0 && camera != microphone {
+		live := platform.CaptureCamera
+		if camera {
+			live = platform.CaptureMicrophone
+		}
+		w.setCaptureState(live, platform.CaptureActive)
+	}
+}
+
+func (w *window) IsAudioMuted() bool {
+	return w.canMute() && uintptr(send(w.web, "_mediaMutedState"))&wkMediaAudioMuted != 0
+}
+
+// captureKeys are the properties of WKWebView that tell the page's
+// capture, by platform.CaptureKind: the camera's and the microphone's
+// (macOS 12+), and WebKit's private _displayCaptureState (macOS 13+), all
+// key-value observable. Their values are WKMediaCaptureState's and
+// WKDisplayCaptureState's, none, active and muted, as
+// platform.CaptureState's.
+var captureKeys = [...]string{"cameraCaptureState", "microphoneCaptureState", "_displayCaptureState"}
+
+// captureSetters change the capture of captureKeys: their completion
+// handler may be nil.
+var captureSetters = [...]string{
+	"setCameraCaptureState:completionHandler:",
+	"setMicrophoneCaptureState:completionHandler:",
+	"_setDisplayCaptureState:completionHandler:",
+}
+
+// CaptureState reports the captureKeys property of kind, CaptureNone when
+// WebKit doesn't answer it.
+func (w *window) CaptureState(kind platform.CaptureKind) platform.CaptureState {
+	if !respondsTo(w.web, captureKeys[kind]) {
+		return platform.CaptureNone
+	}
+	return platform.CaptureState(send(w.web, captureKeys[kind]))
+}
+
+// SetCaptureState changes the page's capture of kind with its
+// captureSetters method, while the page captures such a device, as
+// WebKitGTK's setters do: WebKit would otherwise keep a mute set before
+// the page captures. It does nothing when WebKit doesn't answer it.
+func (w *window) SetCaptureState(kind platform.CaptureKind, state platform.CaptureState) {
+	if w.CaptureState(kind) == platform.CaptureNone {
+		return
+	}
+	w.captureMuted[kind] = state == platform.CaptureMuted
+	w.setCaptureState(kind, state)
+}
+
+func (w *window) setCaptureState(kind platform.CaptureKind, state platform.CaptureState) {
+	if respondsTo(w.web, captureSetters[kind]) {
+		send(w.web, captureSetters[kind], uintptr(state), 0)
+	}
+}
+
+// captureChanged tells the handler of the page's capture of kind, which
+// WebKit observed changing.
+func (w *window) captureChanged(kind platform.CaptureKind) {
+	state := w.CaptureState(kind)
+	if state == platform.CaptureNone {
+		w.captureMuted[kind] = false
+	}
+	w.h.CaptureStateChanged(kind, state)
+}
+
+// TogglePictureInPicture moves the page's video into picture in picture,
+// or back, with WebKit's private -[WKWebView _togglePictureInPicture]
+// when _canTogglePictureInPicture says it can, else with the page's
+// script, which evaluateJavaScript runs as a user's gesture: it says no on
+// a Mac without a Touch Bar (a MacBook Air on macOS 27), where the script
+// works. It does nothing in a page without the option, where WebKit
+// refuses picture in picture.
+func (w *window) TogglePictureInPicture() {
+	if !w.opts.PictureInPicture {
+		return
+	}
+	if respondsTo(w.web, "_canTogglePictureInPicture") && respondsTo(w.web, "_togglePictureInPicture") &&
+		sendBool(w.web, "_canTogglePictureInPicture") {
+		send(w.web, "_togglePictureInPicture")
+		return
+	}
+	w.Eval(platform.TogglePictureInPicture)
+}
+
+// isPictureInPictureActive reports WebKit's private
+// -[WKWebView _isPictureInPictureActive], false when WebKit doesn't
+// answer it.
+func (w *window) isPictureInPictureActive() bool {
+	return respondsTo(w.web, "_isPictureInPictureActive") && sendBool(w.web, "_isPictureInPictureActive")
+}
+
+// PictureInPictureActive tells WebKit's _isPictureInPictureActive, which
+// knows of picture in picture through its media controls only, else the
+// page's document.pictureInPictureElement, which the script's sets.
+func (w *window) PictureInPictureActive(cb func(bool)) {
+	if w.isPictureInPictureActive() || !w.opts.PictureInPicture || w.closed {
+		cb(w.isPictureInPictureActive())
+		return
+	}
+	w.CallAsyncFunction(platform.PictureInPictureActive, func(s string, err error) {
+		cb(err == nil && s == "true")
+	})
+}
+
+// pipHandler is the name of the script message handler that pipScript
+// tells whether the page's document has a video in picture in picture.
+const pipHandler = "mygoPictureInPicture"
+
+// pipScript tells pipHandler, as the page shows and as a video of its
+// document goes into picture in picture or out of it, whether one is in.
+// WebKit's _isPictureInPictureActive knows only of its media controls'
+// picture in picture, not of requestPictureInPicture().
+const pipScript = `(() => {
+	const h = window.webkit.messageHandlers.` + pipHandler + `;
+	const tell = () => h.postMessage(String(!!document.pictureInPictureElement));
+	addEventListener("enterpictureinpicture", tell, true);
+	addEventListener("leavepictureinpicture", tell, true);
+	addEventListener("pageshow", tell);
+})()`
+
+// leavingPage runs as the page is about to navigate. WebKit restores a
+// page from its back/forward cache believing that the video it had in
+// picture in picture still is, so a page leaving with one is not kept
+// there: WebKit's private -[WKPreferences _setUsesPageCache:] turns the
+// cache off until a page leaves without one. Pages of windows without
+// PictureInPicture are cached as usual.
+func (w *window) leavingPage() {
+	if !w.opts.PictureInPicture || w.closed {
+		return
+	}
+	off := w.pipActive || w.isPictureInPictureActive()
+	if off == w.pageCacheOff {
+		return
+	}
+	prefs := send(send(w.web, "configuration"), "preferences")
+	if !respondsTo(prefs, "_setUsesPageCache:") {
+		return
+	}
+	w.pageCacheOff = off
+	send(prefs, "_setUsesPageCache:", boolArg(!off))
+}
+
+// SessionState returns WKWebView's interactionState (macOS 12+), which
+// is NSData of WebKit's own encoding of the back/forward list (its
+// _sessionStateData, which Safari keeps), nil before macOS 12 or when
+// WebKit gives something else.
+func (w *window) SessionState() []byte {
+	if !respondsTo(w.web, "interactionState") {
+		return nil
+	}
+	var b []byte
+	withPool(func() {
+		s := send(w.web, "interactionState")
+		if s != 0 && sendBool(s, "isKindOfClass:", uintptr(class("NSData"))) {
+			b = goBytes(s)
+		}
+	})
+	return b
+}
+
+// RestoreSessionState sets WKWebView's interactionState, which restores
+// the back/forward list and goes to its current item. WebKit ignores data
+// it can't decode, which leaves the list without a current item.
+func (w *window) RestoreSessionState(state []byte) bool {
+	if !respondsTo(w.web, "setInteractionState:") {
+		return false
+	}
+	var ok bool
+	withPool(func() {
+		send(w.web, "setInteractionState:", uintptr(nsData(state)))
+		ok = send(send(w.web, "backForwardList"), "currentItem") != 0
+	})
+	return ok
 }
 
 func (w *window) inspector() id {
@@ -1436,6 +1967,7 @@ func registerWindowClasses() {
 		}
 	}
 	classDef("MyGoWindow", "NSWindow", nil, []objc.MethodDef{
+		method("orderWindow:relativeTo:", orderWindowRelativeTo("MyGoWindow")),
 		method("canBecomeKeyWindow", func(self id, _ objc.SEL) bool { return true }),
 		method("canBecomeMainWindow", func(self id, _ objc.SEL) bool { return true }),
 		method("selectKeyViewFollowingView:", selectKeyView("MyGoWindow", false)),
@@ -1445,6 +1977,7 @@ func registerWindowClasses() {
 	// A panel (WindowOptions.Panel) takes the keyboard, without
 	// activating the app, and is never the main window.
 	classDef("MyGoPanel", "NSPanel", nil, []objc.MethodDef{
+		method("orderWindow:relativeTo:", orderWindowRelativeTo("MyGoPanel")),
 		method("canBecomeKeyWindow", func(self id, _ objc.SEL) bool { return true }),
 		method("canBecomeMainWindow", func(self id, _ objc.SEL) bool { return false }),
 		// NSPanel closes on an Escape its content leaves (cancelOperation:),
@@ -1468,16 +2001,14 @@ func registerWindowClasses() {
 	})
 
 	registerClipViewClass()
-	classDef("MyGoWebView", "WKWebView", nil, append(webViewMethods(), []objc.MethodDef{
+	classDef("MyGoWebView", "WKWebView", nil, append(append(webViewMethods(), contextMenuMethods()...), []objc.MethodDef{
 		method("mouseDown:", func(self id, cmd objc.SEL, ev id) {
 			if w := theBackend.byWebView[self]; w != nil {
 				if w.host != nil {
 					w.pressed(ev, 0)
 				}
 				// A web view's page drags the window it is in (StartDrag).
-				w = w.top()
-				release(w.lastMouseDown)
-				w.lastMouseDown = retain(ev)
+				w.top().pressedLeft(ev)
 			}
 			sendSuper(self, "MyGoWebView", cmd, uintptr(ev))
 		}),
@@ -1522,6 +2053,7 @@ func registerWindowClasses() {
 			}),
 			method("windowDidBecomeKey:", func(self id, _ objc.SEL, n id) {
 				if w := b().windowFor(self); w != nil {
+					w.orderChildrenLater()
 					w.h.Focused()
 					w.surfaceKeyChanged(true)
 				}
@@ -1555,6 +2087,13 @@ func registerWindowClasses() {
 				}
 				w.h.Resized()
 			}),
+			method("windowWillMove:", func(self id, _ objc.SEL, n id) {
+				// The window server begins to move the window: a drag
+				// region's press is its (window_drag.go).
+				if w := b().windowFor(self); w != nil {
+					theDrag.willMove(w.win)
+				}
+			}),
 			method("windowDidMove:", func(self id, _ objc.SEL, n id) {
 				if w := b().windowFor(self); w != nil {
 					w.h.Moved()
@@ -1567,11 +2106,13 @@ func registerWindowClasses() {
 			}),
 			method("windowDidMiniaturize:", func(self id, _ objc.SEL, n id) {
 				if w := b().windowFor(self); w != nil {
+					w.hideChildren()
 					w.h.Minimized()
 				}
 			}),
 			method("windowDidDeminiaturize:", func(self id, _ objc.SEL, n id) {
 				if w := b().windowFor(self); w != nil {
+					w.orderChildrenLater()
 					w.h.Restored()
 				}
 			}),
@@ -1585,6 +2126,19 @@ func registerWindowClasses() {
 				}
 				return proposed
 			}),
+			// The child windows follow their parent into its full-screen
+			// Space, and are left where they are as it comes out of it.
+			method("windowWillEnterFullScreen:", func(self id, _ objc.SEL, n id) {
+				if w := b().windowFor(self); w != nil {
+					w.childrenAttached = true
+					w.attachChildren()
+				}
+			}),
+			method("windowDidFailToEnterFullScreen:", func(self id, _ objc.SEL, win id) {
+				if w := b().windowFor(self); w != nil {
+					w.leftFullScreen()
+				}
+			}),
 			method("windowDidEnterFullScreen:", func(self id, _ objc.SEL, n id) {
 				if w := b().windowFor(self); w != nil {
 					w.h.EnteredFullScreen()
@@ -1595,6 +2149,7 @@ func registerWindowClasses() {
 			}),
 			method("windowDidExitFullScreen:", func(self id, _ objc.SEL, n id) {
 				if w := b().windowFor(self); w != nil {
+					w.leftFullScreen()
 					w.layoutTrafficLights()
 					w.h.LeftFullScreen()
 					if w.hiddenTitleBar() {
@@ -1618,11 +2173,15 @@ func registerWindowClasses() {
 				if body == 0 || !sendBool(body, "isKindOfClass:", uintptr(class("NSString"))) {
 					return
 				}
+				if goString(send(msg, "name")) == pipHandler {
+					w.pipActive = goString(body) == "true"
+					return
+				}
 				w.h.Message(goString(body))
 			}),
 
-			// Key-value observing of the page title and the window's
-			// appearance.
+			// Key-value observing of the page title, its sound and
+			// capture, and the window's appearance.
 			method("observeValueForKeyPath:ofObject:change:context:", func(self id, _ objc.SEL, keyPath, object, change id, ctx uintptr) {
 				w := b().windowFor(self)
 				if w == nil {
@@ -1631,6 +2190,14 @@ func registerWindowClasses() {
 				switch goString(keyPath) {
 				case "title":
 					w.h.TitleChanged(goString(send(w.web, "title")))
+				case "_isPlayingAudio":
+					w.h.AudibleChanged(w.IsAudible())
+				case "cameraCaptureState":
+					w.captureChanged(platform.CaptureCamera)
+				case "microphoneCaptureState":
+					w.captureChanged(platform.CaptureMicrophone)
+				case "_displayCaptureState":
+					w.captureChanged(platform.CaptureDisplay)
 				case "effectiveAppearance":
 					// AppKit lays the title bar out again after telling us.
 					b().post(w.layoutTrafficLights)
@@ -1652,7 +2219,7 @@ func registerWindowClasses() {
 					nav := platform.Navigation{
 						URL:           goString(send(send(send(action, "request"), "URL"), "absoluteString")),
 						IsMainFrame:   frame != 0 && sendBool(frame, "isMainFrame"),
-						UserInitiated: navType == 0 || navType == 1,
+						UserInitiated: userInitiated(action, navType),
 						Unasked:       navType == 2 || navType == 3,
 						Reload:        navType == 3,
 					}
@@ -1661,6 +2228,9 @@ func registerWindowClasses() {
 						nav.Unasked = true
 					}
 					allow = w.h.WillNavigate(nav)
+					if allow && nav.IsMainFrame {
+						w.leavingPage()
+					}
 				}
 				callBlock(handler, boolArg(allow))
 			}),
@@ -1732,7 +2302,8 @@ func registerWindowClasses() {
 			}),
 			method("webView:didStartProvisionalNavigation:", func(self id, _ objc.SEL, web, nav id) {
 				if w := b().windowFor(self); w != nil {
-					w.h.NavigationStarted(w.URL())
+					w.provisionalURL = w.URL()
+					w.h.NavigationStarted(w.provisionalURL)
 				}
 			}),
 			method("webView:didCommitNavigation:", func(self id, _ objc.SEL, web, nav id) {
@@ -1747,12 +2318,20 @@ func registerWindowClasses() {
 			}),
 			method("webView:didFailProvisionalNavigation:withError:", func(self id, _ objc.SEL, web, nav, err id) {
 				if w := b().windowFor(self); w != nil {
-					w.loadFailed(err)
+					w.loadFailed(err, w.provisionalURL)
 				}
 			}),
 			method("webView:didFailNavigation:withError:", func(self id, _ objc.SEL, web, nav, err id) {
 				if w := b().windowFor(self); w != nil {
-					w.loadFailed(err)
+					w.loadFailed(err, w.URL())
+				}
+			}),
+			// HTTP sign-in and server certificates (auth.go).
+			method("webView:didReceiveAuthenticationChallenge:completionHandler:", func(self id, _ objc.SEL, web, challenge id, handler uintptr) {
+				if w := b().windowFor(self); w != nil {
+					w.authChallenge(challenge, handler)
+				} else {
+					callBlock(handler, authDefault, 0)
 				}
 			}),
 			method("webViewWebContentProcessDidTerminate:", func(self id, _ objc.SEL, web id) {
@@ -1779,7 +2358,10 @@ func registerWindowClasses() {
 					Y:      num("y"),
 					Width:  num("width"),
 					Height: num("height"),
-					Native: uintptr(cfg),
+					// The action of the link, or of window.open(), whose
+					// WKNavigationType is "other".
+					UserInitiated: userInitiated(action, sendInt(action, "navigationType")),
+					Native:        uintptr(cfg),
 				}
 				child, ok := w.h.NewWindow(req).(*window)
 				if !ok || child == nil {
@@ -1811,7 +2393,22 @@ func registerWindowClasses() {
 		}...))
 }
 
-func (w *window) loadFailed(err id) {
+// userInitiated reports whether a user's gesture started a navigation
+// action. WebKit's private -[WKNavigationAction _isUserInitiated] knows,
+// a click whose handler navigates or calls window.open() included;
+// without it, the action's WKNavigationType says, a link or a form,
+// which misses those.
+func userInitiated(action id, navType int) bool {
+	if respondsTo(action, "_isUserInitiated") {
+		return sendBool(action, "_isUserInitiated")
+	}
+	return navType == 0 || navType == 1 // WKNavigationTypeLinkActivated, FormSubmitted
+}
+
+// loadFailed reports a failed load of the URL its error names: the
+// string or the NSURL, which is all WebKit keeps of a certificate error;
+// else of fallback.
+func (w *window) loadFailed(err id, fallback string) {
 	code := sendInt(err, "code")
 	// Cancelled (-999) and "frame load interrupted" (102) happen when a
 	// navigation is replaced or denied; they are not failures.
@@ -1822,7 +2419,13 @@ func (w *window) loadFailed(err id) {
 	withPool(func() {
 		info := send(err, "userInfo")
 		url = goString(send(info, "objectForKey:", uintptr(nsString("NSErrorFailingURLStringKey"))))
+		if u := send(info, "objectForKey:", uintptr(nsString("NSErrorFailingURLKey"))); url == "" && u != 0 && sendBool(u, "isKindOfClass:", uintptr(class("NSURL"))) {
+			url = goString(send(u, "absoluteString"))
+		}
 		desc = goString(send(err, "localizedDescription"))
 	})
+	if url == "" {
+		url = fallback
+	}
 	w.h.LoadFailed(url, code, desc)
 }

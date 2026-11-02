@@ -87,7 +87,8 @@ What every app has, whether its windows show native UI or web pages.
   navigation, downloads, permissions, printing.
 - [The application](app.md): the lifecycle, quitting, a single instance,
   deep links, file associations, recent documents, starting at login,
-  well-known directories, the jump list, browsing data and cookies.
+  well-known directories, the jump list, browsing data, cookies and
+  sessions.
 - [Menus and the tray](menus.md): application, context and Dock menus,
   keyboard shortcuts and tray icons.
 - [Documents](documents.md): document-based apps, a window per file, with
@@ -128,8 +129,8 @@ components, from buttons to tables.
 - [Building and distributing](distribution.md): packaged apps for macOS,
   Windows and Linux, signing, installers and disk images.
 - [Auto-updates](updates.md): signed updates from GitHub releases, an S3
-  bucket or your own server, delta updates, and an update window in the
-  manner of Sparkle.
+  bucket, your own server or the app's own update service, delta updates,
+  and an update window in the manner of Sparkle.
 - [GitHub Actions](github-actions.md): a workflow that builds, signs and
   notarizes the apps of every platform, and publishes them with their
   updates, when you push a tag.
@@ -155,6 +156,9 @@ components, from buttons to tables.
   one standard layout.
 - [Loading](plugins/loading.md): loading.dev's 29 loading indicators for
   native UI.
+- [Automation](plugins/automation.md): drive a running app from another
+  process, as end-to-end test runners and agents do: its windows,
+  elements, input, menus and screenshots.
 
 ## Reference
 
@@ -178,7 +182,7 @@ Apps run on:
 | Platform | Windows with web pages need | Windows of native UI need |
 |---|---|---|
 | macOS 12 or later | nothing: WKWebView is part of macOS | nothing: they draw with Metal |
-| Linux (x64, arm64) | GTK 3 and WebKitGTK 4.1 (or 4.0): `libwebkit2gtk-4.1-0` on Debian and Ubuntu, `webkit2gtk4.1` on Fedora | GTK 3 alone |
+| Linux (x64, arm64) | GTK 3 and WebKitGTK 4.1 (or 4.0): `libwebkit2gtk-4.1-0` on Debian and Ubuntu, `webkit2gtk4.1` on Fedora, `webkit2gtk-4.1` on Arch Linux | GTK 3 alone |
 | Windows 10 and 11 (x64, arm64) | the [WebView2 Runtime](https://developer.microsoft.com/microsoft-edge/webview2/), which Windows 11 includes | nothing: they draw with Direct3D 11 |
 
 An app whose windows all show native UI needs neither WebKitGTK nor the

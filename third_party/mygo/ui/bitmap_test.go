@@ -7,6 +7,8 @@ import (
 	"image"
 	"image/color"
 	"image/jpeg"
+	"image/png"
+	"runtime"
 	"testing"
 
 	"golang.org/x/image/bmp"
@@ -228,6 +230,47 @@ func TestDecodeBitmapOfWebPAndBMP(t *testing.T) {
 	}
 }
 
+func TestDecodeImageOfBitmapsAndSVGs(t *testing.T) {
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, stripedImage(6, 4, 1, 0)); err != nil {
+		t.Fatal(err)
+	}
+	src, err := DecodeImage(buf.Bytes())
+	if b, ok := src.(*Bitmap); err != nil || !ok || b.w != 6 || b.h != 4 {
+		t.Errorf("PNG: %T, %v", src, err)
+	}
+	for _, data := range []string{
+		`<svg width="30" height="20"/>`,
+		"\xef\xbb\xbf \n\t<?xml version=\"1.0\"?>\n<svg viewBox=\"0 0 30 20\"/>", // a BOM and spaces
+		`<!DOCTYPE svg><!-- a logo --><svg width="30" height="20"/>`,
+	} {
+		src, err := DecodeImage([]byte(data))
+		if s, ok := src.(*SVG); err != nil || !ok || s.w != 30 || s.h != 20 {
+			t.Errorf("%q: %T, %v", data, src, err)
+		}
+	}
+	for _, data := range []string{"", "not a picture \x00", `<html><body/></html>`, `<svg width="0" height="0"/>`} {
+		if src, err := DecodeImage([]byte(data)); err == nil || src != nil {
+			t.Errorf("%q: %T, no error", data, src)
+		}
+	}
+}
+
+func TestImageSize(t *testing.T) {
+	if w, h := ImageSize(NewBitmap(image.NewRGBA(image.Rect(0, 0, 6, 4)))); w != 6 || h != 4 {
+		t.Errorf("a bitmap is %v×%v", w, h)
+	}
+	if w, h := ImageSize(MustParseSVG([]byte(`<svg viewBox="0 0 30 20"/>`))); w != 30 || h != 20 {
+		t.Errorf("an SVG is %v×%v", w, h)
+	}
+	if w, h := ImageSize(nil); w != 0 || h != 0 {
+		t.Errorf("nil is %v×%v", w, h)
+	}
+	if w, h := ImageSize((*Bitmap)(nil)); w != 0 || h != 0 {
+		t.Errorf("a nil bitmap is %v×%v", w, h)
+	}
+}
+
 // BenchmarkHalvePhoto halves a photo of 4000×3000 pixels, a step of
 // drawing an image smaller than it is.
 func BenchmarkHalvePhoto(b *testing.B) {
@@ -235,6 +278,127 @@ func BenchmarkHalvePhoto(b *testing.B) {
 	b.ResetTimer()
 	for range b.N {
 		halve(img)
+	}
+}
+
+// heapInuse returns the bytes the heap has in use, after collecting.
+func heapInuse() uint64 {
+	runtime.GC()
+	var s runtime.MemStats
+	runtime.ReadMemStats(&s)
+	return s.HeapInuse
+}
+
+// decodedStripes returns a bitmap DecodeBitmap made of stripedImage's
+// stripes as a PNG, which can release its pixels.
+func decodedStripes(t *testing.T, w, h, n, off int) *Bitmap {
+	t.Helper()
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, stripedImage(w, h, n, off)); err != nil {
+		t.Fatal(err)
+	}
+	b, err := DecodeBitmap(buf.Bytes())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b
+}
+
+// cloneImage returns a copy of img's pixels, which later frames do not
+// overwrite.
+func cloneImage(img *image.RGBA) *image.RGBA {
+	out := image.NewRGBA(img.Rect)
+	copy(out.Pix, img.Pix)
+	return out
+}
+
+// TestReleasePixelsDropsThePixels checks issue #664: a bitmap whose pixels
+// a GPU renderer uploaded can drop its CPU copies, base and levels, and
+// keeps the source to re-make them from, which the CPU renderer's draw
+// brings back, and a renderer's upload drops again.
+func TestReleasePixelsDropsThePixels(t *testing.T) {
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, stripedImage(2048, 2048, 64, 0)); err != nil {
+		t.Fatal(err)
+	}
+	b, err := DecodeBitmap(buf.Bytes())
+	if err != nil {
+		t.Fatal(err)
+	}
+	b.smaller(8) // levels for drawing it smaller
+	if b.img.Pix == nil || len(b.levels) != 3 {
+		t.Fatal("the bitmap has no pixels and levels to drop")
+	}
+	before := heapInuse()
+	b.ReleasePixels()
+	if got := heapInuse(); got > before-12<<20 {
+		t.Fatalf("releasing the pixels of 20 MiB left %d MiB of %d in use", got>>20, before>>20)
+	}
+	if b.img.Pix != nil {
+		t.Error("the base kept its pixels")
+	}
+	for i, lvl := range b.levels {
+		if lvl.Pix != nil {
+			t.Errorf("level %d kept its pixels", i)
+		}
+	}
+	if w, h := b.Size(); w != 2048 || h != 2048 {
+		t.Errorf("size %d×%d after releasing", w, h)
+	}
+	if pix := b.img.Pixels(); pix == nil {
+		t.Error("the pixels did not come back for the CPU renderer")
+	}
+	b.img.Uploaded()
+	if b.img.Pix != nil {
+		t.Error("the pixels did not go again after the upload")
+	}
+	runtime.KeepAlive(b)
+}
+
+// TestReleasedBitmapDrawsTheSame checks that a released bitmap still
+// draws as itself: the CPU renderer re-creates its pixels from what the
+// bitmap was made of.
+func TestReleasedBitmapDrawsTheSame(t *testing.T) {
+	bm := decodedStripes(t, 300, 200, 30, 0)
+	tt := coreNewTester(func(c *context) {
+		coreImage(c, bm).Size(150, 100).Fit(FillBox)
+	}, 200, 150)
+	want := cloneImage(tt.Image())
+	bm.ReleasePixels()
+	// The CPU renderer redraws what changed since; a size away and back
+	// draws everything, released pixels included.
+	tt.SetSize(220, 170)
+	tt.SetSize(200, 150)
+	got := tt.Image()
+	if !bytes.Equal(want.Pix, got.Pix) {
+		t.Fatal("a released bitmap draws other pixels")
+	}
+}
+
+// TestReleasedBitmapDrawsSmallerFromRebuiltLevels checks that a released
+// bitmap re-makes the level a smaller drawing needs from its source,
+// while the base's pixels stay dropped.
+func TestReleasedBitmapDrawsSmallerFromRebuiltLevels(t *testing.T) {
+	bm := decodedStripes(t, 512, 512, 4, 2)
+	tt := coreNewTester(func(c *context) {
+		coreImage(c, bm).Size(64, 64).Fit(FillBox)
+	}, 100, 100)
+	if len(bm.levels) != 3 {
+		t.Fatalf("%d levels made before releasing", len(bm.levels))
+	}
+	want := cloneImage(tt.Image())
+	bm.ReleasePixels()
+	// A size away and back draws everything again.
+	tt.SetSize(120, 90)
+	tt.SetSize(100, 100)
+	if got := tt.Image(); !bytes.Equal(want.Pix, got.Pix) {
+		t.Fatal("a released bitmap draws other pixels smaller")
+	}
+	if bm.img.Pix != nil {
+		t.Error("the base's pixels came back with the level")
+	}
+	if len(bm.levels) != 3 {
+		t.Errorf("%d levels after releasing", len(bm.levels))
 	}
 }
 
@@ -276,5 +440,52 @@ func TestBitmapUpdate(t *testing.T) {
 	bm.Update(solid(32, 48, red))
 	if w, h := bm.Size(); w != 32 || h != 48 || bm.img == img {
 		t.Errorf("resized to %dx%d", w, h)
+	}
+}
+
+// TestReleasedBitmapUpdates checks that Update shows another picture in a
+// released bitmap, smaller too, from levels whose pixels it dropped, and
+// that the bitmap keeps the new picture's pixels, which nothing else
+// makes again.
+func TestReleasedBitmapUpdates(t *testing.T) {
+	bm := decodedStripes(t, 512, 512, 4, 2)
+	tt := coreNewTester(func(c *context) {
+		coreImage(c, bm).Size(64, 64).Fit(FillBox)
+	}, 100, 100)
+	bm.ReleasePixels()
+	next := stripedImage(512, 512, 4, 3)
+	bm.Update(next)
+	tt.Frame()
+	got := cloneImage(tt.Image())
+	ref := NewBitmap(next)
+	want := coreNewTester(func(c *context) {
+		coreImage(c, ref).Size(64, 64).Fit(FillBox)
+	}, 100, 100).Image()
+	if !bytes.Equal(want.Pix, got.Pix) {
+		t.Fatal("an updated released bitmap draws other pixels")
+	}
+	if bm.img.Restore != nil || bm.img.Dropped != nil {
+		t.Error("the updated bitmap still drops its pixels")
+	}
+	bm.ReleasePixels() // nothing to make them from: it keeps them
+	if bm.img.Pix == nil {
+		t.Error("an updated bitmap dropped the pixels nothing makes again")
+	}
+}
+
+// TestReleasePixelsKeepsWhatCannotComeBack checks that a bitmap NewBitmap
+// made, which keeps nothing to re-make its pixels from, and a canvas's
+// keep them.
+func TestReleasePixelsKeepsWhatCannotComeBack(t *testing.T) {
+	bm := NewBitmap(stripedImage(8, 8, 1, 0))
+	bm.ReleasePixels()
+	if bm.img.Pix == nil || bm.img.Restore != nil {
+		t.Error("a converted bitmap dropped its pixels")
+	}
+	cv := NewCanvas(8, 8)
+	pix := cv.img.Pix
+	cv.Bitmap().ReleasePixels()
+	if cv.img.Restore != nil || len(cv.img.Pix) != len(pix) {
+		t.Error("a canvas's bitmap dropped its pixels")
 	}
 }

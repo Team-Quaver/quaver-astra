@@ -42,6 +42,97 @@ func TestCalendar(t *testing.T) {
 	}
 }
 
+func TestCalendarBrowse(t *testing.T) {
+	date := time.Date(2026, 10, 29, 9, 41, 0, 0, time.UTC)
+	changed := 0
+	tt := NewTester(func(c *Context) {
+		if Calendar(c, &date).Browse().Changed() {
+			changed++
+		}
+	}, 400, 400)
+	tt.Frame()
+	if err := tt.Click("Next month"); err != nil {
+		t.Fatal(err)
+	}
+	tt.Frame()
+	if changed != 0 || date.Day() != 29 || date.Month() != time.October {
+		t.Fatalf("paging to the next month chose %s (%d changes)", date.Format("2006-01-02"), changed)
+	}
+	if !tt.HasText("November 2026") {
+		t.Fatalf("Next month shows %q", tt.Texts())
+	}
+	// A click chooses.
+	if err := tt.Click("November 12, 2026"); err != nil {
+		t.Fatal(err)
+	}
+	if want := time.Date(2026, 11, 12, 9, 41, 0, 0, time.UTC); !date.Equal(want) || changed != 1 {
+		t.Fatalf("a click on the 12th: %v (%d changes)", date, changed)
+	}
+	// The keys move without choosing, Enter chooses.
+	for _, key := range []Key{KeyPageDown, KeyRight, KeyEnd, KeyHome, KeyDown} {
+		tt.Key(0, key)
+	}
+	if changed != 1 || !sameDay(date, time.Date(2026, 11, 12, 0, 0, 0, 0, time.UTC)) {
+		t.Fatalf("Page Down and the arrows chose %v (%d changes)", date, changed)
+	}
+	if !tt.HasText("December 2026") {
+		t.Fatalf("Page Down shows %q", tt.Texts())
+	}
+	// Assistive technology reads the day under the keys, the day chosen
+	// marked so.
+	tt.send(platform.SurfaceEvent{Kind: platform.AccessibilityOn})
+	if n := accessNode(t, tt.h.access, platform.RoleButton, "December 8, 2026"); tt.h.access.Focus != n.ID || n.States&platform.AccessChecked != 0 {
+		t.Errorf("the focus on %d, the day %+v", tt.h.access.Focus, n)
+	}
+	tt.Key(0, KeyPageUp)
+	if n := accessNode(t, tt.h.access, platform.RoleButton, "November 12, 2026"); n.States&platform.AccessChecked == 0 {
+		t.Errorf("the day chosen %+v", n)
+	}
+	tt.Key(0, KeyEnter)
+	if want := time.Date(2026, 11, 8, 9, 41, 0, 0, time.UTC); !date.Equal(want) || changed != 2 {
+		t.Fatalf("Enter on the 8th: %v (%d changes)", date, changed)
+	}
+	// The calendar goes to a date the app sets.
+	tt.Key(0, KeyPageDown)
+	date = time.Date(2027, 3, 3, 9, 41, 0, 0, time.UTC)
+	tt.Frame()
+	if !tt.HasText("March 2027") || changed != 2 {
+		t.Fatalf("a date the app set shows %q (%d changes)", tt.Texts(), changed)
+	}
+	tt.Key(0, KeyRight)
+	tt.Key(0, KeySpace)
+	if want := time.Date(2027, 3, 4, 9, 41, 0, 0, time.UTC); !date.Equal(want) || changed != 3 {
+		t.Fatalf("Right and Space from the 3rd: %v (%d changes)", date, changed)
+	}
+}
+
+// A calendar in a popover that closes as the user picks a day.
+func TestCalendarBrowsePopover(t *testing.T) {
+	due := time.Date(2026, 10, 29, 0, 0, 0, 0, time.UTC)
+	open := false
+	tt := NewTester(func(c *Context) {
+		chip := Button(c, due.Format("Jan 2"))
+		if chip.Clicked() {
+			open = !open
+		}
+		Popover(c, chip, &open, func() {
+			if Calendar(c, &due).Browse().Changed() {
+				open = false
+			}
+		})
+	}, 400, 420)
+	tt.Click("Oct 29")
+	tt.Click("Next month")
+	tt.Click("Next month")
+	if !open || !tt.HasText("December 2026") || due.Month() != time.October {
+		t.Fatalf("paging: open %v, due %v, texts %q", open, due, tt.Texts())
+	}
+	tt.Click("December 24, 2026")
+	if open || !sameDay(due, time.Date(2026, 12, 24, 0, 0, 0, 0, time.UTC)) {
+		t.Fatalf("a click on the 24th: open %v, due %v", open, due)
+	}
+}
+
 func TestTimeInput(t *testing.T) {
 	alarm := time.Date(2026, 10, 4, 7, 30, 0, 0, time.UTC)
 	changes := 0

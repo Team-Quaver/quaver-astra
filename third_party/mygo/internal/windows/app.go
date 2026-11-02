@@ -43,12 +43,24 @@ type Backend struct {
 	envErr     error
 	envStarted bool
 	envWaiters []func()
+	// envUnthrottled tells that the environment's browser runs, or is
+	// starting, with unthrottledArguments, which the page that started it
+	// asked for; envWarned that a page that asked later was told it was
+	// too late.
+	envUnthrottled, envWarned bool
+	// envAutoplay and envAutoplayWarned are the same for autoplayArguments
+	// (PageOptions.Autoplay).
+	envAutoplay, envAutoplayWarned bool
 	// envResult is whether the environment was created (1) or failed (2),
 	// 0 before, for WebViewAvailable, which any goroutine may call.
 	envResult atomic.Int32
 
 	// cookies gives cookie calls a cookie manager (cookies.go).
 	cookies cookieStore
+	// stores are the profiles of sessions (session.go), privateStores
+	// the number of InPrivate ones made.
+	stores        []*dataStore
+	privateStores int
 
 	menus menuTable
 
@@ -72,12 +84,16 @@ type Backend struct {
 
 	// captions are the windows of the controls of windows with a hidden
 	// title bar (titlebar.go), captionFonts their glyphs by DPI.
-	captions     map[uintptr]*captionBar
+	captions map[uintptr]*captionBar
+	// topEdges are the windows over the top resize borders of windows
+	// without a caption (topedge.go), and their windows.
+	topEdges     map[uintptr]*window
 	captionFonts map[int]captionFont
-	// menuFonts are the fonts of the menu items MyGo draws by DPI, and
-	// menuBrushes the brushes of menus' backgrounds by color
-	// (menudraw.go).
+	// menuFonts are the fonts of the menu items MyGo draws by DPI,
+	// menuExtra how much Windows widens them by DPI, and menuBrushes the
+	// brushes of menus' backgrounds by color (menudraw.go).
 	menuFonts   map[int]menuFonts
+	menuExtra   map[int]int32
 	menuBrushes map[uint32]uintptr
 	// menuHook hooks the main thread while menus show.
 	menuHook uintptr
@@ -107,6 +123,7 @@ func New() *Backend {
 		menus:         newMenuTable(),
 		themeSource:   "system",
 		captions:      map[uintptr]*captionBar{},
+		topEdges:      map[uintptr]*window{},
 		captionFonts:  map[int]captionFont{},
 		surfaces:      map[uintptr]*surface{},
 	}
@@ -143,9 +160,26 @@ func (b *Backend) Init(h platform.AppHandler, opts platform.AppOptions) error {
 // startEnvironment starts creating the WebView2 environment, the first time
 // a window that shows a web page is created, and returns why it cannot,
 // such as a missing WebView2 Runtime. Windows that show native UI need
-// none: an app whose windows all do runs without the runtime.
-func (b *Backend) startEnvironment() error {
+// none: an app whose windows all do runs without the runtime. o are the
+// options of the page that needs it, nil for none.
+//
+// The environment's browser runs with unthrottledArguments when that first
+// page asked not to be throttled, and with autoplayArguments when it asked
+// to play without a user gesture: the arguments are the browser's, which
+// all the app's pages share, and a page that asks once it runs is too
+// late, which the log tells.
+func (b *Backend) startEnvironment(o *platform.WindowOptions) error {
+	unthrottled := o != nil && o.NoBackgroundThrottling
+	autoplay := o != nil && o.Autoplay
 	if b.envStarted {
+		if unthrottled && !b.envUnthrottled && !b.envWarned {
+			b.envWarned = true
+			log.Print("mygo: ThrottlingOff of a page shown after the first one: WebView2's browser already runs without the arguments that keep hidden pages running; give the option to the first window or web view that shows a page")
+		}
+		if autoplay && !b.envAutoplay && !b.envAutoplayWarned {
+			b.envAutoplayWarned = true
+			log.Print("mygo: AutoplayAllow of a page shown after the first one: WebView2's browser already runs without the argument that lets pages play sound without a user gesture; give the option to the first window or web view that shows a page")
+		}
 		return nil
 	}
 	dir := os.Getenv("LOCALAPPDATA")
@@ -158,8 +192,14 @@ func (b *Backend) startEnvironment() error {
 	if len(b.languages) > 0 {
 		language = b.languages[0]
 	}
-	err := createEnvironment(userData, language, func(env uintptr, err error) {
+	// What the first page asked for counts from now, so that a page shown
+	// while the environment is being made isn't told it is too late.
+	b.envUnthrottled, b.envAutoplay = unthrottled, autoplay
+	err := createEnvironment(userData, language, browserArguments(unthrottled, autoplay), func(env uintptr, withArgs bool, err error) {
 		b.env, b.envErr = env, err
+		if err != nil || !withArgs {
+			b.envUnthrottled, b.envAutoplay = false, false
+		}
 		if err != nil {
 			log.Print(err)
 			b.envResult.Store(2)
@@ -341,6 +381,10 @@ func wndProc(hwnd, m, wp, lp uintptr) uintptr {
 			}
 		} else if c := b.captions[hwnd]; c != nil {
 			if r, ok := c.message(hwnd, uint32(m), wp, lp); ok {
+				return r
+			}
+		} else if w := b.topEdges[hwnd]; w != nil {
+			if r, ok := w.topEdgeMessage(uint32(m), wp, lp); ok {
 				return r
 			}
 		} else if s := b.surfaces[hwnd]; s != nil {
@@ -536,6 +580,12 @@ func (a appController) IsHidden() bool        { return len(a.b.hidden) > 0 }
 func (a appController) SetBadge(label string) { a.b.badge = label }
 func (a appController) Badge() string         { return a.b.badge }
 
+// IsActive reports whether the window in front is one of the app's.
+func (a appController) IsActive() bool {
+	fg, _, _ := procGetForegroundWindow.Call()
+	return a.b.windows[fg] != nil
+}
+
 const (
 	flashwStop      = 0
 	flashwTray      = 0x2
@@ -641,11 +691,12 @@ func (a appController) Package() (platform.PackageInfo, bool) {
 	return info, true
 }
 
-// ClearBrowsingData clears the profile the app's web views share, through
-// the web view cookie calls use: a window's, or a hidden one before a
-// window shows a page (cookies.go).
-func (a appController) ClearBrowsingData(done func(error)) {
-	a.withCookieManager(func(_ []platform.Cookie, err error) { done(err) }, func(r *cookieRequest) {
+// ClearBrowsingData clears the profile of store, the one the app's web
+// views share for nil, through the web view cookie calls use: a window's,
+// or a hidden one before a window shows a page (cookies.go). SiteDataAll
+// is ClearBrowsingDataAll, other types ClearBrowsingData of their kinds.
+func (a appController) ClearBrowsingData(store platform.DataStore, types platform.SiteData, done func(error)) {
+	a.withCookieManager(store, func(_ []platform.Cookie, err error) { done(err) }, func(r *cookieRequest) {
 		wv13 := queryInterface(r.webview, &iidICoreWebView2_13)
 		if wv13 == 0 {
 			r.finish(nil, errors.New("mygo: clearing browsing data needs a newer WebView2 Runtime"))
@@ -667,7 +718,12 @@ func (a appController) ClearBrowsingData(done func(error)) {
 				return
 			}
 			r.finish(nil, nil)
-		}, func(h uintptr) uintptr { return comCall(p2, profile2ClearBrowsingDataAll, h) })
+		}, func(h uintptr) uintptr {
+			if types.All() {
+				return comCall(p2, profile2ClearBrowsingDataAll, h)
+			}
+			return comCall(p2, profile2ClearBrowsingData, browsingDataKinds(types), h)
+		})
 		if failed(hr) {
 			r.finish(nil, hresultError("clearing browsing data", hr))
 		}

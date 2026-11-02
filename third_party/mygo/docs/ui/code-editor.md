@@ -94,7 +94,8 @@ The editor edits as Zed does, with the commands bound to the same keys
   a word such as `end`, outdents its line as it is typed. Undo takes back
   typing a burst at a time.
 - **Folding.** The gutter's markers fold the lines indented under a line,
-  or up to its closing bracket; Cmd+Alt+[ and ] fold and unfold, Cmd+K
+  up to its closing bracket, or a run of imports, with the blank lines
+  between them; Cmd+Alt+[ and ] fold and unfold, Cmd+K
   Cmd+0 folds everything and Cmd+K Cmd+J unfolds it, Cmd+K Cmd+1 to 9 by
   level.
 - **Finding.** Cmd+F opens the find bar, with case, whole words, regular
@@ -125,9 +126,17 @@ if ui.Button(c, "Format").Clicked() {
 and set the carets and selections, `Insert` types at each of them, `GoTo`
 moves the caret to a position and `ScrollTo` shows a line. `Find` opens
 the find bar on a query and `FindMatches` counts its matches; `Fold`,
-`Unfold` and `Folded` fold lines; `Focused` reports whether the editor has
+`Unfold` and `Folded` fold lines, and `FoldImports` the first run of
+imports, as an editor can on opening a file; `Focused` reports whether the editor has
 the keyboard focus, and `VisibleLines` the first and last lines the last
-frame showed, as a half page of Vim's moves by.
+frame showed, as a half page of Vim's moves by. `ScrollY` and
+`SetScrollY` read and set how far the lines are scrolled, in DIPs, and
+`LineTop` where a line starts, below the first: editors side by side
+scroll together with them, and an app draws what joins their lines, as
+the bands between the panes of a merge. The scroll bars' thumbs show
+while the pointer is over the editor, or drags one, as a scroll
+container's do; the marks of changes, matches and diagnostics on the
+vertical one show all the time.
 
 `OnInput` sees each input event before the editor does: keys, the text
 typed, edit commands and the pointer. Returning true takes the event, and
@@ -174,6 +183,13 @@ app.code.OnInput = func(ev ui.InputEvent) bool {
   keep their line numbers as the text is edited, unlike diagnostics and
   inlays, which move with it: compute them again when the buffer's
   `Version` changes.
+- `TextBackgrounds` fill ranges of the text, bytes `Start` to `End`, with
+  a color under the text and the selections and over line backgrounds, as
+  the words a merge changed within its lines. They follow the editor's
+  layout: the rows a line wraps into, tabs, wide characters and scrolling
+  sideways; lines a fold hides show none. As line backgrounds, they stay
+  where they are as the text is edited, cut to its end until computed
+  again when the buffer's `Version` changes.
 - `TabSize` and `Indent` set indentation: tabs or spaces, as the
   language's files usually have them when zero (Go's tabs).
 - `Whitespace` shows spaces and tabs as dots and arrows: within selections
@@ -202,11 +218,13 @@ app.code.OnInput = func(ev ui.InputEvent) bool {
 
 `LanguageFor` finds a file's language by its name, and `LanguageNamed` by
 its own; `Languages` lists them. The editor knows Go, JavaScript,
-TypeScript, JSON, Python, Rust, C, C++, Java, Kotlin, Swift, C#, shell
-scripts, YAML, TOML, SQL, Ruby, Lua, PHP, CSS, HTML, XML, Markdown, diffs,
-Dockerfiles, Makefiles, Protocol Buffers and Zig. A `Language` says how to
-highlight, comment, match brackets and indent its text: build one for
-another language, or copy one and change it.
+TypeScript, JSON, Python, Rust, C, C++, Java, Kotlin, Scala, Swift, Dart,
+C#, shell scripts, YAML, TOML, SQL, R, Ruby, Lua, PHP, CSS, HTML, XML,
+Markdown, diffs, Dockerfiles, Makefiles, Protocol Buffers, GraphQL and Zig.
+A `Language` says how to highlight, comment, match brackets and indent its
+text, and with `Imports`, a pattern of a line that imports (`^import\b` for
+Go), which lines fold as a run: build one for another language, or copy
+one and change it.
 
 A language highlights its text with a `Tokenizer` by default: a function
 from a line, and the state the line before it ended in, to the line's

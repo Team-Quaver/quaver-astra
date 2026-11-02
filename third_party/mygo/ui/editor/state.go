@@ -98,6 +98,13 @@ type State struct {
 	// the text is edited, unlike diagnostics and inlays, which move with
 	// it: compute them again when the buffer's Version changes.
 	LineBackgrounds []LineBackground
+	// TextBackgrounds fill ranges of the text with colors, under the
+	// text and over line backgrounds, as the words a merge changed:
+	// across wrapped rows, tabs and wide characters as the editor lays
+	// them out, not the lines folds hide. As LineBackgrounds, they stay
+	// where they are as the text is edited: compute them again when the
+	// buffer's Version changes.
+	TextBackgrounds []TextBackground
 	// OnInput sees each input event before the editor, as keys for a
 	// mode of the app's such as Vim's: returning true takes it, and the
 	// editor leaves it. Text typed at the carets comes as InputText;
@@ -189,6 +196,15 @@ type LineBackground struct {
 	Color       ui.Color
 }
 
+// TextBackground fills bytes Start to End of the text with Color. Ranges
+// past the end of the text, as an edit leaves them until they are
+// computed again, are cut to it; empty ones fill nothing. A range across
+// lines fills the text of each, not past its end.
+type TextBackground struct {
+	Start, End int
+	Color      ui.Color
+}
+
 func (st *State) options() options {
 	return options{
 		readOnly: st.ReadOnly, font: st.Font, lineHeight: st.LineHeight, tabSize: st.TabSize, indent: st.Indent,
@@ -196,7 +212,7 @@ func (st *State) options() options {
 		wrapGuides: st.WrapGuides, indentGuides: !st.NoIndentGuides, scrollPastEnd: !st.NoScrollPastEnd && !st.FitContent,
 		autoClose: !st.NoAutoClose, folding: !st.NoFolding, activeLine: !st.NoActiveLine, cursorShape: st.CursorShape, fitContent: st.FitContent,
 		placeholder: st.Placeholder, label: st.Label, theme: st.Theme, bindings: st.Bindings, gutterMarks: st.GutterMarks,
-		backgrounds: st.LineBackgrounds, diffBase: st.DiffBase, onCompletion: st.OnCompletion, onHover: st.OnHover, onDefinition: st.OnDefinition,
+		backgrounds: st.LineBackgrounds, textBgs: st.TextBackgrounds, diffBase: st.DiffBase, onCompletion: st.OnCompletion, onHover: st.OnHover, onDefinition: st.OnDefinition,
 		onGutterClick: st.OnGutterClick, contextMenu: st.ContextMenu, onInput: st.OnInput, noInputMethod: st.NoInputMethod, minDigits: 3,
 		renderFindBar: st.RenderFindBar, renderGoToLine: st.RenderGoToLine,
 		renderCompletions: st.RenderCompletions, renderHover: st.RenderHover,
@@ -282,6 +298,27 @@ func (st *State) ScrollTo(line int) {
 	st.ed.setScroll(st.ed.view.heights.top(line))
 }
 
+// ScrollY returns how far the editor's lines are scrolled up, in DIPs, 0
+// for an editor as high as its lines (FitContent); SetScrollY scrolls
+// them, as far as they scroll, as editors side by side scroll together.
+func (st *State) ScrollY() float64 { return st.ed.scrollY }
+
+func (st *State) SetScrollY(y float64) {
+	st.ensure()
+	st.ed.setScroll(y)
+}
+
+// LineTop returns the top of a line, from 0, in DIPs below the top of the
+// first, as the last frame laid the lines out: less ScrollY, it is where
+// the line shows in the editor. The lines a fold hides take no room, and
+// LineTop of the count of lines is the height of them all. With SoftWrap,
+// the lines of a long text far from the view may take the rows they are
+// estimated to for a few frames, until they are measured.
+func (st *State) LineTop(line int) float64 {
+	st.ensure()
+	return st.ed.view.heights.top(line)
+}
+
 // Find opens the find bar with query, and selects its first match after
 // the caret.
 func (st *State) Find(query string) {
@@ -303,8 +340,9 @@ func (st *State) FindMatches() (count, current int) {
 	return len(f.matches), f.current
 }
 
-// Fold folds the lines indented under line, or up to its closing
-// bracket, as the gutter's marker does; Unfold unfolds them.
+// Fold folds the lines indented under line, up to its closing bracket,
+// or the run of imports it starts, as the gutter's marker does; Unfold
+// unfolds them.
 func (st *State) Fold(line int) {
 	st.ensure()
 	if !st.ed.isFolded(line) {
@@ -316,6 +354,28 @@ func (st *State) Unfold(line int) {
 	st.ensure()
 	if st.ed.isFolded(line) {
 		st.ed.toggleFoldLine(line)
+	}
+}
+
+// FoldImports folds the first run of imports of the text, or the first
+// import alone by its brackets, as editors can on opening a file
+// (Language's Imports).
+func (st *State) FoldImports() {
+	st.ensure()
+	ed := &st.ed
+	l := ed.language()
+	if l == nil || l.Imports == nil {
+		return
+	}
+	r := &ed.view.text
+	for line := range r.LineCount() {
+		if !ed.isImport(l, line) {
+			continue
+		}
+		if !ed.isFolded(line) {
+			ed.toggleFoldLine(line)
+		}
+		return
 	}
 }
 

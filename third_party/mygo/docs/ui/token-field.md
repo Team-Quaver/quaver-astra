@@ -14,7 +14,9 @@ change.
 ui.TokenField(c, &app.tags, allTags).Label("Tags")
 ```
 
-Chips wrap onto more lines as they fill the field.
+Chips wrap onto more lines as they fill the field. `Placeholder` shows a
+text in its input while it is empty, as "Add a tag…"; it shows none
+without one.
 
 ## Accessibility
 

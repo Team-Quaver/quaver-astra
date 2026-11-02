@@ -410,8 +410,8 @@ vec4 stopsAt(vec4 c2, float t, bool lab) {
 
 // paint returns the premultiplied color at p of plain color, a gradient
 // mixed in sRGB (1) or Oklab (2), stripes (3), or a gradient of stops,
-// linear (4, 5) or conic (6, 7), mixed in sRGB or in Oklab, as
-// scene.Paint says.
+// linear (4, 5), conic (6, 7) or radial (8, 9), mixed in sRGB or in
+// Oklab, as scene.Paint says.
 vec4 paint(vec2 p, float mode, vec4 rect, vec4 c1, vec4 c2, vec4 g) {
 	if (mode < 0.5) {
 		return premul(c1);
@@ -421,12 +421,14 @@ vec4 paint(vec2 p, float mode, vec4 rect, vec4 c1, vec4 c2, vec4 g) {
 		if (mode < 5.5) {
 			vec2 d = g.zw - g.xy;
 			t = dot(p - g.xy, d) / max(dot(d, d), 0.0001);
-		} else {
+		} else if (mode < 7.5) {
 			vec2 d = p - g.xy;
 			t = (atan(d.x, -d.y) - g.z) * 0.15915494309189535;
 			t -= floor(t);
+		} else {
+			t = length(p - g.xy) / max(g.z, 0.0001);
 		}
-		return stopsAt(c2, t, mode > 4.5 && mode < 5.5 || mode > 6.5);
+		return stopsAt(c2, t, mode > 4.5 && mode < 5.5 || mode > 6.5 && mode < 7.5 || mode > 8.5);
 	}
 	if (mode < 2.5) {
 		vec2 d = g.zw - g.xy;

@@ -1,6 +1,7 @@
 package markdown
 
 import (
+	"slices"
 	"strings"
 	"sync"
 
@@ -26,6 +27,14 @@ type Options struct {
 	// router around the view, a link to #a-heading scrolls to that
 	// heading, and links of other schemes do nothing.
 	OnLink func(url string)
+	// Anchor scrolls to the heading of this slug, with or without its "#",
+	// when the document first shows, when another document replaces it,
+	// and when Anchor changes: a docs reader opens guide.md#install at
+	// its heading. An OnLink that takes #a-heading links sets it.
+	Anchor string
+	// AnchorVersion scrolls to Anchor again when it changes, for the same
+	// heading asked for twice.
+	AnchorVersion uint64
 	// LoadImage loads the image at url, on a goroutine of its own, for the
 	// views to show; until it has, they show its description. Without
 	// it, images show as their descriptions. FileImages loads files.
@@ -42,6 +51,13 @@ type Options struct {
 	// Math, when set, builds blocks of display math from their TeX, which
 	// show as their TeX without it; math within text shows as its TeX.
 	Math func(c *ui.Context, tex string)
+	// InlineMath, when set, makes math within text an object of the
+	// text, from its TeX and the size of the text around it in DIPs: one
+	// on the baseline, which wraps with the words and copies as its
+	// source, as $x_i$. When it returns false, the math shows as its
+	// TeX. It is asked again whenever the paragraph changes, as every
+	// frame of a paragraph streaming in: keep what it makes.
+	InlineMath func(tex string, size float32) (InlineObject, bool)
 	// HTML, when set, builds HTML blocks from their HTML, which show as
 	// their HTML without it; within text, the tags of formatting (<b>,
 	// <i>, <code>, <br>, <mark>, <sub>, …) apply, and other tags show as
@@ -59,6 +75,15 @@ type Options struct {
 	ShareSelection bool
 
 	images sync.Map // url → *imageEntry
+}
+
+// InlineObject is math within text, as Options.InlineMath makes it: a
+// box Width wide, Height above the baseline and Depth below it, in DIPs,
+// which Draw paints in r, its box in the window. Draw only paints: it
+// may run more than once a frame.
+type InlineObject struct {
+	Width, Height, Depth float32
+	Draw                 func(p *ui.Painter, r ui.Rect)
 }
 
 // View shows src, finished Markdown, as it reads: CommonMark and what
@@ -110,10 +135,12 @@ type viewState struct {
 	codes  map[int]*codeState
 	tables map[int]*tableState
 	// scrollTo is a block to scroll into view, -1 for none.
-	scrollTo int
-	notes    map[string]int
-	sb       spanBuilder
-	fade     func(src int) float32
+	scrollTo      int
+	anchor        string
+	anchorVersion uint64
+	notes         map[string]int
+	sb            spanBuilder
+	fade          func(src int) float32
 }
 
 type paraCache struct {
@@ -144,7 +171,8 @@ func build(c *ui.Context, src string, o *Options, streaming bool) ui.Element {
 	if ext == 0 {
 		ext = parser.Default
 	}
-	if st.doc == nil || st.ext != ext {
+	documentChanged := st.doc == nil || st.ext != ext
+	if documentChanged {
 		st.doc, st.ext = parser.New(ext), ext
 		st.paras = st.paras[:0]
 	}
@@ -157,8 +185,13 @@ func build(c *ui.Context, src string, o *Options, streaming bool) ui.Element {
 		// Another text, not more of it: blocks where blocks were may
 		// show other text.
 		st.forget()
+		documentChanged = true
 	}
 	st.doc.Set(src[:shown])
+	if o.Anchor != "" && (documentChanged || st.anchor != o.Anchor || st.anchorVersion != o.AnchorVersion) {
+		st.scrollTo = st.headingNamed(strings.TrimPrefix(o.Anchor, "#"))
+	}
+	st.anchor, st.anchorVersion = o.Anchor, o.AnchorVersion
 	st.fade = st.reveal.fader(c, o.Reveal)
 
 	root.FontSize(th.FontSize).LineHeight(th.LineHeight).TextColor(th.Text)
@@ -374,6 +407,7 @@ func (st *viewState) para(i int, base spanStyle) *para {
 	sb.block = i
 	sb.fade = st.fade
 	sb.notes = st.noteNumber
+	sb.math = st.o.InlineMath
 	sb.build(&pc.p, base)
 	return &pc.p
 }
@@ -396,6 +430,13 @@ func (st *viewState) paragraph(c *ui.Context, i int, base spanStyle) ui.Element 
 		el.Children(func() {
 			for k := range ps {
 				st.piece(c, i, &ps[k])
+			}
+		})
+	}
+	if objects := p.objects; len(objects) > 0 {
+		el.DrawObjects(func(pa *ui.Painter, at int, r ui.Rect) {
+			if k, ok := slices.BinarySearchFunc(objects, at, func(o mathObject, at int) int { return o.rune - at }); ok && objects[k].draw != nil {
+				objects[k].draw(pa, r)
 			}
 		})
 	}

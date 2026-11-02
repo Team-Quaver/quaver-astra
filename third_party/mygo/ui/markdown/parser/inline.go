@@ -156,9 +156,11 @@ type inlineParser struct {
 	// \) or \] closes math, so that openers repeated stay linear.
 	noDollar, noParen, noBracket int
 	// openMath is where $$ opens math that nothing closes, or -1, and hide
-	// a bracket healing leaves out, as the text of a link being written.
-	openMath, hide int
-	labels         []string
+	// a bracket healing leaves out, as the text of a link being written;
+	// openDollar is where a single $ opens math (ExtDollarMath) that
+	// nothing closes up to the end of the text, or -1.
+	openMath, hide, openDollar int
+	labels                     []string
 	// leftover are the openers no closer matched, for healing.
 	leftover []delim
 	probe    bool
@@ -207,7 +209,7 @@ func (ip *inlineParser) run(s string) {
 	ip.scannedBackticks = false
 	ip.html.reset()
 	ip.noMath = -1
-	ip.noDollar, ip.noParen, ip.noBracket, ip.openMath = -1, -1, -1, -1
+	ip.noDollar, ip.noParen, ip.noBracket, ip.openMath, ip.openDollar = -1, -1, -1, -1, -1
 	ip.leftover = ip.leftover[:0]
 	for ip.pos < len(s) {
 		ip.parseInline()
@@ -611,6 +613,9 @@ func (ip *inlineParser) parseDollar() bool {
 			ip.pos = j + 1
 			return true
 		}
+	}
+	if ip.openDollar < 0 {
+		ip.openDollar = start
 	}
 	return false
 }

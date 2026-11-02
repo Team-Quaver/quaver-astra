@@ -225,3 +225,47 @@ func TestHiddenScrollbarPassesPress(t *testing.T) {
 		t.Fatalf("a press on the track hidden again made %d clicks and scrolled from %v to %v, want 2 and no scrolling", clicks, scrolled, st.scrollY)
 	}
 }
+
+// A release that comes while a handler handles its press, through a main
+// loop it runs nested, as GTK's clipboard waits do, ends the press once it
+// is recorded: the handler hears of it after the press, and the element a
+// handler left the press to is clicked.
+func TestReleaseDuringPress(t *testing.T) {
+	for _, takes := range []bool{true, false} {
+		var events []InputKind
+		clicked := 0
+		var tt *Tester
+		tt = NewTester(func(c *Context) {
+			Box(c).Size(100, 100).HandleInput(func(ev InputEvent) bool {
+				if ev.Kind == InputPointerDown || ev.Kind == InputPointerUp {
+					events = append(events, ev.Kind)
+				}
+				if ev.Kind == InputPointerDown {
+					tt.rt.event(platform.SurfaceEvent{Kind: platform.PointerUp, X: 50, Y: 50})
+				}
+				return takes
+			}).Children(func() {
+				if Button(c, "OK").Size(100, 100).Clicked() {
+					clicked++
+				}
+			})
+		}, 100, 100)
+		tt.Frame()
+		tt.send(platform.SurfaceEvent{Kind: platform.PointerDown, X: 50, Y: 50})
+		tt.Frame()
+		if tt.rt.pressed != nil {
+			t.Errorf("taken %v: the press outlived its release", takes)
+		}
+		want, clicks := []InputKind{InputPointerDown, InputPointerUp}, 0
+		if !takes {
+			want, clicks = []InputKind{InputPointerDown}, 1
+		}
+		if !slices.Equal(events, want) {
+			t.Errorf("taken %v: the handler heard %v, want %v", takes, events, want)
+		}
+		if clicked != clicks {
+			t.Errorf("taken %v: the button was clicked %d times, want %d", takes, clicked, clicks)
+		}
+		tt.rt.close()
+	}
+}

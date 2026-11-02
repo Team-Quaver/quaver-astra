@@ -41,6 +41,7 @@ func (*Backend) Screen() platform.Screen                                    { re
 func (*Backend) Theme() platform.Theme                                      { return theme{} }
 func (*Backend) Power() platform.Power                                      { return power{} }
 func (*Backend) Network() platform.Network                                  { return network{} }
+func (*Backend) NowPlaying() platform.NowPlaying                            { return nowPlaying{} }
 func (*Backend) Secrets() platform.Secrets                                  { return secrets{} }
 func (*Backend) NewTray(platform.TrayHandler) (platform.Tray, error)        { return nil, errUnsupported }
 func (*Backend) RegisterHotkey(int, string) error                           { return errUnsupported }
@@ -64,6 +65,7 @@ func (app) WithActivationToken(_ string, fn func())           { fn() }
 func (app) Hide()                                             {}
 func (app) Unhide()                                           {}
 func (app) IsHidden() bool                                    { return false }
+func (app) IsActive() bool                                    { return false }
 func (app) SetBadge(string)                                   {}
 func (app) Badge() string                                     { return "" }
 func (app) Bounce(bool) int                                   { return 0 }
@@ -83,17 +85,26 @@ func (app) SetOpenAtLogin(bool, string, string, string) error { return errUnsupp
 func (app) OpenAtLogin(string, string, string) bool           { return false }
 func (app) OpenedAtLogin() bool                               { return false }
 func (app) SetDockMenu(*platform.Menu)                        {}
-func (app) ClearBrowsingData(done func(error))                { done(errUnsupported) }
-func (app) AddRecentDocument(string) error                    { return errUnsupported }
-func (app) ClearRecentDocuments() error                       { return errUnsupported }
-func (app) SetJumpList(platform.JumpList) error               { return errUnsupported }
+func (app) ClearBrowsingData(_ platform.DataStore, _ platform.SiteData, done func(error)) {
+	done(errUnsupported)
+}
+func (app) NewDataStore(platform.DataStoreOptions) (platform.DataStore, error) {
+	return nil, errUnsupported
+}
+func (app) AddRecentDocument(string) error      { return errUnsupported }
+func (app) ClearRecentDocuments() error         { return errUnsupported }
+func (app) SetJumpList(platform.JumpList) error { return errUnsupported }
 
-func (app) ListCookies(_ string, done func([]platform.Cookie, error)) {
+func (app) ListCookies(_ platform.DataStore, _ string, done func([]platform.Cookie, error)) {
 	done(nil, platform.ErrUnsupported)
 }
-func (app) SetCookie(_ platform.Cookie, done func(error))       { done(platform.ErrUnsupported) }
-func (app) DeleteCookie(_ platform.CookieKey, done func(error)) { done(platform.ErrUnsupported) }
-func (app) ClearCookies(done func(error))                       { done(platform.ErrUnsupported) }
+func (app) SetCookie(_ platform.DataStore, _ platform.Cookie, done func(error)) {
+	done(platform.ErrUnsupported)
+}
+func (app) DeleteCookie(_ platform.DataStore, _ platform.CookieKey, done func(error)) {
+	done(platform.ErrUnsupported)
+}
+func (app) ClearCookies(_ platform.DataStore, done func(error)) { done(platform.ErrUnsupported) }
 func (app) CompileContentRules(_, _, _ string, done func(any, error)) {
 	done(nil, platform.ErrUnsupported)
 }
@@ -162,6 +173,10 @@ func (power) Watch()                        {}
 func (power) KeepAwake(bool, string) func() { return func() {} }
 func (power) OnBattery() bool               { return false }
 func (power) IdleTime() time.Duration       { return 0 }
+
+type nowPlaying struct{}
+
+func (nowPlaying) Set(*platform.NowPlayingInfo) {}
 
 type network struct{}
 

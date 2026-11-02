@@ -30,6 +30,9 @@ type Theme struct {
 	Text, Muted, Link, Strong Color
 	// StrongWeight is the weight of strong text: 600.
 	StrongWeight int
+	// LinkWeight is the smallest weight of link text, so links stand out
+	// among prose without lifting strong text down to it: 0 for no floor.
+	LinkWeight int
 
 	// Code colors code spans, with CodeBackground behind them; CodeSize is
 	// their size in ems: 0.875.

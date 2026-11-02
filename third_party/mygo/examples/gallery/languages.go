@@ -9,6 +9,7 @@ import (
 
 	// MyGo's own strings in the languages of the gallery that MyGo is
 	// translated to; its others show them in English.
+	_ "github.com/egoist/mygo/locales/ja"
 	_ "github.com/egoist/mygo/locales/zh-Hans"
 	_ "github.com/egoist/mygo/locales/zh-Hant"
 )

@@ -35,6 +35,10 @@ func TestPathAt(t *testing.T) {
 		{"open ~/Downloads/clip.mp4", 10, "~/Downloads/clip.mp4"},
 		{"main.go:250:3: undefined: x", 2, "main.go:250:3"},
 		{"(src/a.go)", 3, "src/a.go"},
+		{"write(notes.md)", 8, "notes.md"},
+		{"notes.md (new file +2)", 2, "notes.md"},
+		{"See notes.md.", 7, "notes.md"},
+		{"notes.md:2:3", 2, "notes.md:2:3"},
 		{"just words here", 5, ""},
 		{"version 1.2.3 ok", 9, ""},
 	} {
@@ -46,6 +50,17 @@ func TestPathAt(t *testing.T) {
 		if got, _, _ := pathAt(text, cols, c.col); got != c.want {
 			t.Errorf("pathAt(%q, %d) = %q, want %q", c.row, c.col, got, c.want)
 		}
+	}
+}
+
+func TestPathAtSpan(t *testing.T) {
+	text := []rune("write(notes.md)")
+	cols := make([]int, len(text))
+	for i := range cols {
+		cols[i] = i
+	}
+	if path, x0, x1 := pathAt(text, cols, 8); path != "notes.md" || x0 != 6 || x1 != 14 {
+		t.Errorf("pathAt = %q %d..%d, want notes.md 6..14", path, x0, x1)
 	}
 }
 

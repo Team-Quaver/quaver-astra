@@ -498,6 +498,18 @@ func (t *Terminal) SetSelection(s *Selection) {
 	t.set(21, unsafe.Pointer(s))
 }
 
+// ExtendSelection moves the selection's logical end to ref, keeping its
+// original anchor even for a reversed selection. Read a fresh snapshot:
+// grid references cannot be kept across output, scrolling or resizing.
+func (t *Terminal) ExtendSelection(ref GridRef) bool {
+	s := Selection{size: unsafe.Sizeof(Selection{})}
+	if t.get(31, unsafe.Pointer(&s)) != nil {
+		return false
+	}
+	s.end, s.rectangle = ref, false
+	return t.set(21, unsafe.Pointer(&s)) == nil
+}
+
 // SelectAll returns a selection of everything, scrollback included.
 func (t *Terminal) SelectAll() (Selection, bool) {
 	s := Selection{size: unsafe.Sizeof(Selection{})}

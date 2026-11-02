@@ -99,6 +99,36 @@ type PacedSurface interface {
 	FrameNow()
 }
 
+// RefreshSurface is a PacedSurface whose frames drawn in memory
+// (PresentPixels) show at once, and whose frames asked for (RequestFrame)
+// come at once, not at the display's refreshes, as Windows' do: after
+// each frame drawn in memory, the content waits for the next refresh off
+// the main thread, and Paced frames that come meanwhile wait for it.
+type RefreshSurface interface {
+	// AwaitRefresh returns once the display shows its next refresh, or
+	// at once when nothing is to show. It blocks, and is called from a
+	// goroutine of its own, never the main thread.
+	AwaitRefresh()
+}
+
+// FrameRateSurface is a Surface that can have its display refresh less
+// often than it can while frames come at a lower rate, as macOS's display
+// links do on ProMotion displays.
+type FrameRateSurface interface {
+	// SetFrameRate tells how many frames a second come from now on while
+	// they follow each other, a whole fraction of RefreshRate, or 0 for
+	// one each refresh.
+	SetFrameRate(fps float64)
+}
+
+// ImmediateFrameSurface is a Surface whose RequestFrame sends a
+// SurfaceFrame at once, as Windows' does, rather than at the display's next
+// refresh: a frame due at a later refresh waits on a timer instead.
+type ImmediateFrameSurface interface {
+	// FramesAtOnce marks the surface.
+	FramesAtOnce()
+}
+
 // MaximizeButtonSurface is a Surface whose window makes the maximize
 // button its content draws (in a window without its own, as
 // WindowOptions.HideWindowButtons) the system's for the pointer: Windows
@@ -117,6 +147,28 @@ type IdleSurface interface {
 	// Idle tells that no frame came for a while: the surface may give
 	// back memory that drawing frames took and freed.
 	Idle()
+}
+
+// BackgroundSurface is a Surface told the color the content's frames fill
+// the window with, which its window shows where no frame of its size
+// shows yet: on Windows, DWM can show a window at its new size, as the
+// user drags its border, before the frame of that size, and would show
+// black where the window grew.
+type BackgroundSurface interface {
+	// SetBackground sets the color, opaque, or transparent for none.
+	SetBackground(c Color)
+}
+
+// FirstFrameSurface is a Surface told when the content's first frame
+// reached it: a window made hidden draws that frame while hidden, which
+// no paint or refresh of the display asks for, and which makes it ready
+// to show. Windows' window also stays out of sight until then, rather
+// than show what it holds before, white.
+type FirstFrameSurface interface {
+	// FirstFrame tells that the content presented its first frame. It is
+	// called once, within the frame, before the window is told it is
+	// ready to show.
+	FirstFrame()
 }
 
 // TextInputState is the state of the text input that has the keyboard,
@@ -217,6 +269,10 @@ const (
 	// "italic", "underline", "strikethrough", "alignLeft", "alignCenter"
 	// or "alignRight".
 	SurfaceCommand
+	// SurfaceCommandEnabled asks whether SurfaceCommand with Text would
+	// act now, for a menu to enable its item: WindowHandler.SurfaceEvent
+	// reports it.
+	SurfaceCommandEnabled
 	// FileDragOver reports files of another app dragged over X, Y, and
 	// FileDragLeave that they left. FileDrop drops Files at X, Y.
 	// WindowHandler.SurfaceEvent returns whether the content takes them
@@ -255,6 +311,13 @@ const (
 	WebViewTabOut
 )
 
+// EditCommands are the menu roles of edit commands, which native UI takes as
+// a SurfaceCommand and answers SurfaceCommandEnabled for.
+var EditCommands = map[string]bool{
+	"undo": true, "redo": true, "cut": true, "copy": true, "paste": true, "pasteAndMatchStyle": true,
+	"delete": true, "selectAll": true,
+}
+
 // SurfaceEvent is input on a Surface, or a change of it.
 type SurfaceEvent struct {
 	Kind SurfaceEventKind
@@ -264,9 +327,11 @@ type SurfaceEvent struct {
 	Button int
 	Clicks int
 	// DX and DY are scroll distances in DIPs; Precise marks touchpads and
-	// other devices that scroll by pixels rather than by lines.
-	DX, DY  float64
-	Precise bool
+	// other devices that scroll by pixels rather than by lines. Momentum
+	// marks scrolling that continues after the fingers leave a touchpad.
+	DX, DY   float64
+	Precise  bool
+	Momentum bool
 	// Scale is PointerZoom's.
 	Scale float64
 	Key   Key
@@ -392,7 +457,8 @@ const (
 	KeyY
 	KeyZ
 	// KeyBack and KeyForward go back and forward in a history: the side
-	// buttons of a mouse, and the keys of keyboards that have them.
+	// buttons of a mouse, the keys of keyboards that have them, and on
+	// macOS swipes between pages.
 	KeyBack
 	KeyForward
 )

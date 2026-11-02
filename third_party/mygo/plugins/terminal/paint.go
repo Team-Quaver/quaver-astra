@@ -33,6 +33,8 @@ type rowCache struct {
 	selB  int
 	sel   bool
 	wide  []int16 // the columns of wide characters
+	// holders are the runs of placeholder cells, which show images.
+	holders []holderRun
 	// filled tells that every cell has a background of its own, other
 	// than the default, from which PaddingExtend extends.
 	filled bool
@@ -97,6 +99,7 @@ func (v *view) layout(r ui.Rect, scale float32) {
 		v.shaped.clear()
 		v.lines = v.lines[:0]
 	}
+	v.size = [2]float32{r.W, r.H}
 	px, py := t.opts.padding()
 	v.ox, v.oy = int(math.Round(float64(px*scale))), int(math.Round(float64(py*scale)))
 	w, h := int(math.Round(float64(r.W*scale)))-2*v.ox, int(math.Round(float64(r.H*scale)))-2*v.oy
@@ -258,7 +261,7 @@ func contrast(a, b float32) float32 {
 
 // buildRow makes the cache of the render state's current row.
 func (v *view) buildRow(line *rowCache, rs *vt.RenderState, cols int) {
-	*line = rowCache{ok: true, bgs: line.bgs[:0], runs: line.runs[:0], decos: line.decos[:0], boxes: line.boxes[:0], wide: line.wide[:0], filled: true}
+	*line = rowCache{ok: true, bgs: line.bgs[:0], runs: line.runs[:0], decos: line.decos[:0], boxes: line.boxes[:0], wide: line.wide[:0], holders: line.holders[:0], filled: true}
 	cells := rs.RowCells()
 	line.selA, line.selB, line.sel = rs.RowSelection()
 	def := resolved{fg: color(v.colors.Foreground), bg: color(v.colors.Background)}
@@ -334,6 +337,18 @@ func (v *view) buildRow(line *rowCache, rs *vt.RenderState, cols int) {
 		}
 		cp := c.Codepoint
 		if cp == 0 || st.invisible {
+			cp = ' '
+		}
+		if cp == placeholder {
+			var marks []rune
+			if c.Grapheme {
+				buf = rs.CellGraphemes(x, buf[:0])
+				marks = buf
+				if len(marks) > 0 && marks[0] == placeholder {
+					marks = marks[1:]
+				}
+			}
+			line.holders = addHolder(line.holders, x, readHolder(rs.CellStyle(x), marks))
 			cp = ' '
 		}
 		if noMinContrast(cp) {
@@ -799,16 +814,21 @@ func (v *view) drawPreedit(p *ui.Painter, ox, oy, cw, ch, base float32) {
 	p.Fill(ui.Rect{X: x, Y: y + ch - 1/v.scale, W: w, H: 1 / v.scale}, fg, 0)
 }
 
-// drawScrollbar shows where the viewport is while it shows the scrollback.
+// drawScrollbar shows where the viewport is in the scrollback, as a
+// scroll container's bar does (ui.Scrollbar), while the pointer is over
+// the terminal or drags the thumb; in the terminal's text color, as its
+// colors are its own.
 func (v *view) drawScrollbar(p *ui.Painter, r ui.Rect) {
-	sb := v.scrollbar
-	if sb.Total <= sb.Len || sb.Offset+sb.Len >= sb.Total {
+	if !v.inView && !v.barHeld {
 		return
 	}
-	h := max(r.H*float32(sb.Len)/float32(sb.Total), 24)
-	y := r.Y + (r.H-h)*float32(sb.Offset)/float32(sb.Total-sb.Len)
-	c := color(v.colors.Foreground).Alpha(0.35)
-	p.Fill(ui.Rect{X: r.X + r.W - 7, Y: y + 2, W: 4, H: h - 4}, c, 2)
+	p.Scrollbar(bar(v.scrollbar, r), ui.ScrollbarState{Dragging: v.barHeld, Color: color(v.colors.Foreground)})
+}
+
+// bar returns the scroll bar of the scrollback sb, along the right edge of
+// box.
+func bar(sb vt.Scrollbar, box ui.Rect) ui.Scrollbar {
+	return ui.Scrollbar{Box: box, View: float32(sb.Len), Content: float32(sb.Total), Offset: float32(sb.Offset)}
 }
 
 // lru caches shaped text.

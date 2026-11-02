@@ -18,6 +18,9 @@ func TestFoldTranslations(t *testing.T) {
 		{Kind: OpPushClip, Rect: Rect{W: 50, H: 50}, Transform: m},
 		{Kind: OpFill, Rect: Rect{W: 3, H: 4}, Transform: m.Mul(Rotation(10))},
 		{Kind: OpPopClip},
+		{Kind: OpPushClip, Rect: Rect{W: 50, H: 50}, Transform: m.Mul(Rotation(10))},
+		{Kind: OpPopClip},
+		{Kind: OpFill, Rect: Rect{W: 4, H: 4}, Paint: PaintRadial, Gradient: [4]float32{2, 1, 3, 0}, Transform: m},
 	}}
 	var f TranslationFolder
 	if f.Fold(s) != s {
@@ -33,7 +36,9 @@ func TestFoldTranslations(t *testing.T) {
 		s.Ops[4], // glyphs between pixels
 		{Kind: OpImage, Rect: Rect{X: 10, Y: 20, W: 2, H: 2}},
 		s.Ops[6], // an image between pixels
-		s.Ops[7], s.Ops[8], s.Ops[9],
+		{Kind: OpPushClip, Rect: Rect{X: 10, Y: 20, W: 50, H: 50}}, // a clip's edges are computed where they fall
+		s.Ops[8], s.Ops[9], s.Ops[10], s.Ops[11],
+		{Kind: OpFill, Rect: Rect{X: 10, Y: 20, W: 4, H: 4}, Paint: PaintRadial, Gradient: [4]float32{12, 21, 3, 0}}, // its radius kept
 	}
 	for i := range want {
 		if got.Ops[i] != want[i] {
@@ -46,7 +51,7 @@ func TestFoldTranslations(t *testing.T) {
 	if s.Ops[0].Transform != m || s.Glyphs[0].X != 3.4 {
 		t.Error("folding changed the scene")
 	}
-	plain := &Scene{Ops: []Op{s.Ops[7], s.Ops[8]}}
+	plain := &Scene{Ops: []Op{s.Ops[8], s.Ops[10], s.Ops[11]}}
 	if f.Fold(plain) != plain {
 		t.Error("a scene without translations was copied")
 	}

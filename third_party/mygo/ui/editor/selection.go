@@ -7,6 +7,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/egoist/mygo/internal/rope"
+	"github.com/egoist/mygo/internal/text"
 )
 
 // Selection is a selection of an editor: the text from Anchor to
@@ -87,7 +88,8 @@ func newest(sels []sel) int {
 
 // Character classes, as Zed's CharClassifier: words, punctuation and
 // whitespace. extra holds characters other than letters, digits and _
-// that words of the language hold.
+// that words of the language hold. Each Han ideograph and kana is a word
+// of its own, as text.WordBoundary has it: see apart.
 type charClass uint8
 
 const (
@@ -98,7 +100,7 @@ const (
 
 func classOf(r rune, extra string) charClass {
 	switch {
-	case r == '_' || unicode.IsLetter(r) || unicode.IsDigit(r) || extra != "" && strings.ContainsRune(extra, r):
+	case text.IsWordRune(r) || extra != "" && strings.ContainsRune(extra, r):
 		return classWord
 	case unicode.IsSpace(r):
 		return classSpace
@@ -106,8 +108,16 @@ func classOf(r rune, extra string) charClass {
 	return classPunct
 }
 
+// apart reports whether a and b, next to each other and both of class
+// cls, are in different words all the same: Chinese and Japanese have no
+// spaces between words, so each ideograph and kana is one.
+func apart(cls charClass, a, b rune) bool {
+	return cls == classWord && (text.StandsAlone(a) || text.StandsAlone(b))
+}
+
 // wordRight returns where the word after off ends: past spaces, then the
-// run of characters of one class, as alt-right does. sub stops at the
+// run of characters of one class, as alt-right does, or one ideograph
+// or kana. sub stops at the
 // ends of subwords too: at underscores and where lower case turns upper.
 func wordRight(r rope.Text, off int, extra string, sub bool) int {
 	n := r.Len()
@@ -128,7 +138,7 @@ func wordRight(r rope.Text, off int, extra string, sub bool) int {
 	off += size
 	for off < n {
 		c, size = r.RuneAt(off)
-		if classOf(c, extra) != cls || c == '\n' {
+		if classOf(c, extra) != cls || c == '\n' || apart(cls, prev, c) {
 			break
 		}
 		if sub && cls == classWord && subwordBreak(prev, c, r, off+size) {
@@ -158,7 +168,7 @@ func wordLeft(r rope.Text, off int, extra string, sub bool) int {
 	off -= size
 	for off > 0 {
 		c, size = r.RuneBefore(off)
-		if classOf(c, extra) != cls || c == '\n' {
+		if classOf(c, extra) != cls || c == '\n' || apart(cls, c, next) {
 			break
 		}
 		if sub && cls == classWord && subwordBreakBack(c, next) {
@@ -195,7 +205,7 @@ func subwordBreakBack(c, next rune) bool {
 }
 
 // wordAt returns the word around off, or the run of its class: what a
-// double click selects.
+// double click selects. An ideograph or a kana is a word alone.
 func wordAt(r rope.Text, off int, extra string) (int, int) {
 	line := r.LineOf(off)
 	a, z := r.LineStart(line), r.LineEnd(line)
@@ -223,19 +233,29 @@ func wordAt(r rope.Text, off int, extra string) (int, int) {
 		return off, off
 	}
 	start, end := i, i
-	for start > 0 {
-		c, size := utf8.DecodeLastRuneInString(s[:start])
-		if classOf(c, extra) != cls {
-			break
-		}
-		start -= size
-	}
 	for end < len(s) {
 		c, size := utf8.DecodeRuneInString(s[end:])
 		if classOf(c, extra) != cls {
 			break
 		}
+		if end > start {
+			if p, _ := utf8.DecodeLastRuneInString(s[:end]); apart(cls, p, c) {
+				break
+			}
+		}
 		end += size
+	}
+	for start > 0 {
+		c, size := utf8.DecodeLastRuneInString(s[:start])
+		if classOf(c, extra) != cls {
+			break
+		}
+		if start < end {
+			if n, _ := utf8.DecodeRuneInString(s[start:]); apart(cls, c, n) {
+				break
+			}
+		}
+		start -= size
 	}
 	return a + start, a + end
 }

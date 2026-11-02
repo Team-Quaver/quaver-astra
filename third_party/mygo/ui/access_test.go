@@ -330,3 +330,52 @@ func TestInputMethodContext(t *testing.T) {
 		t.Errorf("replacing in a long text: ...%q", d.name[len(d.name)-5:])
 	}
 }
+
+// BenchmarkAccessTree describes a frame of many clickable cards of two
+// texts each, as the content does every frame once assistive technology
+// asked for the window.
+func BenchmarkAccessTree(b *testing.B) {
+	tt := coreNewTester(func(c *context) {
+		coreColumn(c).Fill().Children(func() {
+			for i := range 400 {
+				card := coreColumn(c).Padding(8)
+				card.Clicked()
+				card.Children(func() {
+					coreTextf(c, "Game %d", i)
+					coreText(c, "Studio")
+				})
+			}
+		})
+	}, 640, 20000)
+	tt.send(platform.SurfaceEvent{Kind: platform.AccessibilityOn})
+	b.ReportAllocs()
+	for b.Loop() {
+		tt.rt.accessTree()
+	}
+}
+
+// TestRowNamedByLabels: a list's row is named by its content, an element
+// inside it with a Label by the label rather than its texts, as the web
+// names from content with a descendant's aria-label.
+func TestRowNamedByLabels(t *testing.T) {
+	var ls ListState
+	tt := NewTester(func(c *Context) {
+		List(c, &ls, 1, func(i int) {
+			Row(c).Children(func() {
+				Box(c).Label("Done").Children(func() { Text(c, "✓") })
+				Text(c, "Write the report")
+			})
+		}).Fill()
+	}, 320, 240)
+	tt.rt.access = true
+	tt.Frame()
+	for _, n := range tt.rt.accessTree().Nodes {
+		if n.Role == platform.RoleListItem {
+			if n.Label != "Done Write the report" {
+				t.Errorf("row named %q, want %q", n.Label, "Done Write the report")
+			}
+			return
+		}
+	}
+	t.Error("no row for assistive technology")
+}

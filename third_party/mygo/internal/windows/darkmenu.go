@@ -215,10 +215,10 @@ func (w *window) drawMenuBarItem(lp uintptr) {
 	if plate == back {
 		box = nil
 	}
-	paintItem(dc, r, back, box, plate, float64(toPx(menuRadius, dpi)), func(dc uintptr, r rect) {
-		old, _, _ := procSelectObject.Call(dc, font)
-		label(dc, r)
-		procSelectObject.Call(dc, old)
+	paintItem(dc, r, back, box, plate, float64(toPx(menuRadius, dpi)), func(img *bitmap, r rect) {
+		old, _, _ := procSelectObject.Call(img.dc, font)
+		label(img.dc, r)
+		procSelectObject.Call(img.dc, old)
 	})
 }
 

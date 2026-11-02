@@ -101,7 +101,7 @@ type Attachment struct {
 func (a *Attachment) size() (w, h float32) {
 	w, h = a.Width, a.Height
 	if a.Image != nil && (w <= 0 || h <= 0) {
-		iw, ih := imageSize(a.Image)
+		iw, ih := ui.ImageSize(a.Image)
 		switch {
 		case w <= 0 && h <= 0:
 			w, h = iw, ih
@@ -112,18 +112,6 @@ func (a *Attachment) size() (w, h float32) {
 		}
 	}
 	return max(w, 1), max(h, 1)
-}
-
-// imageSize returns the size an image shows at, in DIPs.
-func imageSize(src ui.ImageSource) (float32, float32) {
-	switch s := src.(type) {
-	case *ui.Bitmap:
-		w, h := s.Size()
-		return float32(w), float32(h)
-	case *ui.SVG:
-		return s.Size()
-	}
-	return 0, 0
 }
 
 // ObjectReplacement is the character an Attachment takes in a text.
@@ -177,6 +165,16 @@ type ParagraphStyle struct {
 	// the monospaced font, its spaces kept.
 	Quote     bool `json:"quote,omitempty"`
 	CodeBlock bool `json:"codeBlock,omitempty"`
+	// ID is the app's name for the paragraph, the key of what it keeps
+	// about it, which the editor does not show. It stays with the
+	// paragraph's text as it is edited (see Text.Replace): a paragraph
+	// split keeps it in its first half (the second when split at its
+	// start), paragraphs joined keep the first's, and the paragraphs an
+	// edit makes have none, unless the document names them
+	// (Document.IdentifyParagraphs). Undo brings it
+	// back with the text, JSON saves it, and the clipboard, Markdown,
+	// HTML and RTF leave it out.
+	ID string `json:"id,omitempty"`
 }
 
 // Run is a run of text with its attributes.
@@ -238,7 +236,7 @@ func NewText(s string) Text {
 }
 
 // TextOf returns an Text of paragraphs. A newline in a
-// run starts another paragraph of the same style.
+// run starts another paragraph of the same style, without its ID.
 //
 //	ui.TextOf(
 //		ui.Paragraph{Style: ui.ParagraphStyle{Heading: 1}, Runs: []ui.Run{{Text: "Groceries"}}},
@@ -269,6 +267,7 @@ func TextOf(paragraphs ...Paragraph) Text {
 				line.Reset()
 				runs = nil
 				rest = after
+				p.Style.ID = ""
 			}
 		}
 		lines = append(lines, line.String())
@@ -517,6 +516,12 @@ func (t Text) Slice(start, end int) Text {
 // rune comes from, as AppKit fixes paragraph styles: deleting the newline
 // after a heading keeps the heading, and text put at the start of a
 // paragraph brings its own paragraph's style.
+//
+// The IDs of paragraphs follow their text instead, and never come from
+// with, so that no two paragraphs get one ID: a paragraph split keeps its
+// ID in the first half, or in the second when split at its start, as
+// Enter there moves the paragraph down; the new paragraphs have none; and
+// paragraphs joined keep the first's, unless nothing of it is left.
 func (t Text) Replace(start, end int, with Text) Text {
 	n := t.Len()
 	start, end = max(0, min(start, end, n)), max(0, min(max(start, end), n))
@@ -545,16 +550,28 @@ func (t Text) Replace(start, end int, with Text) Text {
 		case f.n > 0:
 			style = f.style
 		}
+		style.ID = last.style.ID
+		if headN > 0 || f.n > 0 {
+			style.ID = first.style.ID
+		}
 		out = append(out, richPara{id: first.id, style: style, n: headN + f.n + tailN, runs: runs})
 	} else {
+		// Split at its start, the paragraph's text goes to the last part,
+		// with its ID.
+		moved := pa == pz && headN == 0
 		f := frag[0]
 		style := f.style
 		if headN > 0 {
 			style = first.style
 		}
+		style.ID = first.style.ID
+		if moved {
+			style.ID = ""
+		}
 		out = append(out, richPara{id: first.id, style: style, n: headN + f.n, runs: cutRuns(head, f.runs, 0, f.n+1)})
 		for _, f := range frag[1 : len(frag)-1] {
 			f.id = paraIDs.Add(1)
+			f.style.ID = ""
 			out = append(out, f)
 		}
 		f = frag[len(frag)-1]
@@ -562,8 +579,13 @@ func (t Text) Replace(start, end int, with Text) Text {
 		if f.n > 0 {
 			style = f.style
 		}
-		if pz != pa {
+		style.ID = ""
+		switch {
+		case pz != pa:
 			id = last.id
+			style.ID = last.style.ID
+		case moved:
+			style.ID = first.style.ID
 		}
 		runs := cutRuns(nil, f.runs, 0, f.n)
 		runs = cutRuns(runs, tail, 0, tailN+1)
@@ -658,6 +680,12 @@ func (t Text) Format(start, end int, fn func(a *Attributes)) Text {
 // paragraph end only starts, after a selection of whole paragraphs.
 func (t Text) FormatParagraphs(start, end int, fn func(p *ParagraphStyle)) Text {
 	pa, pz := t.paragraphSpan(start, end)
+	return t.formatParas(pa, pz, fn)
+}
+
+// formatParas returns the text with fn changing the styles of paragraphs
+// pa to pz.
+func (t Text) formatParas(pa, pz int, fn func(p *ParagraphStyle)) Text {
 	out := make([]richPara, 0, pz-pa+1)
 	changed := false
 	seqEach(t.seq(), pa, func(i int, p *richPara) bool {

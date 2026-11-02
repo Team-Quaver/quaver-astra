@@ -58,6 +58,11 @@ func TestMain(m *testing.M) {
 	}
 	fb = fake.New()
 	backendOnce.Do(func() { theBackend = fb })
+	if os.Getenv("MYGO_TEST_STUCK_QUIT") == "1" {
+		stuckQuit()
+	}
+	// A quit that a test lets through must not end the tests.
+	stopGrace = 0
 	if os.Getenv("MYGO_TEST_BEFORE_RUN") == "1" {
 		beforeRun()
 	}
@@ -175,6 +180,27 @@ func TestWindowDefaults(t *testing.T) {
 	}
 	if WindowByID(w.ID()) != w {
 		t.Error("WindowByID")
+	}
+}
+
+// TestGlassWindowOptions passes a floating panel's look to the backend: the
+// glass and the corners of a frameless window, a negative radius none; and
+// its active look, which SetActiveAppearance sets.
+func TestGlassWindowOptions(t *testing.T) {
+	w, fw := testWindow(t, WindowOptions{Frameless: true, Transparent: true, Vibrancy: VibrancyGlassClear, CornerRadius: 16})
+	if o := fw.Opts; o.Vibrancy != "glass-clear" || o.CornerRadius != 16 {
+		t.Errorf("vibrancy %q, radius %d", o.Vibrancy, o.CornerRadius)
+	}
+	if fw.ActiveAppearance() {
+		t.Error("drawn as active before SetActiveAppearance")
+	}
+	w.SetActiveAppearance(true)
+	if !fw.ActiveAppearance() {
+		t.Error("SetActiveAppearance(true) did not reach the backend")
+	}
+	_, fw = testWindow(t, WindowOptions{Frameless: true, CornerRadius: -4})
+	if o := fw.Opts; o.CornerRadius != 0 {
+		t.Errorf("radius %d; want none", o.CornerRadius)
 	}
 }
 
@@ -369,6 +395,50 @@ func TestWillNavigate(t *testing.T) {
 	check(platform.Navigation{URL: "https://blocked.example", IsMainFrame: true}, false)
 	check(platform.Navigation{URL: "https://blocked.example", IsMainFrame: false}, true)
 	check(platform.Navigation{URL: "https://blocked.example", IsMainFrame: true, Unasked: true}, true)
+}
+
+// TestUserInitiated checks that whether a user's gesture opened a window
+// or navigated reaches the window open handler and OnWillNavigate, which
+// can refuse what a page's script did on its own.
+func TestUserInitiated(t *testing.T) {
+	w, fw := testWindow(t, WindowOptions{})
+	off := App.OnWindowCreated(func(c *Window) { t.Cleanup(c.Destroy) })
+	defer off()
+	var asked []WindowOpenRequest
+	w.Page().SetWindowOpenHandler(func(req WindowOpenRequest) *WindowOptions {
+		asked = append(asked, req)
+		if !req.UserInitiated {
+			return nil // a pop-up
+		}
+		return &WindowOptions{}
+	})
+	opens := func(req platform.NewWindowRequest) bool {
+		return onMainValue(func() bool { return fw.H.NewWindow(req) != nil })
+	}
+	if !opens(platform.NewWindowRequest{URL: "https://clicked.example/", Width: 300, Height: 200, UserInitiated: true}) {
+		t.Error("the window a user's click opened was refused")
+	}
+	if opens(platform.NewWindowRequest{URL: "https://popup.example/"}) {
+		t.Error("the window a script opened on its own was opened")
+	}
+	want := []WindowOpenRequest{
+		{URL: "https://clicked.example/", Width: 300, Height: 200, UserInitiated: true},
+		{URL: "https://popup.example/"},
+	}
+	if !slices.Equal(asked, want) {
+		t.Errorf("the handler was asked %+v, want %+v", asked, want)
+	}
+
+	var users []bool
+	w.Page().OnWillNavigate(func(e *NavigateEvent) { users = append(users, e.UserInitiated) })
+	for _, user := range []bool{true, false} {
+		onMain(func() {
+			fw.H.WillNavigate(platform.Navigation{URL: "https://next.example/", IsMainFrame: true, UserInitiated: user})
+		})
+	}
+	if !slices.Equal(users, []bool{true, false}) {
+		t.Errorf("OnWillNavigate was told UserInitiated %v, want [true false]", users)
+	}
 }
 
 // TestReloadLoadsHTMLAgain checks that a reload of a document LoadHTML
@@ -1191,10 +1261,11 @@ func TestProtocolCORS(t *testing.T) {
 	}
 
 	for _, origin := range []string{
-		"mygo://localhost",        // the frontend
-		"http://mygo.localhost",   // the frontend, as WebView2 serves it
-		"http://assets.localhost", // a custom scheme, as WebView2 serves it
-		"https://app.example.com", // in PageOptions.TrustedOrigins
+		"mygo://localhost",            // the frontend
+		"http://mygo.localhost",       // the frontend, as WebView2 serves it
+		"http://assets.localhost",     // a custom scheme, as WebView2 serves it
+		"http://abc.assets.localhost", // another host of a custom scheme, as WebView2 serves it
+		"https://app.example.com",     // in PageOptions.TrustedOrigins
 	} {
 		rec := send("GET", "/data", origin, nil)
 		if rec.status != 200 || rec.body.String() != "data" {
@@ -1213,7 +1284,7 @@ func TestProtocolCORS(t *testing.T) {
 			t.Errorf("dev server: Access-Control-Allow-Origin = %q", got)
 		}
 	}
-	for _, origin := range []string{"", "null", "https://example.com", "http://evil.localhost", "http://assets.localhost:8080"} {
+	for _, origin := range []string{"", "null", "https://example.com", "http://evil.localhost", "http://assets.localhost:8080", "http://abc.evil.localhost", "http://a_b.assets.localhost"} {
 		if got := send("GET", "/data", origin, nil).header.Get("Access-Control-Allow-Origin"); got != "" {
 			t.Errorf("%q got Access-Control-Allow-Origin %q", origin, got)
 		}
@@ -1902,6 +1973,7 @@ var needsAppCalls = []struct {
 	{"App.SetBadgeCount", func() { App.SetBadgeCount(1) }},
 	{"App.ShowAboutPanel", func() { App.ShowAboutPanel(AboutPanelOptions{}) }},
 	{"App.ClearBrowsingData", func() { App.ClearBrowsingData() }},
+	{"Session.ClearData", func() { NewEphemeralSession().ClearData(SiteDataAll) }},
 	{"App.Dock.SetBadge", func() { App.Dock.SetBadge("1") }},
 	{"App.Dock.Badge", func() { App.Dock.Badge() }},
 	{"App.Dock.Bounce", func() { App.Dock.Bounce(false) }},
@@ -1950,6 +2022,42 @@ var needsAppCalls = []struct {
 	{"Dialog.Error", func() { Dialog.Error("title", "content") }},
 	{"Menu.Popup", func() { NewMenu(nil).Popup(nil) }},
 	{"Menu.PopupAt", func() { NewMenu(nil).PopupAt(nil, 0, 0) }},
+}
+
+// TestQuitWhileLoopRuns: once the quit sequence has run, a loop that goes
+// on running does not keep the app: a later quit asks it to stop again,
+// and the app finishes and exits after stopGrace.
+func TestQuitWhileLoopRuns(t *testing.T) {
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(exe, "-test.run=^$")
+	cmd.Env = append(os.Environ(), "MYGO_TEST_STUCK_QUIT=1")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("%v\n%s", err, out)
+	}
+	if got := string(out); !strings.Contains(got, "asked again: 2\n") || !strings.Contains(got, "quit\n") {
+		t.Errorf("output:\n%s", got)
+	}
+}
+
+// stuckQuit is a helper process for TestQuitWhileLoopRuns: its event
+// loop does not stop when asked.
+func stuckQuit() {
+	fb.IgnoresQuit = true
+	stopGrace = 100 * time.Millisecond
+	App.OnWindowAllClosed(func() {})
+	App.OnQuit(func() { fmt.Println("quit") })
+	App.WhenReady(func() {
+		App.Quit()
+		App.Quit()
+		postMain(func() { fmt.Println("asked again:", fb.Quits) })
+	})
+	App.Run()
+	fmt.Println("the loop stopped")
+	os.Exit(1)
 }
 
 // beforeRun is a helper process for TestBeforeRun: it does what main may

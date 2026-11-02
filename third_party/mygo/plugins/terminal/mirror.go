@@ -265,9 +265,16 @@ func scrolledPast(term *vt.Terminal, id vt.RowID, scrollback int) int {
 // restart starts the other terminal over: its scrollback and screen, then
 // this one's, row by row.
 func (m *Mirror) restart(out *bytes.Buffer, screen []line, alt bool, top int) {
-	// Both screens' images go too, which frames send again.
+	// Both screens' images go too, which frames send again: those sent by
+	// their ids, as deleting the placements that show (d=A) leaves those
+	// of the scrollback, which the other terminal keeps over its screen
+	// once the scrollback is cleared under them.
 	const noImages = "\x1b_Ga=d,d=A,q=2\x1b\\"
-	out.WriteString("\x1b[?1049h" + noImages + "\x1b[?1049l" + noImages + "\x1b[0m\x1b[H\x1b[2J\x1b[3J")
+	out.WriteString("\x1b[?1049h" + noImages)
+	m.deleteImages(out, &m.imgs[1])
+	out.WriteString("\x1b[?1049l" + noImages)
+	m.deleteImages(out, &m.imgs[0])
+	out.WriteString("\x1b[0m\x1b[H\x1b[2J\x1b[3J")
 	m.modes, m.cursor = "", ""
 	m.imgs = [2]mirroredImages{}
 	m.sent = make([][]byte, len(screen))
@@ -529,9 +536,110 @@ func readLine(term *vt.Terminal, rs *vt.RenderState, y int) line {
 // X10's, as Ghostty does.
 var mirroredModes = []vt.Mode{
 	vt.ModeCursorKeys, 66, // DECCKM, DECNKM (the keypad's)
+	67, 1035, 1036, 1039, // DECBKM (Backspace's), NumLock's keypad, Alt's ESC
 	vt.ModeFocusEvent, vt.ModeAltScroll, vt.ModeBracketedPaste, vt.ModeGraphemes,
 	9, 1000, 1002, 1003, 1005, 1006, 1015, 1016, // the mouse's
 	5, // DECSCNM, the screen in reverse video
+}
+
+// mouseEvents and mouseFormats are the mouse's modes of each of its two
+// settings.
+var (
+	mouseEvents  = []vt.Mode{9, 1000, 1002, 1003}
+	mouseFormats = []vt.Mode{1005, 1006, 1015, 1016}
+)
+
+// mouseLast orders the modes on so that the mouse's in effect come last,
+// for the other terminal to take the events and the format the terminal
+// sends: the last of a setting's modes set picks it, and its others stay
+// set, so that crossterm's 1015 then 1006, as herdr sets them, are SGR's
+// and not URxvt's. off is a mode to reset after, when the modes on are
+// none in effect: a reset of one picks none or X10's again, and leaves the
+// others set. A mouse encoder tells which are in effect by what it sends.
+func mouseLast(term *vt.Terminal, on []vt.Mode) (_ []vt.Mode, off vt.Mode) {
+	var events, formats int
+	for _, md := range on {
+		if slices.Contains(mouseEvents, md) {
+			events++
+		} else if slices.Contains(mouseFormats, md) {
+			formats++
+		}
+	}
+	if events == 0 {
+		return on, 0 // no events, of which the format is the format
+	}
+	e, err := vt.NewMouseEncoder()
+	if err != nil {
+		return on, 0
+	}
+	defer e.Free()
+	// Cells of 10 by 10 pixels, 300 of them across: X10's coordinates go
+	// up to 223, past which UTF-8's take two bytes.
+	sends := func(pressed bool, action vt.MouseAction, button int, x float32) []byte {
+		e.Sync(term, 3000, 100, 10, 10, 0, 0, pressed)
+		return e.Encode(action, button, 0, x, 5)
+	}
+	var event vt.Mode
+	switch {
+	case len(sends(false, vt.MouseMotion, vt.ButtonNone, 5)) > 0:
+		event = 1003
+	case len(sends(true, vt.MouseMotion, vt.ButtonLeft, 15)) > 0:
+		event = 1002
+	case len(sends(false, vt.MouseRelease, vt.ButtonLeft, 5)) > 0:
+		event = 1000
+	case len(sends(false, vt.MousePress, vt.ButtonLeft, 5)) > 0:
+		event = 9
+	}
+	on = moveLast(on, event, mouseEvents)
+	if event == 0 {
+		return on, mouseEventsOn(on)
+	}
+	if formats == 0 {
+		return on, 0
+	}
+	var format vt.Mode
+	switch b := sends(false, vt.MousePress, vt.ButtonLeft, 1505); {
+	case bytes.HasPrefix(b, []byte("\x1b[<")):
+		format = 1006
+		if bytes.Contains(b, []byte(";1505;")) {
+			format = 1016
+		}
+	case bytes.HasPrefix(b, []byte("\x1b[M")):
+		if len(b) > 6 {
+			format = 1005
+		}
+	case len(b) > 0:
+		format = 1015
+	}
+	on = moveLast(on, format, mouseFormats)
+	if format == 0 {
+		for _, md := range on {
+			if slices.Contains(mouseFormats, md) {
+				off = md
+			}
+		}
+	}
+	return on, off
+}
+
+// moveLast moves md to the end of the modes on, when it's on, or else
+// none of the setting's modes.
+func moveLast(on []vt.Mode, md vt.Mode, setting []vt.Mode) []vt.Mode {
+	if md == 0 || !slices.Contains(on, md) {
+		return on
+	}
+	on = slices.DeleteFunc(slices.Clone(on), func(o vt.Mode) bool { return o == md })
+	return append(on, md)
+}
+
+// mouseEventsOn returns a mouse's event mode among those on.
+func mouseEventsOn(on []vt.Mode) vt.Mode {
+	for _, md := range on {
+		if slices.Contains(mouseEvents, md) {
+			return md
+		}
+	}
+	return 0
 }
 
 // programColors returns the sequences that set the colors programs set
@@ -573,17 +681,20 @@ func (m *Mirror) state(out *bytes.Buffer, c vt.Cursor) {
 	t := m.t
 	term := t.term
 	var modes bytes.Buffer
-	for _, on := range []bool{false, true} {
-		for _, md := range mirroredModes {
-			if term.Mode(md) != on {
-				continue
-			}
-			v := byte('l')
-			if on {
-				v = 'h'
-			}
-			fmt.Fprintf(&modes, "\x1b[?%d%c", md, v)
+	var on []vt.Mode
+	for _, md := range mirroredModes {
+		if term.Mode(md) {
+			on = append(on, md)
+		} else {
+			fmt.Fprintf(&modes, "\x1b[?%dl", md)
 		}
+	}
+	on, off := mouseLast(term, on)
+	for _, md := range on {
+		fmt.Fprintf(&modes, "\x1b[?%dh", md)
+	}
+	if off != 0 {
+		fmt.Fprintf(&modes, "\x1b[?%dl", off)
 	}
 	mok := 1
 	if term.ModifyOtherKeys() {

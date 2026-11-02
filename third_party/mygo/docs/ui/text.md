@@ -12,7 +12,8 @@ ui.Textf(c, "%d files, %s", n, size).TextColor(c.Theme().TextMuted)
 
 `FontSize`, `FontWeight`, `Bold`, `Italic`, `Font`, `LineHeight`,
 `FixedLineHeight` (in DIPs, whatever the font size), `TextColor`,
-`TextAlign`, `Underline`, `WavyUnderline`, `Strikethrough`,
+`TextAlign`, `Underline`, `WavyUnderline`, `DottedUnderline` (as links
+mark hover), `Strikethrough`,
 `DecorationColor` and `DecorationThickness` (of the underline and
 strikethrough), `TextBackground` (a highlight behind the lines),
 `LetterSpacing` and `FontFeatures` style it, set on the text or on any
@@ -103,6 +104,40 @@ ui.RichText(c,
 	ui.Span{Text: "match", Background: ui.RGBA(250, 204, 21, 0.4)},
 )
 ```
+
+A span with an `ObjectWidth` makes its object replacement characters
+(U+FFFC) inline objects: boxes `ObjectWidth` wide, `ObjectHeight` above
+the baseline and `ObjectDescent` below it, which wrap with the words and
+which the line makes room for, as a formula's subscripts need.
+`DrawObjects` draws them, after the glyphs, in the text's clip: it gets
+each one's rune in the paragraph and its box.
+
+```go
+ui.RichText(c,
+	ui.Span{Text: "where "},
+	ui.Span{Text: "\uFFFC", ObjectWidth: f.W, ObjectHeight: f.Ascent, ObjectDescent: f.Descent},
+	ui.Span{Text: " is the mean"},
+).DrawObjects(func(p *ui.Painter, at int, r ui.Rect) { f.Draw(p, r) })
+```
+
+A span's `BaselineShift` raises its text that many DIPs above the
+baseline, or lowers it when negative, as superscripts and subscripts are,
+whatever the font has for them; the line makes room for it, and the
+span's underline and strikethrough go with it:
+
+```go
+ui.RichText(c,
+	ui.Span{Text: "H"},
+	ui.Span{Text: "2", Size: 10, BaselineShift: -3},
+	ui.Span{Text: "O boils at 100 °C"},
+	ui.Span{Text: "1", Size: 10, BaselineShift: 6},
+)
+```
+
+A soft hyphen (U+00AD) in a text is a place a line may break at: it
+shows as a hyphen where a line breaks there, and as nothing elsewhere, as
+in browsers. When the hyphen itself does not fit and the line has no
+other place to break but within a word, the hyphen overflows the width.
 
 ## Elements within a sentence
 

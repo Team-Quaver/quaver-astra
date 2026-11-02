@@ -253,8 +253,15 @@ func npTestApp(t *testing.T, cover color.RGBA) (*App, *ui.Tester) {
 // npTestAppLyrics 允许测试注入翻译 LRC（版式回归用：长译文必须换行）。
 func npTestAppLyrics(t *testing.T, cover color.RGBA, qrc, trans string) (*App, *ui.Tester) {
 	t.Helper()
+	return npTestAppEngine(t, cover, qrc, trans, loadEngine{})
+}
+
+// npTestAppEngine 与 npTestAppLyrics 相同，但允许换一个播放引擎：需要推进
+// 播放位置的用例（如歌词跟随）用可写 Position 的假引擎。
+func npTestAppEngine(t *testing.T, cover color.RGBA, qrc, trans string, eng player.Engine) (*App, *ui.Tester) {
+	t.Helper()
 	const pmid = "001Qu4I30VtaFH"
-	p := player.New(npBackend{qrc: qrc, trans: trans}, loadEngine{}, &nullPrefs{})
+	p := player.New(npBackend{qrc: qrc, trans: trans}, eng, &nullPrefs{})
 	p.PlayList([]player.Song{{
 		Mid: "m1", Title: "晴天", Artists: "周杰伦", Album: "叶惠美",
 		AlbumPmid: pmid, Interval: 269,

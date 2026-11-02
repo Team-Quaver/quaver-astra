@@ -166,7 +166,7 @@ func (rt *engine) dragMove(x, y float32) {
 					done(result)
 				}
 			}
-			if err := rt.host.startDataDrag(src.data(), value, options, x, y); err != nil {
+			if err := rt.host.startDataDrag(src.data(), value, options, x*rt.zoomFactor(), y*rt.zoomFactor()); err != nil {
 				options.Done(transfer.Result{Err: err})
 			}
 			return
@@ -266,10 +266,12 @@ func (rt *engine) dragCancel() bool {
 }
 
 // dragScroll scrolls the scroll container under the pointer while a value
-// is dragged near one of its edges, faster nearer to it.
+// or native transfer is dragged near one of its edges, faster nearer to it.
 func (rt *engine) dragScroll() {
 	d := rt.drag
-	if d == nil || d.canceled || d.native {
+	// A native source may still be alive after leaving this window. Only
+	// its destination events (incoming) tell us it is over this window.
+	if rt.incoming == nil && (d == nil || d.canceled || d.native) {
 		return
 	}
 	const edge = 32
@@ -289,7 +291,9 @@ func (rt *engine) dragScroll() {
 		if dy != 0 && scrollBy(s, 0, dy) {
 			rt.animating = true
 			// The element under the pointer changes as the content moves.
-			d.over = rt.valueTarget(rt.pointerX, rt.pointerY, d.value)
+			if d != nil && !d.native && !d.canceled {
+				d.over = rt.valueTarget(rt.pointerX, rt.pointerY, d.value)
+			}
 		}
 		return
 	}
@@ -311,13 +315,14 @@ func (rt *engine) paintDrag(p *Painter, w, h float32) {
 	} else {
 		shift(e, dx, dy)
 	}
-	saved, savedClip, dimmed := p.opacity, p.clip, e.opacitySet
-	p.opacity, p.clip, e.opacitySet = 0.75, Rect{0, 0, w, h}, false
+	saved, savedClip, savedTheme, dimmed := p.opacity, p.clip, p.theme, e.opacitySet
+	// Painted alone, it takes the theme of the Themed around it.
+	p.opacity, p.clip, p.theme, e.opacitySet = 0.75, Rect{0, 0, w, h}, e.theme(), false
 	p.element(e)
 	p.opacity = 1
 	// How many go with it, as several rows dragged.
 	if n, ok := d.value.(interface{ dragCount() int }); ok && n.dragCount() > 1 {
-		t := rt.c.theme
+		t := p.Theme()
 		label := Span{Text: itoa(n.dragCount()), Size: t.FontSize - 2, Weight: 600, Color: t.AccentText}
 		tw, th := p.MeasureText(0, label)
 		bw := max(tw+10, th+4)
@@ -326,7 +331,7 @@ func (rt *engine) paintDrag(p *Painter, w, h float32) {
 		p.Fill(Rect{x, y, bw, th + 4}, t.Accent, (th+4)/2)
 		p.RichText(x+(bw-tw)/2, y+2, 0, label)
 	}
-	p.opacity, p.clip, e.opacitySet = saved, savedClip, dimmed
+	p.opacity, p.clip, p.theme, e.opacitySet = saved, savedClip, savedTheme, dimmed
 	if affine {
 		restoreVisual(e)
 	} else {

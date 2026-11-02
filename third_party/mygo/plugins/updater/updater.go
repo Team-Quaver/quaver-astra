@@ -169,8 +169,18 @@ func LastCheck() time.Time {
 	return u.state.LastCheck
 }
 
+// AvailableVersion reports the newer version found by the last check, or "".
+// It is empty before checking, after a failed check, and for a skipped version.
+// A downloaded update keeps its version until the app relaunches.
+func AvailableVersion() string {
+	u := used()
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	return u.available
+}
+
 // OnChange calls fn on the main thread after the choices of the user or the
-// time of the last check changed: a check succeeded, the user answered the
+// time of the last check or AvailableVersion changed: a check succeeded, the user answered the
 // update window (its checkbox, Skip This Version), or the app called
 // SetAutomaticChecks or SetAutomaticDownloads. A preferences page that shows
 // AutomaticChecks, AutomaticDownloads or LastCheck reads them again. It
@@ -269,6 +279,7 @@ type updater struct {
 	// while the app runs, which runs at the next launch.
 	session   *session
 	installed *release
+	available string
 }
 
 func newUpdater(opts Options, open func(*session)) *updater {
@@ -330,10 +341,11 @@ func (u *updater) update(fn func(*state)) {
 	u.load()
 	u.mu.Lock()
 	before := u.state
+	beforeAvailable := u.available
 	fn(&u.state)
 	u.save()
 	var changes []*func()
-	if !u.state.same(before) {
+	if !u.state.same(before) || u.available != beforeAvailable {
 		changes = slices.Clone(u.changes)
 	}
 	u.mu.Unlock()
@@ -413,17 +425,24 @@ func nextCheck(last, failed time.Time, interval time.Duration, now time.Time) ti
 }
 
 // checked records the outcome of a check.
-func (u *updater) checked(err error) {
+func (u *updater) checked(err error, version string, user bool) {
 	u.mu.Lock()
 	if err != nil {
 		u.failed = now()
 		u.mu.Unlock()
+		u.update(func(*state) { u.available = "" })
 		return
 	}
 	u.failed = time.Time{}
 	u.mu.Unlock()
 	t := now()
-	u.update(func(s *state) { s.LastCheck = t })
+	u.update(func(s *state) {
+		s.LastCheck = t
+		u.available = version
+		if !user && s.SkippedVersion == version {
+			u.available = ""
+		}
+	})
 }
 
 // begin starts a check, or makes the one under way show its window when
@@ -472,6 +491,7 @@ func (u *updater) run(s *session) {
 	defer u.end(s)
 	t := s.t
 	if !enabled() {
+		u.update(func(*state) { u.available = "" })
 		s.set(t.unavailableView())
 		s.show()
 		s.wait()
@@ -493,7 +513,11 @@ func (u *updater) run(s *session) {
 	if s.ctx.Err() != nil {
 		return // canceled
 	}
-	u.checked(err)
+	version := ""
+	if err == nil && r != nil {
+		version = r.version
+	}
+	u.checked(err, version, s.User())
 	switch {
 	case err != nil:
 		if s.User() {
@@ -532,6 +556,7 @@ func (u *updater) run(s *session) {
 		st.AutomaticDownloads = resp.automaticDownloads
 		if resp.action == actionSkip {
 			st.SkippedVersion = r.version
+			u.available = ""
 		}
 	})
 	if resp.action == actionInstall {

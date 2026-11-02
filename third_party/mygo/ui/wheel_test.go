@@ -4,6 +4,8 @@ import (
 	"math"
 	"testing"
 	"time"
+
+	"github.com/egoist/mygo/internal/platform"
 )
 
 func TestWheelGlides(t *testing.T) {
@@ -50,6 +52,21 @@ func TestWheelGlides(t *testing.T) {
 	tt.Scroll(100, 100, 0, 30)
 	if s.Y != 40 {
 		t.Errorf("a touchpad scrolled to %v", s.Y)
+	}
+}
+
+func TestWheelMomentumReachesInput(t *testing.T) {
+	var got InputEvent
+	tt := coreNewTester(func(c *context) {
+		coreBox(c).Fill().HandleInput(func(ev InputEvent) bool {
+			got = ev
+			return true
+		})
+	}, 200, 200)
+	tt.Move(100, 100)
+	tt.send(platform.SurfaceEvent{Kind: platform.PointerScroll, X: 100, Y: 100, DY: -40, Precise: true, Momentum: true})
+	if got.Kind != InputScroll || !got.Precise || !got.Momentum {
+		t.Errorf("input got kind %v, precise %v, momentum %v; want InputScroll, true, true", got.Kind, got.Precise, got.Momentum)
 	}
 }
 

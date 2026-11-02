@@ -125,7 +125,9 @@ than 500 ms while more keep coming; `debounceMs` sets the quiet, as Go's
 `Debounce`: `0` is 50 ms, and a negative number reports them right away. A
 watch compares what it sees with what it saw, so events say what is
 different, not every step that made it so: a file written many times in a
-row is one write, and one created and removed in between is nothing. Treat
+row is one write, one replaced at its path by another, as atomic saves
+replace it, is a write too, and one created and removed in between is
+nothing. Treat
 them as hints to read the files again. Go doesn't look again until the page
 has taken a batch, so nothing is lost while the page is busy.
 

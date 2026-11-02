@@ -7,6 +7,8 @@ import (
 	"sync"
 	"syscall"
 	"unsafe"
+
+	"github.com/egoist/mygo/internal/platform"
 )
 
 // Windows 11 still draws Win32 menus as Windows 10 did, while its own menus
@@ -32,7 +34,6 @@ const (
 	dtCalcRect             = 0x400
 	dtRight                = 0x002
 	srcCopy                = 0x00CC0020
-	smCxMenuCheck          = 71
 	spiGetNonClientMetrics = 0x0029
 	layoutRTL              = 0x1
 )
@@ -85,9 +86,31 @@ type menuLook struct {
 	// column is whether the menu has a column for the marks of checkable
 	// items, which all its items leave room for.
 	column bool
+	// icon is the item's icon, and icons whether the menu has a column
+	// for icons, after that of the marks (menuicon.go).
+	icon  *platform.MenuIcon
+	icons bool
 	// first and last are whether the item is the menu's first or last,
 	// which has the menu's padding above or below it.
 	first, last bool
+	// menu and pos are the menu holding the item and its position there.
+	menu uintptr
+	pos  int
+	// width is the width the item asked for when Windows measured it last,
+	// at dpi, 0 before.
+	width int32
+	dpi   int
+}
+
+// ftype returns the type the item has besides MFT_OWNERDRAW.
+func (l *menuLook) ftype() uint32 {
+	switch {
+	case l.separator:
+		return mftSeparator
+	case l.radio:
+		return mftRadioCheck
+	}
+	return 0
 }
 
 // padding returns the room above and below the item: the menu's padding,
@@ -264,13 +287,14 @@ func (b *Backend) menuFace(dpi int) menuFonts {
 }
 
 // dropMenuFonts forgets the fonts of popup items, for the next menus to
-// follow a change of the system's.
+// follow a change of the system's, and how much Windows widens the items,
+// which follows its menu font.
 func (b *Backend) dropMenuFonts() {
 	for _, f := range b.menuFonts {
 		procDeleteObject.Call(f.text)
 		procDeleteObject.Call(f.glyphs)
 	}
-	b.menuFonts = nil
+	b.menuFonts, b.menuExtra = nil, nil
 }
 
 // The glyphs of Segoe Fluent Icons, also in Segoe MDL2 Assets.
@@ -352,10 +376,30 @@ func textWidth(dc, font uintptr, text string) int32 {
 func (b *Backend) measureItem(hwnd uintptr, l *menuLook, mis *measureItemStruct) {
 	dpi := dpiOf(hwnd)
 	top, bottom := l.padding(dpi)
+	l.dpi = dpi
 	if l.separator {
+		l.width = 0
 		mis.ItemWidth, mis.ItemHeight = 0, uint32(toPx(menuSeparatorHeight, dpi)+top+bottom)
 		return
 	}
+	// Windows widens every item past the width it asks for, by as much as
+	// it doesn't tell, which isn't a check's width (SM_CXMENUCHECK): 26
+	// pixels at 192 DPI on Windows 11, where a check is 31 (#922). Items
+	// ask for what they need less what Windows widened those of the menus
+	// shown at the DPI by, as they drew (learnMenuExtra), and for all they
+	// need before one showed: the first menu is wider than it needs, none
+	// narrower.
+	w := b.itemWidth(l, dpi)
+	if extra, ok := b.menuExtra[dpi]; ok {
+		w = max(w-extra, 0)
+	}
+	l.width = w
+	mis.ItemWidth, mis.ItemHeight = uint32(w), uint32(toPx(menuItemHeight, dpi)+top+bottom)
+}
+
+// itemWidth returns the width an item that isn't a separator needs at dpi:
+// its text and marks, past the highlight's inset and padding.
+func (b *Backend) itemWidth(l *menuLook, dpi int) int32 {
 	f := b.menuFace(dpi)
 	dc, _, _ := procGetDC.Call(0)
 	defer procReleaseDC.Call(0, dc)
@@ -363,22 +407,47 @@ func (b *Backend) measureItem(hwnd uintptr, l *menuLook, mis *measureItemStruct)
 	if l.column {
 		w += toPx(menuMarkColumn, dpi)
 	}
+	if l.icons {
+		w += toPx(menuIconColumn, dpi)
+	}
 	if l.accel != "" {
 		w += toPx(menuAccelGap, dpi) + textWidth(dc, f.text, l.accel)
 	}
 	if l.submenu {
 		w += toPx(menuAccelGap/2+menuChevron, dpi)
 	}
-	// Windows adds the width of its checks to that of every item.
-	check, _, _ := procGetSystemMetricsForDpi.Call(smCxMenuCheck, uintptr(dpi))
-	w = max(w-int32(check)+1, 0)
-	mis.ItemWidth, mis.ItemHeight = uint32(w), uint32(toPx(menuItemHeight, dpi)+top+bottom)
+	return w
+}
+
+// learnMenuExtra learns how much Windows widened the items of a menu at
+// dpi from one of them drawn w wide: all are as wide as the widest asked
+// for, and that. It keeps the least it saw at the DPI.
+func (b *Backend) learnMenuExtra(l *menuLook, dpi int, w int32) {
+	widest := int32(0)
+	for _, o := range b.menus.looks {
+		if o.menu != l.menu {
+			continue
+		}
+		if o.dpi != dpi { // measured at another DPI, or not yet
+			return
+		}
+		widest = max(widest, o.width)
+	}
+	extra := w - widest
+	if old, ok := b.menuExtra[dpi]; extra < 0 || ok && old <= extra {
+		return
+	}
+	if b.menuExtra == nil {
+		b.menuExtra = map[int]int32{}
+	}
+	b.menuExtra[dpi] = extra
 }
 
 func (b *Backend) drawItem(hwnd uintptr, l *menuLook, d *drawItemStruct) {
 	dpi := dpiOf(hwnd)
 	p := b.menuPalette()
 	r := d.Item
+	b.learnMenuExtra(l, dpi, r.Right-r.Left)
 	state := d.ItemState
 	selected := state&odsSelected != 0 && !l.separator
 	inset := toPx(menuInset, dpi)
@@ -387,7 +456,8 @@ func (b *Backend) drawItem(hwnd uintptr, l *menuLook, d *drawItemStruct) {
 	if selected {
 		plate = &rect{inset, top, r.Right - r.Left - inset, r.Bottom - r.Top - bottom}
 	}
-	paintItem(d.DC, r, p.back, plate, p.plate, float64(toPx(menuRadius, dpi)), func(dc uintptr, r rect) {
+	paintItem(d.DC, r, p.back, plate, p.plate, float64(toPx(menuRadius, dpi)), func(img *bitmap, r rect) {
+		dc := img.dc
 		r.Top, r.Bottom = r.Top+top, r.Bottom-bottom
 		if l.separator {
 			thick := max(toPx(1, dpi), 1)
@@ -426,6 +496,25 @@ func (b *Backend) drawItem(hwnd uintptr, l *menuLook, d *drawItemStruct) {
 			}
 			x += toPx(menuMarkColumn, dpi)
 		}
+		if l.icons {
+			box := toPx(platform.MenuIconSize, dpi)
+			if ic := l.icon; ic != nil && drawMenuIcon != nil {
+				// A template icon in the text's color; one in color
+				// faded when the item is disabled.
+				opacity := 1.0
+				if state&(odsGrayed|odsDisabled) != 0 && !ic.Template {
+					opacity = 0.4
+				}
+				// In a mirrored DC, which lays the item out from the
+				// right, x counts from the right edge of the bitmap.
+				at := x
+				if layout, _, _ := procGetLayout.Call(dc); layout&layoutRTL != 0 {
+					at = r.Right - x - box
+				}
+				drawMenuIcon(img.px, r.Right-r.Left, ic, at, r.Top+(r.Bottom-r.Top-box)/2, box, dibColor(fore), opacity)
+			}
+			x += toPx(menuIconColumn, dpi)
+		}
 		if l.submenu {
 			// A menu laid out right to left has a mirrored DC, which
 			// places the glyphs from the right but draws them unmirrored:
@@ -461,7 +550,7 @@ func (b *Backend) drawItem(hwnd uintptr, l *menuLook, d *drawItemStruct) {
 // menu's DC at r: the background, a highlight with rounded corners
 // (plate, in the item's coordinates, nil for none) antialiased over it,
 // and what draw draws over them, in the bitmap's coordinates.
-func paintItem(dc uintptr, r rect, back uint32, plate *rect, plateColor uint32, radius float64, draw func(dc uintptr, r rect)) {
+func paintItem(dc uintptr, r rect, back uint32, plate *rect, plateColor uint32, radius float64, draw func(img *bitmap, r rect)) {
 	w, h := r.Right-r.Left, r.Bottom-r.Top
 	if w <= 0 || h <= 0 {
 		return
@@ -483,7 +572,7 @@ func paintItem(dc uintptr, r rect, back uint32, plate *rect, plateColor uint32, 
 		}
 	}
 	procGdiFlush.Call()
-	draw(img.dc, rect{0, 0, w, h})
+	draw(img, rect{0, 0, w, h})
 	procGdiFlush.Call()
 	procBitBlt.Call(dc, uintptr(r.Left), uintptr(r.Top), uintptr(w), uintptr(h), img.dc, 0, 0, srcCopy)
 }

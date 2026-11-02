@@ -88,6 +88,31 @@ Lists are flat, as in Quill and Automerge: a paragraph's `Indent` is its
 level, and items next to each other make a list, numbered at each level from
 1 (in letters and Roman numerals below the first).
 
+A paragraph's `ID` is the app's name for it, as the key of what the app keeps
+about it, such as notes or a timeline. The editor does not show it, and it
+follows the paragraph's text through edits:
+
+- Splitting a paragraph keeps the ID in the first half, or in the second when
+  Enter at its start moves the paragraph down. The other half has none.
+- Joining two paragraphs keeps the first's, unless the first was empty.
+- Paragraphs pasted or inserted have none: `Replace` never takes the IDs of
+  the text it inserts, so no two paragraphs get one ID.
+
+Undo and redo bring IDs back with the text, and JSON saves them. The
+clipboard, HTML, Markdown and RTF leave them out. Give IDs as the text is
+made (`TextOf`, `UnmarshalJSON`), or have the document name the paragraphs
+that edits make, in the step of undo that makes them:
+
+```go
+app.doc = richtext.NewDocument(chapter)
+app.doc.IdentifyParagraphs(func() string { return rand.Text() })
+
+// On save, every paragraph has an ID:
+for start, p := range app.doc.Text().Paragraphs() {
+	app.store.Save(p.Style.ID, start, p)
+}
+```
+
 `MarshalJSON` and `UnmarshalJSON` save a text. `Markdown` and `HTML` export
 it, and `ParseMarkdown`, `ParseHTML` and `ParseRTF` read Markdown, HTML and
 RTF, as a paste does.
@@ -133,6 +158,7 @@ first paragraph. These methods change the document:
 | `Edit(fn)` | changes it any way, as one step of undo |
 | `Undo`, `Redo`, `BreakUndoCoalescing` | take steps back and forth |
 | `SetText` | replaces the text, as opening another note, and clears the history |
+| `IdentifyParagraphs(newID)` | names the paragraphs without an `ID`, and those edits make |
 
 `Edit` runs a function on an `Edit`, whose `Replace`, `ReplaceString`,
 `Format`, `FormatParagraphs` and `Select` change the document as one step of
@@ -211,7 +237,8 @@ focus. Paste and Match Style pastes plain text in the typing attributes.
 text, links, the caret and the selection; the font, size and colors of
 code, within text and in blocks, and the corners and room of blocks of
 code; each level of heading's size, weight, color and room above and
-below; the indentation of lists, the colors of their markers and check
+below; the first-line indent of body paragraphs and the room between
+them; the indentation of lists, the colors of their markers and check
 boxes; the bar and text of quotations; and the padding of `Editor`,
 which replaces the window theme's. What it leaves zero takes the
 value of `DefaultTheme` for the window's theme, so that a theme sets only
@@ -229,6 +256,59 @@ richtext.Editor(c, doc, richtext.EditorOptions{Theme: &richtext.Theme{
 Lengths are in ems, times the editor's font size, so that a theme scales
 with `Font`, but for the padding and the quotation bar's width, in DIPs. Changing the theme lays the text out again. The colors the
 editor shows go to screen readers with its runs.
+
+Body paragraphs (not headings, items of lists or code) run together by
+default, as in notes. For prose, set them apart in either of two ways:
+
+- `FirstLineIndent` indents the first line of a body paragraph, as printed
+  fiction does (about 1.2 ems). The first paragraph after a heading, a list,
+  a block of code, an empty paragraph or one aligned otherwise (a centered
+  scene break, "* * *") isn't indented, nor is the first of a quotation, as
+  nothing needs to set it apart. Only paragraphs aligned at the start are
+  indented.
+- `ParagraphSpacing` puts room between two body paragraphs, as prose on
+  screens does. Headings keep their own room above and below.
+
+```go
+richtext.EditorBase(c, app.doc, richtext.EditorOptions{Theme: &richtext.Theme{
+	FirstLineIndent: 1.2,
+}})
+```
+
+The indent is no character: the caret, selection, clicks and arrow keys
+skip over it, as in a word processor.
+
+## Paragraphs on screen
+
+`Document.VisibleParagraphs` returns the paragraphs in view in the editor
+showing the document: each one's index, the rune it starts at, and the top
+and height of its lines in DIPs from the top of the editor's element,
+scrolled. Read it as the view builds to line a gutter up with the
+paragraphs, as a timeline, notes in the margin or paragraph numbers. Put the
+gutter beside the editor with the same top, and draw at its top plus each
+paragraph's:
+
+```go
+boxes := app.doc.VisibleParagraphs()
+ui.Row(c).Fill().AlignItems(ui.Stretch).Children(func() {
+	ui.Box(c).Width(40).Clip().Draw(func(p *ui.Painter, r ui.Rect) {
+		for _, b := range boxes {
+			p.Fill(ui.Rect{X: r.X + 16, Y: r.Y + b.Top, W: 4, H: b.Height}, t.Accent, 2)
+		}
+	})
+	richtext.EditorBase(c, app.doc).Grow(1)
+})
+```
+
+The boxes are where the editor paints the paragraphs in that frame, since
+it lays them out as they are read. When a frame moves them from where they
+were read, as the editor scrolls, its width changes or it reveals the caret,
+it builds another, so the gutter follows without the app watching the
+scrolling. The room above and below a paragraph (a heading's margins, the
+spacing between paragraphs) is left out of its box, so a mark at its top
+lines up with its first line. `VisibleParagraphs` lays out only what is in
+view, as painting does, so it costs as little in a long document as in a
+short one. It returns nil until an editor showed the document.
 
 ## Typing at the edges of formats
 

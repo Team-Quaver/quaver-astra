@@ -188,8 +188,8 @@ type PlaylistRef struct {
 	Cover string
 }
 
-// Engine 是 player 需要的音频能力（由 *audio.Engine 基于 mpv 实现）。
-// 位置/时长由引擎直接从 mpv 取，player 不再自己推算。
+// Engine 是 player 需要的音频能力（由 *audio.Engine 基于 Liino 实现）。
+// 位置/时长由引擎直接取，player 不再自己推算。
 type Engine interface {
 	// OpenURL 异步载入并起播；载入结果由 Loaded / LoadError 回报。
 	OpenURL(url string, startFrac, dur float64, autoplay bool) error
@@ -221,7 +221,7 @@ type startVolumeSetter interface {
 	SetStartVolume(v float64)
 }
 
-// versionReporter 是引擎的可选版本自报；设置页用它提示 mpv 能力边界。
+// versionReporter 是引擎的可选版本自报；设置页用它展示引擎版本。
 type versionReporter interface {
 	Version() string
 }
@@ -1267,7 +1267,7 @@ func (p *Player) Playing() bool {
 	return p.playing && !p.eng.Paused()
 }
 
-// PlayingAudio 报告 mpv 是否正在实际出声。Loading/缓冲开始前不算播放，
+// PlayingAudio 报告引擎是否正在实际出声。Loading/缓冲开始前不算播放，
 // 「播放时禁止睡眠」按这个真实口径持有系统请求。
 func (p *Player) PlayingAudio() bool {
 	p.mu.RLock()
@@ -1540,7 +1540,7 @@ func (p *Player) loadTiers() {
 
 // pickTier 把 "auto" 换算成本机可播放的最高档位。
 //
-// 换了 mpv 之后支持集是全档位（含 atmos / DTS / FLAC / AAC），
+// 引擎支持集是全档位（含 atmos / DTS / FLAC / AAC），
 // 因此这里直接取未锁定档位里 rank 最高的一档。
 func pickTier(table *TierTable, want string) string {
 	if want != "auto" {
@@ -1627,7 +1627,7 @@ func (p *Player) startCurrent(resumeTo float64, autoplay bool, overrideTier stri
 	// 会话局部回退集合：只被本次起播的协程链访问，避免跨会话共享竞争
 	fallback := map[string]bool{}
 	go func() {
-		// 解析 → 交给 mpv 载入 → 等载入结果。任何一环失败（档位不被支持、
+		// 解析 → 交给引擎载入 → 等载入结果。任何一环失败（档位不被支持、
 		// 网络错误）都继续走回退链换下一档。
 		var info *StreamInfo
 		resume := resumeTo     // 起播进度；带进度失败时下面退回从 0 再试
@@ -1646,12 +1646,12 @@ func (p *Player) startCurrent(resumeTo float64, autoplay bool, overrideTier stri
 				return
 			}
 			if lerr := p.eng.OpenURL(i.URL, resume/dur, dur, autoplay); lerr != nil {
-				// 引擎压根没收下这次载入（mpv 未运行等）：与档位无关，
+				// 引擎压根没收下这次载入（引擎不可用等）：与档位无关，
 				// 换档只是把整条队列白白跳完。
 				p.failWithErr(seq, fmt.Errorf("%w：%w", errEngineFatal, lerr))
 				return
 			}
-			// mpv 载入是异步的：网络流可能慢，要等它给出结果才能判断这档
+			// 引擎载入是异步的：网络流可能慢，要等它给出结果才能判断这档
 			// 能不能播。等不到（超时）或报错都视为该档失败，继续降档。
 			lerr := p.awaitLoaded(seq)
 			if lerr == nil {
@@ -1700,9 +1700,9 @@ func (p *Player) startCurrent(resumeTo float64, autoplay bool, overrideTier stri
 	}()
 }
 
-// awaitLoaded 等 mpv 报出本次载入的结果。
+// awaitLoaded 等引擎报出本次载入的结果。
 //
-// mpv 的 loadfile 是异步的：命令立刻返回，真正的结果（打开成功/失败）随后
+// 引擎的载入是异步的：命令立刻返回，真正的结果（打开成功/失败）随后
 // 以事件的形式到来。这里轮询到「file-loaded 成形」或「报错」为止；超时就按
 // 失败处理，让调用方降档——总比卡住整条起播链好。
 //
@@ -1770,7 +1770,7 @@ func (p *Player) resolveWithFallback(song Song, want string, dep []string, seq u
 	return nil, "", lastErr
 }
 
-// fallbackChain 从高档到低档的回退链（mpv 可解全部档位，这里按上游
+// fallbackChain 从高档到低档的回退链（引擎可解全部档位，这里按上游
 // 的 rank 顺序逐级让位；换档由起播协程的 fallback 集合去重）。
 func fallbackChain(want string) []string {
 	order := []string{
@@ -1792,7 +1792,7 @@ func fallbackChain(want string) []string {
 
 var errStale = errors.New("已切换歌曲")
 
-// errEngineFatal 标记「与音质档位无关」的引擎故障（mpv 拒绝了载入命令、进程
+// errEngineFatal 标记「与音质档位无关」的引擎故障（引擎拒绝了载入命令、进程已关闭
 // 已经没了）。继续降档、继续跳歌只会把整条队列白白吃光，player 据此收手报错。
 var errEngineFatal = errors.New("播放引擎故障")
 
@@ -2024,8 +2024,8 @@ func (p *Player) ToggleLove(song Song) {
 
 // StartTicker 启动播放状态监听（200ms）。
 //
-// 位置直接读 mpv 的 time-pos，不再用墙钟推算——旧实现必须自己累加
-// 位置并处理 seek/换歌时的重锚定，误差会累积；mpv 是唯一真相源。
+// 位置直接读引擎时钟，不再用墙钟推算——旧实现必须自己累加
+// 位置并处理 seek/换歌时的重锚定，误差会累积；引擎是唯一真相源。
 // 本循环只负责：同步位置/时长、检测自然播完切下一首、驱动 UI 重绘。
 func (p *Player) StartTicker() {
 	go func() {
@@ -2053,7 +2053,7 @@ func (p *Player) tick() {
 		return
 	}
 
-	// 从引擎同步真实位置与时长（mpv 的 time-pos / duration）
+	// 从引擎同步真实位置与时长（引擎的时钟 / 时长）
 	pos := p.eng.Position()
 	dur := p.eng.Duration(fallback)
 
@@ -2071,7 +2071,7 @@ func (p *Player) tick() {
 	p.sessionTickSave()
 	p.listenSetPlaying(p.PlayingAudio())
 
-	// 加载中不重复触发自动切歌：eof/atEnd 是上一首的残留状态——mpv 的
+	// 加载中不重复触发自动切歌：eof/atEnd 是上一首的残留状态——引擎的
 	// end-file 已置 eof=true，但 startCurrent 的 goroutine 还在做 API
 	// 解析、尚未调 OpenURL 清除它。每 200ms 的 tick 会反复误判为播完，
 	// 导致连跳多首。loading 由 startCurrent 在同 goroutine 内同步置 true，
@@ -2127,10 +2127,10 @@ func (p *Player) Muted() bool {
 	return p.muted
 }
 
-// Close 终止播放引擎。应用退出时调用，确保 mpv 子进程不成为孤儿。
+// Close 终止播放引擎。应用退出时调用，确保音频设备与解码线程被释放。
 //
 // 退出顺带把播放会话落盘：先停掉未到期的防抖计时器，再同步写一次——必须赶
-// 在 mpv 关闭之前 flush，实时进度要从还活着的引擎里取。
+// 在引擎关闭之前 flush，实时进度要从还活着的引擎里取。
 func (p *Player) Close() {
 	p.saveMu.Lock()
 	if p.saveTimer != nil {

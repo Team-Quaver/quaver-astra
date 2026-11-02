@@ -250,3 +250,55 @@ func TestTextLayoutVisualCaretUTF16(t *testing.T) {
 		t.Fatalf("hit-test lost visual edge: %+v %+v", up, got)
 	}
 }
+
+// tallClient is the text of a code editor as high as its lines: its caret
+// is far down its box.
+type tallClient struct {
+	primitiveClient
+	caretY float32
+}
+
+func (c *tallClient) BoundsForRange(r TextInputRange) (Rect, TextInputRange, bool) {
+	return Rect{X: 40, Y: c.caretY, W: 1, H: 20}, r, true
+}
+
+// Focusing an app's text field taller than the scroll view around it, by
+// Tab or by assistive technology and the input methods that act as it,
+// scrolls its caret into view, not the top of its box.
+func TestFocusRevealsClientCaret(t *testing.T) {
+	var s ScrollState
+	c := &tallClient{caretY: 1500}
+	tt := coreNewTester(func(ctx *context) {
+		coreScroll(ctx).Fill().TrackScroll(&s).Children(func() {
+			coreBox(ctx).Height(500).Shrink(0)
+			coreBox(ctx).Size(250, 2000).Shrink(0).HandleTextInput(c).Role(RoleTextField).Label("code")
+			coreBox(ctx).Height(500).Shrink(0)
+		})
+	}, 300, 200)
+	defer tt.rt.close()
+	// The caret is 500+1500 down the content, 20 high, in a view 200 high.
+	shows := func() bool { return s.Y <= 2000 && s.Y+200 >= 2020 }
+	tt.Key(0, KeyTab)
+	tt.Frame()
+	if !shows() {
+		t.Fatalf("Tab into the field scrolled to %v, which doesn't show its caret", s.Y)
+	}
+	s.Y = 0
+	tt.Frame()
+	tt.send(platform.SurfaceEvent{Kind: platform.AccessibilityOn})
+	field := accessNode(t, tt.h.access, platform.RoleTextField, "code")
+	tt.send(platform.SurfaceEvent{Kind: platform.AccessAction, ID: field.ID, Action: platform.AccessFocus})
+	tt.Frame()
+	if !shows() {
+		t.Fatalf("focusing the field scrolled to %v, which doesn't show its caret", s.Y)
+	}
+	// Up the field, the caret comes into view from above.
+	c.caretY = 100
+	s.Y = 2200
+	tt.Frame()
+	tt.send(platform.SurfaceEvent{Kind: platform.AccessAction, ID: field.ID, Action: platform.AccessFocus})
+	tt.Frame()
+	if s.Y > 600 || s.Y+200 < 620 {
+		t.Fatalf("focusing the field scrolled to %v, which doesn't show its caret at 600", s.Y)
+	}
+}

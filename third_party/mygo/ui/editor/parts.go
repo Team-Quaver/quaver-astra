@@ -556,3 +556,10 @@ func (ed *editor) buildHover(c *ui.Context, anchor ui.Element) {
 // goes to the innermost element taking it as it comes, which then leaves
 // it to the buttons and fields inside, as they take it.
 func shield(ui.InputEvent) bool { return false }
+
+// wheelOnly shields the presses on what a diff shows over its editors,
+// outside them, as its separators, but scrolls the editor by the wheel:
+// the input never reaches an editor from what is not inside it.
+func (ed *editor) wheelOnly(ev ui.InputEvent) bool {
+	return ev.Kind == ui.InputScroll && ed.wheel(ev)
+}

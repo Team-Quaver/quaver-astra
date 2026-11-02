@@ -80,16 +80,12 @@ jobs:
           go-version-file: go.mod
           cache-dependency-path: go.sum
 
-      - name: Install mpv
-        run: sudo apt-get update && sudo apt-get install -y mpv
+      # Liino 的 native 解码后端动态加载系统 FFmpeg；装上后集成测试才会真跑，
+      # 没装时该用例自动跳过（适配层逻辑由合成解码后端覆盖）。
+      - name: Install FFmpeg runtime
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg
 
       - run: go test ./internal/...
-
-      - name: Test mpv engine
-        env:
-          QAA_TEST_MPV: "1"
-          QAA_MPV_AO: "null"
-        run: go test -run TestEngineRealMPV -v ./internal/audio/
 
   build:
     name: Build (${{ matrix.target }})

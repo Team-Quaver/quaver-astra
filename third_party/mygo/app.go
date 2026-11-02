@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/egoist/mygo/internal/platform"
 )
@@ -46,6 +47,8 @@ type Application struct {
 
 	// quitting is only touched on the main thread.
 	quitting    bool
+	stopping    bool // the quit sequence ran: the event loop is to stop (main thread)
+	ended       bool // the event loop stopped: finish runs (main thread)
 	relaunch    bool // Relaunch: start again once quit (main thread)
 	initialized bool // Run initialized the backend (main thread)
 
@@ -103,7 +106,7 @@ func (a *Application) Run() error {
 	if err := b.Init(appHandler{}, platform.AppOptions{
 		Name:             a.Name(),
 		Identifier:       identifier(),
-		ActivationPolicy: string(a.activationPolicy()),
+		ActivationPolicy: string(a.ActivationPolicy()),
 	}); err != nil {
 		return err
 	}
@@ -158,10 +161,47 @@ func (a *Application) IsReady() bool {
 // it.
 func (a *Application) Quit() {
 	postMain(func() {
-		if a.prepareQuit() {
+		if a.stopping {
 			backend().Quit()
+			return
+		}
+		if a.prepareQuit() {
+			a.stopLoop()
 		}
 	})
+}
+
+// stopGrace is how long the event loop has to stop once the quit sequence
+// has run, before the app finishes and exits without it; 0 waits on.
+var stopGrace = 3 * time.Second
+
+// stopLoop stops the event loop once the quit sequence has run.
+func (a *Application) stopLoop() {
+	a.loopStopping()
+	backend().Quit()
+}
+
+// loopStopping records that the quit sequence has run. Its windows closed,
+// the app must not stay behind should the event loop go on: AppKit's has
+// been seen to after a relaunch asked for from a daemon's reconnection,
+// when every later quit was taken for one already under way. A later quit
+// asks the loop to stop again (Quit, QuitRequested), and after stopGrace
+// the app finishes and exits anyway.
+func (a *Application) loopStopping() {
+	a.stopping = true
+	if stopGrace > 0 {
+		time.AfterFunc(stopGrace, func() { postMain(a.forceStop) })
+	}
+}
+
+// forceStop finishes the app and exits, should its event loop not have
+// stopped in time.
+func (a *Application) forceStop() {
+	if a.ended {
+		return
+	}
+	a.finish()
+	os.Exit(0)
 }
 
 // Exit terminates the process immediately with the given exit code,
@@ -211,6 +251,7 @@ func (a *Application) prepareQuit() bool {
 // finish runs once after the event loop has stopped.
 func (a *Application) finish() {
 	a.finished.Do(func() {
+		a.ended = true
 		stopNativeCalls()
 		stopFileWatches()
 		clipboardStopped = true
@@ -347,7 +388,9 @@ func (a *Application) Menu() *Menu {
 	return a.menu
 }
 
-func (a *Application) activationPolicy() ActivationPolicy {
+// ActivationPolicy returns how the app appears in the Dock (macOS):
+// ActivationPolicyRegular unless SetActivationPolicy changed it.
+func (a *Application) ActivationPolicy() ActivationPolicy {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if a.policy == "" {
@@ -371,6 +414,14 @@ func (a *Application) SetActivationPolicy(p ActivationPolicy) {
 func (a *Application) Focus() {
 	needsApp("App.Focus")
 	onMain(func() { backend().App().Activate() })
+}
+
+// IsActive reports whether the application is the active one: the app in
+// front on macOS, the app with the window that has the keyboard on Windows
+// and Linux, the focused page in browsers.
+func (a *Application) IsActive() bool {
+	needsApp("App.IsActive")
+	return onMainValue(func() bool { return backend().App().IsActive() })
 }
 
 // Hide hides all windows of the application (macOS).
@@ -493,14 +544,17 @@ func (a *Application) OnWindowCreated(fn func(w *Window)) (off func()) {
 	return a.onWindowCreated.add(fn, false)
 }
 
-// ClearBrowsingData deletes what the app's pages stored: cookies, local
-// and session storage, IndexedDB, service workers and caches, e.g. when the
-// user signs out. Open pages keep what they hold in memory until they are
-// reloaded.
+// ClearBrowsingData deletes what the app's pages stored in the default
+// session: cookies, local and session storage, IndexedDB, service workers
+// and caches, e.g. when the user signs out. Open pages keep what they hold
+// in memory until they are reloaded. Session.ClearData clears the data of
+// other sessions, or some kinds of data.
 func (a *Application) ClearBrowsingData() error {
 	needsApp("App.ClearBrowsingData")
 	ch := make(chan error, 1)
-	onMain(func() { backend().App().ClearBrowsingData(func(err error) { deliver(ch, err) }) })
+	onMain(func() {
+		backend().App().ClearBrowsingData(nil, platform.SiteDataAll, func(err error) { deliver(ch, err) })
+	})
 	return await(ch)
 }
 
@@ -573,10 +627,21 @@ func (d *Dock) Show() { App.SetActivationPolicy(ActivationPolicyRegular) }
 // appHandler receives application events from the backend.
 type appHandler struct{}
 
-func (appHandler) Ready()              { App.handleReady() }
-func (appHandler) Dispatch()           { loop.drain() }
-func (appHandler) QuitRequested() bool { return App.prepareQuit() }
-func (appHandler) Terminating()        { App.finish() }
+func (appHandler) Ready()    { App.handleReady() }
+func (appHandler) Dispatch() { loop.drain() }
+func (appHandler) QuitRequested() bool {
+	if App.stopping {
+		// The loop goes on although asked to stop: ask again.
+		return true
+	}
+	if !App.prepareQuit() {
+		return false
+	}
+	// The backend stops its loop itself.
+	App.loopStopping()
+	return true
+}
+func (appHandler) Terminating() { App.finish() }
 func (appHandler) Activated(visible bool) {
 	fire1(&App.onActivate, visible)
 }
