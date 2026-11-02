@@ -110,7 +110,7 @@ func (a *App) foliaStage(c *ui.Context, t *ui.Theme, cur player.Song, hasCur boo
 	curLine := stageIndexAt(data.lines, pos)
 	if data.state == "ok" && curLine >= 0 && curLine != a.lastLyricLine {
 		a.lastLyricLine = curLine
-		a.npList.ScrollTo(curLine, ui.Center)
+		a.followLyricLine(curLine)
 	}
 
 	a.foliaAtmosphere(c, t, cur)
@@ -134,12 +134,10 @@ func (a *App) foliaStage(c *ui.Context, t *ui.Theme, cur player.Song, hasCur boo
 					TextColor(ui.RGBA(255, 255, 255, 0.45))
 			})
 		default:
-			a.npList.Key = nil
 			a.npList.Label = func(i int) string { return data.lines[i].Text }
-			pad := npListPadding(c)
-			ui.List(c, &a.npList, len(data.lines), func(i int) {
+			a.lyricList(c, len(data.lines), curLine, func(i int) {
 				a.foliaLyricLine(c, t, data.lines[i], i, i == curLine, data.source)
-			}).Grow(1).Padding(pad, 0, pad, 0)
+			})
 		}
 
 		if hasCur {
@@ -241,6 +239,9 @@ func (a *App) foliaLyricLine(c *ui.Context, t *ui.Theme, line player.TTMLLine, i
 	}
 	row := ui.Column(c).FillWidth().Padding(5, 12).Gap(5).Radius(10).
 		Cursor(ui.CursorPointer).Transition(hoverFade)
+	if current {
+		a.followLyricRow(c, row, index)
+	}
 	row.Children(func() {
 		if !current {
 			ui.Text(c, line.Text).Font(a.lyricFontFamily()).FontSize(fz(17)).
@@ -321,17 +322,6 @@ func (a *App) foliaTrackCard(c *ui.Context, t *ui.Theme, cur player.Song, source
 				TextColor(ui.Hex("#ffffff")).SingleLine().Ellipsis("…")
 			ui.Text(c, cur.Artists).FontSize(fz(11)).TextColor(ui.RGBA(255, 255, 255, 0.56)).
 				SingleLine().Ellipsis("…")
-			progress := ui.Box(c).FillWidth().Height(2).MarginY(3).Radius(1).
-				Background(ui.RGBA(255, 255, 255, 0.14))
-			frac := float32(0)
-			if d := a.PL.Duration(); d > 0 {
-				frac = clampF32(float32(a.PL.Position() / d))
-			}
-			progress.Draw(func(p *ui.Painter, r ui.Rect) {
-				if frac > 0 {
-					p.Fill(ui.Rect{X: r.X, Y: r.Y, W: r.W * frac, H: r.H}, t.Accent, 1)
-				}
-			})
 		})
 		ui.Column(c).AlignItems(ui.End).Gap(4).Children(func() {
 			if source != "" {

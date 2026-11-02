@@ -89,6 +89,14 @@ type App struct {
 	queueList    ui.ListState // 播放队列列表
 	reproCloseAt time.Time
 
+	// 歌词跟随：npScroll 接管列表偏移，换行时按 lyricfollow.go 的曲线缓动
+	// 滚到下一句，而不是瞬间跳位。npListRect/npShown 是上一帧的列表视口与
+	// 实际偏移，和 LayoutBounds 同口径，用来算居中目标。
+	npScroll   ui.ScrollState
+	npListRect ui.Rect
+	npShown    float32
+	npFollow   lyricFollow
+
 	// media 是系统媒体控制中心会话（Linux MPRIS / Windows SMTC），
 	// 在 New 建立会话，Attach 时补窗口句柄，Close 时注销。
 	media smedia.Controller

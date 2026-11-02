@@ -90,6 +90,7 @@ func npCoverSize(c *ui.Context) float32 {
 // 动效（对齐主项目 .np）：整体上滑 + 淡入，.34s cubic-bezier(.32,.72,.24,1)；
 // 关闭时同样滑回下方（MyGo 的 Exit 会给退场元素留一份副本，兄弟不为它留位）。
 func (a *App) nowPlaying(c *ui.Context, t *ui.Theme) {
+	a.advanceLyricFollow(c)
 	cur, hasCur := a.PL.Current()
 	coverLarge := ""
 	if hasCur {
@@ -432,7 +433,7 @@ func (a *App) lyricColumn(c *ui.Context, t *ui.Theme) {
 
 	if state == "ok" && cur >= 0 && cur != a.lastLyricLine {
 		a.lastLyricLine = cur
-		a.npList.ScrollTo(cur, ui.Center)
+		a.followLyricLine(cur)
 	}
 
 	ui.Column(c).Grow(1).Fill().Gap(8).Children(func() {
@@ -451,17 +452,31 @@ func (a *App) lyricColumn(c *ui.Context, t *ui.Theme) {
 				})
 				break
 			}
-			a.npList.Key = nil
 			a.npList.Label = func(i int) string { return lines[i].Text }
 			// 首尾 padding 负责留白；不再叠加 Absolute 渐变——渐变只要横跨
 			// 内容层就会在右侧模糊底上切出硬边（用户反馈过这条异常分界）。
 			// 列表自身负责裁切滚动内容，背景保持原本连续的模糊渐变。
-			pad := npListPadding(c)
-			ui.List(c, &a.npList, len(lines), func(i int) {
+			a.lyricList(c, len(lines), cur, func(i int) {
 				a.lyricColumnLine(c, lines[i], i)
-			}).Grow(1).Padding(pad, 0, pad, 0)
+			})
 		}
 	})
+}
+
+// lyricList 是正在播放页三种歌词布局共用的列表：接管滚动状态（跟随换行由
+// lyricfollow.go 按帧推进偏移），并记下上一帧的视口，供居中目标计算。
+// cur 是本帧的当前句；若它没被建出来（跳转太远或首次布局），退回瞬间居中。
+func (a *App) lyricList(c *ui.Context, n, cur int, row func(int)) ui.Element {
+	a.npList.Key = nil
+	pad := npListPadding(c)
+	el := ui.List(c, &a.npList, n, row).Grow(1).Padding(pad, 0, pad, 0).
+		TrackScroll(&a.npScroll)
+	a.npListRect = el.LayoutBounds()
+	if f := &a.npFollow; f.pending && f.line == cur {
+		f.pending = false
+		a.npList.ScrollTo(cur, ui.Center)
+	}
+	return el
 }
 
 // lyricColumnAMLL renders a matched AMLL TTML lyric in the quiet split
@@ -472,15 +487,13 @@ func (a *App) lyricColumnAMLL(c *ui.Context, t *ui.Theme, data stageLyricData) {
 	cur := stageIndexAt(data.lines, a.PL.Position())
 	if cur >= 0 && cur != a.lastLyricLine {
 		a.lastLyricLine = cur
-		a.npList.ScrollTo(cur, ui.Center)
+		a.followLyricLine(cur)
 	}
 	ui.Column(c).Grow(1).Fill().Gap(8).Children(func() {
-		a.npList.Key = nil
 		a.npList.Label = func(i int) string { return data.lines[i].Text }
-		pad := npListPadding(c)
-		ui.List(c, &a.npList, len(data.lines), func(i int) {
+		a.lyricList(c, len(data.lines), cur, func(i int) {
 			a.lyricColumnAMLLLine(c, t, data.lines[i], i, i == cur)
-		}).Grow(1).Padding(pad, 0, pad, 0)
+		})
 	})
 }
 
@@ -497,6 +510,9 @@ func (a *App) lyricColumnAMLLLine(c *ui.Context, t *ui.Theme, line player.TTMLLi
 	row := ui.Column(c).FillWidth().Padding(8, 4).Gap(5).Radius(10).
 		Cursor(ui.CursorPointer).Transition(hoverFade)
 	row.AlignItems(align)
+	if current {
+		a.followLyricRow(c, row, index)
+	}
 	target := float32(0.34)
 	if current {
 		target = 1
@@ -561,6 +577,9 @@ func (a *App) lyricColumnLine(c *ui.Context, line player.LyricLine, index int) {
 	}
 	row := ui.Column(c).FillWidth().Padding(8, 4).Gap(5).Radius(10).
 		Cursor(ui.CursorPointer).Transition(hoverFade)
+	if isCur {
+		a.followLyricRow(c, row, index)
+	}
 	// 行间过渡：非当前句压暗（主项目 .np-ly-line 是 opacity .34 + blur(1.6px)；
 	// MyGo 的元素没有模糊滤镜，用透明度把同一件事做出来）。走 Animate 而不是
 	// 硬切色值，「成为当前句 / 不再是当前句」这一跳就是缓动的。
