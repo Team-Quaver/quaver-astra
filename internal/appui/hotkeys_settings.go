@@ -47,9 +47,10 @@ func (a *App) hotkeysSettings(c *ui.Context, t *ui.Theme) {
 func (a *App) hotkeyGlobalSwitch(c *ui.Context, t *ui.Theme) {
 	ui.Column(c).FillWidth().Gap(6).Children(func() {
 		ui.Text(c, "全局快捷键").FontSize(fz(14)).FontWeight(700)
-		if a.hotkeys.blocked {
-			// Wayland：这一档整段交给桌面，开关留着只会让人以为它能打开。
-			ui.Text(c, "由桌面持有 · Wayland 会话下不注册全局快捷键").
+		if a.hotkeys.wayland {
+			// Wayland：全局快捷键经门户注册，但改键与开关都交给桌面，
+			// 这一页只保留说明，不提供开关和绑定格。
+			ui.Text(c, "由桌面持有 · 请在系统快捷键设置中修改").
 				FontSize(fz(13)).TextColor(t.TextMuted)
 		} else {
 			a.prefRow(c, "启用全局快捷键", a.hotkeyEnabled, func(v bool) {
@@ -59,23 +60,23 @@ func (a *App) hotkeyGlobalSwitch(c *ui.Context, t *ui.Theme) {
 				a.syncHotkeys()
 			})
 		}
-		ui.Text(c, hotkeyPlatformNote(a.hotkeys.blocked)).FontSize(fz(11.5)).TextColor(t.TextMuted).MaxLines(6)
+		ui.Text(c, hotkeyPlatformNote(a.hotkeys.wayland)).FontSize(fz(11.5)).TextColor(t.TextMuted).MaxLines(6)
 	})
 }
 
 // hotkeyPlatformNote 说明三个平台各自怎么拿到全局快捷键，以及已知的边界。
-func hotkeyPlatformNote(blocked bool) string {
+func hotkeyPlatformNote(wayland bool) string {
 	switch runtime.GOOS {
 	case "darwin":
 		return "全局快捷键在 Astra 不在前台时同样生效。macOS 的媒体键由系统转交，无需在这里重复绑定；需要自定义时点绑定格按下组合键即可。撞车的组合键会在下表标出。"
 	case "windows":
 		return "全局快捷键在 Astra 收进托盘后依然生效。与系统或其他应用撞车的组合键会在下表标出，换一个即可。"
 	}
-	if blocked {
+	if wayland {
 		return "Wayland 会话下，后台快捷键由系统桌面管理，请到桌面的快捷键设置中修改；Astra 内的窗口快捷键不受影响。"
 	}
 	if runtime.GOOS == "linux" {
-		return "X11 会话下全局快捷键由 Astra 直接接管；切换到 Wayland 后将由系统桌面管理。撞车的组合键会在下表标出。"
+		return "X11 会话下全局快捷键由 Astra 直接接管；切换到 Wayland 后将经桌面门户由系统管理。撞车的组合键会在下表标出。"
 	}
 	return ""
 }
@@ -84,7 +85,7 @@ func hotkeyPlatformNote(blocked bool) string {
 func (a *App) hotkeyTableHeader(c *ui.Context, t *ui.Theme) {
 	ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(8).Children(func() {
 		ui.Text(c, "动作").FontSize(fz(12)).TextColor(t.TextMuted).Width(hotkeyActionCol)
-		if !a.hotkeys.blocked {
+		if !a.hotkeys.wayland {
 			ui.Text(c, "全局（后台也生效）").FontSize(fz(12)).TextColor(t.TextMuted).Grow(1)
 		}
 		ui.Text(c, "窗口内（需聚焦 Astra）").FontSize(fz(12)).TextColor(t.TextMuted).Grow(1)
@@ -103,9 +104,9 @@ func (a *App) hotkeyBindRow(c *ui.Context, t *ui.Theme, spec hotkeySpec, idx int
 				ui.Text(c, spec.hint).FontSize(fz(10.5)).TextColor(t.TextMuted).MaxLines(3)
 			}
 		})
-		// Wayland：「全局」整列不端出来。留着录制按钮等于给用户一条注定不生效、
-		// 却又看得见能点的绑定；配置仍在（切回 X11 会话即恢复），只是这里不编辑。
-		if !a.hotkeys.blocked {
+		// Wayland：全局快捷键仍会经门户注册，但改键交给桌面。这里不端出
+		// 录制按钮，免得用户以为在本页改了就能覆盖桌面持有的那一套。
+		if !a.hotkeys.wayland {
 			a.hotkeyBindCell(c, t, scopeGlobal, spec)
 		}
 		a.hotkeyBindCell(c, t, scopeLocal, spec)

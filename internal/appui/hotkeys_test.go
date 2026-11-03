@@ -374,62 +374,58 @@ func TestWaylandSessionDetection(t *testing.T) {
 	}
 }
 
-// TestSyncHotkeysWaylandBlocksGlobal 是这次改动的核心：Wayland 会话下
-// 一个全局键都不注册，但配置、窗口内快捷键与退出清理都不受影响。
-func TestSyncHotkeysWaylandBlocksGlobal(t *testing.T) {
+// TestSyncHotkeysWaylandRegistersGlobal 检查 Wayland 会话仍把全局快捷键送去
+// 注册面：MyGo 在 RegisterHotkey 里会改走 XDG GlobalShortcuts 门户，由桌面
+// 建会话并代持。注册照做，只是设置页不展示「全局」列。
+func TestSyncHotkeysWaylandRegistersGlobal(t *testing.T) {
 	app, reg, _ := hotkeyApp(t)
-	app.hotkeys.blocked = true
-	// 开关照旧是「开」，说明屏蔽不是靠关掉开关实现的。
+	app.hotkeys.wayland = true
+	// 开关照旧是「开」：Wayland 不靠关掉总开关来绕过注册。
 	app.syncHotkeys()
 
-	if len(reg.keys()) != 0 {
-		t.Errorf("Wayland 会话下仍注册了全局快捷键：%v", reg.keys())
+	cc := cmdOrCtrl()
+	want := []string{cc + "+Alt+Left", cc + "+Alt+P", cc + "+Alt+Right"}
+	if got := reg.keys(); !slices.Equal(got, want) {
+		t.Errorf("Wayland 会话下全局注册 = %v，期望 %v", got, want)
 	}
 	if reg.unregisters == 0 {
-		t.Error("屏蔽时也要先撤干净，否则会留下上一个会话的半套绑定")
+		t.Error("注册前也要先撤干净，否则会留下上一个会话的半套绑定")
 	}
-	if len(app.hotkeys.local) != 4 {
-		t.Errorf("窗口内快捷键不该被会话屏蔽关掉，实际 %d 条", len(app.hotkeys.local))
+	// 全局占住了三个默认键，同动作同键的窗口内绑定不重复登记，只剩「退出」。
+	if len(app.hotkeys.local) != 1 {
+		t.Errorf("窗口内绑定 = %d 条，期望 1 条（只有退出）", len(app.hotkeys.local))
 	}
-	// 配置必须原样留着：切回 X11 会话就恢复，屏蔽是运行期的决定，不是用户意图。
-	if app.hotkeyRaw(scopeGlobal, hotkeySpecs[0]) == "" {
-		t.Error("出厂默认不该被写成空——退出 Wayland 会话后用户会发现绑定全没了")
-	}
-	// 屏蔽不是错误：全局一列整段不进设置页，也不留逐条的问题提示。
+	// 注册不是错误：设置页只是不展示全局一列，不该留逐条的问题提示。
 	if n := len(app.hotkeys.notes); n != 0 {
-		t.Errorf("Wayland 屏蔽不该产生任何绑定级提示，实际 %d 条：%v", n, app.hotkeys.notes)
+		t.Errorf("Wayland 注册不该产生绑定级提示，实际 %d 条：%v", n, app.hotkeys.notes)
 	}
-	// 提示是「没在工作」而不是「出错了」：不能和红色的注册失败混为一谈。
 	app.closeHotkeys()
 	if len(reg.keys()) != 0 {
 		t.Errorf("退出后仍挂着全局快捷键：%v", reg.keys())
 	}
 }
 
-// TestSyncHotkeysWaylandNoLocalCollisionNote 检查屏蔽时窗口内不再被要求让路：
-// 全局那列一个键都没占，同键的窗口内绑定必须照常生效。
-func TestSyncHotkeysWaylandNoLocalCollisionNote(t *testing.T) {
+// TestSyncHotkeysWaylandOccupiesGlobalKeys 检查 Wayland 下全局绑定真的占住键：
+// 与全局不同动作同键的窗口内绑定要让路并给出提示；tooltip 退回仍然生效的
+// 那条全局绑定。
+func TestSyncHotkeysWaylandOccupiesGlobalKeys(t *testing.T) {
 	app, _, _ := hotkeyApp(t)
-	app.hotkeys.blocked = true
+	app.hotkeys.wayland = true
 	app.Conf.Set(hotkeyConfKey(scopeGlobal, "Next"), "Ctrl+Alt+J")
 	app.Conf.Set(hotkeyConfKey(scopeLocal, "PlayPause"), "Ctrl+Alt+J")
 	app.syncHotkeys()
 
-	if note := app.hotkeyNote(scopeLocal, hotkeySpecs[0]); note != "" {
-		t.Errorf("全局没占住任何键，窗口内不该被判定撞车：%q", note)
+	note := app.hotkeyNote(scopeLocal, hotkeySpecs[0])
+	if note == "" || !strings.Contains(note, "窗口内不会触发") {
+		t.Errorf("全局占住的键，窗口内应当提示撞车，实际：%q", note)
 	}
-	var hit bool
 	for _, b := range app.hotkeys.local {
 		if b.action == hkPlayPause {
-			hit = true
+			t.Error("被全局占住的窗口内绑定不应登记")
 		}
 	}
-	if !hit {
-		t.Error("窗口内的「播放/暂停」应当生效")
-	}
-	// tooltip 也不能报出那条按不动的全局绑定。
-	if tip := app.hotkeyTip(hkPlayPause); !strings.Contains(tip, "Ctrl+Alt+J") {
-		t.Errorf("tooltip 应取窗口内绑定，实际 %q", tip)
+	if tip := app.hotkeyTip(hkPlayPause); !strings.Contains(tip, "Ctrl+Alt+P") {
+		t.Errorf("tooltip 应取仍然生效的全局绑定，实际 %q", tip)
 	}
 }
 
@@ -791,14 +787,14 @@ func TestHotkeyTipPrefersEffectiveBinding(t *testing.T) {
 	}
 }
 
-// TestSettingsPageHidesGlobalColumnOnWayland 是设置页的实测：屏蔽时「全局」
-// 这一列（表头、录制格、解绑按钮、总开关）整段不出现，窗口内照常能点。
-// tooltip 也不能报出一条按不动的全局媒体键。
+// TestSettingsPageHidesGlobalColumnOnWayland 是设置页的实测：Wayland 下
+// 「全局」这一列（表头、录制格、解绑按钮、总开关）整段不出现，窗口内照常
+// 能点；但全局绑定仍会通过门户注册，tooltip 也照常报出生效的那条。
 func TestSettingsPageHidesGlobalColumnOnWayland(t *testing.T) {
 	app, reg, _ := hotkeyApp(t)
 	app.settings.tab = hotkeysTab
-	app.hotkeys.blocked = true
-	// 全局绑一条媒体键、窗口内解掉，用来验证 tooltip 不会报出这条按不动的绑定。
+	app.hotkeys.wayland = true
+	// 全局绑一条媒体键、窗口内解掉：tooltip 应当报出这条仍然生效的全局绑定。
 	app.Conf.Set(hotkeyConfKey(scopeGlobal, "Prev"), "MediaPreviousTrack")
 	app.Conf.Set(hotkeyConfKey(scopeLocal, "Prev"), "")
 	app.syncHotkeys()
@@ -807,29 +803,28 @@ func TestSettingsPageHidesGlobalColumnOnWayland(t *testing.T) {
 	tester.Frame()
 
 	if tester.HasText("全局（后台也生效）") {
-		t.Error("屏蔽时不该还有「全局」表头")
+		t.Error("Wayland 下不该还有「全局」表头")
 	}
 	for _, label := range []string{"全局快捷键：播放/暂停", "清除全局快捷键：播放/暂停"} {
 		if err := tester.Click(label); err == nil {
-			t.Errorf("屏蔽时「%s」不该点得到", label)
+			t.Errorf("Wayland 下「%s」不该点得到", label)
 		}
 	}
 	if !tester.HasText("由桌面持有") {
-		t.Errorf("没有说明全局一列交给桌面：%v", tester.Texts())
+		t.Errorf("没有说明全局快捷键交给桌面：%v", tester.Texts())
 	}
 	if tester.HasText("启用全局快捷键") {
-		t.Error("屏蔽时不该留一个开了也没用的开关")
+		t.Error("Wayland 下不该留一个和桌面冲突的总开关")
 	}
 	// 窗口内那一列必须还在，否则这个页面就没有可编辑的东西了。
 	if err := tester.Click("窗口内快捷键：播放/暂停"); err != nil {
 		t.Errorf("点不到窗口内录制格：%v", err)
 	}
-	// 播放条的 tooltip 里不能出现那条按不动的媒体键。
-	if tip := app.hotkeyTip(hkPrev); tip != "" {
-		t.Errorf("屏蔽后不该把全局绑定报进 tooltip，实际 %q", tip)
+	// 全局绑定仍然注册，tooltip 要报出这条生效的媒体键。
+	if tip := app.hotkeyTip(hkPrev); tip != "（媒体上一曲键）" {
+		t.Errorf("tooltip 应报出生效的全局绑定，实际 %q", tip)
 	}
-	// 而且真的一个键都没注册。
-	if len(reg.keys()) != 0 {
-		t.Errorf("屏蔽后仍注册了：%v", reg.keys())
+	if !reg.has("MediaPreviousTrack") {
+		t.Errorf("Wayland 下全局绑定应当送去注册：%v", reg.keys())
 	}
 }

@@ -184,8 +184,9 @@ func New(base string, store *conf.Store, v *vault.Vault, version string) *App {
 	a.PL = pl
 	// 缓存上限只存在内嵌后端的内存里，启动后按用户设置重推一次。
 	a.applyLocalCacheLimit()
-	// Wayland 会话下整列全局快捷键交给桌面持有，Astra 不注册（见 hotkeys.go）。
-	a.hotkeys.blocked = waylandSession()
+	// Wayland 会话下全局快捷键经 XDG GlobalShortcuts 门户由桌面代持，
+	// 设置页不再展示这一列（见 hotkeys.go）。
+	a.hotkeys.wayland = waylandSession()
 	a.initMedia()
 	a.initUpdate()
 	mygo.App.OnBeforeQuit(func(*mygo.QuitEvent) { a.quitStarted.Store(true) })
