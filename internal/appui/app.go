@@ -4,6 +4,7 @@ package appui
 import (
 	"fmt"
 	"os"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -44,7 +45,7 @@ type App struct {
 
 	npOpen       bool
 	queueOpen    bool
-	sbCollapsed  bool
+	searchOpen   bool
 	searchDraft  string
 	pendingToast string
 	volOpen      bool
@@ -55,11 +56,7 @@ type App struct {
 	npMoreOpen  bool
 	npQInfoOpen bool
 	// npQInfo 是音质胶囊浮窗的流参数探测缓存（后台探测、回填重绘）。
-	npQInfo qinfoProbe
-	// amll 是当前账号下按歌曲 mid 缓存的 AMLL TTML 解析结果。网络
-	// 回填在后台 goroutine，UI 每帧只读；amllMu 保证两者不打架。
-	amllMu        sync.Mutex
-	amll          map[string]amllEntry
+	npQInfo       qinfoProbe
 	seekDragging  bool
 	seekFrac      float32
 	probedMid     string
@@ -179,7 +176,6 @@ func New(base string, store *conf.Store, v *vault.Vault, version string) *App {
 		sleep:         newSystemSleepBlocker(),
 		Router:        ui.NewRouter("/"),
 		Covers:        NewCoverCache(),
-		sbCollapsed:   store.Bool("Window.SidebarCollapsed", false),
 		queueOpen:     store.Bool("Window.QueueOpen", false),
 		playlist:      map[int64]*playlistState{},
 		lastLyricLine: -2,
@@ -339,10 +335,6 @@ func (a *App) View(c *ui.Context) {
 		a.probedMid = cur.Mid
 		a.probeCover(coverURL(cur.AlbumPmid, cur.AlbumMid, 300))
 	}
-	// AMLL TTML 与 QRC 并行准备：网络慢或没有 TTML 时，正在播放页继续
-	// 使用 QQ 音乐 QRC 逐字歌词，不阻塞首帧。
-	a.ensureAMLL()
-
 	root := ui.Column(c).Fill()
 	root.Children(func() {
 		body := ui.Box(c).Grow(1).Clip()
@@ -375,18 +367,15 @@ func (a *App) View(c *ui.Context) {
 }
 
 func (a *App) mainRow(c *ui.Context) {
-	ui.Row(c).Fill().AlignItems(ui.Stretch).Children(func() {
-		a.sidebar(c)
-		ui.Column(c).Grow(1).Fill().Children(func() {
-			a.topBar(c)
-			ui.Row(c).Grow(1).FillWidth().AlignItems(ui.Stretch).Children(func() {
-				a.routeArea(c)
-				// 正在播放页会把内容区整页盖住，队列这时改走浮窗
-				//（queueFloat）：停靠栏建了也看不见，只会白占一次列表状态。
-				if a.queueOpen && !a.npOpen {
-					a.queuePanel(c)
-				}
-			})
+	ui.Column(c).Fill().AlignItems(ui.Stretch).Children(func() {
+		a.topBar(c)
+		ui.Row(c).Grow(1).FillWidth().AlignItems(ui.Stretch).Children(func() {
+			a.routeArea(c)
+			// 正在播放页会把内容区整页盖住，队列这时改走浮窗
+			//（queueFloat）：停靠栏建了也看不见，只会白占一次列表状态。
+			if a.queueOpen && !a.npOpen {
+				a.queuePanel(c)
+			}
 		})
 	})
 }
@@ -445,7 +434,7 @@ func (a *App) routeArea(c *ui.Context) {
 	})
 }
 
-// ===== 侧栏 =====
+// ===== 顶部菜单 =====
 
 type navItem struct {
 	path  string
@@ -461,226 +450,175 @@ var navItems = []navItem{
 	{"/playlists", "list", "歌单"},
 }
 
-// 侧栏几何。展开 216，收起 64。收起态只放得下 44 宽的内容区，
-// 所以所有子元素都要走 sidePad() 统一缩进，避免各处手写数值不一致。
-//
-// 垂直节奏同样要统一：导航项、用户区、底部按钮共用 sideBtnHeight 的行高与
-// sideIconSize 的图标尺寸，这样它们的图标中心线才在同一条水平线上。
-//
-// 布局上有一条铁律：侧栏里的按钮不许 FillWidth+MarginX 组合。列的交叉轴
-// 默认 Stretch 本来就会先扣掉 MarginX 再拉伸；显式 100% 宽却是按容器全宽
-// 解析的，Margin 叠加在其外，按钮会向右溢出（收起态 64 宽 → 按钮实际占
-// 10..74，内容盒右移 12px，图标整体偏右）。
-//
-// 用户头像曾经用 Avatar 的默认尺寸（FontSize*2.25≈32px），比导航图标
-// 大一大圈且让用户区行高（48）与导航行高（40）不一致——于是头像既凸出、
-// 又和下方图标错位，看起来「没对齐」。
+// 顶栏几何。导航与右侧工具按钮共用接近的点击盒与图标尺寸，
+// 它们的中线因此天然落在同一条水平线上。
 const (
-	sideWidth       = 216.0
-	sideWidthSmall  = 64.0
-	sidePadX        = 10.0
-	sideBtnHeight   = 40.0
-	sideFootBtnSize = 36.0
-	sideIconSize    = 18.0
-	sideAvatarSize  = 26.0
+	topBarH       = 46.0
+	topBtnSize    = 32.0
+	topNavSize    = 34.0
+	topIconSize   = 17.0
+	topAvatarSize = 26.0
+	macDotSize    = 12.0
+	macDotHit     = 20.0
 )
 
-// sideLabelMin 是「还放得下文字标签」的宽度下限。收起/展开是宽度过渡，
-// 标签若跟 a.sbCollapsed 布尔量走，动画中段就会突兀地出现/消失；
-// 以实际宽度为准，标签与裁剪同步进出。
-const sideLabelMin = 132.0
+// macTrafficOnLeft 报告自绘窗口按钮是否按 macOS HIG 放在左边。
+// 单独成函数便于在没有 macOS 构建的测试里断言这条平台约定。
+func macTrafficOnLeft(goos string) bool { return goos == "darwin" }
 
-// sidePad 是当前形态下的水平内边距：收起态按钮要居中，缩进更小。
-func (a *App) sidePad() float32 {
-	if a.sbCollapsed {
-		return 10
+// backOrBrand 画返回按钮；没有历史时退回品牌音符。顶栏只此一处品牌标记。
+func (a *App) backOrBrand(c *ui.Context, t *ui.Theme) {
+	if a.Router.CanGoBack() {
+		a.topIconBtn(c, "back", "返回", func() { a.Router.Back() })
+		return
 	}
-	return sidePadX
+	ui.Icon(c, Icons["note"]).FontSize(fz(topIconSize)).AlignSelf(ui.Center).TextColor(t.Accent)
 }
 
-func (a *App) sidebar(c *ui.Context) {
-	t := c.Theme()
-	target := float32(sideWidth)
-	if a.sbCollapsed {
-		target = sideWidthSmall
-	}
-	side := ui.Column(c).PaddingY(10).Gap(2).Background(a.sideBg(t)).Clip()
-	// 收起/展开是宽度过渡，不是宽度硬切（主项目 .sidebar width .24s）。
-	// 第一帧 Animate 直接返回目标值，所以启动画面与测试环境拿到的就是终态宽度。
-	w := side.AnimateWith("sidebar-w", target, 220*time.Millisecond, easePage)
-	side.Width(w)
-	label := w > sideLabelMin
-	collapsed := !label
-	side.Children(func() {
-		// 用户区。
-		//
-		// 头像要和下面导航项的图标对齐，两侧必须共享同一套几何：
-		//   - 按钮不设 FillWidth（见上方常量注释），列交叉轴 Stretch 会
-		//     扣掉 MarginX 后拉伸，展开/收起态的按钮盒都不溢出
-		//   - 行高都取 sideBtnHeight，AlignItems(Center) 让头像处于行中线
-		//   - 头像显式给定边长，不吃 Avatar 的默认 FontSize*2.25（约 32px，
-		//     比导航图标大一大圈，视觉上就凸出来了）
-		//   - 子元素必须在 userBtn.Children 里创建：MyGo 的元素在创建处
-		//     就挂到当前父节点，在 Children 外先建 Row 会把它挂成按钮的
-		//     兄弟——头像因此贴到侧栏最左边，和图标错开一整列
-		me := a.PL.Me()
-		loggedIn := a.PL.LoggedIn()
-
-		userBtn := ui.ButtonBase(c).Height(sideBtnHeight).Padding(0, a.sidePad()).
-			Margin(0, a.sidePad(), 6, a.sidePad()).Radius(10).AlignItems(ui.Center).Gap(10).
-			Transition(hoverFade)
-		if loggedIn {
-			ava := a.Covers.Get(me.Avatar, a.invalidate)
-			userBtn.Children(func() {
-				ui.Avatar(c, me.Name, ava).Size(sideAvatarSize, sideAvatarSize)
-				if label {
-					ui.Column(c).Grow(1).Gap(0).Children(func() {
-						ui.Text(c, me.Name).FontSize(fz(13)).FontWeight(600).SingleLine().Ellipsis("…")
-						if me.VipLabel != "" {
-							ui.Text(c, me.VipLabel).FontSize(fz(10)).TextColor(t.Accent)
-						}
-					})
-				}
-			})
-			// 头像进「个人中心」：档位、各自到期时间、退出登录都在那一页。
-			// 设置仍由底部的齿轮进入——旧写法把两件事挤在一个入口，想退出
-			// 登录的人根本不知道按钮在「设置 → 关于」最底下。
-			userBtn.Tooltip("个人中心").Label("个人中心")
-			a.styleSideBtn(userBtn, a.Router.Path() == "/profile", c)
-			if userBtn.Clicked() {
-				a.Router.Push("/profile")
-			}
-		} else {
-			userBtn.Children(func() {
-				ui.Icon(c, Icons["user"]).FontSize(fz(sideIconSize))
-				if label {
-					ui.Text(c, "点击登录").FontSize(fz(13)).TextColor(t.TextMuted)
-				}
-			})
-			if userBtn.Clicked() {
-				a.Router.Push("/login")
-			}
-		}
-
-		// 头像固定在顶部、设置/收起固定在底部；上下两个弹性留白等分，
-		// 把中间这组导航压到剩余空间的真正中心。
-		ui.Spacer(c)
-		nav := ui.Column(c).FillWidth().Gap(2)
-		nav.Children(func() {
-			for _, it := range navItems {
-				a.sideNavItem(c, t, it, label)
-			}
-		})
-		ui.Spacer(c)
-
-		a.sideFooter(c, t, collapsed, w)
-	})
-}
-
-// sideFooter 是侧栏底部：设置 + 收起/展开。
-//
-// 收起态改为纵向排列：侧栏此时只有 64 宽，两个 36 的按钮加 gap 放不下，
-// 横排会被挤出边界、与上方导航项的图标列错位。纵排后每个按钮都与展开态
-// 的图标占据同一条中心线。
-//
-// collapsed 由实际宽度算出（见 sidebar），过渡中段宽度不够就提前排成纵排，
-// 免得两个按钮被挤出侧栏。w 用于收起/展开图标的旋转进度。
-//
-// 返回容器元素，供布局测试读实际位置（测试不该硬编码 y 坐标——播放器条
-// 占掉底部高度，靠算常数极易与真实布局脱节）。
-func (a *App) sideFooter(c *ui.Context, t *ui.Theme, collapsed bool, w float32) ui.Element {
-	// 收起/展开图标按宽度进度旋转 180°（主项目是同一个 chevron 转 180°，
-	// 而不是在两个方向上硬换图标）。0 = 收起态指右（提示「展开」），
-	// 180 = 展开态指左（提示「收起」）。
-	k := float32(0)
-	if d := float32(sideWidth - sideWidthSmall); d > 0 {
-		k = clampF32((w - sideWidthSmall) / d)
-	}
-	if collapsed {
-		// 纵排：与上方 40 高的导航项共用同一条中心线
-		return ui.Column(c).FillWidth().PaddingX(a.sidePad()).Gap(2).Children(func() {
-			a.sideIconBtn(c, t, "settings", "设置", 0, func() {
-				a.Router.Push("/settings")
-			})
-			a.sideIconBtn(c, t, "expand", "展开侧栏", 180*k, a.toggleSidebar)
-		})
-	}
-
-	return ui.Row(c).FillWidth().PaddingX(a.sidePad()).Gap(4).Children(func() {
-		a.sideIconBtn(c, t, "settings", "设置", 0, func() {
-			a.Router.Push("/settings")
-		})
-		a.sideIconBtn(c, t, "expand", "收起侧栏", 180*k, a.toggleSidebar)
-	})
-}
-
-// sideIconBtn 是侧栏底部/收起态用的纯图标按钮（带 tooltip）。
-// rot 是图标的旋转角度（度），0 为不转。
-func (a *App) sideIconBtn(c *ui.Context, t *ui.Theme, icon, tip string, rot float32, onClick func()) {
-	b := ui.ButtonBase(c).Size(sideFootBtnSize, sideFootBtnSize).Radius(8).Center().
-		Transition(hoverFade)
+// topNavItem 是顶部菜单的一项：只有图标，功能名放在 tooltip 与无障碍名里。
+func (a *App) topNavItem(c *ui.Context, t *ui.Theme, it navItem) {
+	active := a.Router.Path() == it.path
+	b := ui.ButtonBase(c).Size(topNavSize, topNavSize).Radius(9).Center().Transition(hoverFade)
 	b.Children(func() {
-		ic := ui.Icon(c, Icons[icon]).FontSize(fz(sideIconSize)).AlignSelf(ui.Center)
-		if rot != 0 {
-			ic.Rotate(rot)
+		size := fz(topIconSize)
+		// ∞ 在 24 网格里只有 10 单位高，按常规 17px 画会比邻居矮一截；
+		// 单独放大到 21px，视觉重量才和日历/红心一致。
+		if it.icon == "guess" {
+			size = fz(21)
 		}
+		ui.Icon(c, Icons[it.icon]).FontSize(size).AlignSelf(ui.Center)
 	})
-	if b.Hovered() {
+	b.Tooltip(it.label)
+	b.Label(it.label)
+	if active {
+		b.Background(t.Accent.Alpha(0.13))
+		b.TextColor(t.Accent)
+	} else if b.Hovered() {
 		b.Background(t.SurfaceHover)
 	}
-	b.Tooltip(tip)
-	b.Label(tip)
 	if b.Clicked() {
-		onClick()
-	}
-}
-
-func (a *App) toggleSidebar() {
-	a.sbCollapsed = !a.sbCollapsed
-	a.Conf.Set("Window.SidebarCollapsed", a.sbCollapsed)
-}
-
-func (a *App) sideNavItem(c *ui.Context, t *ui.Theme, it navItem, label bool) {
-	active := a.Router.Path() == it.path
-	btn := ui.ButtonBase(c).Height(sideBtnHeight).Padding(0, a.sidePad()).
-		MarginX(a.sidePad()).Radius(8).AlignItems(ui.Center).Gap(10).
-		Transition(hoverFade)
-	btn.Children(func() {
-		ui.Icon(c, Icons[it.icon]).FontSize(fz(sideIconSize)).AlignSelf(ui.Center).Label(it.label)
-		if label {
-			ui.Text(c, it.label).FontSize(fz(13.5)).Grow(1)
-		}
-	})
-	if !label {
-		// 收起态无标题：ButtonBase 默认主轴居中，图标落在按钮正中。
-		btn.Center()
-	} else {
-		btn.Justify(ui.Start)
-	}
-	a.styleSideBtn(btn, active, c)
-	if btn.Clicked() {
+		a.searchOpen = false
 		a.Router.Push(it.path)
 	}
 }
 
-// styleSideBtn 统一侧栏按钮的激活/悬停样式。
-func (a *App) styleSideBtn(btn ui.Element, active bool, c *ui.Context) {
+// topIconBtn 是顶栏的纯图标按钮（悬停底色 + tooltip + 无障碍名）。
+func (a *App) topIconBtn(c *ui.Context, icon, tip string, onClick func()) ui.Element {
 	t := c.Theme()
-	if active {
-		btn.Background(t.Accent.Alpha(0.13))
-		btn.TextColor(t.Accent)
-		// A two-pixel signal rule instead of a full rounded "selected pill".
-		// It keeps the active row legible without turning the sidebar into a
-		// stack of iOS-style capsules.
-		btn.Draw(func(p *ui.Painter, r ui.Rect) {
-			p.Fill(ui.Rect{X: r.X, Y: r.Y + 9, W: 2, H: r.H - 18}, t.Accent, 1)
+	b := ui.ButtonBase(c).Size(topBtnSize, topBtnSize).Radius(8).Center().Transition(hoverFade)
+	b.Children(func() {
+		ui.Icon(c, Icons[icon]).FontSize(fz(topIconSize)).AlignSelf(ui.Center)
+	})
+	b.Tooltip(tip)
+	b.Label(tip)
+	if b.Hovered() {
+		b.Background(t.SurfaceHover)
+	}
+	if b.Clicked() {
+		onClick()
+	}
+	return b
+}
+
+// searchButton 是搜索入口：按钮 + 下拉浮窗，浮窗里才放输入框。
+func (a *App) searchButton(c *ui.Context, t *ui.Theme) {
+	b := a.topIconBtn(c, "search", "搜索", func() { a.searchOpen = !a.searchOpen })
+	if a.searchOpen {
+		b.Background(t.Accent.Alpha(0.13))
+		b.TextColor(t.Accent)
+	}
+	ui.PopoverBase(c, b, &a.searchOpen, func(panel ui.Element) {
+		// 右缘对齐搜索按钮，320 宽的浮窗才不会被窗口右缘裁掉。
+		panel.AttachTo(b, ui.AnchorBottomRight, ui.AnchorTopRight).Margin(8, 0, 0, 0)
+		panel.Width(320).Padding(10).Background(t.Surface).Radius(12).
+			Border(1, t.Border).Shadow(0, 10, 32, 0, ui.RGBA(0, 0, 0, 0.18))
+		panel.Children(func() {
+			sf := ui.SearchField(c, &a.searchDraft).FillWidth().AutoFocus()
+			sf.Label("搜索音乐")
+			sf.Placeholder("搜索音乐")
+			if sf.Submitted() {
+				kw := strings.TrimSpace(a.searchDraft)
+				if kw != "" {
+					a.searchOpen = false
+					a.Router.Push("/search?kw=" + kw)
+				}
+			}
 		})
-	} else if btn.Hovered() {
-		btn.Background(t.SurfaceHover)
+	})
+}
+
+// avatarButton 是右上角的用户入口：登录后进个人中心，未登录进登录页。
+func (a *App) avatarButton(c *ui.Context, t *ui.Theme) {
+	me := a.PL.Me()
+	b := ui.ButtonBase(c).Size(topNavSize, topNavSize).Radius(999).Center().Transition(hoverFade)
+	if !a.PL.LoggedIn() {
+		b.Children(func() {
+			ui.Icon(c, Icons["user"]).FontSize(fz(topIconSize)).AlignSelf(ui.Center)
+		})
+		b.Tooltip("登录")
+		b.Label("登录")
+		if b.Hovered() {
+			b.Background(t.SurfaceHover)
+		}
+		if b.Clicked() {
+			a.searchOpen = false
+			a.Router.Push("/login")
+		}
+		return
+	}
+	ava := a.Covers.Get(me.Avatar, a.invalidate)
+	b.Children(func() {
+		ui.Avatar(c, me.Name, ava).Size(topAvatarSize, topAvatarSize)
+	})
+	b.Tooltip("个人中心")
+	b.Label("个人中心")
+	if a.Router.Path() == "/profile" {
+		b.Background(t.Accent.Alpha(0.13))
+	} else if b.Hovered() {
+		b.Background(t.SurfaceHover)
+	}
+	if b.Clicked() {
+		a.searchOpen = false
+		a.Router.Push("/profile")
 	}
 }
 
-func (a *App) sideBg(t *ui.Theme) ui.Color {
+// macWindowButtons 按 macOS HIG 把交通灯放在左上：关、最小化、缩放。
+// 自绘 CSD 时它们只是三枚圆点，不依赖系统标题栏。
+func (a *App) macWindowButtons(c *ui.Context) {
+	if a.Win == nil {
+		return
+	}
+	row := ui.Row(c).AlignItems(ui.Center).Gap(8)
+	row.Children(func() {
+		a.macTrafficLight(c, "关闭", "#ff5f57", "#e0443e", "×", a.closeWindow)
+		a.macTrafficLight(c, "最小化", "#febc2e", "#d89e24", "−", func() { a.Win.Minimize() })
+		a.macTrafficLight(c, "缩放", "#28c840", "#1aab29", "+", func() { a.Win.ToggleMaximize() })
+	})
+}
+
+// macTrafficLight 画一枚交通灯圆点；悬停时显示 HIG 的符号。
+func (a *App) macTrafficLight(c *ui.Context, tip, fill, ring, glyph string, fn func()) {
+	b := ui.ButtonBase(c).Size(macDotHit, macDotHit).Radius(999).Center()
+	b.Children(func() {
+		hovered := b.Hovered()
+		ui.Box(c).Size(macDotSize, macDotSize).Radius(999).
+			Background(ui.Hex(fill)).Border(1, ui.Hex(ring)).Center().Children(func() {
+			if hovered {
+				ui.Text(c, glyph).FontSize(fz(9)).FontWeight(800).
+					TextColor(ui.RGBA(0, 0, 0, 0.62)).AlignSelf(ui.Center)
+			}
+		})
+	})
+	b.Tooltip(tip)
+	b.Label(tip)
+	if b.Clicked() {
+		fn()
+	}
+}
+
+// panelBg 是侧边面板/队列停靠栏的底色（与窗口底色区分开）。
+func panelBg(t *ui.Theme) ui.Color {
 	if t.Dark {
 		return ui.Hex("#151a16")
 	}
@@ -691,37 +629,45 @@ func (a *App) sideBg(t *ui.Theme) ui.Color {
 
 func (a *App) topBar(c *ui.Context) {
 	t := c.Theme()
-	bar := ui.Row(c).FillWidth().Height(46).Padding(0, 18).Gap(8).AlignItems(ui.Center).DragWindow()
+	bar := ui.Row(c).FillWidth().Height(topBarH).Padding(0, 14).Gap(6).
+		AlignItems(ui.Center).DragWindow()
 	bar.Draw(func(p *ui.Painter, r ui.Rect) {
 		p.Fill(ui.Rect{X: r.X, Y: r.Y + r.H - 1, W: r.W, H: 1}, t.Border.Alpha(0.65), 0)
 	})
 	bar.Children(func() {
-		if a.Router.CanGoBack() {
-			back := ui.ButtonBase(c).Size(30, 30).Radius(15).Center()
-			back.Children(func() { ui.Icon(c, Icons["back"]).FontSize(fz(17)).AlignSelf(ui.Center) })
-			if back.Hovered() {
-				back.Background(t.SurfaceHover)
+		// 左组：macOS 的交通灯在最左（HIG），随后是返回/品牌图标。
+		// 左右两组等权 Grow，导航组因此落在窗口真正的中线上。
+		left := ui.Row(c).Grow(1).AlignItems(ui.Center).Gap(8)
+		left.Children(func() {
+			if macTrafficOnLeft(runtime.GOOS) {
+				a.macWindowButtons(c)
+				ui.Box(c).Width(2)
 			}
-			back.Tooltip("返回")
-			if back.Clicked() {
-				a.Router.Back()
-			}
-		} else {
-			ui.Icon(c, Icons["note"]).FontSize(fz(17)).AlignSelf(ui.Center).TextColor(t.Accent)
-		}
+			a.backOrBrand(c, t)
+		})
 
-		// 居中搜索胶囊
-		ui.Spacer(c)
-		sf := ui.SearchField(c, &a.searchDraft).Width(280).Label("搜索音乐")
-		if sf.Submitted() {
-			kw := strings.TrimSpace(a.searchDraft)
-			if kw != "" {
-				a.Router.Push("/search?kw=" + kw)
+		nav := ui.Row(c).AlignItems(ui.Center).Gap(2)
+		nav.Children(func() {
+			for _, it := range navItems {
+				a.topNavItem(c, t, it)
 			}
-		}
-		ui.Spacer(c)
+		})
 
-		a.windowButtons(c)
+		// 右组：搜索、设置、头像。非 macOS 再跟上自绘 CSD 按钮；
+		// macOS 的窗口按钮已经在左边，设置与头像留在最右。
+		right := ui.Row(c).Grow(1).Justify(ui.End).AlignItems(ui.Center).Gap(2)
+		right.Children(func() {
+			a.searchButton(c, t)
+			a.topIconBtn(c, "settings", "设置", func() {
+				a.searchOpen = false
+				a.Router.Push("/settings")
+			})
+			a.avatarButton(c, t)
+			if !macTrafficOnLeft(runtime.GOOS) {
+				ui.Box(c).Width(6)
+				a.windowButtons(c)
+			}
+		})
 	})
 }
 
@@ -768,7 +714,7 @@ func (a *App) invalidate() {
 }
 
 // isCreatedPlaylist 报告 id 是否是当前登录用户自建的歌单。
-// 自建歌单在侧栏列表里（PL.Playlists），tid 即路由参数 id。
+// 自建歌单在歌单页列表里（PL.Playlists），tid 即路由参数 id。
 func (a *App) isCreatedPlaylist(id int64) bool {
 	for _, pl := range a.PL.Playlists() {
 		if pl.ID == id {

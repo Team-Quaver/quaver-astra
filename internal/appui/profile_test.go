@@ -19,7 +19,7 @@ import (
 // profileStub 是「个人中心」依赖的假后端。
 //
 // 页面的会员明细走 HTTP（profileView 自己调 a.API），登录态却由 player.Backend
-// 的桩件提供 —— 两条路都指向同一个 logged 标志，logout 之后侧栏与页面才会一起
+// 的桩件提供 —— 两条路都指向同一个 logged 标志，logout 之后顶栏与页面才会一起
 // 回到未登录形态，这正是退出登录后最容易留下残影的地方。
 type profileStub struct {
 	t       *testing.T
@@ -142,12 +142,12 @@ func waitText(t *testing.T, tester *ui.Tester, substr string) {
 	t.Fatalf("等不到 %q；当前帧文本：%v", substr, tester.Texts())
 }
 
-// TestSidebarAvatarOpensProfile 头像点击的落点：个人中心，不是设置。
-func TestSidebarAvatarOpensProfile(t *testing.T) {
-	app := sideLoggedApp(t, false)
+// TestTopBarAvatarOpensProfile 头像点击的落点：个人中心，不是设置。
+func TestTopBarAvatarOpensProfile(t *testing.T) {
+	app := loggedApp(t)
 	tester := ui.NewTester(app.View, testWinW, testWinH)
 	if err := tester.Click("个人中心"); err != nil {
-		t.Fatalf("侧栏用户区应当可点（锚点 = 个人中心）：%v", err)
+		t.Fatalf("顶栏用户区应当可点（锚点 = 个人中心）：%v", err)
 	}
 	if got := app.Router.Path(); got != "/profile" {
 		t.Errorf("头像应跳 /profile，实得 %q", got)
@@ -167,7 +167,7 @@ func TestProfileShowsMembershipExpiry(t *testing.T) {
 	if tester.HasText("豪华绿钻") {
 		t.Errorf("huge_vip=0 的档位不该出现在权益列表里；当前帧：%v", tester.Texts())
 	}
-	// UID 来自页面自己拉的 /user/me，不是侧栏那份缓存。
+	// UID 来自页面自己拉的 /user/me，不是顶栏那份缓存。
 	waitText(t, tester, "UID 7gGmYq0Q")
 }
 

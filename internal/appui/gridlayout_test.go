@@ -41,7 +41,7 @@ func assertGridRowAligned(t *testing.T, name string, boxes []ui.Rect) {
 // TestPlaylistGridCardsShareOneRowGeometry 钉住歌单流的两个对齐问题：
 // 标题一/两行不能把同排卡片顶歪；卡片顶到播放量的距离也必须统一。
 func TestPlaylistGridCardsShareOneRowGeometry(t *testing.T) {
-	app := sideLoggedApp(t, false)
+	app := loggedApp(t)
 	titles := []string{
 		"歌单 01｜短",
 		"歌单 02｜两行标题会换行啦啦啦",
@@ -75,7 +75,7 @@ func TestPlaylistGridCardsShareOneRowGeometry(t *testing.T) {
 
 // TestHomePlaylistGridAligns 首页推荐网格沿用统一卡片几何。
 func TestHomePlaylistGridAligns(t *testing.T) {
-	app := sideLoggedApp(t, false)
+	app := loggedApp(t)
 	app.Router = ui.NewRouter("/")
 	app.home = homeState{
 		loaded: true,
@@ -108,7 +108,7 @@ func TestHomePlaylistGridAligns(t *testing.T) {
 // TestPlaylistGridIncompleteRowKeepsCardWidth 末行卡片不能因为数量少而被拉宽。
 // 这是用户看到“后面两张突然变大”的直接回归保护。
 func TestPlaylistGridIncompleteRowKeepsCardWidth(t *testing.T) {
-	app := sideLoggedApp(t, false)
+	app := loggedApp(t)
 	titles := []string{
 		"宽度 01 短", "宽度 02 两行标题会换行啦啦啦", "宽度 03 A Long English Playlist Name",
 		"宽度 04", "宽度 05 今晚听什么｜通勤与深夜电台精选", "宽度 06",
@@ -131,7 +131,7 @@ func TestPlaylistGridIncompleteRowKeepsCardWidth(t *testing.T) {
 }
 
 func TestHomeExtendedSections(t *testing.T) {
-	app := sideLoggedApp(t, false)
+	app := loggedApp(t)
 	app.Router = ui.NewRouter("/")
 	app.home = homeState{
 		loaded: true,

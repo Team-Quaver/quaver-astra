@@ -169,7 +169,7 @@ func relativeLuminance(c ui.Color) float64 {
 // color-scheme，深色桌面上 portal 说是深色，强制浅色就被覆盖了。
 // 现在应用自己按 Style.Theme 定明暗，桌面说深色也必须给出浅色。
 func TestForcedLightThemeOverridesDarkDesktop(t *testing.T) {
-	app, tester := sideTestApp(t, false)
+	app, tester := testApp(t)
 	app.Router = ui.NewRouter("/settings")
 
 	// 先确认「跟随系统 + 深色桌面」确实是深色，否则下面的断言没有意义。

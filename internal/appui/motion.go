@@ -14,8 +14,7 @@ import (
 //	.route > .entering > *   opacity 0→1 + translateY(8px)，.26s
 //	                         cubic-bezier(.22,.61,.36,1)，块间延迟 .04s 递增
 //	.np                      上滑开合，.34s cubic-bezier(.32,.72,.24,1)
-//	.nav a / .side-btn / .row  transition: background .14s
-//	.sidebar                 width .24s cubic-bezier(.22,.61,.36,1)
+//	.nav a / .row            transition: background .14s
 //	.pb-fill                 进度填充跟着位置缓动
 //
 // MyGo 里能走第一等 API 的都走第一等的：ElementTransition 管开合与位移，
@@ -29,7 +28,7 @@ import (
 
 // 主项目的两条缓动曲线（都是 cubic-bezier）。
 var (
-	// easePage 对应 route-in / 侧栏宽度：起步快、收尾长，界面出现得利落。
+	// easePage 对应 route-in：起步快、收尾长，界面出现得利落。
 	easePage = bezier(0.22, 0.61, 0.36, 1)
 	// easePanel 对应正在播放页的开合：更强调尾巴，像面板「弹」到位。
 	easePanel = bezier(0.32, 0.72, 0.24, 1)

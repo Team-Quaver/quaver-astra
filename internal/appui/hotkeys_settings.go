@@ -9,8 +9,7 @@ import (
 const (
 	// hotkeyActionCol 是动作名列宽；hotkeyClearCol 是解绑按钮列宽。
 	// 两列定宽，绑定按钮才能对齐成两条竖线，不随文案长度跳动。
-	// 动作列还要放一句「单向动作」的说明：给到 150 才不至于折成三行，
-	// 把整行拉高、五行表格变成高低不齐。
+	// 「退出 Astra」比播放动作长，留 150 才不会折行、把整行拉高。
 	hotkeyActionCol = 150.0
 	hotkeyClearCol  = 26.0
 	// hotkeyCellMin 是绑定按钮的最小宽度：「媒体播放/暂停键」不短，
@@ -23,7 +22,7 @@ const (
 // 交互口径与主流播放器一致：点一下绑定格进入录制，按下新的组合键即改，
 // Esc 取消，右侧小叉解绑——不让用户手写 Electron 风格的 accelerator 串。
 func (a *App) hotkeysSettings(c *ui.Context, t *ui.Theme) {
-	// 内容比窗口高是常态（六行绑定 + 两段说明），必须可滚：
+	// 内容比窗口高是常态（四行绑定 + 两段说明），必须可滚：
 	// 不能靠用户把窗口拉到最大才能点到「恢复默认」。
 	body := ui.Scroll(c).Grow(1).FillWidth().Gap(16).MaxWidth(680)
 	a.enterBlock(c, 0, body)
@@ -220,8 +219,8 @@ func (a *App) hotkeyHints(c *ui.Context, t *ui.Theme) {
 	ui.Column(c).FillWidth().Gap(10).Children(func() {
 		ui.Column(c).FillWidth().Gap(2).Children(func() {
 			ui.Text(c, "同键时全局优先").FontSize(fz(12)).FontWeight(700)
-			ui.Text(c, "与生效中的全局快捷键同键时，窗口内绑定不会触发，并会在上表标注。").
-				FontSize(fz(11.5)).TextColor(t.TextMuted).MaxLines(3)
+			ui.Text(c, "同一动作在两列用同一组键是默认形态：全局生效时由全局接管，全局不可用时窗口内顶上。不同动作撞车时窗口内不会触发，并会在上表标注。").
+				FontSize(fz(11.5)).TextColor(t.TextMuted).MaxLines(4)
 		})
 		ui.Column(c).FillWidth().Gap(2).Children(func() {
 			ui.Text(c, "媒体键只能作全局快捷键").FontSize(fz(12)).FontWeight(700)

@@ -54,12 +54,20 @@ func TestUIShots(t *testing.T) {
 		}
 	}
 
+	// 顶栏：搜索以「按钮 + 浮窗」存在，菜单按钮只留图标。
+	_, searchTester := testApp(t)
+	if err := searchTester.Click("搜索"); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(50 * time.Millisecond)
+	shot(searchTester, "topbar-search.png")
+
 	// 设置 - 关于（产品图标在介绍文案左侧）
-	about, aboutTester := sideTestApp(t, false)
+	about, aboutTester := testApp(t)
 	about.settings.tab = aboutTab
 	shot(aboutTester, "settings-about.png")
 
-	// 个人中心（侧栏头像的落点：档位、各自的到期时间、退出登录）
+	// 个人中心（顶栏头像的落点：档位、各自的到期时间、退出登录）
 	_, profTester, _ := profileApp(t, `{"svip":1,"svip_start":"2024-06-01","svip_end":"2027-01-01",`+
 		`"identity":{"vip":1,"vip_end":"2026-10-24","huge_vip":0,"level":12}}`)
 	waitText(t, profTester, "到期（还剩")
@@ -77,16 +85,15 @@ func TestUIShots(t *testing.T) {
 	time.Sleep(450 * time.Millisecond)
 	shot(progressTester, "np-progress.png")
 
-	// 辞曲舞台 + AMLL TTML：多声部、背景和声与逐字发光。
+	// 辞曲舞台：逐字发光与翻译辅助行。
 	foliaApp, foliaTester := npTestApp(t, color.RGBA{R: 96, G: 148, B: 210, A: 255})
-	foliaApp.setAMLL("m1", "file", player.ParseTTML(testTTML), nil)
 	foliaApp.PL.SetLyricAuxMode("translation")
 	foliaApp.setLyricStage("folia")
 	time.Sleep(450 * time.Millisecond)
-	shot(foliaTester, "np-folia-amll.png")
+	shot(foliaTester, "np-folia.png")
 
-	// 新增外观设置：正在播放布局与 AMLL 匹配状态。
-	appearance, appearanceTester := sideTestApp(t, false)
+	// 新增外观设置：正在播放布局。
+	appearance, appearanceTester := testApp(t)
 	appearance.settings.tab = appearanceTab
 	shot(appearanceTester, "settings-appearance.png")
 
@@ -129,7 +136,7 @@ func TestUIShots(t *testing.T) {
 	shot(qtester, "np-queue.png")
 
 	// 首页：无限电台 + 新歌 + 推荐 + AI 歌单 + 排行榜。
-	homeApp := sideLoggedApp(t, false)
+	homeApp := loggedApp(t)
 	homeApp.Router = ui.NewRouter("/")
 	homeApp.home = homeState{
 		loaded: true,
@@ -179,7 +186,7 @@ func TestUIShots(t *testing.T) {
 	shot(ui.NewTester(radioApp.View, testWinW, testWinH), "guess-radio.png")
 
 	// 歌单页：我创建的歌单 + 我收藏的歌单。
-	cov := sideCoverApp(t, false)
+	cov := coverApp(t)
 	cov.Router = ui.NewRouter("/playlists")
 	cov.favLists = favListsState{loaded: true}
 	shot(ui.NewTester(cov.View, testWinW, testWinH), "playlists.png")

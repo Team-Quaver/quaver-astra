@@ -59,7 +59,7 @@ func TestUpdateStatusText(t *testing.T) {
 // TestSettingsUpdateShowsInstall 断言「关于」页在发现可升级版本时给出安装入口，
 // 且当前无可用更新时不显示。
 func TestSettingsUpdateShowsInstall(t *testing.T) {
-	app, tester := sideTestApp(t, false)
+	app, tester := testApp(t)
 	app.settings.tab = aboutTab
 	app.Version = "1.4.0"
 	app.Upd = update.NewClient()
@@ -84,7 +84,7 @@ func TestSettingsUpdateShowsInstall(t *testing.T) {
 // TestSettingsUpdateSystemPackageOpensRelease 断言系统包安装形态下按钮改为
 // 「打开发行页」，不做原地替换。
 func TestSettingsUpdateSystemPackageOpensRelease(t *testing.T) {
-	app, tester := sideTestApp(t, false)
+	app, tester := testApp(t)
 	app.settings.tab = aboutTab
 	app.Upd = update.NewClient()
 	app.upd = updateState{
@@ -103,7 +103,7 @@ func TestSettingsUpdateSystemPackageOpensRelease(t *testing.T) {
 
 // TestSettingsAboutShowsVersion 断言「关于」页标题旁显示当前版本号。
 func TestSettingsAboutShowsVersion(t *testing.T) {
-	app, tester := sideTestApp(t, false)
+	app, tester := testApp(t)
 	app.settings.tab = aboutTab
 	app.Version = "1.2.3"
 	tester.Frame()

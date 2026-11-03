@@ -1,7 +1,6 @@
 package appui
 
 import (
-	"fmt"
 	"runtime"
 	"time"
 
@@ -168,47 +167,6 @@ func (a *App) settingsAppearance(c *ui.Context, t *ui.Theme) {
 		}
 		ui.Text(c, "辞曲舞台以歌词排版为主，保留封面氛围、逐字发光与多声部层次；随窗口尺寸自动收敛。").
 			FontSize(fz(11.5)).TextColor(t.TextMuted).MaxLines(2)
-
-		a.prefRow(c, "自动匹配 AMLL TTML 逐字歌词", func() bool { return a.amllEnabled() }, func(v bool) {
-			a.Conf.Set(amllAutoKey, v)
-			a.invalidate()
-		})
-		ui.Text(c, "按歌曲 mid 匹配 AMLL TTML DB，本地缓存后离线可用；没有 TTML 时自动回退 QQ 音乐 QRC。").
-			FontSize(fz(11.5)).TextColor(t.TextMuted).MaxLines(2)
-
-		ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(10).Children(func() {
-			btn := ui.ButtonBase(c).Padding(7, 12).Radius(8).Border(1, t.Border).Transition(hoverFade)
-			btn.Children(func() { ui.Text(c, "载入当前歌曲 TTML…").FontSize(fz(12.5)) })
-			if btn.Hovered() {
-				btn.Background(t.SurfaceHover)
-			}
-			if btn.Clicked() {
-				a.pickAMLLFile()
-			}
-			if cur, ok := a.PL.Current(); ok {
-				entry := a.amllFor(cur.Mid)
-				status := "尚未匹配"
-				switch entry.state {
-				case "loading":
-					status = "匹配中…"
-				case "ok":
-					status = fmt.Sprintf("%d 行 · %s", len(entry.lines), entry.source)
-				case "none":
-					status = "库中没有这首的 TTML"
-				case "error":
-					status = "匹配失败：" + entry.err
-				}
-				ui.Text(c, status).FontSize(fz(11)).TextColor(t.TextMuted).MaxLines(2)
-			}
-		})
-
-		ui.Divider(c)
-
-		ui.Text(c, "侧栏").FontSize(fz(14)).FontWeight(700)
-		a.prefRow(c, "收起侧栏", func() bool { return a.sbCollapsed }, func(v bool) {
-			a.sbCollapsed = v
-			a.Conf.Set("Window.SidebarCollapsed", v)
-		})
 
 		ui.Divider(c)
 
@@ -470,7 +428,7 @@ func (a *App) settingsAbout(c *ui.Context, t *ui.Theme) {
 		a.settingsUpdate(c, t)
 
 		// 账号相关动作（退出登录、清除凭证）不在这里：它们属于「个人中心」，
-		// 从侧栏头像进去。关于页只讲这个应用本身与更新。
+		// 从顶栏头像进去。关于页只讲这个应用本身与更新。
 	})
 }
 

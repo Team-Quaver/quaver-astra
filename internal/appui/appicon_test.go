@@ -26,7 +26,7 @@ func TestAppIconAssetsAreSquare(t *testing.T) {
 // TestSettingsAboutShowsAppIconLeftOfCopy 锁住“关于”页品牌布局：产品图标
 // 必须位于标题/简介的左侧，而不是只显示两行文字。
 func TestSettingsAboutShowsAppIconLeftOfCopy(t *testing.T) {
-	app, tester := sideTestApp(t, false)
+	app, tester := testApp(t)
 	app.settings.tab = aboutTab
 	tester.Frame()
 

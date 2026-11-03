@@ -105,7 +105,7 @@ func TestParseAccentColor(t *testing.T) {
 // 点击会写入配置并渲染出各自的附加信息（系统色读取结果 / 自定义色值），
 // 整页渲染不 panic。
 func TestSettingsAccentSection(t *testing.T) {
-	app, tester := sideTestApp(t, false)
+	app, tester := testApp(t)
 	// 自定义草稿只在启动时从配置读一次；写入后强制重载，专用分支才能显示它。
 	app.Conf.Set(accentCustomKey, "#7c3aed")
 	app.settings.draftsLoaded = false

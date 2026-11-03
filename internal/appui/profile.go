@@ -12,13 +12,13 @@ import (
 
 // ===== 个人中心 =====
 //
-// 侧栏头像的落点。以前点头像跳「设置」，于是两件事挤在一个入口里：想看自己
+// 顶栏头像的落点。以前点头像跳「设置」，于是两件事挤在一个入口里：想看自己
 // 账号的人被丢进一堆偏好开关，想退出登录的人反而找不到按钮（它藏在
 // 「设置 → 关于」最底下）。这一页只管账号：我是谁、买到什么时候、怎么退出。
 
 // profileState 是「个人中心」页的数据态。
 //
-// 会员权益不塞进 player.UserInfo：那份状态侧栏每帧都要读，字段只够一个档位
+// 会员权益不塞进 player.UserInfo：那份状态顶栏每帧都要读，字段只够一个档位
 // 标签；到期明细是打开这一页才需要的东西，按其它页面的惯例由页面自己后台取、
 // 自己缓存，退出登录时整块作废。
 type profileState struct {
@@ -59,7 +59,7 @@ func (a *App) profileView(c *ui.Context) {
 	name, avatar, uid := me.Name, me.Avatar, ""
 	tier := me.VipLabel
 	if st.loaded && st.me.BaseInfo.Name != "" {
-		// 取数失败时 st.me 是空壳，别拿它盖掉侧栏已经有的昵称。
+		// 取数失败时 st.me 是空壳，别拿它盖掉顶栏已经有的昵称。
 		name, avatar, uid = st.me.BaseInfo.Name, st.me.BaseInfo.Avatar, st.me.BaseInfo.EncryptedUin
 	}
 	if st.vipOK {
@@ -213,7 +213,7 @@ func (a *App) loadProfile(st *profileState) {
 	}()
 }
 
-// profileLogout 退出登录：清掉本页缓存，并让 player 重新确认登录态（侧栏、
+// profileLogout 退出登录：清掉本页缓存，并让 player 重新确认登录态（顶栏、
 // 我喜欢、歌单都跟着回到未登录形态）。
 func (a *App) profileLogout(st *profileState) {
 	if st.logging {

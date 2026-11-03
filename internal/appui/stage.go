@@ -10,36 +10,45 @@ import (
 )
 
 // stageLyricData is the normalized lyric source used by the 辞曲 stage.
-// QRC and AMLL TTML both feed the same line model, so the stage does not
-// need two near-identical renderers.
+// Word-timed QRC and line-level LRC both feed the same line model, so the
+// stage does not need two near-identical renderers.
 type stageLyricData struct {
-	lines  []player.TTMLLine
+	lines  []player.QrcLine
 	state  string
 	source string
 }
 
-func (a *App) stageLyrics() stageLyricData {
-	cur, _ := a.PL.Current()
-	if cur.Mid != "" {
-		entry := a.amllFor(cur.Mid)
-		if entry.state == "ok" && len(entry.lines) > 0 && (a.amllEnabled() || entry.source == "file") {
-			return stageLyricData{lines: entry.lines, state: "ok", source: "AMLL TTML"}
-		}
+// lyricStageKey chooses the now-playing layout: classic or folia.
+const lyricStageKey = "Lyrics.Stage"
+
+func (a *App) lyricStage() string {
+	if a.Conf == nil {
+		return "classic"
 	}
+	if a.Conf.String(lyricStageKey, "classic") == "folia" {
+		return "folia"
+	}
+	return "classic"
+}
+
+func (a *App) setLyricStage(stage string) {
+	if stage != "folia" {
+		stage = "classic"
+	}
+	if a.Conf != nil {
+		a.Conf.Set(lyricStageKey, stage)
+	}
+	a.invalidate()
+}
+
+func (a *App) stageLyrics() stageLyricData {
 	if qrc := a.PL.QrcLines(); len(qrc) > 0 {
-		lines := make([]player.TTMLLine, 0, len(qrc))
-		for _, line := range qrc {
-			lines = append(lines, player.TTMLLine{
-				Time: line.Time, Dur: line.Dur, Text: line.Text,
-				Trans: line.Trans, Roma: line.Roma, Words: line.Words,
-			})
-		}
-		return stageLyricData{lines: lines, state: "ok", source: "QQ 音乐 QRC"}
+		return stageLyricData{lines: qrc, state: "ok", source: "QQ 音乐 QRC"}
 	}
 	lines, state := a.PL.LyricLines()
-	out := make([]player.TTMLLine, 0, len(lines))
+	out := make([]player.QrcLine, 0, len(lines))
 	for _, line := range lines {
-		out = append(out, player.TTMLLine{
+		out = append(out, player.QrcLine{
 			Time: line.Time, Text: line.Text, Trans: line.Trans, Roma: line.Roma,
 			Dur: nextLyricDuration(lines, line.Time),
 		})
@@ -57,23 +66,13 @@ func nextLyricDuration(lines []player.LyricLine, at float64) float64 {
 }
 
 func (a *App) stageLyricSource() string {
-	cur, _ := a.PL.Current()
-	if cur.Mid != "" {
-		entry := a.amllFor(cur.Mid)
-		if entry.state == "ok" && len(entry.lines) > 0 && (a.amllEnabled() || entry.source == "file") {
-			if entry.source == "file" {
-				return "AMLL · 本地"
-			}
-			return "AMLL TTML"
-		}
-	}
 	if len(a.PL.QrcLines()) > 0 {
 		return "QQ 音乐 QRC"
 	}
 	return ""
 }
 
-func stageIndexAt(lines []player.TTMLLine, t float64) int {
+func stageIndexAt(lines []player.QrcLine, t float64) int {
 	at := -1
 	for i := range lines {
 		if lines[i].Time <= t+0.001 {
@@ -85,7 +84,7 @@ func stageIndexAt(lines []player.TTMLLine, t float64) int {
 	return at
 }
 
-func stageAux(line player.TTMLLine, mode string) string {
+func stageAux(line player.QrcLine, mode string) string {
 	switch mode {
 	case "translation":
 		if line.Trans != "" {
@@ -138,7 +137,7 @@ func (a *App) foliaStage(c *ui.Context, t *ui.Theme, cur player.Song, hasCur boo
 		default:
 			a.npList.Label = func(i int) string { return data.lines[i].Text }
 			a.lyricList(c, len(data.lines), curLine, func(i int) {
-				a.foliaLyricLine(c, t, data.lines[i], i, i == curLine, data.source)
+				a.foliaLyricLine(c, t, data.lines[i], i, i == curLine)
 			})
 		}
 
@@ -230,15 +229,12 @@ func (a *App) foliaAtmosphere(c *ui.Context, t *ui.Theme, cur player.Song) {
 	})
 }
 
-func (a *App) foliaLyricLine(c *ui.Context, t *ui.Theme, line player.TTMLLine, index int, current bool, source string) {
+func (a *App) foliaLyricLine(c *ui.Context, t *ui.Theme, line player.QrcLine, index int, current bool) {
 	pos := a.lyricPos(c)
 	if current && a.PL.Playing() && pos < line.End() {
 		c.AnimationFrame()
 	}
 	align := ui.Start
-	if line.Agent == "v2" {
-		align = ui.End
-	}
 	row := ui.Column(c).FillWidth().Padding(5, 12).Gap(5).Radius(10).
 		Cursor(ui.CursorPointer).Transition(hoverFade)
 	if current {
@@ -251,14 +247,10 @@ func (a *App) foliaLyricLine(c *ui.Context, t *ui.Theme, line player.TTMLLine, i
 				MaxLines(2).TextAlign(align)
 			return
 		}
-		a.foliaCurrentWords(c, t, line, pos, source, align)
+		a.foliaCurrentWords(c, t, line, pos, align)
 		if aux := stageAux(line, a.PL.LyricAuxMode()); aux != "" {
 			ui.Text(c, aux).Font(a.lyricFontFamily()).FontSize(fz(16)).
 				TextColor(ui.RGBA(255, 255, 255, 0.68)).MaxLines(3).TextAlign(align)
-		}
-		if line.BackgroundText != "" {
-			ui.Text(c, line.BackgroundText).Font(a.lyricFontFamily()).FontSize(fz(13)).
-				TextColor(t.Accent.Alpha(0.72)).MaxLines(2).TextAlign(align)
 		}
 	})
 	if row.Hovered() && !current {
@@ -271,7 +263,7 @@ func (a *App) foliaLyricLine(c *ui.Context, t *ui.Theme, line player.TTMLLine, i
 	}
 }
 
-func (a *App) foliaCurrentWords(c *ui.Context, t *ui.Theme, line player.TTMLLine, pos float64, source string, align ui.Align) {
+func (a *App) foliaCurrentWords(c *ui.Context, t *ui.Theme, line player.QrcLine, pos float64, align ui.Align) {
 	if len(line.Words) == 0 {
 		ui.Text(c, line.Text).Font(a.lyricFontFamily()).FontSize(fz(38)).
 			FontWeight(800).TextColor(ui.Hex("#ffffff")).MaxLines(3).TextAlign(align).
@@ -291,11 +283,7 @@ func (a *App) foliaCurrentWords(c *ui.Context, t *ui.Theme, line player.TTMLLine
 	// A single shaped paragraph keeps the line's own word spacing, kerning
 	// and wrapping. Splitting it into Row children drops the QRC spacer
 	// words and turns Latin spaces into zero-width gaps.
-	ql := player.QrcLine{
-		Time: line.Time, Dur: line.Dur, Text: line.Text,
-		Trans: line.Trans, Roma: line.Roma, Words: line.Words,
-	}
-	a.karaokeRubyLine(c, ql, true, size, npFoliaLyricWidth(c), align, func(fill float32) ui.Color {
+	a.karaokeRubyLine(c, line, true, size, npFoliaLyricWidth(c), align, func(fill float32) ui.Color {
 		if fill >= 1 {
 			return ui.Hex("#ffffff")
 		}

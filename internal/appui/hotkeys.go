@@ -27,15 +27,14 @@ import (
 // 同一个组合键即使也绑到窗口内，窗口永远不会收到它。所以解析阶段就把
 // 「撞车」判定出来并显示在设置页，而不是留一条点了没反应的绑定。
 
-// hotkeyAction 是可绑定的播放动作。
+// hotkeyAction 是可绑定的动作。
 type hotkeyAction string
 
 const (
 	hkPlayPause hotkeyAction = "playPause" // 播放/暂停（切换）
-	hkPlay      hotkeyAction = "play"      // 只朝「播」走
-	hkPause     hotkeyAction = "pause"     // 只朝「停」走
 	hkPrev      hotkeyAction = "prev"
 	hkNext      hotkeyAction = "next"
+	hkQuit      hotkeyAction = "quit"
 )
 
 // hotkeyScope 是绑定的作用域。
@@ -66,17 +65,19 @@ type hotkeySpec struct {
 
 // hotkeySpecs 的顺序就是设置页的展示顺序。
 //
-// 全局默认用媒体键：那是「播放暂停 / 上一曲 / 下一曲」在三个平台共同的语言，
-// 不需要 Astra 在前台（Wayland 除外，见上）。窗口内用不了媒体键（MyGo 原生 UI 的 Key 集合里没有
-// 它们，各平台也不把媒体键当普通按键送进窗口），所以默认给一组 Ctrl+Alt 组合，
-// 并刻意不与全局默认撞车。逗号/句号取「< / >」的形状表示前后，同时避开
-// Windows 上 Ctrl+Alt+方向键可能触发的显卡旋转热键。
+// 全局默认不再用媒体键：Astra 不走 XDG 桌面门户，媒体键在各桌面上的归属
+// 也不稳定（Wayland 下更是全归「正在播放」），出厂绑一组明确的 Ctrl+Alt
+// 组合更可预期。窗口内默认与全局保持同一组键：全局生效时按键被系统截走，
+// 窗口内那条只是让「全局不可用」（Wayland 或关掉全局开关）时仍能按同样的
+// 键操作；同动作同键不算冲突，见 syncHotkeys。
+//
+// 「退出」只给窗口内：它是关闭应用而不是播放动作，绑到全局容易在后台
+// 误触，也会和桌面/终端自带的 Ctrl+Q 抢键。
 var hotkeySpecs = []hotkeySpec{
-	{action: hkPlayPause, label: "播放/暂停", suffix: "PlayPause", globalDefault: "MediaPlayPause", localDefault: "CmdOrCtrl+Alt+P"},
-	{action: hkPlay, label: "播放", suffix: "Play", hint: "已在播放时不动作", globalDefault: "", localDefault: ""},
-	{action: hkPause, label: "暂停", suffix: "Pause", hint: "已暂停或未播放时不动作", globalDefault: "", localDefault: ""},
-	{action: hkPrev, label: "上一曲", suffix: "Prev", globalDefault: "MediaPreviousTrack", localDefault: "CmdOrCtrl+Alt+,"},
-	{action: hkNext, label: "下一曲", suffix: "Next", globalDefault: "MediaNextTrack", localDefault: "CmdOrCtrl+Alt+."},
+	{action: hkPlayPause, label: "播放/暂停", suffix: "PlayPause", globalDefault: "CmdOrCtrl+Alt+P", localDefault: "CmdOrCtrl+Alt+P"},
+	{action: hkPrev, label: "上一曲", suffix: "Prev", globalDefault: "CmdOrCtrl+Alt+Left", localDefault: "CmdOrCtrl+Alt+Left"},
+	{action: hkNext, label: "下一曲", suffix: "Next", globalDefault: "CmdOrCtrl+Alt+Right", localDefault: "CmdOrCtrl+Alt+Right"},
+	{action: hkQuit, label: "退出 Astra", suffix: "Quit", localDefault: "CmdOrCtrl+Q"},
 }
 
 const (
@@ -124,22 +125,6 @@ func waylandSession() bool {
 		return false
 	}
 	return os.Getenv("WAYLAND_DISPLAY") != ""
-}
-
-// init 处理一个平台差异：macOS 的 Carbon RegisterEventHotKey 只认 ANSI 虚拟键，
-// 媒体键（播放/暂停、上一曲、下一曲）不在其中，注册必然失败；而 macOS 本来就
-// 把媒体键送给「正在播放」的那个播放器，Astra 通过 MPRemoteCommandCenter
-// 接住了这些命令（见 internal/smedia/nowplaying_darwin.go）。
-// 所以在 macOS 上全局一列出厂留空，不留下三条按不了也修不掉的报错。
-func init() {
-	if runtime.GOOS != "darwin" {
-		return
-	}
-	for i, spec := range hotkeySpecs {
-		if strings.HasPrefix(spec.globalDefault, "Media") {
-			hotkeySpecs[i].globalDefault = ""
-		}
-	}
 }
 
 // hotkeyConfKey 是一项绑定的配置键。
@@ -538,6 +523,9 @@ type hotkeyState struct {
 	// 用户点了录制格之后去点别处（焦点跑掉、按键再也进不来）时，
 	// 超时即视为放弃，别让整套窗口内快捷键一直哑着。
 	recordAt time.Time
+	// quit 是「退出 Astra」动作的落点；nil 表示走 mygo.App.Quit。
+	// 单测没有真实应用事件循环，注入一个可观测的钩子。
+	quit func()
 	// bound 记录「已向系统发起过注册」，Close 才知道要不要撤销。
 	bound bool
 }
@@ -645,6 +633,12 @@ func (a *App) syncHotkeys() {
 			continue
 		}
 		if other, dup := globalTaken[acc]; enabled && dup {
+			if other == spec.action {
+				// 同一动作在两个作用域用同一组键就是出厂形态：全局生效时按键
+				// 被系统截走，窗口内这条只在全局不可用（Wayland、关掉开关）
+				// 时顶上。不算冲突，不重复登记，也不留红字。
+				continue
+			}
 			notes[conf] = "与「" + hotkeyLabelOfAction(other) + "」的全局快捷键同键：按键会被系统截走，窗口内不会触发"
 			continue
 		}
@@ -734,21 +728,32 @@ func (a *App) resetHotkeys() {
 // runHotkeyAction 把动作落到播放器上。回调来自系统（全局）或根视图轮询
 // （窗口内），两者都在主线程；player 本身并发安全。
 func (a *App) runHotkeyAction(action hotkeyAction) {
+	if action == hkQuit {
+		a.quitApp()
+		return
+	}
 	if a.PL == nil {
 		return
 	}
 	switch action {
 	case hkPlayPause:
 		a.PL.PlayOrPause()
-	case hkPlay:
-		a.PL.Play()
-	case hkPause:
-		a.PL.Pause()
 	case hkPrev:
 		a.PL.Prev()
 	case hkNext:
 		a.PL.Next(false)
 	}
+}
+
+// quitApp 走 MyGo 的应用退出流程（与托盘「退出」一致）：OnBeforeQuit 置
+// quitStarted，随后 OnQuit → App.Close 收口音频与全局快捷键。
+// hotkeys.quit 是测试注入口，正常运行时为空。
+func (a *App) quitApp() {
+	if a.hotkeys.quit != nil {
+		a.hotkeys.quit()
+		return
+	}
+	mygo.App.Quit()
 }
 
 // localHotkeys 在根视图每帧轮询窗口内快捷键。

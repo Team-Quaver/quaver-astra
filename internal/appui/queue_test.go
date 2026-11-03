@@ -134,7 +134,7 @@ func TestQueueFallsBackToDockWhenNowPlayingCloses(t *testing.T) {
 		t.Fatalf("收起正在播放页后播放列表没了；当前帧文本：%v", tester.Texts())
 	}
 	if r.Y < 44 {
-		t.Errorf("播放列表标题 Y=%v，收起正在播放页后应回到顶栏（44px）下方的停靠栏", r.Y)
+		t.Errorf("播放列表标题 Y=%v，收起正在播放页后应回到顶栏（46px）下方的停靠栏", r.Y)
 	}
 	if err := tester.Click("夜曲"); err != nil {
 		t.Fatalf("点不到停靠栏里的队列行：%v", err)

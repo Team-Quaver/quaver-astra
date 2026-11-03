@@ -183,7 +183,7 @@ type PlaylistRef struct {
 	ID    int64
 	DirID int64
 	Title string
-	// Cover 是歌单封面地址（后端 picurl）。侧栏行首画它；为空或还没取到
+	// Cover 是歌单封面地址（后端 picurl）。歌单行首画它；为空或还没取到
 	// 时退回♪占位，所以调用方不能拿它判断「这个歌单有没有封面」。
 	Cover string
 }

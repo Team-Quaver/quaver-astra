@@ -1,8 +1,6 @@
 package appui
 
 import (
-	"fmt"
-	"strings"
 	"time"
 
 	"github.com/Team-Quaver/quaver-astra/internal/player"
@@ -425,10 +423,6 @@ func (a *App) npIconButton(c *ui.Context, icon, label string, size float32) ui.E
 
 // lyricColumn 左侧歌词列（行级歌词 + 翻译 + 跟随滚动）。
 func (a *App) lyricColumn(c *ui.Context, t *ui.Theme) {
-	if data := a.stageLyrics(); strings.HasPrefix(data.source, "AMLL") && len(data.lines) > 0 {
-		a.lyricColumnAMLL(c, t, data)
-		return
-	}
 	lines, state := a.PL.LyricLines()
 	cur := a.PL.LyricIndex(a.PL.Position())
 
@@ -505,95 +499,6 @@ func (a *App) lyricList(c *ui.Context, n, cur int, row func(int)) ui.Element {
 		}
 	}
 	return el
-}
-
-// lyricColumnAMLL renders a matched AMLL TTML lyric in the quiet split
-// layout. The Folia stage is the more expressive presentation, but TTML
-// should still improve the default layout: duet sides and background
-// vocals are visible here too.
-func (a *App) lyricColumnAMLL(c *ui.Context, t *ui.Theme, data stageLyricData) {
-	cur := stageIndexAt(data.lines, a.PL.Position())
-	if cur >= 0 && cur != a.lastLyricLine {
-		a.lastLyricLine = cur
-		if !a.lyricFollowPaused(c.Now()) {
-			a.followLyricLine(cur)
-		}
-	}
-	ui.Column(c).Grow(1).Fill().Gap(8).Children(func() {
-		a.npList.Label = func(i int) string { return data.lines[i].Text }
-		a.lyricList(c, len(data.lines), cur, func(i int) {
-			a.lyricColumnAMLLLine(c, t, data.lines[i], i, i == cur)
-		})
-	})
-}
-
-func (a *App) lyricColumnAMLLLine(c *ui.Context, t *ui.Theme, line player.TTMLLine, index int, current bool) {
-	align := ui.Start
-	if line.Agent == "v2" {
-		align = ui.End
-	}
-	scale := a.Conf.Float("Style.LyricScale", 100) / 100
-	size := 18 * float32(scale)
-	if current {
-		size = 29 * float32(scale)
-	}
-	row := ui.Column(c).FillWidth().Padding(8, 4).Gap(5).Radius(10).
-		Cursor(ui.CursorPointer).Transition(hoverFade)
-	row.AlignItems(align)
-	if current {
-		a.followLyricRow(c, row, index)
-	}
-	target := float32(0.34)
-	if current {
-		target = 1
-	}
-	row.Opacity(row.Animate(fmt.Sprintf("amll-line-%d", index), target, 260*time.Millisecond)).
-		TransformOrigin(0, 0.5)
-	if !current {
-		row.AnimatePose(ui.Pose{Scale: 0.985}, ui.Animation{Duration: 260 * time.Millisecond})
-	}
-	row.Children(func() {
-		ql := player.QrcLine{
-			Time: line.Time, Dur: line.Dur, Text: line.Text,
-			Trans: line.Trans, Roma: line.Roma, Words: line.Words,
-		}
-		switch {
-		case current && ql.HasRuby():
-			a.karaokeRubyLine(c, ql, true, size, npLyricWidth(c), align, func(fill float32) ui.Color {
-				return karaokeColor(fill)
-			}, false)
-		case current && len(line.Words) > 0:
-			a.karaokeLine(c, ql, size, align)
-		default:
-			txt := ui.Text(c, line.Text).Font(a.lyricFontFamily()).FontSize(fz(size)).
-				TextColor(ui.Hex("#ffffff")).TextAlign(align)
-			if current {
-				txt.FontWeight(750)
-			} else {
-				txt.FontWeight(500)
-			}
-		}
-		if aux := stageAux(line, a.PL.LyricAuxMode()); aux != "" {
-			col := ui.RGBA(255, 255, 255, 0.72)
-			if !current {
-				col = ui.RGBA(255, 255, 255, 0.42)
-			}
-			ui.Text(c, aux).Font(a.lyricFontFamily()).FontSize(fz(size * 0.6)).
-				TextColor(col).TextAlign(align)
-		}
-		if line.BackgroundText != "" {
-			ui.Text(c, line.BackgroundText).Font(a.lyricFontFamily()).FontSize(fz(size * 0.58)).
-				TextColor(t.Accent.Alpha(0.7)).TextAlign(align)
-		}
-	})
-	if row.Hovered() && !current {
-		row.Background(ui.RGBA(255, 255, 255, 0.055))
-	}
-	if row.Clicked() {
-		if d := a.PL.Duration(); d > 0 {
-			a.PL.SeekTo(line.Time / d)
-		}
-	}
 }
 
 // lyricColumnLine 是歌词列表的一行（与列表容器分开命名，便于单独维护行样式）。
@@ -708,7 +613,7 @@ func (a *App) queuePalette(t *ui.Theme, glass bool) queuePalette {
 	}
 	return queuePalette{
 		title: t.Text, sub: t.TextMuted, hover: t.SurfaceHover,
-		bg: a.sideBg(t), border: t.Border, tint: a.rowTint(t),
+		bg: panelBg(t), border: t.Border, tint: a.rowTint(t),
 		accent: t.Accent, icon: t.Text,
 	}
 }

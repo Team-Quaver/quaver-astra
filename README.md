@@ -64,21 +64,20 @@ CI 发布：每次 push 都会构建并发布一个带短 commit id 的 snapshot
 | `QAA_AUDIO_LOG=1` | 把 Liino/FFmpeg 的音频诊断日志打到 stderr（默认静音；拖动进度时 FLAC 的帧重同步告警属于预期行为） |
 | `QAA_TEST_MPRIS=1` | 开启 MPRIS 往返测试（需会话 D-Bus + playerctl） |
 | `QAA_SESSION_TYPE` | 覆盖会话类型判定（`wayland` / `x11`）：Wayland 下全局快捷键整列交给桌面持有，自检与测试据此切换这条分支 |
-| `QAA_AMLL_DB_BASE` | 覆盖 AMLL TTML DB 地址（镜像或自建源）；默认依次尝试 GitHub Raw 与 jsDelivr |
 | `GITHUB_TOKEN` / `GH_TOKEN` | 可选的 GitHub token，仅用于更新检查，提升匿名 API 60 次/小时的限流 |
 
 ## 功能（轻量版范围）
 
 - 首页：无限电台快速开始、新歌速递、推荐歌单、AI 歌单、排行榜分组
-- 歌单页：我创建的歌单与收藏的歌单集中展示；侧栏不再重复铺歌单，导航组在头像与底栏之间垂直居中
+- 歌单页：我创建的歌单与收藏的歌单集中展示；顶部菜单不再重复铺歌单
 - 歌单详情：头部 + 歌曲列表，触底翻页、收藏歌单
 - 搜索：歌曲 / 歌单两个 tab，热搜词、翻页
 - 我喜欢 / 每日 30 首
 - **猜你喜欢 · 无限电台**：首轮 5 首，轮末自动续歌并裁掉历史；只向前播放，禁用上一首、插队、循环与随机，离开页面不打断
 - 登录：QQ / 微信 / 手机三通道扫码（自动生成 + 轮询），凭证加密保存、重启自动恢复
-- **个人中心**（点侧栏头像进入）：昵称、UID、当前档位，以及超级会员 / 豪华绿钻 / 绿钻**各自的到期时间**——三个档位是独立权益，到期日不同就不合并成一行；上游只给标志不给时间时如实写「未提供到期时间」。退出登录与「清除已保存的凭证」也收在这一页（原先埋在「设置 → 关于」最底下，点头像只会跳设置的人根本找不到）
+- **个人中心**（点顶栏头像进入）：昵称、UID、当前档位，以及超级会员 / 豪华绿钻 / 绿钻**各自的到期时间**——三个档位是独立权益，到期日不同就不合并成一行；上游只给标志不给时间时如实写「未提供到期时间」。退出登录与「清除已保存的凭证」也收在这一页（原先埋在「设置 → 关于」最底下，点头像只会跳设置的人根本找不到）
 - 正在播放页：**经典双栏**与 **辞曲舞台** 两种布局。辞曲舞台参考 Folia 的“歌词即构图”思路，使用自定义轨道几何、巨型逐字排版、当前词上浮与封面氛围，不复刻 Folia 主题或 Apple 式组件
-- 歌词：QQ 音乐 **QRC 逐字与振假名**，并自动匹配 **AMLL TTML**（按 QQ 音乐 mid，匹配 `amll-ttml-db` 的 `qq-lyrics/`）。支持 TTML 词级时间轴、对唱 agent、背景和声、翻译与音译；匹配失败或离线时无缝回退 QRC/LRC。TTML 本地缓存，可在「设置 → 外观」载入当前歌曲的本地 `.ttml`
+- 歌词：QQ 音乐 **QRC 逐字与振假名**，逐字高亮、翻译与音译辅助行；没有 QRC 时回退行级 LRC
 - 歌词辅助行支持**关闭 / 翻译优先 / 音译优先**三档，缺首选那一路时自动回落另一路（点击跳转、跟随高亮）；播放条提供音质胶囊
 - 播放条：底部细进度轨拖拽 seek（两端吸附到 0/1，支持 Home/End 与方向键）、音量弹层、循环模式、随机播放（每日一套确定性顺序）、音质菜单（会话级切换）、红心收藏、队列面板（可拖拽排序）；「回退到全景声」同时降权 7.1 与 5.1
 - 播放队列：插队播放 / 加入队列 / 删除 / 清空；双击歌曲即播
@@ -86,11 +85,11 @@ CI 发布：每次 push 都会构建并发布一个带短 commit id 的 snapshot
 - 封面动态取色：主题强调色随当前封面变化（含深浅色两套映射）
 - 明暗主题跟随系统（可在设置里强制；强制值优先于桌面外观，见下）
 - 设置页可分别选择界面字体与歌词字体：系统、衬线、非衬线、等宽或自定义 family list；歌词字体同时作用于行级歌词、翻译和逐字高亮
-- **动效**：对齐主项目（桌面版 Quaver）的动效语言——正在播放页上滑开合、路由页错峰入场（route-in）、侧栏宽度过渡 + 收起图标旋转、行/卡片底色过渡、进度条缓动、逐字歌词每帧推进
-- 侧栏可收起；收起态底部按钮纵向排列；侧栏几何有布局测试守护（图标列共线、行距均匀）；纯图标按钮均有 tooltip
+- **动效**：对齐主项目（桌面版 Quaver）的动效语言——正在播放页上滑开合、路由页错峰入场（route-in）、行/卡片底色过渡、进度条缓动、逐字歌词每帧推进
+- **顶栏**：菜单栏横置顶部、只显示图标（功能名走 tooltip），无限电台用 ∞ 标记；搜索是按钮 + 浮窗；设置与头像在右侧；自绘 CSD 在非 macOS 右置，macOS 按 HIG 改为左侧交通灯；布局有测试守护（菜单居中、按钮共线、搜索浮窗）
 - 系统托盘：对齐 Quaver Music 的曲目行、上一曲 / 播放暂停 / 下一曲、循环与随机、显示主窗口、退出；左键双击把程序拉回前台（单击不切换），右键弹出菜单；窗口关闭按钮可收进托盘
 - **系统媒体控制中心**：Linux 注册 MPRIS2（总线名 `org.mpris.MediaPlayer2.QuaverAstra`，`DesktopEntry` 为应用 ID `red.0w0.quaver-astra`，桌面键盘媒体键、播放状态/封面/进度/循环模式双向同步），Windows 接入 SMTC（系统媒体浮层、媒体键、封面缩略图与进度时间轴，支持系统侧循环/随机切换），macOS 接入 Now Playing（`MPNowPlayingInfoCenter` + `MPRemoteCommandCenter`，控制中心/菜单栏正在播放卡片：标题/歌手/专辑/封面与进度，播放/暂停/上一首/下一首/拖动进度回传）。macOS 的系统投影只对带 `CFBundleIdentifier` 的应用生效，裸跑可能看不到，打包 `.app` 后正常；架构见 `internal/smedia/`
-- **快捷键**（设置 → 快捷键）：全局与窗口内两套绑定，动作是播放/暂停、播放、暂停、上一曲、下一曲。全局默认绑媒体键（Windows `RegisterHotKey`、macOS Carbon 热键、Linux X11 由 Astra 抓键）；**Wayland 会话下全局快捷键整段交给桌面持有**——Astra 一个键都不注册，设置页里「全局」那一列直接不出现，播放/暂停、上一曲、下一曲与音量都由桌面的媒体键经 MPRIS2 送达（见上一条的媒体中心），改键请到桌面的快捷键设置里改，窗口内快捷键不受影响；判定见 `internal/appui/hotkeys.go` 的 `waylandSession`。窗口内默认 `Ctrl+Alt+P` / `Ctrl+Alt+,` / `Ctrl+Alt+.`，点绑定格再按下组合键即改，Esc 取消，小叉解绑。两个作用域同键时全局优先（按键被系统截走，窗口收不到），媒体键只能作全局绑定；注册失败或与别的绑定撞车都会在设置页标出来。
+- **快捷键**（设置 → 快捷键）：全局与窗口内两套绑定，动作是播放/暂停、上一曲、下一曲、退出。Astra 不使用 XDG 桌面门户，全局默认绑一组明确的组合键 `Ctrl+Alt+P` / `Ctrl+Alt+←` / `Ctrl+Alt+→`（Windows `RegisterHotKey`、macOS Carbon 热键、Linux X11 由 Astra 抓键）；**Wayland 会话下全局快捷键整段交给桌面持有**——Astra 一个键都不注册，设置页里「全局」那一列直接不出现，播放/暂停、上一曲、下一曲与音量都由桌面的媒体键经 MPRIS2 送达（见上一条的媒体中心），改键请到桌面的快捷键设置里改，窗口内快捷键不受影响；判定见 `internal/appui/hotkeys.go` 的 `waylandSession`。窗口内默认与全局同一组键（全局不可用时顶上），另加退出 `Ctrl+Q`；点绑定格再按下组合键即改，Esc 取消，小叉解绑。两个作用域同键时全局优先（按键被系统截走，窗口收不到），同一动作在两个作用域同键不算冲突；媒体键只能作全局绑定；注册失败或与别的绑定撞车都会在设置页标出来。
 - 播放音频时阻止系统睡眠（暂停/停止即恢复，不阻止熄屏）；正常退出、TERM/Ctrl+C 与 native SIGABRT 清理时都会释放 Liino 的输出会话与解码线程
 - **版本号**：「设置 → 关于」标题旁显示当前版本（优先取构建注入值，本地 `go build` 时回落到工作区的 git tag）
 - **自动更新**：「设置 → 关于」可切换**稳定版**（GitHub latest API，最新正式 Release）与**快照版**（最近一次 push 的 `snapshot-*` 预发布）两个渠道，启动时自动检查（可关）。
@@ -104,7 +103,6 @@ internal/backend/       quaver-server 进程内嵌 + HTTP 客户端（信封 {co
                         vip.go = 会员权益契约：档位顺序 + 只认各档 *_end 的到期解析
 internal/player/        播放器状态机（队列/模式/随机/回退链/歌词/收藏），与 UI 解耦
                         lyric.go = 行级 LRC 解析；qrc.go = 逐字 QRC 解码与解析
-                        ttml.go = AMLL/Apple Music TTML 词级、对唱与背景和声解析
 internal/audio/         Liino 原生音频适配层（进程内解码 + 直连系统音频）
                         engine.go = 把 liino.Player 适配成 player.Engine（异步载入 / 时钟 / 事件）
                         status.go = 解码后端与输出驱动自检（设置 → 关于）
@@ -113,12 +111,11 @@ internal/smedia/        系统媒体控制中心投影（Linux MPRIS / Windows S
                         smtc_windows.go     = WinRT SMTC（裸 vtable 调用 + 纯 Go COM 事件对象，无 cgo）
                         nowplaying_darwin.go = MediaPlayer.framework 的 MPNowPlayingInfoCenter/MPRemoteCommandCenter
                         objc_darwin.go      = 无 cgo 的 Objective-C 桥（purego 动态发消息 + 主队列投递）
-internal/appui/         MyGo 原生 UI：外壳、侧栏、路由页、播放条、正在播放、队列、个人中心、快捷键
+internal/appui/         MyGo 原生 UI：外壳、顶栏菜单、路由页、播放条、正在播放、队列、个人中心、快捷键
                         profile.go = 会员档位与各自到期时间的展示（时间口径见 backend/vip.go）
                         hotkeys.go = 全局（mygo.GlobalShortcut）与窗口内（ui.Context.Shortcut）两套绑定；
                                      waylandSession 判定 Wayland 会话后全局一列不注册，交由桌面持有
-                        stage.go = 辞曲舞台（Folia 式排版）与 AMLL/QRC 统一歌词渲染
-                        amll.go = AMLL TTML 自动匹配、镜像回退、本地缓存与手动载入
+                        stage.go = 辞曲舞台（Folia 式排版）与 QRC/LRC 统一歌词渲染
                         theme.go = 调色板与明暗判定；motion.go = 动效语言（缓动/错峰入场/逐字绘制）
 internal/colorprobe/    封面主色提取 + 模糊底图
 internal/vault/         登录凭证加密持久化（ChaCha20-Poly1305 + 随机主密钥）

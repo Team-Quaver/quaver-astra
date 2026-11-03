@@ -14,7 +14,7 @@ import (
 // TestSplashHiddenWithoutAttach：测试里直接构造的 App 未走 Attach，
 // splashAt 为零值，启动画面恒不显示——首帧与既有定妆照不能被遮盖。
 func TestSplashHiddenWithoutAttach(t *testing.T) {
-	app, tester := sideTestApp(t, false)
+	app, tester := testApp(t)
 	tester.Frame()
 	if app.splashDone {
 		t.Fatal("splashAt 为零值时不应把 splashDone 置真")
@@ -27,7 +27,7 @@ func TestSplashHiddenWithoutAttach(t *testing.T) {
 // TestSplashLifecycle：起算后进入时间轴（找得到启动画面层与署名字样），
 // 时间轴走完后 splashDone 置真、层彻底撤掉。
 func TestSplashLifecycle(t *testing.T) {
-	app, tester := sideTestApp(t, false)
+	app, tester := testApp(t)
 	app.splashAt = time.Now().Add(-3 * time.Second) // 3.0s：字标与署名均已出现，未到淡出
 	tester.Frame()
 	if _, found := tester.Find("启动画面"); !found {
@@ -52,7 +52,7 @@ func TestSplashLifecycle(t *testing.T) {
 
 // TestSplashSkip：Escape 把时钟拨到淡出起点，跳过后续动画。
 func TestSplashSkip(t *testing.T) {
-	app, tester := sideTestApp(t, false)
+	app, tester := testApp(t)
 	app.splashAt = time.Now().Add(-time.Second) // 1.0s：动画进行中
 	tester.Frame()
 	if _, found := tester.Find("启动画面"); !found {
@@ -87,7 +87,7 @@ func TestSplashShots(t *testing.T) {
 	}
 	for _, mode := range []string{"light", "dark"} {
 		for _, f := range frames {
-			app, _ := sideTestApp(t, false)
+			app, _ := testApp(t)
 			app.Conf.Set("Style.Theme", mode)
 			// 固定相对帧时钟，慢机器上也不会把关键帧渲染成后续阶段。
 			tester := ui.NewTester(func(c *ui.Context) {
@@ -110,7 +110,7 @@ func TestSplashShots(t *testing.T) {
 }
 
 func TestSplashThemeModes(t *testing.T) {
-	app, _ := sideTestApp(t, false)
+	app, _ := testApp(t)
 	tester := ui.NewTester(func(c *ui.Context) {
 		app.splashAt = c.Now().Add(-3500 * time.Millisecond)
 		app.View(c)
@@ -175,7 +175,7 @@ func TestSplashPaletteContrastAndLogo(t *testing.T) {
 }
 
 func TestSplashWordmarkScale(t *testing.T) {
-	app, _ := sideTestApp(t, false)
+	app, _ := testApp(t)
 	tester := ui.NewTester(func(c *ui.Context) {
 		app.splashAt = c.Now().Add(-3500 * time.Millisecond)
 		app.View(c)

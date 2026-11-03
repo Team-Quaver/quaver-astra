@@ -12,7 +12,7 @@ import (
 
 // ===== 歌单集合页 =====
 
-// playlistsView 收拢「我创建的歌单」与「我收藏的歌单」。侧栏不再重复列出
+// playlistsView 收拢「我创建的歌单」与「我收藏的歌单」。顶部菜单不再重复列出
 // 所有歌单，只保留这个稳定入口；两段数据各自加载、各自降级。
 func (a *App) playlistsView(c *ui.Context) {
 	t := c.Theme()

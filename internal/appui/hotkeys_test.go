@@ -279,21 +279,29 @@ func TestSyncHotkeysDefaults(t *testing.T) {
 	app, reg, _ := hotkeyApp(t)
 	app.syncHotkeys()
 
-	// 全局出厂默认是三个媒体键；macOS 上媒体键归系统「正在播放」，
-	// 默认留空（见 hotkeys.go 的 init）。
-	want := []string{"MediaNextTrack", "MediaPlayPause", "MediaPreviousTrack"}
-	if runtime.GOOS == "darwin" {
-		want = nil
-	}
+	// 全局出厂默认是一组明确的 Ctrl+Alt 组合（不再用媒体键）。
+	cc := cmdOrCtrl()
+	want := []string{cc + "+Alt+Left", cc + "+Alt+P", cc + "+Alt+Right"}
 	if got := reg.keys(); !slices.Equal(got, want) {
 		t.Errorf("全局注册 = %v，期望 %v", got, want)
 	}
-	if len(app.hotkeys.local) != 3 {
-		t.Errorf("窗口内绑定 = %d 条，期望 3 条（播放/暂停 + 上一曲 + 下一曲）", len(app.hotkeys.local))
+	// 窗口内三条播放键默认与全局同键，被系统截走的同动作绑定不重复登记，
+	// 所以全局开着时只剩「退出」一条窗口内绑定；全局不可用时它们会顶上来
+	//（见 TestSyncHotkeysGlobalDisabledKeepsLocal）。
+	if len(app.hotkeys.local) != 1 {
+		t.Errorf("窗口内绑定 = %d 条，期望 1 条（只有退出）", len(app.hotkeys.local))
+	}
+	cmd := ui.Ctrl
+	if runtime.GOOS == "darwin" {
+		cmd = ui.Super
 	}
 	for _, b := range app.hotkeys.local {
-		if b.mods != ui.Ctrl|ui.Alt {
-			t.Errorf("窗口内绑定 %+v 的修饰键不对", b)
+		if b.action != hkQuit {
+			t.Errorf("同键全局绑定生效时不该重复登记窗口内绑定：%+v", b)
+			continue
+		}
+		if b.mods != cmd || b.key != ui.KeyQ {
+			t.Errorf("退出快捷键 = %+v，期望 %s+Q", b, cmdOrCtrl())
 		}
 	}
 	for _, acc := range want {
@@ -304,12 +312,10 @@ func TestSyncHotkeysDefaults(t *testing.T) {
 	if n := len(app.hotkeys.notes); n != 0 {
 		t.Errorf("默认配置不该有问题提示，实际 %d 条：%v", n, app.hotkeys.notes)
 	}
-	// 播放/暂停两个单向动作默认不绑：避免出厂就抢走 Ctrl+Alt+... 这类常用组合。
-	for _, scope := range []hotkeyScope{scopeGlobal, scopeLocal} {
-		for _, suffix := range []string{"Play", "Pause"} {
-			if app.hotkeyRaw(scope, hotkeySpec{suffix: suffix, globalDefault: "", localDefault: ""}) != "" {
-				t.Errorf("%s 的 %s 默认应当为空", scope, suffix)
-			}
+	// 四个动作之外没有残留的单向「播放/暂停」动作。
+	for _, suffix := range []string{"Play", "Pause"} {
+		if _, ok := hotkeySpecOf(hotkeyAction(strings.ToLower(suffix))); ok {
+			t.Errorf("单向动作 %s 应当已经移除", suffix)
 		}
 	}
 }
@@ -322,7 +328,7 @@ func TestSyncHotkeysGlobalDisabledKeepsLocal(t *testing.T) {
 	if len(reg.keys()) != 0 {
 		t.Errorf("关掉开关后仍注册了全局快捷键：%v", reg.keys())
 	}
-	if len(app.hotkeys.local) != 3 {
+	if len(app.hotkeys.local) != 4 {
 		t.Errorf("窗口内快捷键不该被全局开关关掉，实际 %d 条", len(app.hotkeys.local))
 	}
 }
@@ -382,7 +388,7 @@ func TestSyncHotkeysWaylandBlocksGlobal(t *testing.T) {
 	if reg.unregisters == 0 {
 		t.Error("屏蔽时也要先撤干净，否则会留下上一个会话的半套绑定")
 	}
-	if len(app.hotkeys.local) != 3 {
+	if len(app.hotkeys.local) != 4 {
 		t.Errorf("窗口内快捷键不该被会话屏蔽关掉，实际 %d 条", len(app.hotkeys.local))
 	}
 	// 配置必须原样留着：切回 X11 会话就恢复，屏蔽是运行期的决定，不是用户意图。
@@ -464,8 +470,8 @@ func TestSyncHotkeysDuplicateInScope(t *testing.T) {
 	app.Conf.Set(hotkeyConfKey(scopeLocal, "Next"), "ctrl+alt+j") // 同一键，只是大小写不同
 	app.syncHotkeys()
 
-	// 后声明的一条（specs[4] = 下一曲）让位并给出提示。
-	note := app.hotkeyNote(scopeLocal, hotkeySpecs[4])
+	// 后声明的一条（specs[2] = 下一曲）让位并给出提示。
+	note := app.hotkeyNote(scopeLocal, hotkeySpecs[2])
 	if note == "" || !strings.Contains(note, "同一个组合键") {
 		t.Fatalf("同作用域重复应当提示后一条，实际：%q", note)
 	}
@@ -507,7 +513,7 @@ func TestSyncHotkeysRegisterFailureFreesLocal(t *testing.T) {
 	// 媒体键只能出现在全局一列。
 	app.Conf.Set(hotkeyConfKey(scopeLocal, "Next"), "MediaNextTrack")
 	app.syncHotkeys()
-	if note := app.hotkeyNote(scopeLocal, hotkeySpecs[4]); !strings.Contains(note, "只能绑到全局") {
+	if note := app.hotkeyNote(scopeLocal, hotkeySpecs[2]); !strings.Contains(note, "只能绑到全局") {
 		t.Errorf("窗口内绑媒体键应当提示改用全局，实际：%q", note)
 	}
 }
@@ -516,14 +522,14 @@ func TestSyncHotkeysBadConfigOnlyNotes(t *testing.T) {
 	app.Conf.Set(hotkeyConfKey(scopeGlobal, "Next"), "喵")
 	app.syncHotkeys()
 
-	if note := app.hotkeyNote(scopeGlobal, hotkeySpecs[4]); note == "" {
+	if note := app.hotkeyNote(scopeGlobal, hotkeySpecs[2]); note == "" {
 		t.Error("坏配置应当有提示")
 	}
 	if reg.has("喵") {
 		t.Error("坏配置不该送去注册")
 	}
 	// 其余默认绑定照常。
-	if !reg.has("MediaPlayPause") {
+	if !reg.has(cmdOrCtrl() + "+Alt+P") {
 		t.Errorf("一条坏配置不该影响其他绑定：%v", reg.keys())
 	}
 }
@@ -539,8 +545,8 @@ func TestSyncHotkeysRebuildsFromScratch(t *testing.T) {
 	if reg.unregisters <= first {
 		t.Error("每次同步都应先撤干净再重注册（Wayland 门户一次会话绑全部）")
 	}
-	if reg.has("MediaPlayPause") {
-		t.Errorf("解绑后不应还挂着 MediaPlayPause：%v", reg.keys())
+	if reg.has(cmdOrCtrl() + "+Alt+P") {
+		t.Errorf("解绑后不应还挂着播放/暂停的全局键：%v", reg.keys())
 	}
 }
 
@@ -580,29 +586,32 @@ func TestGlobalHotkeyDispatch(t *testing.T) {
 	}
 	reg.press(t, "Ctrl+Alt+U")
 	waitPlaying(t, app.PL, true)
+}
 
-	// 单向动作：显式绑一对播放/暂停键，状态已符合时不该再动引擎。
-	app.Conf.Set(hotkeyConfKey(scopeGlobal, "Play"), "Ctrl+Alt+K")
-	app.Conf.Set(hotkeyConfKey(scopeGlobal, "Pause"), "Ctrl+Alt+L")
+// TestLocalQuitHotkey 检查窗口内的退出键：默认 Ctrl+Q，按下后走应用退出流程。
+func TestLocalQuitHotkey(t *testing.T) {
+	app, _, _ := hotkeyApp(t)
+	var quit int
+	app.hotkeys.quit = func() { quit++ }
 	app.syncHotkeys()
 
-	reg.press(t, "Ctrl+Alt+L")
-	waitPlaying(t, app.PL, false)
-	pauses := eng.pauses
-	reg.press(t, "Ctrl+Alt+L")
-	if eng.pauses != pauses {
-		t.Error("已经暂停时，「暂停」不该再动引擎")
+	mod := ui.Ctrl
+	if runtime.GOOS == "darwin" {
+		mod = ui.Super
 	}
-	reg.press(t, "Ctrl+Alt+K")
-	waitPlaying(t, app.PL, true)
-	plays := eng.plays
-	reg.press(t, "Ctrl+Alt+K")
-	if eng.plays != plays {
-		t.Error("已经在播时，「播放」不该再动引擎")
+	tester := ui.NewTester(app.View, testWinW, testWinH)
+	tester.Frame()
+	tester.Key(mod, ui.KeyQ)
+	tester.Frame()
+	if quit != 1 {
+		t.Errorf("%s+Q 应触发退出一次，实际 %d 次", cmdOrCtrl(), quit)
 	}
 }
 func TestLocalHotkeyFiresAndYieldsToRecorder(t *testing.T) {
 	app, _, eng := hotkeyApp(t)
+	// 这一条测的是窗口内作用域：关掉全局，让默认同键的窗口内绑定真正顶上。
+	app.Conf.Set(hotkeyEnabledKey, false)
+	app.settings.tab = hotkeysTab
 	app.syncHotkeys()
 	app.PL.EnqueueMany([]player.Song{{Mid: "a", SongID: 1, Interval: 269}})
 
@@ -615,7 +624,7 @@ func TestLocalHotkeyFiresAndYieldsToRecorder(t *testing.T) {
 	tester.Key(ui.Ctrl|ui.Alt, ui.KeyP)
 	waitPlaying(t, app.PL, false)
 
-	tester.Key(ui.Ctrl|ui.Alt, ui.KeyPeriod) // 下一曲（默认 Ctrl+Alt+.）
+	tester.Key(ui.Ctrl|ui.Alt, ui.KeyRight) // 下一曲（默认 Ctrl+Alt+→）
 	if app.PL.QueueLen() == 0 {
 		t.Fatal("队列应当还在")
 	}
@@ -626,9 +635,10 @@ func TestLocalHotkeyFiresAndYieldsToRecorder(t *testing.T) {
 	app.startRecording(scopeLocal, hotkeySpecs[1])
 	tester.Frame()
 	before := eng.plays
+	playingBefore := app.PL.Playing()
 	tester.Key(ui.Ctrl|ui.Alt, ui.KeyP)
 	tester.Frame()
-	if eng.plays != before || app.PL.Playing() {
+	if eng.plays != before || app.PL.Playing() != playingBefore {
 		t.Error("录制期间窗口内快捷键不应该触发")
 	}
 
@@ -639,13 +649,14 @@ func TestLocalHotkeyFiresAndYieldsToRecorder(t *testing.T) {
 		t.Error("切走 tab 后录制状态应当清空")
 	}
 	tester.Key(ui.Ctrl|ui.Alt, ui.KeyP)
-	waitPlaying(t, app.PL, true)
+	waitPlaying(t, app.PL, false)
 }
 
 // 录了但没按（用户转头去点别处、焦点跑了）不能把窗口内快捷键永久压住。
 func TestRecordingTimesOut(t *testing.T) {
 	app, _, _ := hotkeyApp(t)
 	app.settings.tab = hotkeysTab
+	app.Conf.Set(hotkeyEnabledKey, false) // 让默认同键的窗口内绑定生效
 	app.PL.EnqueueMany([]player.Song{{Mid: "a", SongID: 1, Interval: 269}})
 	app.syncHotkeys()
 
@@ -676,7 +687,7 @@ func TestRecorderCapturesAndClearsBinding(t *testing.T) {
 	tester := ui.NewTester(app.View, 1200, 1100)
 	tester.Frame()
 
-	if err := tester.Click("窗口内快捷键：播放"); err != nil {
+	if err := tester.Click("窗口内快捷键：上一曲"); err != nil {
 		t.Fatalf("点不到录制格：%v", err)
 	}
 	tester.Frame()
@@ -689,8 +700,8 @@ func TestRecorderCapturesAndClearsBinding(t *testing.T) {
 
 	// 录制期间的按键不该再被窗口快捷键吃掉。
 	tester.Key(ui.Ctrl|ui.Alt, ui.KeyR)
-	if got := app.Conf.String(hotkeyConfKey(scopeLocal, "Play"), ""); got != "Ctrl+Alt+R" {
-		t.Errorf("录到的绑定 = %q，期望 Ctrl+Alt+R（conf=%v）", got, app.Conf.String(hotkeyConfKey(scopeLocal, "Play"), ""))
+	if got := app.Conf.String(hotkeyConfKey(scopeLocal, "Prev"), ""); got != "Ctrl+Alt+R" {
+		t.Errorf("录到的绑定 = %q，期望 Ctrl+Alt+R（conf=%v）", got, app.Conf.String(hotkeyConfKey(scopeLocal, "Prev"), ""))
 	}
 	if app.hotkeys.record != nil {
 		t.Error("录完应退出录制态")
@@ -701,7 +712,7 @@ func TestRecorderCapturesAndClearsBinding(t *testing.T) {
 	}
 
 	// Esc 取消，不改配置。
-	if err := tester.Click("全局快捷键：暂停"); err != nil {
+	if err := tester.Click("全局快捷键：上一曲"); err != nil {
 		t.Fatalf("点不到全局录制格：%v", err)
 	}
 	tester.Frame()
@@ -709,7 +720,7 @@ func TestRecorderCapturesAndClearsBinding(t *testing.T) {
 	if app.hotkeys.record != nil {
 		t.Error("Esc 应当取消录制")
 	}
-	if app.Conf.String(hotkeyConfKey(scopeGlobal, "Pause"), "") != "" {
+	if app.Conf.String(hotkeyConfKey(scopeGlobal, "Prev"), "") != "" {
 		t.Error("取消录制不该写配置")
 	}
 
@@ -718,18 +729,23 @@ func TestRecorderCapturesAndClearsBinding(t *testing.T) {
 		t.Fatalf("点不到解绑按钮：%v", err)
 	}
 	tester.Frame()
-	if reg.has("MediaPlayPause") {
+	if reg.has(cmdOrCtrl() + "+Alt+P") {
 		t.Error("解绑后全局注册应当撤掉")
 	}
 	if err := tester.Click("恢复默认快捷键"); err != nil {
 		t.Fatalf("点不到恢复默认：%v", err)
 	}
 	tester.Frame()
-	if def := hotkeySpecs[0].globalDefault; def != "" && !reg.has(def) {
-		t.Errorf("恢复默认后应重新绑定 %s：%v", def, reg.keys())
-	}
-	if def := hotkeySpecs[0].globalDefault; def == "" && len(reg.keys()) == 0 {
-		t.Errorf("恢复默认后窗口内/全局配置不该全空：%v", reg.keys())
+	if def := hotkeySpecs[0].globalDefault; def != "" {
+		bind, err := parseHotkey(def)
+		if err != nil {
+			t.Fatalf("默认绑定 %q 解不开：%v", def, err)
+		}
+		if !reg.has(bind.String()) {
+			t.Errorf("恢复默认后应重新绑定 %s：%v", bind.String(), reg.keys())
+		}
+	} else if len(reg.keys()) == 0 {
+		t.Errorf("恢复默认后全局配置不该全空：%v", reg.keys())
 	}
 }
 
@@ -755,21 +771,22 @@ func TestHotkeyTipPrefersEffectiveBinding(t *testing.T) {
 		t.Errorf("tooltip = %q，期望（Ctrl+Alt+P）", got)
 	}
 	// 两个作用域都没绑：不带后缀，别在按钮上写「（）」占位。
-	if got := app.hotkeyTip(hkPlay); got != "" {
+	app.Conf.Set(hotkeyConfKey(scopeLocal, "Quit"), "")
+	app.syncHotkeys()
+	if got := app.hotkeyTip(hkQuit); got != "" {
 		t.Errorf("未绑定的动作不该有 tooltip 后缀，实际 %q", got)
 	}
-	// 只绑全局时退回全局那条（媒体键）。媒体播放键一次只能归一个动作，
-	// 所以先把默认占着它的「播放/暂停」解掉。
-	app.Conf.Set(hotkeyConfKey(scopeGlobal, "PlayPause"), "")
-	app.Conf.Set(hotkeyConfKey(scopeGlobal, "Play"), "MediaPlayPause")
+	// 只绑全局时退回全局那条（这里显式换成媒体键，便于与窗口内默认区分）。
+	app.Conf.Set(hotkeyConfKey(scopeLocal, "Prev"), "")
+	app.Conf.Set(hotkeyConfKey(scopeGlobal, "Prev"), "MediaPreviousTrack")
 	app.syncHotkeys()
-	if got := app.hotkeyTip(hkPlay); got != "（媒体播放/暂停键）" {
-		t.Errorf("tooltip = %q，期望（媒体播放/暂停键）", got)
+	if got := app.hotkeyTip(hkPrev); got != "（媒体上一曲键）" {
+		t.Errorf("tooltip = %q，期望（媒体上一曲键）", got)
 	}
 	// 全局开关关掉之后它并不生效，后缀也要跟着消失。
 	app.Conf.Set(hotkeyEnabledKey, false)
 	app.syncHotkeys()
-	if got := app.hotkeyTip(hkPlay); got != "" {
+	if got := app.hotkeyTip(hkPrev); got != "" {
 		t.Errorf("全局关闭后不该再报全局键，实际 %q", got)
 	}
 }
@@ -781,8 +798,9 @@ func TestSettingsPageHidesGlobalColumnOnWayland(t *testing.T) {
 	app, reg, _ := hotkeyApp(t)
 	app.settings.tab = hotkeysTab
 	app.hotkeys.blocked = true
-	app.Conf.Set(hotkeyConfKey(scopeGlobal, "PlayPause"), "")
-	app.Conf.Set(hotkeyConfKey(scopeGlobal, "Play"), "MediaPlayPause")
+	// 全局绑一条媒体键、窗口内解掉，用来验证 tooltip 不会报出这条按不动的绑定。
+	app.Conf.Set(hotkeyConfKey(scopeGlobal, "Prev"), "MediaPreviousTrack")
+	app.Conf.Set(hotkeyConfKey(scopeLocal, "Prev"), "")
 	app.syncHotkeys()
 
 	tester := ui.NewTester(app.View, 1200, 1100)
@@ -807,7 +825,7 @@ func TestSettingsPageHidesGlobalColumnOnWayland(t *testing.T) {
 		t.Errorf("点不到窗口内录制格：%v", err)
 	}
 	// 播放条的 tooltip 里不能出现那条按不动的媒体键。
-	if tip := app.hotkeyTip(hkPlay); tip != "" {
+	if tip := app.hotkeyTip(hkPrev); tip != "" {
 		t.Errorf("屏蔽后不该把全局绑定报进 tooltip，实际 %q", tip)
 	}
 	// 而且真的一个键都没注册。
