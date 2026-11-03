@@ -29,8 +29,7 @@ func qualityLabel(tier string, degraded bool) string {
 	return s
 }
 
-// barH 是底部播放条的高度。正在播放页上的队列浮窗要用它算可用高度
-// （浮窗与播放条不重叠）。
+// barH 是底部播放条的高度。
 const barH = 84.0
 
 // barHits 收集这一帧播放条里的交互控件。整条 bar 现在同时是进度条：
@@ -172,7 +171,8 @@ func (a *App) barTrack(c *ui.Context, t *ui.Theme, cur player.Song, hasCur bool)
 		}
 		if info.Clicked() && hasCur {
 			a.npOpen = !a.npOpen
-			// 正在播放页的浮层跟着页走：不然重新打开时旧菜单/浮窗还挂着。
+			// 重新打开时右栏回到默认的歌词；浮层也一并收起，不然旧菜单还挂着。
+			a.npQueue = false
 			a.npMoreOpen = false
 			a.npQInfoOpen = false
 		}
@@ -403,18 +403,23 @@ func (a *App) iconBtnDisabled(c *ui.Context, icon, label string, size float32) u
 	return b
 }
 
-// queueBtn 是播放条上的队列开关。面板开着时高亮：队列浮窗盖在正在播放页的
-// 右侧，图标不带状态的话，「开着队列」这件事在整页浮层上就没有任何痕迹。
+// queueBtn 是播放条上的队列开关。正在播放页开着时它切换右栏（歌词 ↔ 队列）；
+// 页面没开时它开关内容区右侧的停靠栏。
 func (a *App) queueBtn(c *ui.Context, t *ui.Theme) ui.Element {
+	onNP := a.npOpen && !a.PL.RadioActive()
+	open := a.queueOpen
+	if onNP {
+		open = a.npQueue
+	}
 	b := ui.ButtonBase(c).Size(32, 32).Radius(16).Center().Transition(hoverFade)
 	b.Children(func() {
 		ic := ui.Icon(c, Icons["queue"]).FontSize(fz(18)).AlignSelf(ui.Center)
-		if a.queueOpen {
+		if open {
 			ic.TextColor(t.Accent)
 		}
 	})
 	switch {
-	case a.queueOpen:
+	case open:
 		b.Background(t.Accent.Alpha(0.13))
 	case b.Hovered():
 		b.Background(t.SurfaceHover)
@@ -422,13 +427,17 @@ func (a *App) queueBtn(c *ui.Context, t *ui.Theme) ui.Element {
 	b.Tooltip("播放队列")
 	b.Label("播放队列")
 	if b.Clicked() {
-		a.queueOpen = !a.queueOpen
-		a.Conf.Set("Window.QueueOpen", a.queueOpen)
-		if a.queueOpen {
-			// 正在播放页的 ⋮ 菜单/音质浮窗和队列浮窗抢同一块右上角：
-			// 开队列时先收掉，不然它们会被压在队列底下点不到。
-			a.npMoreOpen = false
-			a.npQInfoOpen = false
+		if onNP {
+			a.npQueue = !a.npQueue
+			if a.npQueue {
+				// 正在播放页的 ⋮ 菜单/音质浮窗和右栏抢同一块区域：
+				// 开队列时先收掉，不然它们会被压在队列底下点不到。
+				a.npMoreOpen = false
+				a.npQInfoOpen = false
+			}
+		} else {
+			a.queueOpen = !a.queueOpen
+			a.Conf.Set("Window.QueueOpen", a.queueOpen)
 		}
 	}
 	return b

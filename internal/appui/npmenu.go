@@ -39,6 +39,7 @@ func npAttachAbove(panel, anchor ui.Element) {
 // 正在播放页是铺满内容区的常驻浮层，只换路由它仍盖在最上面。
 func (a *App) npJump(target string) {
 	a.npOpen = false
+	a.npQueue = false
 	a.npMoreOpen = false
 	a.npQInfoOpen = false
 	a.Router.Push(target)

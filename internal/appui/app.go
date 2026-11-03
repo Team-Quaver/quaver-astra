@@ -44,6 +44,7 @@ type App struct {
 	glowNow ui.Color
 
 	npOpen       bool
+	npQueue      bool // 正在播放页右栏显示队列（默认显示歌词）
 	queueOpen    bool
 	searchOpen   bool
 	searchDraft  string
@@ -99,6 +100,8 @@ type App struct {
 	// npFollowPause 是用户滚过歌词列表后的静默截止时间：在它之前换行不
 	// 自动把列表拽回当前句，好让用户找歌词、点歌词。见 lyricfollow.go。
 	npFollowPause time.Time
+	// npPauseWake 是已经为哪个静默截止时间排过到期唤醒，避免每帧重复排。
+	npPauseWake time.Time
 	// npScrollSeen 是上一帧结束时列表的偏移，用来认出帧与帧之间由用户
 	// （滚轮、拖动滚动条）造成的位移；npScrollAbsorb 是「下一帧的偏移
 	// 是我们自己滚的」，不计为用户滚动。
@@ -174,7 +177,7 @@ func New(base string, store *conf.Store, v *vault.Vault, version string) *App {
 		Conf:          store,
 		Version:       version,
 		sleep:         newSystemSleepBlocker(),
-		Router:        ui.NewRouter("/"),
+		Router:        newAppRouter("/"),
 		Covers:        NewCoverCache(),
 		queueOpen:     store.Bool("Window.QueueOpen", false),
 		playlist:      map[int64]*playlistState{},
@@ -316,16 +319,16 @@ func (a *App) View(c *ui.Context) {
 	}
 
 	if a.npOpen && c.Shortcut(0, ui.KeyEscape) {
-		// 浮层从后往前收：队列浮窗是后开的，先收它，再按一次才关整页。
-		if a.queueOpen {
-			a.queueOpen = false
-			a.Conf.Set("Window.QueueOpen", false)
+		// 从后往前收：先收起队列、回到歌词，再按一次才关整页。电台没有队列，
+		// 右栏恒为歌词，直接关页。
+		if a.npQueue && !a.PL.RadioActive() {
+			a.npQueue = false
 		} else {
 			a.npOpen = false
 		}
 	}
 
-	// 电台没有可编辑队列：状态一旦生效就收起队列停靠/浮窗。
+	// 电台没有可编辑队列：状态一旦生效就收起队列停靠。
 	if a.PL.RadioActive() && a.queueOpen {
 		a.queueOpen = false
 		a.Conf.Set("Window.QueueOpen", false)
@@ -343,11 +346,6 @@ func (a *App) View(c *ui.Context) {
 			a.mainRow(c)
 			if a.npOpen {
 				a.nowPlaying(c, t)
-				// 队列浮窗建在正在播放页之后：绝对子元素按建树顺序绘制、
-				// 也按同一顺序命中，晚建的才盖得住整页、也才收得到点击。
-				if a.queueOpen {
-					a.queueFloat(c, t)
-				}
 			}
 		})
 		a.playerBar(c, t)
@@ -372,8 +370,8 @@ func (a *App) mainRow(c *ui.Context) {
 		a.topBar(c)
 		ui.Row(c).Grow(1).FillWidth().AlignItems(ui.Stretch).Children(func() {
 			a.routeArea(c)
-			// 正在播放页会把内容区整页盖住，队列这时改走浮窗
-			//（queueFloat）：停靠栏建了也看不见，只会白占一次列表状态。
+			// 正在播放页会把内容区整页盖住，队列这时走页面右栏；
+			// 停靠栏建了也看不见，只会白占一次列表状态。
 			if a.queueOpen && !a.npOpen {
 				a.queuePanel(c)
 			}
@@ -771,6 +769,7 @@ func (a *App) maybeSelfCheck() {
 				if len(songs) > 0 {
 					a.playListNow(songs, 0)
 					a.npOpen = true
+					a.npQueue = false
 				}
 			})
 		}()

@@ -73,7 +73,7 @@ func TestUIShots(t *testing.T) {
 	waitText(t, profTester, "到期（还剩")
 	shot(profTester, "profile.png")
 
-	// 正在播放页（歌词跟随态）
+	// 正在播放页（歌词跟随态，默认右栏）。
 	base, baseTester := npTestApp(t, color.RGBA{R: 96, G: 148, B: 210, A: 255})
 	base.PL.SeekTo(2.0 / 269)
 	time.Sleep(450 * time.Millisecond)
@@ -85,14 +85,7 @@ func TestUIShots(t *testing.T) {
 	time.Sleep(450 * time.Millisecond)
 	shot(progressTester, "np-progress.png")
 
-	// 辞曲舞台：逐字发光与翻译辅助行。
-	foliaApp, foliaTester := npTestApp(t, color.RGBA{R: 96, G: 148, B: 210, A: 255})
-	foliaApp.PL.SetLyricAuxMode("translation")
-	foliaApp.setLyricStage("folia")
-	time.Sleep(450 * time.Millisecond)
-	shot(foliaTester, "np-folia.png")
-
-	// 新增外观设置：正在播放布局。
+	// 外观设置。
 	appearance, appearanceTester := testApp(t)
 	appearance.settings.tab = appearanceTab
 	shot(appearanceTester, "settings-appearance.png")
@@ -123,16 +116,16 @@ func TestUIShots(t *testing.T) {
 	time.Sleep(250 * time.Millisecond)
 	shot(tester2, "np-qinfo.png")
 
-	// 正在播放页上的播放队列浮窗（右侧悬着、盖在整页之上）
+	// 正在播放页右栏的完整播放队列。
 	qapp, qtester := npTestApp(t, color.RGBA{R: 96, G: 148, B: 210, A: 255})
+	qapp.npQueue = true
 	qapp.PL.EnqueueMany([]player.Song{
 		{Mid: "m2", Title: "七里香", Artists: "周杰伦", AlbumPmid: "001Qu4I30VtaFH", Interval: 299},
 		{Mid: "m3", Title: "夜曲", Artists: "周杰伦", AlbumPmid: "001Qu4I30VtaFH", Interval: 227},
 		{Mid: "m4", Title: "搁浅", Artists: "周杰伦", AlbumPmid: "001Qu4I30VtaFH", Interval: 261},
 		{Mid: "m5", Title: "以父之名", Artists: "周杰伦", AlbumPmid: "001Qu4I30VtaFH", Interval: 342},
 	})
-	qapp.queueOpen = true
-	time.Sleep(450 * time.Millisecond)
+	qtester.Advance(450 * time.Millisecond)
 	shot(qtester, "np-queue.png")
 
 	// 首页：无限电台 + 新歌 + 推荐 + AI 歌单 + 排行榜。

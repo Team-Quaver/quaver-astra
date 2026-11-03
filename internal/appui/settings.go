@@ -149,25 +149,6 @@ func (a *App) settingsAppearance(c *ui.Context, t *ui.Theme) {
 				FontSize(fz(11.5)).TextColor(t.TextMuted).MaxLines(2)
 		})
 
-		ui.Text(c, "正在播放与歌词").FontSize(fz(14)).FontWeight(700)
-		stageLabels := []string{"经典双栏", "辞曲舞台（沉浸式）"}
-		stageKeys := []string{"classic", "folia"}
-		stageLabel := stageLabels[0]
-		if a.lyricStage() == "folia" {
-			stageLabel = stageLabels[1]
-		}
-		stageSel := ui.Select(c, &stageLabel, stageLabels).Width(280)
-		if stageSel.Changed() {
-			for i, label := range stageLabels {
-				if label == stageLabel {
-					a.setLyricStage(stageKeys[i])
-					break
-				}
-			}
-		}
-		ui.Text(c, "辞曲舞台以歌词排版为主，保留封面氛围、逐字发光与多声部层次；随窗口尺寸自动收敛。").
-			FontSize(fz(11.5)).TextColor(t.TextMuted).MaxLines(2)
-
 		ui.Divider(c)
 
 		ui.Text(c, "关闭窗口行为").FontSize(fz(14)).FontWeight(700)

@@ -10,14 +10,12 @@ import (
 	"github.com/egoist/mygo/ui"
 )
 
-// ===== 正在播放页上的播放队列浮窗 =====
+// ===== 正在播放页右栏的播放队列 =====
 //
-// 队列原先只有「内容区右侧的停靠栏」一种形态，而正在播放页是铺满内容区的
-// 常驻浮层：开着队列再打开正在播放页，队列就被整页盖住；在正在播放页上点
-// 播放条的队列钮，状态是切了、画面却毫无变化。现在正在播放页上的队列改走
-// 浮窗（queueFloat），盖在页面上、也收得到点击。
+// 右栏默认是歌词。点「队列」标签后队列从右缘滑入、取代歌词；点「歌词」
+// 标签歌词再淡回来。播放条的队列钮只负责非播放页的停靠栏。
 
-// queueNPApp 造一个「正在播放页开着、播放列表也开着」的界面，队列里三首。
+// queueNPApp 造一个「正在播放页开着、右栏切到队列」的界面，队列里三首。
 func queueNPApp(t *testing.T) (*App, *ui.Tester) {
 	t.Helper()
 	app, tester := npTestApp(t, color.RGBA{R: 255, A: 255})
@@ -25,95 +23,87 @@ func queueNPApp(t *testing.T) (*App, *ui.Tester) {
 		{Mid: "m2", Title: "七里香", Artists: "周杰伦", Interval: 269},
 		{Mid: "m3", Title: "夜曲", Artists: "周杰伦", Interval: 269},
 	})
-	app.queueOpen = true
-	// 浮窗的右滑淡入从它被建出来的那一帧起算，先渲染一帧把它挂上，
-	// 再等正在播放页的上滑淡入与它一起落定（两者都走 Transition）。
+	app.npQueue = true
+	// 右栏的滑入从被建出来的那一帧起算，先渲染一帧再等它落定。
 	tester.Frame()
 	tester.Advance(450 * time.Millisecond)
 	tester.Frame()
 	return app, tester
 }
 
-// TestNowPlayingQueueIsOneFloatingPanel：队列面板只能建一份。停靠栏与浮窗
-// 共用一份 ListState（滚动位置、拖拽换序），两个都建的话等于两棵列表抢同一
-// 份状态，文字也会出现两遍。
-func TestNowPlayingQueueIsOneFloatingPanel(t *testing.T) {
+// TestNowPlayingQueueReplacesLyrics：切到队列后右栏是队列，封面保留在左栏，
+// 歌词不再和队列同时出现。
+func TestNowPlayingQueueReplacesLyrics(t *testing.T) {
 	_, tester := queueNPApp(t)
 
 	const title = "播放列表 · 3 首"
-	n := 0
-	for _, s := range tester.Texts() {
-		if s == title {
-			n++
-		}
-	}
-	if n != 1 {
-		t.Fatalf("播放列表标题出现 %d 次，应为 1 次（停靠栏与浮窗同时建了）", n)
-	}
-
 	r, ok := tester.Find(title)
 	if !ok {
 		t.Fatalf("正在播放页上看不到播放列表；当前帧文本：%v", tester.Texts())
 	}
-	// 1000 宽的窗口里，320 宽的浮窗右边距 16：标题在浮窗内再缩 12px 内边距。
-	if min := float32(testWinW - 320 - 16); r.X < min {
-		t.Errorf("播放列表标题 X=%v，应在窗口右侧的浮窗里（≥ %v）", r.X, min)
+	// 右栏从封面列之后开始：内容层左右 56 内边距 + 340 封面列 + 56 列间距。
+	if min := float32(npPadX + npSideW + npGap); r.X < min {
+		t.Errorf("播放列表标题 X=%v，应在封面右侧的右栏里（≥ %v）", r.X, min)
 	}
-	if r.Y > 60 {
-		t.Errorf("播放列表标题 Y=%v，浮窗应悬在页面顶部（16px 边距 + 头行内）", r.Y)
+	if r.Y < npPadY || r.Y > npPadY+queueHeadH {
+		t.Errorf("播放列表标题 Y=%v，应落在右栏头行（%v~%v）", r.Y, npPadY, npPadY+queueHeadH)
+	}
+	if tester.HasText("那一年") {
+		t.Error("队列显示时歌词不应同时留在右栏里")
 	}
 }
 
-// TestNowPlayingQueueFloatCoversPage：浮窗要画在正在播放页【之上】。
-//
-// 封面是一整块 300px 宽的纯红。它现在落在页面左侧，与右侧浮窗并不重叠，
-// 所以只扫浮窗自身的横向范围：浮窗里最多只剩 34px 的小封面；浮窗要是被
-// 整页压住，这一带会透出底下 300px 宽的封面纯红。
-func TestNowPlayingQueueFloatCoversPage(t *testing.T) {
+// TestNowPlayingQueueSlidesInFromRight：点「队列」标签时，队列从右缘滑入，
+// 而不是直接钉在终态。
+func TestNowPlayingQueueSlidesInFromRight(t *testing.T) {
+	app, tester := npTestApp(t, color.RGBA{R: 255, A: 255})
+	app.PL.EnqueueMany([]player.Song{
+		{Mid: "m2", Title: "七里香", Artists: "周杰伦", Interval: 269},
+	})
+	tester.Advance(450 * time.Millisecond)
+	tester.Frame()
+
+	if err := tester.Click("显示播放队列"); err != nil {
+		t.Fatalf("点不到队列标签：%v", err)
+	}
+	tester.Frame()
+	start, ok := tester.Find("播放列表 · 2 首")
+	if !ok {
+		t.Fatalf("切到队列后看不到播放列表；当前帧文本：%v", tester.Texts())
+	}
+	tester.Advance(400 * time.Millisecond)
+	tester.Frame()
+	end, _ := tester.Find("播放列表 · 2 首")
+	if start.X <= end.X {
+		t.Errorf("队列出现时 X=%v，落定后 X=%v——没有从右缘滑入", start.X, end.X)
+	}
+}
+
+// TestNowPlayingLyricsFadeBackIn：从队列点「歌词」标签，歌词淡回来、队列让位。
+func TestNowPlayingLyricsFadeBackIn(t *testing.T) {
 	_, tester := queueNPApp(t)
 
-	img := tester.Image()
-	if img == nil {
-		t.Fatal("无法取得渲染结果")
+	if err := tester.Click("显示歌词"); err != nil {
+		t.Fatalf("点不到歌词标签：%v", err)
 	}
-	head := mustFind(t, tester, "播放列表 · 3 首")
-	last := mustFind(t, tester, "夜曲")
-	nearRed := func(x, y int) bool {
-		c := at(img, x, y)
-		return c.R >= 200 && c.G <= 32 && c.B <= 32
+	tester.Frame()
+	tester.Advance(350 * time.Millisecond)
+	tester.Frame()
+	if !tester.HasText("那一年") {
+		t.Fatalf("点歌词标签后歌词没有淡回来；当前帧文本：%v", tester.Texts())
 	}
-	// 浮窗宽 320、右侧留 16；只看它覆盖的那一段画面。
-	left := testWinW - 320 - 16
-	best := 0
-	for y := int(head.Y) - 4; y <= int(last.Y+last.H)+4 && y < img.Bounds().Dy(); y++ {
-		if y < 0 {
-			continue
-		}
-		run := 0
-		for x := left; x < img.Bounds().Dx(); x++ {
-			if nearRed(x, y) {
-				run++
-				if run > best {
-					best = run
-				}
-			} else {
-				run = 0
-			}
-		}
-	}
-	// 队列行里 34px 的小封面在这个阈值内。
-	if best > 80 {
-		t.Errorf("浮窗范围内最宽的纯红横段有 %dpx——封面还盖在播放列表浮窗上面", best)
+	if tester.HasText("播放列表 · 3 首") {
+		t.Error("歌词显示时队列不应还留在右栏里")
 	}
 }
 
-// TestNowPlayingQueueFloatRowsAreClickable：浮窗里的行要收得到点击，而不是被
-// 底下的封面/歌词层吃掉（MyGo 的命中链取最上面那个元素，晚建的浮窗才拿得到）。
-func TestNowPlayingQueueFloatRowsAreClickable(t *testing.T) {
+// TestNowPlayingQueueRowsAreClickable：右栏队列的行要收得到点击，而不是被
+// 封面/背景层吃掉。
+func TestNowPlayingQueueRowsAreClickable(t *testing.T) {
 	app, tester := queueNPApp(t)
 
 	if err := tester.Click("七里香"); err != nil {
-		t.Fatalf("点不到浮窗里的队列行：%v", err)
+		t.Fatalf("点不到队列里的行：%v", err)
 	}
 	tester.Frame()
 	if cur, ok := app.PL.Current(); !ok || cur.Mid != "m2" {
@@ -121,12 +111,41 @@ func TestNowPlayingQueueFloatRowsAreClickable(t *testing.T) {
 	}
 }
 
+// TestQueueDockSlidesInFromRight：非播放页的停靠队列栏从右缘外侧滑入，
+// 与正在播放页右栏的队列是同一个动作。
+func TestQueueDockSlidesInFromRight(t *testing.T) {
+	app, tester := npTestApp(t, color.RGBA{R: 255, A: 255})
+	app.PL.EnqueueMany([]player.Song{
+		{Mid: "m2", Title: "七里香", Artists: "周杰伦", Interval: 269},
+	})
+	app.npOpen = false
+	tester.Advance(450 * time.Millisecond)
+	tester.Frame()
+
+	app.queueOpen = true
+	tester.Frame()
+	start, ok := tester.Find("播放列表 · 2 首")
+	if !ok {
+		t.Fatalf("打开停靠队列后看不到播放列表；当前帧文本：%v", tester.Texts())
+	}
+	tester.Advance(400 * time.Millisecond)
+	tester.Frame()
+	end, _ := tester.Find("播放列表 · 2 首")
+	if start.X <= end.X {
+		t.Errorf("停靠队列出现时 X=%v，落定后 X=%v——没有从右缘滑入", start.X, end.X)
+	}
+}
+
 // TestQueueFallsBackToDockWhenNowPlayingCloses：收起正在播放页，队列还在，
-// 而且回到顶栏下方的停靠栏——浮窗是这一页上的形态，不是队列的唯一形态。
+// 而且回到顶栏下方的停靠栏——右栏只是队列在播放页上的形态。
 func TestQueueFallsBackToDockWhenNowPlayingCloses(t *testing.T) {
 	app, tester := queueNPApp(t)
+	app.queueOpen = true
 
 	app.npOpen = false
+	tester.Frame()
+	// 停靠栏从右缘外侧滑入，等它落定再找位置/点击。
+	tester.Advance(400 * time.Millisecond)
 	tester.Frame()
 
 	r, ok := tester.Find("播放列表 · 3 首")

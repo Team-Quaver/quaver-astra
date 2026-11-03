@@ -41,6 +41,27 @@ func (e *seekEngine) set(t float64) {
 	e.mu.Unlock()
 }
 
+// TestLyricBlurTargetsNonCurrentLines 守住歌词模糊的取舍：当前句清晰、
+// 其余句模糊；用户滚动后的 3s 静默期里整片都不模糊。
+func TestLyricBlurTargetsNonCurrentLines(t *testing.T) {
+	app := &App{}
+	now := time.Now()
+	if got := app.lyricLineBlur(true, now); got != 0 {
+		t.Errorf("当前句模糊量 = %v，期望 0", got)
+	}
+	if got := app.lyricLineBlur(false, now); got != npLyricBlur {
+		t.Errorf("非当前句模糊量 = %v，期望 %v", got, npLyricBlur)
+	}
+
+	app.npFollowPause = now.Add(lyricFollowPause)
+	if got := app.lyricLineBlur(false, now); got != 0 {
+		t.Errorf("滚动静默期内非当前句模糊量 = %v，期望 0（正在找歌词，不能糊）", got)
+	}
+	if got := app.lyricLineBlur(false, now.Add(lyricFollowPause)); got != npLyricBlur {
+		t.Errorf("静默期结束后模糊量 = %v，期望恢复 %v", got, npLyricBlur)
+	}
+}
+
 // TestLyricFollowGlides 守住换行跟随是「缓动滚过去」而不是瞬间跳位：
 // 当前句变了之后，列表偏移应当从原位逐步走到目标，走完才停下。
 func TestLyricFollowGlides(t *testing.T) {
@@ -224,6 +245,83 @@ func TestLyricFollowPausesWhileUserScrolls(t *testing.T) {
 	}
 	if got := app.npScroll.Y; got == afterScroll {
 		t.Fatal("静默期结束后没有把列表挪回当前句")
+	}
+}
+
+// TestLyricFollowStaysResumedAfterScroll 守住复位之后不再被重新判成用户
+// 滚动：跟随自己写偏移、列表布局再校正，若把这点差值当成滚动，3s 静默期
+// 会被反复续上，歌词模糊就会周期性地闪。
+func TestLyricFollowStaysResumedAfterScroll(t *testing.T) {
+	eng := &seekEngine{pos: 4.5}
+	app, tester := npTestAppEngine(t, color.RGBA{R: 96, G: 148, B: 210, A: 255}, lyricFollowQRC(40), "", eng)
+	app.PL.StartTicker()
+	waitLyricIndex(t, app, 3)
+	tester.Frame()
+	settleLyricFollow(t, app, tester)
+
+	tester.Scroll(700, 350, 0, 140)
+	tester.Frame()
+	if !app.lyricFollowPaused(tester.Now()) {
+		t.Fatal("滚远后没有暂停跟随")
+	}
+
+	tester.Advance(3 * time.Second)
+	tester.Frame()
+	// 让瞬移淡入与跟随动画都走完，再多跑几秒。
+	for i := 0; i < 400; i++ {
+		tester.Advance(16 * time.Millisecond)
+		tester.Frame()
+		if app.lyricFollowPaused(tester.Now()) {
+			t.Fatalf("复位后第 %d 帧又被判成用户滚动（偏移 %.1f，上帧 %.1f）",
+				i, app.npScroll.Y, app.npScrollSeen)
+		}
+	}
+}
+
+func TestDebugBlurFlicker(t *testing.T) {
+	eng := &seekEngine{pos: 4.5}
+	app, tester := npTestAppEngine(t, color.RGBA{R: 96, G: 148, B: 210, A: 255}, lyricFollowQRC(40), "", eng)
+	app.PL.StartTicker()
+	waitLyricIndex(t, app, 3)
+	tester.Frame()
+	settleLyricFollow(t, app, tester)
+
+	tester.Scroll(700, 350, 0, 140)
+	tester.Frame()
+	tester.Advance(3 * time.Second)
+	tester.Frame()
+
+	latest := map[int]float32{}
+	curFlag := map[int]bool{}
+	debugBlurHook = func(i int, cur bool, v float32) {
+		latest[i] = v
+		curFlag[i] = cur
+	}
+	defer func() { debugBlurHook = nil }()
+
+	prev := map[int]float32{}
+	changes := map[int]int{}
+	for f := 0; f < 400; f++ {
+		tester.Advance(16 * time.Millisecond)
+		tester.Frame()
+		if f < 120 {
+			prev = map[int]float32{}
+			for i, v := range latest {
+				prev[i] = v
+			}
+			continue
+		}
+		for i, v := range latest {
+			if p, ok := prev[i]; ok && (v-p > 0.02 || p-v > 0.02) {
+				changes[i]++
+			}
+			prev[i] = v
+		}
+	}
+	for i, n := range changes {
+		if n > 2 {
+			t.Logf("line %d changed %d times in 280 frames (cur=%v last=%.3f)", i, n, curFlag[i], latest[i])
+		}
 	}
 }
 

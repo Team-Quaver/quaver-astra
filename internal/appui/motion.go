@@ -13,6 +13,7 @@ import (
 //
 //	.route > .entering > *   opacity 0→1 + translateY(8px)，.26s
 //	                         cubic-bezier(.22,.61,.36,1)，块间延迟 .04s 递增
+//	Router                   页面替换只淡入，不做左右侧滑（newAppRouter）
 //	.np                      上滑开合，.34s cubic-bezier(.32,.72,.24,1)
 //	.nav a / .row            transition: background .14s
 //	.pb-fill                 进度填充跟着位置缓动
@@ -153,6 +154,17 @@ func styleFade(c *ui.Context, m motion, e ui.Element, from, to float32) {
 	default:
 		e.Opacity(from + (to-from)*k)
 	}
+}
+
+// newAppRouter 建路由，并把页面替换统一成淡入：Router 默认的 Auto 会按
+// 路径层级左右侧滑（进详情从右、返回从左、平级淡入），方向不一致；统一
+// 成淡入后，唯一的位移来自 pageEnter 的「由下 8px 上滑」，首页去其他页、
+// 返回以及其他页面之间跳转看起来就是同一个动作。
+func newAppRouter(path string) *ui.Router {
+	r := ui.NewRouter(path)
+	r.Transition = ui.TransitionFade
+	r.Animation = &ui.Animation{Duration: 260 * time.Millisecond, Ease: easePage}
+	return r
 }
 
 // enterState 是路由页的错峰入场时钟。

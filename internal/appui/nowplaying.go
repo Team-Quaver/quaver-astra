@@ -22,7 +22,14 @@ const (
 	npPadMin    = 72.0
 	npPadMax    = 160.0
 	npPadFactor = 0.22
+
+	// 非当前句的模糊（对齐主项目 .np-ly-line 的 blur(1.6px)）。模糊值按帧
+	// 插值，换句与进出静默期时才是淡入淡出，而不是硬切。
+	npLyricBlur    = 1.6
+	npLyricBlurDur = 260 * time.Millisecond
 )
+
+var debugBlurHook func(index int, isCur bool, v float32)
 
 // npLyricWidth 是歌词列的可排宽度：内容层宽 − 两侧内边距 − 列间距 − 封面列。
 func npLyricWidth(c *ui.Context) float32 {
@@ -49,17 +56,6 @@ func npListPadding(c *ui.Context) float32 {
 	return pad
 }
 
-// npFoliaLyricWidth is the usable text width of the 辞曲 stage: its content
-// column is padded 54px on each side, the same as foliaStage.
-func npFoliaLyricWidth(c *ui.Context) float32 {
-	w, _ := c.Size()
-	v := w - 108
-	if v < 120 {
-		v = 120
-	}
-	return v
-}
-
 // npCoverSize is the record sleeve's edge, in DIPs. It fills the side
 // column unless the window is too short, in which case it shrinks so the
 // metadata and the quality row below still fit on screen.
@@ -80,9 +76,9 @@ func npCoverSize(c *ui.Context) float32 {
 
 // nowPlaying 是正在播放页：绝对定位覆盖内容区（播放条仍在其下方可见）。
 //
-// 版式参考 mygo-cloudmusic 的 Now Playing：左侧是唱片封套与元信息（歌名、
-// 歌手、音质、收藏、更多），右侧是歌词；播放控制不在这里重复一份，仍由
-// 页面下方的播放条负责。顶上只有标签栏（歌词 / 辞曲 / 队列）与关闭键。
+// 左侧是唱片封套与元信息（歌名、歌手、音质、收藏、更多），右侧默认是歌词；
+// 点顶上的「队列」标签，队列会从右缘滑入并取代歌词，点「歌词」再淡回来。
+// 播放控制不在这里重复一份，仍由页面下方的播放条负责。
 // 背景由封面取色驱动，而不是纯粹压黑一张模糊图。
 //
 // 动效（对齐主项目 .np）：整体上滑 + 淡入，.34s cubic-bezier(.32,.72,.24,1)；
@@ -106,19 +102,15 @@ func (a *App) nowPlaying(c *ui.Context, t *ui.Theme) {
 	np.Children(func() {
 		a.npBackdrop(c, coverLarge)
 
-		if a.lyricStage() == "folia" {
-			a.foliaStage(c, t, cur, hasCur)
-		} else {
-			// 内容层：必须也是绝对定位。
-			//
-			// 根因（用户报的「正在播放页封面渲染透明化」）：MyGo 里 Absolute 子元素
-			// 绘制在流式子元素【之上】（ui/paint.go：先画 flow、再画 absolute，与
-			// CSS 定位元素的层叠关系一致）。背景层只做绝对定位的话，模糊封面图与
-			// 黑色遮罩就会压在歌词和封面上——封面看着像掺进背景里、半透明。
-			// 让内容层同样绝对定位，绘制顺序就回到「底图 → 遮罩 → 内容」；
-			// 关闭按钮建在最后，仍然最上。
-			a.npSplit(c, t, cur, hasCur)
-		}
+		// 内容层：必须也是绝对定位。
+		//
+		// 根因（用户报的「正在播放页封面渲染透明化」）：MyGo 里 Absolute 子元素
+		// 绘制在流式子元素【之上】（ui/paint.go：先画 flow、再画 absolute，与
+		// CSS 定位元素的层叠关系一致）。背景层只做绝对定位的话，模糊封面图与
+		// 黑色遮罩就会压在队列和封面上——封面看着像掺进背景里、半透明。
+		// 让内容层同样绝对定位，绘制顺序就回到「底图 → 遮罩 → 内容」；
+		// 关闭按钮建在最后，仍然最上。
+		a.npSplit(c, t, cur, hasCur)
 
 		// 整页可拖窗口：正在播放页盖住了顶栏，没有这一层用户就无法拖动
 		// 无边框窗口。标签与关闭键晚建，盖在拖拽层之上。
@@ -128,27 +120,49 @@ func (a *App) nowPlaying(c *ui.Context, t *ui.Theme) {
 }
 
 // npSplit is the quiet layout: the sleeve and its metadata on the left,
-// the lyrics on the right. The cover column mirrors a record player's
-// deck, while the lyric pane stays the reading surface.
+// the lyrics (or the queue, once shown) on the right. The cover column
+// mirrors a record player's deck while the right pane is the working area.
 func (a *App) npSplit(c *ui.Context, t *ui.Theme, cur player.Song, hasCur bool) {
 	ui.Row(c).Absolute().Fill().Padding(npPadY, npPadX, 24, npPadX).
 		Gap(npGap).AlignItems(ui.Stretch).Children(func() {
 		a.npLeft(c, t, cur, hasCur)
-		a.npLyricPane(c, t)
+		a.npRightPane(c, t)
+	})
+}
+
+// npRightPane holds the single right-hand surface. Lyrics are the default;
+// the queue takes their place when the user opens it, and the two crossfade
+// instead of swapping abruptly. Radio has no editable queue, so it always
+// falls back to lyrics.
+func (a *App) npRightPane(c *ui.Context, t *ui.Theme) {
+	queue := a.npQueue && !a.PL.RadioActive()
+	ui.Box(c).Grow(1).Basis(0).MinWidth(0).Clip().Children(func() {
+		if queue {
+			a.npQueuePane(c, t)
+		} else {
+			a.npLyricPane(c, t)
+		}
 	})
 }
 
 // npLyricPane is the right-hand reading column: a small header naming the
-// source, then the lyrics themselves.
+// source, then the lyrics themselves. It fades back in when the queue closes.
 func (a *App) npLyricPane(c *ui.Context, t *ui.Theme) {
 	_ = t
-	ui.Column(c).Grow(1).Basis(0).MinWidth(0).Children(func() {
+	pane := ui.Column(c).Key("np-lyrics").Grow(1).Basis(0).MinWidth(0).
+		Transition(ui.ElementTransition{
+			Duration: 260 * time.Millisecond,
+			Ease:     easePage,
+			Enter:    &ui.Motion{Opacity: 0},
+			Exit:     &ui.Motion{Opacity: 0},
+		})
+	pane.Children(func() {
 		ui.Row(c).FillWidth().Height(26).AlignItems(ui.End).Children(func() {
 			ui.Text(c, "歌词").FontSize(fz(10.5)).FontWeight(800).
 				LetterSpacing(1.4).TextColor(ui.RGBA(255, 255, 255, 0.42))
 			ui.Spacer(c)
-			if source := a.stageLyricSource(); source != "" {
-				ui.Text(c, "歌词源 · "+source).FontSize(fz(10.5)).
+			if len(a.PL.QrcLines()) > 0 {
+				ui.Text(c, "歌词源 · QQ 音乐 QRC").FontSize(fz(10.5)).
 					TextColor(ui.RGBA(255, 255, 255, 0.42)).SingleLine()
 			}
 		})
@@ -157,34 +171,44 @@ func (a *App) npLyricPane(c *ui.Context, t *ui.Theme) {
 	})
 }
 
-// npTopControls keeps the pane tabs and the close button above both
-// now-playing layouts. The tabs are deliberately visible rather than
-// buried in settings: lyrics and the typography-led 辞曲 stage are the two
-// ways to read the same song, and switching must stay one click away.
+// npQueuePane is the queue in the lyric area: it slides in from the right
+// edge when the user switches to it. Its header, list and rows are shared
+// with the docked panel outside now-playing.
+func (a *App) npQueuePane(c *ui.Context, t *ui.Theme) {
+	s := a.queuePalette(t, true)
+	pane := ui.Column(c).Key("np-queue").Grow(1).Basis(0).FillWidth().MinWidth(0).
+		Transition(ui.ElementTransition{
+			Duration: 340 * time.Millisecond,
+			Ease:     easePanel,
+			Enter:    &ui.Motion{X: 56, Opacity: 0},
+			Exit:     &ui.Motion{X: 56, Opacity: 0},
+		})
+	pane.Children(func() {
+		// 播放页上用顶部标签切回歌词，头行不再重复一个「收起」。
+		a.queueHead(c, s, nil)
+		a.queueBody(c, s)
+	})
+}
+
+// npTopControls keeps the pane tabs and the close button above the layout.
+// Lyrics are the default surface; the 队列 tab slides the queue in from the
+// right, and 歌词 fades the lyrics back in.
 func (a *App) npTopControls(c *ui.Context) {
-	stage := a.lyricStage()
+	queue := a.npQueue && !a.PL.RadioActive()
 	tabs := ui.Row(c).Absolute().Top(16).Left(npPadX).
 		Gap(6).AlignItems(ui.Center).Padding(3, 3).Radius(999).
 		Background(ui.RGBA(10, 12, 18, 0.32))
 	tabs.Children(func() {
-		a.npTab(c, "歌词", "歌词", stage != "folia", func() {
-			a.setLyricStage("classic")
+		a.npTab(c, "歌词", "显示歌词", !queue, func() {
+			a.npQueue = false
 		})
-		a.npTab(c, "辞曲", "切换正在播放布局", stage == "folia", func() {
-			if stage == "folia" {
-				a.setLyricStage("classic")
-			} else {
-				a.setLyricStage("folia")
-			}
-		})
-		a.npTab(c, "队列", "显示播放列表", a.queueOpen, func() {
-			a.queueOpen = !a.queueOpen
-			a.Conf.Set("Window.QueueOpen", a.queueOpen)
-			if a.queueOpen {
+		if !a.PL.RadioActive() {
+			a.npTab(c, "队列", "显示播放队列", queue, func() {
+				a.npQueue = true
 				a.npMoreOpen = false
 				a.npQInfoOpen = false
-			}
-		})
+			})
+		}
 	})
 
 	closeBtn := ui.Box(c).Absolute().Top(14).Right(14).Size(32, 32).Radius(999).
@@ -204,9 +228,8 @@ func (a *App) npTopControls(c *ui.Context) {
 	}
 }
 
-// npTab is one pill of the top tab strip. Accessibility labels differ from
-// the visible text where the visible text is a mode name ("辞曲") rather
-// than the action ("切换正在播放布局").
+// npTab is one pill of the top tab strip. Accessibility labels describe the
+// action ("显示或隐藏歌词") while the visible text stays short.
 func (a *App) npTab(c *ui.Context, text, label string, active bool, run func()) {
 	b := ui.ButtonBase(c).Padding(6, 13).Radius(999).Label(label).Transition(hoverFade)
 	color := ui.RGBA(255, 255, 255, 0.58)
@@ -501,6 +524,16 @@ func (a *App) lyricList(c *ui.Context, n, cur int, row func(int)) ui.Element {
 	return el
 }
 
+// lyricLineBlur 是一行歌词的目标模糊量：当前句 0，其余句 npLyricBlur；
+// 用户滚动后的静默期（lyricFollowPause）里一律 0，让正在找的那句保持可读。
+// 真正的淡入淡出由调用方的 AnimateWith 按帧插值。
+func (a *App) lyricLineBlur(isCur bool, now time.Time) float32 {
+	if isCur || a.lyricFollowPaused(now) {
+		return 0
+	}
+	return npLyricBlur
+}
+
 // lyricColumnLine 是歌词列表的一行（与列表容器分开命名，便于单独维护行样式）。
 func (a *App) lyricColumnLine(c *ui.Context, line player.LyricLine, index int) {
 	cur := a.PL.LyricIndex(a.PL.Position())
@@ -515,15 +548,23 @@ func (a *App) lyricColumnLine(c *ui.Context, line player.LyricLine, index int) {
 	if isCur {
 		a.followLyricRow(c, row, index)
 	}
-	// 行间过渡：非当前句压暗（主项目 .np-ly-line 是 opacity .34 + blur(1.6px)；
-	// MyGo 的元素没有模糊滤镜，用透明度把同一件事做出来）。走 Animate 而不是
-	// 硬切色值，「成为当前句 / 不再是当前句」这一跳就是缓动的。
+	// 行间过渡：非当前句压暗并模糊（对齐主项目 .np-ly-line 的 opacity .34 +
+	// blur(1.6px)）。两个值都走 Animate 而不是硬切，「成为当前句 / 不再是
+	// 当前句」这一跳因此是缓动的。
 	target := float32(0.34)
 	if isCur {
 		target = 1
 	}
 	row.Opacity(row.Animate("lyric-line", target, 260*time.Millisecond)).
 		TransformOrigin(0, 0.5)
+	// 当前句清晰，其余句子模糊（对齐主项目 .np-ly-line 的 blur(1.6px)）。
+	// 用户滚动歌词后的 3s 静默期里整片都不模糊——那会儿用户正在找、在
+	// 读，糊掉只会帮倒忙。模糊值本身走缓动，换句与进出静默期都是淡入淡出。
+	bv := row.AnimateWith("lyric-blur", a.lyricLineBlur(isCur, c.Now()), npLyricBlurDur, ui.EaseOut)
+	if debugBlurHook != nil {
+		debugBlurHook(index, isCur, bv)
+	}
+	row.Blur(bv)
 	if !isCur {
 		// The line shrinks a hair as it gives up the focus. The current line
 		// springs back to full size, matching the reference's lyric motion.
@@ -589,13 +630,13 @@ func (a *App) karaokeLineAt(c *ui.Context, index int, size float32) bool {
 
 // queuePalette 是队列面板的配色。
 //
-// 面板有两个落点：内容区右侧的停靠栏（正在播放页没开）和正在播放页上的浮窗。
-// 列表本体、拖拽换序、当前行高亮、悬停删除在两处必须一模一样，不然两边迟早
-// 长出不一样的队列；能变的只有颜色与容器装饰，所以把颜色单独抽出来。
+// 面板有两个落点：内容区右侧的停靠栏（正在播放页没开）和正在播放页上替代
+// 歌词区的右栏。列表本体、拖拽换序、当前行高亮、悬停删除在两处必须一模一样，
+// 不然两边迟早长出不一样的队列；能变的只有颜色与容器装饰，所以把颜色单独抽出来。
 type queuePalette struct {
 	title, sub, hover, bg, border, tint, accent, icon ui.Color
-	// line/divider 只在浮窗上用：停靠栏本来就贴着内容区边界，头行下再加一条
-	// 横线显脏；浮窗悬在模糊封面上，需要一条线把头行和列表分开。
+	// line/divider 只在正在播放页上用：停靠栏本来就贴着内容区边界，头行下再加
+	// 一条横线显脏；播放页的右栏压在模糊封面上，需要一条线把头行和列表分开。
 	line    ui.Color
 	divider bool
 }
@@ -618,73 +659,45 @@ func (a *App) queuePalette(t *ui.Theme, glass bool) queuePalette {
 	}
 }
 
-// queueHeadH/queueRowH 是面板的固定行高：头行与单首歌的行。浮窗要按内容算高，
-// 这两处必须和 queueHead/queueRow 里写的高度是同一个数。
+// queueHeadH/queueRowH 是面板的固定行高：头行与单首歌的行。两处必须和
+// queueHead/queueRow 里写的高度是同一个数。
 const (
 	queueHeadH = 44.0
 	queueRowH  = 46.0
 )
 
-// queueFloatH 是浮窗的内容高度：头行 + 各行 + 底边 8px 收口，装不下时封顶到
-// 内容区（窗口高 − 播放条）减去上下 16px 的留白，列表自己滚动。
-//
-// 队列短的时候让面板跟着内容走，不拉着一条几百像素的空玻璃挂到播放条上。
-func queueFloatH(c *ui.Context, n int) float32 {
-	_, wh := c.Size()
-	maxH := wh - barH - 32
-	h := queueHeadH + float32(n)*queueRowH + 8
-	if h > maxH {
-		h = maxH
-	}
-	if minH := float32(queueHeadH + queueRowH + 8); h < minH {
-		h = minH
-	}
-	return h
-}
-
 // queuePanel 是内容区右侧的停靠队列栏（正在播放页未打开时的形态）。
+// 开关时从右缘外侧滑入/滑出：它是从内容区边上「抽出来」的一栏，位移要
+// 和正在播放页右栏的队列一致，不能生硬地闪现。
 func (a *App) queuePanel(c *ui.Context) {
 	s := a.queuePalette(c.Theme(), false)
-	panel := ui.Column(c).Width(300).Background(s.bg).
-		BorderWidth(1, 0, 0, 1).BorderColor(s.border)
-	panel.Children(func() {
-		a.queueHead(c, s)
-		a.queueBody(c, s)
-	})
-}
-
-// queueFloat 是正在播放页上的队列浮窗：右侧留 16px，悬在整页之上。
-//
-// 它必须建在 nowPlaying 之后：MyGo 里绝对子元素按建树顺序绘制，命中链也按同一
-// 顺序取最上面的一个，晚建的才盖得住整页、也才收得到点击——不然点队列里的行，
-// 命中的是底下的封面/歌词层，看着就是「按了没反应」。
-func (a *App) queueFloat(c *ui.Context, t *ui.Theme) {
-	s := a.queuePalette(t, true)
-	panel := ui.Column(c).Key("queue-float").Absolute().
-		Top(16).Right(16).Width(320).Height(queueFloatH(c, a.PL.QueueLen())).
-		Background(s.bg).Radius(16).Border(1, s.border).
-		Shadow(0, 18, 48, 0, ui.RGBA(0, 0, 0, 0.45)).Clip().
+	panel := ui.Column(c).Key("queue-dock").Width(300).Background(s.bg).
+		BorderWidth(1, 0, 0, 1).BorderColor(s.border).
 		Transition(ui.ElementTransition{
-			Duration: 220 * time.Millisecond,
+			Duration: 340 * time.Millisecond,
 			Ease:     easePanel,
-			Enter:    &ui.Motion{X: 24, Opacity: 0},
+			Enter:    &ui.Motion{X: 300, Opacity: 0},
+			Exit:     &ui.Motion{X: 300, Opacity: 0},
 		})
 	panel.Children(func() {
-		a.queueHead(c, s)
+		a.queueHead(c, s, func() {
+			a.queueOpen = false
+			a.Conf.Set("Window.QueueOpen", false)
+		})
 		a.queueBody(c, s)
 	})
 }
 
-// queueHead 是面板头行：标题 + 清空 + 收起。两个落点共用。
-func (a *App) queueHead(c *ui.Context, s queuePalette) {
+// queueHead 是面板头行：标题 + 清空 +（停靠栏才有的）收起。onClose 为 nil
+// 时不画收起——正在播放页用顶部标签切回歌词。
+func (a *App) queueHead(c *ui.Context, s queuePalette, onClose func()) {
 	ui.Row(c).FillWidth().Height(queueHeadH).PaddingX(12).AlignItems(ui.Center).Gap(8).Children(func() {
 		ui.Textf(c, "播放列表 · %d 首", a.PL.QueueLen()).FontSize(fz(13)).FontWeight(700).
 			TextColor(s.title).SingleLine().Grow(1)
 		a.queueIconBtn(c, s, "trash", "清空播放列表", func() { a.PL.ClearQueue() })
-		a.queueIconBtn(c, s, "clear", "收起播放列表", func() {
-			a.queueOpen = false
-			a.Conf.Set("Window.QueueOpen", false)
-		})
+		if onClose != nil {
+			a.queueIconBtn(c, s, "clear", "收起播放列表", onClose)
+		}
 	})
 	if s.divider {
 		ui.Box(c).FillWidth().Height(1).Background(s.line)

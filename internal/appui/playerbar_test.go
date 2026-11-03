@@ -106,7 +106,7 @@ func TestPlayerBarControlsStillWork(t *testing.T) {
 		t.Fatalf("点不到队列按钮：%v", err)
 	}
 	tester.Frame()
-	if !app.queueOpen {
+	if !app.npQueue {
 		t.Fatal("点击队列按钮被整条 seek 面吃掉了")
 	}
 	if app.seekFrac != beforeSeek {

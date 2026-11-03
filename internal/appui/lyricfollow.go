@@ -81,10 +81,20 @@ func (a *App) advanceLyricFollow(c *ui.Context) {
 
 	// 静默期结束：让本次构建重新跟随当前句。期间 lastLyricLine 照常
 	// 更新，所以换行本身不触发动画；这里清成哨兵才会强制跟一次。
-	if !a.npFollowPause.IsZero() && !now.Before(a.npFollowPause) {
-		a.npFollowPause = time.Time{}
-		a.lastLyricLine = -2
-		a.npResume = true
+	//
+	// 静默期里画面可能完全静止（暂停播放、没有输入）：到期时得醒一次，
+	// 才能把歌词模糊恢复、把跟随接回当前句。同一个截止时间只排一次。
+	if !a.npFollowPause.IsZero() {
+		switch {
+		case !now.Before(a.npFollowPause):
+			a.npFollowPause = time.Time{}
+			a.npPauseWake = time.Time{}
+			a.lastLyricLine = -2
+			a.npResume = true
+		case a.npPauseWake != a.npFollowPause:
+			a.npPauseWake = a.npFollowPause
+			c.After(time.Until(a.npFollowPause))
+		}
 	}
 
 	if !f.active {
@@ -114,6 +124,7 @@ func (a *App) resetLyricFollowOnSongChange(key string) {
 	a.npSongKey = key
 	a.npFollow = lyricFollow{}
 	a.npFollowPause = time.Time{}
+	a.npPauseWake = time.Time{}
 	a.lastLyricLine = -2
 	a.npShown, a.npScroll.Y = 0, 0
 	a.npScrollSeen, a.npScrollSeenOK = 0, true
