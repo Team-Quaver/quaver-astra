@@ -464,9 +464,12 @@ func (a *App) volumeCtl(c *ui.Context, t *ui.Theme) ui.Element {
 	if b.Clicked() {
 		a.volOpen = !a.volOpen
 	}
-	ui.Popover(c, b, &a.volOpen, func() {
-		panel := ui.Column(c).Width(220).Padding(12).Gap(10).
-			Background(t.Surface).Radius(12).Border(1, t.Border).Shadow(0, 10, 32, 0, ui.RGBA(0, 0, 0, 0.18))
+	// 用 PopoverBase 自己画面板：ui.Popover 已经带一层主题边框/内边距，
+	// 再套一个带边框的 Column 就会看到内外两条圆角描边。
+	ui.PopoverBase(c, b, &a.volOpen, func(panel ui.Element) {
+		panel.Width(220).Padding(12).Gap(10).Margin(6, 0, 0, 0).
+			Background(t.Surface).Radius(12).Border(1, t.Border).
+			Shadow(0, 10, 32, 0, ui.RGBA(0, 0, 0, 0.18))
 		panel.Children(func() {
 			vol := a.PL.Volume()
 			sl := ui.Slider(c, &vol, 0, 1).FillWidth()
@@ -544,9 +547,10 @@ func (a *App) qualityText() string {
 // qualityMenu 是音档选择菜单。播放条与正在播放页共用——两处只有配色不同，
 // 逻辑（选中项高亮、切换后关闭、写回配置）完全一致。
 func (a *App) qualityMenu(c *ui.Context, anchor ui.Element, fg ui.Color, activeBg, hoverBg ui.Color) {
-	ui.Popover(c, anchor, &a.qualityOpen, func() {
+	// 同上：PopoverBase 只画一层，避免内外双边框。
+	ui.PopoverBase(c, anchor, &a.qualityOpen, func(panel ui.Element) {
 		t := c.Theme()
-		panel := ui.Column(c).Width(210).Padding(6).
+		panel.Width(210).Padding(6).Margin(6, 0, 0, 0).
 			Background(t.Surface).Radius(12).Border(1, t.Border).
 			Shadow(0, 10, 32, 0, ui.RGBA(0, 0, 0, 0.18))
 		panel.Children(func() {

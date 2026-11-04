@@ -104,7 +104,7 @@ func TestAutoSkipStopsAfterMaxSkips(t *testing.T) {
 		t.Errorf("收手后还在自己跳歌：%d → %d", before, p.Index())
 	}
 	// 只试到第 maxAutoSkips+1 首（每首一整条回退链），后面的歌没被牵连
-	if n, want := eng.loadedCount(), len(fallbackChain("master"))*(maxAutoSkips+1); n > want {
+	if n, want := eng.loadedCount(), len(fallbackChain("master", false))*(maxAutoSkips+1); n > want {
 		t.Errorf("载入次数 %d 超过了 4 首歌的回退链总量 %d", n, want)
 	}
 }

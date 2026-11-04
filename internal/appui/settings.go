@@ -294,6 +294,8 @@ func (a *App) settingsPlayback(c *ui.Context, t *ui.Theme) {
 
 		a.prefRow(c, "回退到全景声（含 7.1 / 5.1，不推荐）", func() bool { return a.Conf.Bool("Quality.FallbackToQMAtmos", false) },
 			func(v bool) { a.Conf.Set("Quality.FallbackToQMAtmos", v) })
+		ui.Text(c, "关闭后自动选档与降档都跳过全景声；手动选择仍然生效。").
+			FontSize(fz(11.5)).TextColor(t.TextMuted).MaxLines(2)
 
 		a.prefRow(c, "上报每日听歌音响力", func() bool {
 			return a.Conf.Bool("Playing.ReportListenTime", true)
@@ -340,17 +342,6 @@ func (a *App) settingsPlayback(c *ui.Context, t *ui.Theme) {
 		})
 		ui.Text(c, "暂停或停止即恢复正常睡眠策略；屏幕仍会按系统电源计划熄灭。").
 			FontSize(fz(11.5)).TextColor(t.TextMuted).MaxLines(2)
-
-		// 音量
-		ui.Text(c, "音量").FontSize(fz(14)).FontWeight(700)
-		ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(10).Children(func() {
-			vol := a.PL.Volume()
-			sl := ui.Slider(c, &vol, 0, 1).Grow(1)
-			if sl.Changed() {
-				a.PL.SetVolume(vol)
-			}
-			ui.Textf(c, "%d%%", int(vol*100)).FontSize(fz(12.5)).TextColor(t.TextMuted).Width(40)
-		})
 	})
 }
 

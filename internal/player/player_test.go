@@ -260,6 +260,7 @@ func TestFallbackOnLoadError(t *testing.T) {
 		// URL 形如 http://x/<mid>/<tier>，据此模拟前两档打不开
 		failURL: map[string]string{
 			"http://x/a/master":  "mpv 载入失败",
+			"http://x/a/atmos2":  "mpv 载入失败",
 			"http://x/a/atmos71": "mpv 载入失败",
 		},
 	}
@@ -276,9 +277,10 @@ func TestFallbackOnLoadError(t *testing.T) {
 	p.tiers = be.tiers
 	p.PlayList([]Song{{Mid: "a", SongID: 1, SongType: 1, Interval: 100}}, 0)
 
-	// 回退链按固定 rank 顺序往下让位：master → atmos71 → atmos51 → flac…
-	// 前两档被标记为打不开，所以应停在第一个可播的 atmos51。
-	const want = "atmos51"
+	// 默认关闭全景声回退：回退链按 rank 向下让位，但跳过 7.1 / 5.1
+	// （atmos2 不属于「全景声」开关管辖）。master / atmos2 都打不开时
+	// 应落到 flac，而不是悄悄换成全景声。
+	const want = "flac"
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
 		if st := p.Stream(); st != nil && st.Tier == want && !p.Loading() {
@@ -296,8 +298,8 @@ func TestFallbackOnLoadError(t *testing.T) {
 	if st.Tier != want {
 		t.Fatalf("应降级到 %s，实际 %s", want, st.Tier)
 	}
-	if n := eng.loadedCount(); n < 3 {
-		t.Errorf("应至少尝试 3 档，实际 %d", n)
+	if n := eng.loadedCount(); n < 2 {
+		t.Errorf("应至少尝试 2 档（master → flac），实际 %d", n)
 	}
 }
 
@@ -406,6 +408,78 @@ func TestQMAtmosFallbackIncludesSevenOne(t *testing.T) {
 	}
 	if !seen["atmos71"] || !seen["atmos51"] {
 		t.Fatalf("Fallback Atmos 应同时包含 7.1 与 5.1，实得 %v", qmAtmosFallbackTiers)
+	}
+}
+
+// TestFallbackChainRespectsAtmosToggle 锁住开关的真实语义：关闭时全景声
+// 完全不进回退链；打开时才按 rank 参与。显式选中的全景声档位不受影响。
+func TestFallbackChainRespectsAtmosToggle(t *testing.T) {
+	off := fallbackChain("master", false)
+	if len(off) == 0 || off[0] != "master" {
+		t.Fatalf("回退链应从请求档位开始，实得 %v", off)
+	}
+	for _, tier := range off {
+		if qmAtmosTier(tier) {
+			t.Fatalf("关闭全景声回退后链里仍有 %s：%v", tier, off)
+		}
+	}
+
+	on := fallbackChain("master", true)
+	found := false
+	for _, tier := range on {
+		if tier == "atmos71" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("打开全景声回退后链里应有 atmos71：%v", on)
+	}
+
+	if explicit := fallbackChain("atmos51", true); len(explicit) == 0 || explicit[0] != "atmos51" {
+		t.Fatalf("显式选择全景声时应从该档开始，实得 %v", explicit)
+	}
+}
+
+// atmosDegradingBackend 模拟后端自行沿 rank 降档：请求 master 却回 atmos71。
+type atmosDegradingBackend struct{ liveBackend }
+
+func (b *atmosDegradingBackend) Resolve(mid, mediaMid string, songType int64, tier string, dep []string, durationMs int64) (*StreamInfo, error) {
+	resolved := "flac"
+	if tier == "master" {
+		resolved = "atmos71"
+	}
+	return &StreamInfo{URL: "http://x/" + mid + "/" + resolved, Tier: resolved, TierLabel: resolved}, nil
+}
+
+// TestServerAtmosDegradeRejectedWhenDisabled 覆盖「后端静默降级到全景声」：
+// 客户端不能把 atmos71 当成 master 的成功结果直接播放，必须继续让位。
+func TestServerAtmosDegradeRejectedWhenDisabled(t *testing.T) {
+	eng := &fakeEngine{}
+	be := &atmosDegradingBackend{liveBackend{loggedIn: true}}
+	be.tiers = &TierTable{Tiers: []Tier{
+		{ID: "master", Rank: 90},
+		{ID: "atmos71", Rank: 80},
+		{ID: "flac", Rank: 70},
+	}}
+	p := New(be, eng, fakePrefs{})
+	p.OnNotify(func() {})
+	p.Boot()
+	p.tiers = be.tiers
+	p.PlayList([]Song{{Mid: "a", SongID: 1, SongType: 1, Interval: 100}}, 0)
+
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if st := p.Stream(); st != nil && !p.Loading() {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if err := p.Error(); err != "" {
+		t.Fatalf("降级成功后不应报错，实际: %s", err)
+	}
+	st := p.Stream()
+	if st == nil || st.Tier != "flac" {
+		t.Fatalf("应跳过后端返回的 atmos71 落到 flac，实得 %+v", st)
 	}
 }
 

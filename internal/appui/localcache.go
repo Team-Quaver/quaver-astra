@@ -78,10 +78,9 @@ func (a *App) applyLocalCacheLimit() {
 	if a.API == nil {
 		return
 	}
+	// 0 表示后端默认上限，照样推一次：这条请求会让后端首次打开缓存目录，
+	// 顺手清掉上次进程崩溃/强退留下的 .tmp 残片（缓存开关关着也一样清）。
 	mib := a.localCacheLimitMiB()
-	if mib <= 0 {
-		return
-	}
 	go func() { _, _ = a.API.SetMusicCacheLimit(int64(mib) << 20) }()
 }
 

@@ -1541,8 +1541,9 @@ func (p *Player) loadTiers() {
 // pickTier 把 "auto" 换算成本机可播放的最高档位。
 //
 // 引擎支持集是全档位（含 atmos / DTS / FLAC / AAC），
-// 因此这里直接取未锁定档位里 rank 最高的一档。
-func pickTier(table *TierTable, want string) string {
+// 因此这里直接取未锁定档位里 rank 最高的一档；allowAtmos=false 时
+// 跳过全景声档位，「自动」不该悄悄把用户送进 7.1/5.1。
+func pickTier(table *TierTable, want string, allowAtmos bool) string {
 	if want != "auto" {
 		return want
 	}
@@ -1551,7 +1552,7 @@ func pickTier(table *TierTable, want string) string {
 	}
 	best, bestRank := "128", -1
 	for _, t := range table.Tiers {
-		if t.Locked {
+		if t.Locked || (!allowAtmos && qmAtmosTier(t.ID)) {
 			continue
 		}
 		if t.Rank > bestRank {
@@ -1612,11 +1613,15 @@ func (p *Player) startCurrent(resumeTo float64, autoplay bool, overrideTier stri
 	if want == "" {
 		want = p.conf.String("Quality.DefaultQuality", "auto")
 	}
+	// 开关关闭（默认）时全景声不参与自动选档与回退；只有用户显式
+	// 点了 7.1 / 5.1 才允许。开关打开时把两档压到回退链尾部——
+	// 只在常规档位都不可播时才回退到全景声，而不是优先选它。
+	allowAtmos := p.conf.Bool("Quality.FallbackToQMAtmos", false) || qmAtmosTier(want)
 	if want == "auto" {
-		want = pickTier(p.tiers, "auto")
+		want = pickTier(p.tiers, "auto", allowAtmos)
 	}
 	dep := []string{}
-	if p.conf.Bool("Quality.FallbackToQMAtmos", false) {
+	if allowAtmos {
 		// 显式列出两档全景声：7.1 与 5.1 都属于「Fallback Atmos」，
 		// 不能只降权 5.1 而让 7.1 仍按普通高档位优先。
 		dep = append([]string(nil), qmAtmosFallbackTiers...)
@@ -1633,7 +1638,7 @@ func (p *Player) startCurrent(resumeTo float64, autoplay bool, overrideTier stri
 		resume := resumeTo     // 起播进度；带进度失败时下面退回从 0 再试
 		resumeRetried := false // 「从 0 再试一次」只有一次机会
 		for {
-			i, tier, err := p.resolveWithFallback(song, want, dep, seq, fallback)
+			i, tier, err := p.resolveWithFallback(song, want, dep, seq, fallback, allowAtmos)
 			if err != nil {
 				p.failWithErr(seq, err)
 				return
@@ -1739,9 +1744,9 @@ const loadWaitTimeout = 8 * time.Second
 var errLoadTimeout = errors.New("载入超时")
 
 // resolveWithFallback 按回退链尝试解析（档位受限支持集）。fallback 由调用方持有（会话局部）。
-func (p *Player) resolveWithFallback(song Song, want string, dep []string, seq uint64, fallback map[string]bool) (*StreamInfo, string, error) {
+func (p *Player) resolveWithFallback(song Song, want string, dep []string, seq uint64, fallback map[string]bool, allowAtmos bool) (*StreamInfo, string, error) {
 	var lastErr error
-	for _, tier := range fallbackChain(want) {
+	for _, tier := range fallbackChain(want, allowAtmos) {
 		if fallback[tier] {
 			continue
 		}
@@ -1758,6 +1763,13 @@ func (p *Player) resolveWithFallback(song Song, want string, dep []string, seq u
 		}
 		info, err := p.api.Resolve(song.Mid, "", song.SongType, tier, dep, durationMs)
 		if err == nil && info != nil {
+			if !allowAtmos && qmAtmosTier(info.Tier) {
+				// 后端会自己沿 rank 往下协商：请求 master 也可能拿回
+				// atmos51。开关关闭时按「这一档没成」处理，继续让位给
+				// 下一档，绝不让全景声在用户不知情时上桌。
+				lastErr = fmt.Errorf("服务端把回复降到了全景声档位 %s，但全景声回退已关闭", info.Tier)
+				continue
+			}
 			return info, tier, nil
 		}
 		if err != nil {
@@ -1772,7 +1784,10 @@ func (p *Player) resolveWithFallback(song Song, want string, dep []string, seq u
 
 // fallbackChain 从高档到低档的回退链（引擎可解全部档位，这里按上游
 // 的 rank 顺序逐级让位；换档由起播协程的 fallback 集合去重）。
-func fallbackChain(want string) []string {
+//
+// allowAtmos=false 时整条链跳过 7.1 / 5.1：它们既不该被自动选中，也
+// 不该在 master/flac 失败后兜底。
+func fallbackChain(want string, allowAtmos bool) []string {
 	order := []string{
 		"master", "atmos71", "atmos51", "atmos2", "flac",
 		"640ogg", "320ogg", "320", "128",
@@ -1787,7 +1802,27 @@ func fallbackChain(want string) []string {
 	if at < 0 {
 		return []string{want}
 	}
-	return order[at:]
+	chain := order[at:]
+	if allowAtmos {
+		return append([]string(nil), chain...)
+	}
+	out := make([]string, 0, len(chain))
+	for _, id := range chain {
+		if !qmAtmosTier(id) {
+			out = append(out, id)
+		}
+	}
+	return out
+}
+
+// qmAtmosTier 判定档位是否属于「回退到全景声」开关管辖的 7.1 / 5.1。
+func qmAtmosTier(id string) bool {
+	for _, tier := range qmAtmosFallbackTiers {
+		if tier == id {
+			return true
+		}
+	}
+	return false
 }
 
 var errStale = errors.New("已切换歌曲")
