@@ -97,8 +97,9 @@ func TestLyricFollowGlides(t *testing.T) {
 	}
 
 	// 走到一半：偏移应当落在两端之间，而不是已经在终点。
+	// Advance 会按刷新率把动画帧跑完，不必再调 Frame——动画在跑时
+	// Frame 会在冻结的时钟上重复渲染最多 20 帧，测试会慢一个数量级。
 	tester.Advance(160 * time.Millisecond)
-	tester.Frame()
 	mid := app.npScroll.Y
 	if mid <= from || mid >= app.npFollow.to {
 		t.Fatalf("动画中途偏移 %.1f 不在 (%.1f, %.1f) 之间", mid, from, app.npFollow.to)
@@ -106,7 +107,6 @@ func TestLyricFollowGlides(t *testing.T) {
 
 	// 动画时长 320ms：再推进一段后应当停在终点。
 	tester.Advance(300 * time.Millisecond)
-	tester.Frame()
 	if app.npFollow.active {
 		t.Fatal("动画超时仍未停下")
 	}
@@ -147,7 +147,6 @@ func TestLyricFollowTargetIsStable(t *testing.T) {
 	prev := app.npScroll.Y
 	for i := 0; i < 12 && app.npFollow.active; i++ {
 		tester.Advance(16 * time.Millisecond)
-		tester.Frame()
 		if !app.npFollow.active {
 			break
 		}
@@ -189,7 +188,6 @@ func settleLyricFollow(t *testing.T, app *App, tester *ui.Tester) {
 	t.Helper()
 	for i := 0; i < 60 && app.npFollow.active; i++ {
 		tester.Advance(16 * time.Millisecond)
-		tester.Frame()
 	}
 	if app.npFollow.active || app.npFollow.pending {
 		t.Fatal("跟随动画没有停下")
@@ -241,7 +239,6 @@ func TestLyricFollowPausesWhileUserScrolls(t *testing.T) {
 	}
 	for i := 0; i < 40 && app.npFollow.active; i++ {
 		tester.Advance(16 * time.Millisecond)
-		tester.Frame()
 	}
 	if got := app.npScroll.Y; got == afterScroll {
 		t.Fatal("静默期结束后没有把列表挪回当前句")
@@ -269,8 +266,9 @@ func TestLyricFollowStaysResumedAfterScroll(t *testing.T) {
 	tester.Frame()
 	// 让瞬移淡入与跟随动画都走完，再多跑几秒。
 	for i := 0; i < 400; i++ {
+		// 动画在跑时 Advance 本身就会逐帧渲染；动画停下后没有帧可跑，
+		// 也就不会有新的偏移校正，这里静默推进时钟即可。
 		tester.Advance(16 * time.Millisecond)
-		tester.Frame()
 		if app.lyricFollowPaused(tester.Now()) {
 			t.Fatalf("复位后第 %d 帧又被判成用户滚动（偏移 %.1f，上帧 %.1f）",
 				i, app.npScroll.Y, app.npScrollSeen)
@@ -303,7 +301,6 @@ func TestDebugBlurFlicker(t *testing.T) {
 	changes := map[int]int{}
 	for f := 0; f < 400; f++ {
 		tester.Advance(16 * time.Millisecond)
-		tester.Frame()
 		if f < 120 {
 			prev = map[int]float32{}
 			for i, v := range latest {
