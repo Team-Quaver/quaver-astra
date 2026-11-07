@@ -88,7 +88,7 @@ func (a *App) songRow(c *ui.Context, st *songListState, i int, doubleClick func(
 			}
 		})
 		// 封面
-		art := a.Covers.Get(coverURL(s.AlbumPmid, s.AlbumMid, 300), a.invalidate)
+		art := a.Covers.Get(a.songCoverURL(s, 300), a.invalidate)
 		if art != nil {
 			ui.Image(c, art).Size(44, 44).Fit(ui.Cover).Radius(6)
 		} else {

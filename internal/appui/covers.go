@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/Team-Quaver/quaver-astra/internal/colorprobe"
+	"github.com/Team-Quaver/quaver-astra/internal/player"
 
 	"github.com/egoist/mygo/ui"
 )
@@ -202,6 +203,24 @@ func (cc *CoverCache) FetchRaw(url string) []byte {
 	cc.mu.Lock()
 	defer cc.mu.Unlock()
 	return cc.raw[url]
+}
+
+// songCoverURL 是播放器曲目的封面地址：微云网盘条目优先用后端保存的
+// 自定义/刮削封面，其余情况回退 QQ 曲库专辑封面。
+func (a *App) songCoverURL(s player.Song, size int) string {
+	return a.cloudAwareCoverURL(s.CloudFileID, s.CloudKey, s.CloudHasCover, s.AlbumPmid, s.AlbumMid, size)
+}
+
+// queueRowCoverURL 是队列行视图的封面地址（QueueRowView 只带渲染字段）。
+func (a *App) queueRowCoverURL(r player.QueueRowView, size int) string {
+	return a.cloudAwareCoverURL(r.CloudFileID, r.CloudKey, r.CloudHasCover, r.AlbumPmid, r.AlbumMid, size)
+}
+
+func (a *App) cloudAwareCoverURL(cloudFileID, cloudKey string, hasCover bool, pmid, mid string, size int) string {
+	if cloudFileID != "" && hasCover && cloudKey != "" && a.API != nil {
+		return a.API.CloudCoverURL(cloudKey)
+	}
+	return coverURL(pmid, mid, size)
 }
 
 // coverURL 拼封面地址（pmid 优先，mid 兜底；均空返回 ""）。

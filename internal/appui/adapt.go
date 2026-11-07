@@ -130,6 +130,32 @@ func (a apiAdapter) Resolve(mid, mediaMid string, songType int64, tier string, d
 	}, nil
 }
 
+// ResolveCloud 是 player 的微云取流能力：网盘文件按 file_id 直接出流，
+// 复用后端 /stream/resolve 的令牌、Range 与 QMCv1 解密链路。
+func (a apiAdapter) ResolveCloud(mid, fileID, name string, durationMs int64) (*player.StreamInfo, error) {
+	r, err := a.c.ResolveCloudStream(mid, fileID, name, durationMs, a.cacheSeed())
+	if err != nil {
+		return nil, err
+	}
+	return &player.StreamInfo{
+		URL:       a.c.Base + r.Path,
+		Tier:      r.Tier,
+		TierLabel: r.TierLabel,
+		Degraded:  r.Degraded,
+		Size:      r.Size,
+		Token:     r.Token,
+	}, nil
+}
+
+// FetchCloudLyric 读取网盘条目的刮削/导入歌词。
+func (a apiAdapter) FetchCloudLyric(key string) (string, string, string, error) {
+	l, err := a.c.CloudLyric(key)
+	if err != nil {
+		return "", "", "", err
+	}
+	return l.Lyric, l.Trans, l.Roma, nil
+}
+
 // cacheSeed 返回本地缓存的前端半种：关闭本地缓存（缺省）或尚未生成时为空，
 // 后端会跳过缓存命中与落盘。种子与缓存索引绑定，换种子等于换账号缓存。
 func (a apiAdapter) cacheSeed() string {

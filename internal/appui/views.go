@@ -123,7 +123,7 @@ func (a *App) homeRadioCard(c *ui.Context, st *homeState) {
 	busy := a.PL.RadioLoading()
 	artURL := ""
 	if active && hasCur {
-		artURL = coverURL(cur.AlbumPmid, cur.AlbumMid, 300)
+		artURL = a.songCoverURL(cur, 300)
 	} else if len(st.recs) > 0 {
 		artURL = st.recs[0].Picurl
 	}
@@ -744,7 +744,7 @@ func (a *App) guessView(c *ui.Context) {
 	busy := a.PL.RadioLoading()
 	artURL := ""
 	if active && hasCur {
-		artURL = coverURL(cur.AlbumPmid, cur.AlbumMid, 500)
+		artURL = a.songCoverURL(cur, 500)
 	}
 	art := a.Covers.Get(artURL, a.invalidate)
 

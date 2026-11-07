@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/Team-Quaver/quaver-astra/internal/audio"
+	mpvaudio "github.com/Team-Quaver/quaver-astra/internal/audio/mpv"
 	"github.com/Team-Quaver/quaver-astra/internal/player"
 
 	"github.com/egoist/mygo/ui"
@@ -17,6 +18,10 @@ type settingsState struct {
 	// 缓存几秒，重新进入或设备变化时再刷新。
 	backendStatus   audio.Status
 	backendStatusAt time.Time
+
+	// mpv 定位结果也走同一套节流：ProbeMPV 会碰文件系统，不能每帧跑。
+	mpvInfo   mpvaudio.MPVInfo
+	mpvInfoAt time.Time
 
 	// 本地音乐缓存面板的状态（占用/上限/回执），见 localcache.go。
 	localCache localCacheState
@@ -54,6 +59,16 @@ const (
 	hotkeysTab
 	aboutTab
 )
+
+// mpvStatus 缓存 mpv 定位结果（5 秒），设置页两个 tab 共用。
+func (a *App) mpvStatus() mpvaudio.MPVInfo {
+	st := &a.settings
+	if st.mpvInfoAt.IsZero() || time.Since(st.mpvInfoAt) > 5*time.Second {
+		st.mpvInfo = mpvaudio.MPVInfoFor()
+		st.mpvInfoAt = time.Now()
+	}
+	return st.mpvInfo
+}
 
 func (a *App) settingsView(c *ui.Context) {
 	st := &a.settings
@@ -259,6 +274,27 @@ func (a *App) fontSettingRow(c *ui.Context, t *ui.Theme, title, modeKey, customK
 
 func (a *App) settingsPlayback(c *ui.Context, t *ui.Theme) {
 	ui.Column(c).FillWidth().Gap(16).MaxWidth(560).Children(func() {
+		// 播放后端：默认 Liino 进程内原生播放；MPV 作为兼容性兜底，
+		// 切换立即生效（正在播放时从当前进度重新取流）。
+		ui.Text(c, "播放后端").FontSize(fz(14)).FontWeight(700)
+		a.prefRow(c, "使用 MPV 作为播放后端", func() bool {
+			return a.mpvBackendEnabled()
+		}, a.setMPVBackend)
+		ui.Text(c, "默认由 Liino 在进程内解码并直连系统音频；打开后改用 mpv 子进程，"+
+			"适合系统 FFmpeg/PipeWire 缺失或需要 mpv 缓存与重连能力的场景。").
+			FontSize(fz(11.5)).TextColor(t.TextMuted).MaxLines(2)
+		if a.mpvBackendEnabled() {
+			info := a.mpvStatus()
+			if info.OK {
+				ui.Text(c, "已检测到 mpv："+info.Path+"（"+info.Detail+"）").
+					FontSize(fz(11.5)).TextColor(t.TextMuted).MaxLines(2)
+			} else {
+				ui.Text(c, info.Detail).FontSize(fz(11.5)).TextColor(t.TextMuted).MaxLines(2)
+			}
+		}
+
+		ui.Divider(c)
+
 		// 默认音质：id 与展示标签平行数组
 		ids := []string{"auto"}
 		labels := []string{"自动（最高可播）"}
@@ -360,39 +396,68 @@ func (a *App) settingsAbout(c *ui.Context, t *ui.Theme) {
 
 		ui.Divider(c)
 
-		// 播放后端：Liino 在进程内解码、直连系统音频，没有 mpv 子进程。
-		// 自检直接探测解码后端（系统 FFmpeg / 平台解码器）与输出驱动。
+		// 播放后端：默认 Liino 在进程内解码、直连系统音频；用户在设置 →
+		// 播放里打开 MPV 后，这里改为展示 mpv 子进程的定位结果。
 		ui.Text(c, "播放后端").FontSize(fz(14)).FontWeight(700)
-		if a.settings.backendStatusAt.IsZero() || time.Since(a.settings.backendStatusAt) > 5*time.Second {
-			a.settings.backendStatus = audio.NewStatus()
-			a.settings.backendStatusAt = time.Now()
-		}
-		st := a.settings.backendStatus
-		ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(8).Children(func() {
-			dot := ui.Box(c).Size(8, 8).Radius(4)
-			if st.OK {
-				dot.Background(ui.Hex("#2ea043"))
+		if a.mpvBackendEnabled() {
+			info := a.mpvStatus()
+			label := "mpv"
+			if ver := a.PL.EngineVersion(); ver != "" {
+				label = ver
+			}
+			ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(8).Children(func() {
+				dot := ui.Box(c).Size(8, 8).Radius(4)
+				if info.OK {
+					dot.Background(ui.Hex("#2ea043"))
+				} else {
+					dot.Background(ui.Hex("#e81123"))
+				}
+				ui.Text(c, label).FontSize(fz(13))
+				ui.Text(c, "MPV 子进程模式").FontSize(fz(12)).TextColor(t.TextMuted)
+				ui.Spacer(c)
+				ui.Text(c, "mpv 解码 · 独立进程").
+					FontSize(fz(11.5)).TextColor(t.TextMuted).SingleLine().Ellipsis("…")
+			})
+			if info.OK {
+				ui.Text(c, info.Path).FontSize(fz(12)).TextColor(t.TextMuted).MaxLines(2)
+				ui.Text(c, info.Detail).FontSize(fz(11.5)).TextColor(t.TextMuted).MaxLines(2)
 			} else {
-				dot.Background(ui.Hex("#e81123"))
+				ui.Text(c, info.Detail).FontSize(fz(12)).TextColor(t.TextMuted).MaxLines(4)
 			}
-			ui.Text(c, "Liino "+st.Version).FontSize(fz(13))
-			ui.Text(c, "Native 原生模式").FontSize(fz(12)).TextColor(t.TextMuted)
-			ui.Spacer(c)
-			ui.Text(c, "进程内解码 · 直连系统音频").
-				FontSize(fz(11.5)).TextColor(t.TextMuted).SingleLine().Ellipsis("…")
-		})
-		if st.OK {
-			ui.Text(c, "解码："+st.Decoder).FontSize(fz(12)).TextColor(t.TextMuted).MaxLines(2)
-			ui.Text(c, "输出："+st.Driver).FontSize(fz(12)).TextColor(t.TextMuted).MaxLines(2)
-		} else {
-			ui.Text(c, st.Detail).FontSize(fz(12)).TextColor(t.TextMuted).MaxLines(4)
-			for _, line := range append(st.DecoderAll, st.DriverAll...) {
-				ui.Text(c, line).FontSize(fz(11.5)).TextColor(t.TextMuted).MaxLines(2)
-			}
-		}
-		if runtime.GOOS == "linux" {
-			ui.Text(c, "Linux 需要系统安装 FFmpeg 运行库与 PipeWire 才能播放。").
+			ui.Text(c, "可在设置 → 播放中随时切回 Liino。").
 				FontSize(fz(11.5)).TextColor(t.TextMuted).MaxLines(2)
+		} else {
+			if a.settings.backendStatusAt.IsZero() || time.Since(a.settings.backendStatusAt) > 5*time.Second {
+				a.settings.backendStatus = audio.NewStatus()
+				a.settings.backendStatusAt = time.Now()
+			}
+			st := a.settings.backendStatus
+			ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(8).Children(func() {
+				dot := ui.Box(c).Size(8, 8).Radius(4)
+				if st.OK {
+					dot.Background(ui.Hex("#2ea043"))
+				} else {
+					dot.Background(ui.Hex("#e81123"))
+				}
+				ui.Text(c, "Liino "+st.Version).FontSize(fz(13))
+				ui.Text(c, "Native 原生模式").FontSize(fz(12)).TextColor(t.TextMuted)
+				ui.Spacer(c)
+				ui.Text(c, "进程内解码 · 直连系统音频").
+					FontSize(fz(11.5)).TextColor(t.TextMuted).SingleLine().Ellipsis("…")
+			})
+			if st.OK {
+				ui.Text(c, "解码："+st.Decoder).FontSize(fz(12)).TextColor(t.TextMuted).MaxLines(2)
+				ui.Text(c, "输出："+st.Driver).FontSize(fz(12)).TextColor(t.TextMuted).MaxLines(2)
+			} else {
+				ui.Text(c, st.Detail).FontSize(fz(12)).TextColor(t.TextMuted).MaxLines(4)
+				for _, line := range append(st.DecoderAll, st.DriverAll...) {
+					ui.Text(c, line).FontSize(fz(11.5)).TextColor(t.TextMuted).MaxLines(2)
+				}
+			}
+			if runtime.GOOS == "linux" {
+				ui.Text(c, "Linux 需要系统安装 FFmpeg 运行库与 PipeWire 才能播放。").
+					FontSize(fz(11.5)).TextColor(t.TextMuted).MaxLines(2)
+			}
 		}
 
 		ui.Divider(c)

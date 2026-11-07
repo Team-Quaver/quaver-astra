@@ -63,6 +63,12 @@ type sessionSong struct {
 	Interval  float64         `json:"interval,omitempty"`
 	SongID    int64           `json:"songId,omitempty"`
 	SongType  int64           `json:"songType,omitempty"`
+
+	// 微云网盘条目：恢复会话后仍能按原 file_id 取流、按 key 读封面/歌词。
+	CloudFileID   string `json:"cloudFileId,omitempty"`
+	CloudKey      string `json:"cloudKey,omitempty"`
+	CloudName     string `json:"cloudName,omitempty"`
+	CloudHasCover bool   `json:"cloudHasCover,omitempty"`
 }
 
 type sessionQueue struct {
@@ -82,6 +88,8 @@ func songToSession(s Song) sessionSong {
 		Mid: s.Mid, Name: s.Name, Title: s.Title, Subtitle: s.Subtitle,
 		Artists: s.Artists, Album: s.Album, AlbumPmid: s.AlbumPmid,
 		AlbumMid: s.AlbumMid, Interval: s.Interval, SongID: s.SongID, SongType: s.SongType,
+		CloudFileID: s.CloudFileID, CloudKey: s.CloudKey, CloudName: s.CloudName,
+		CloudHasCover: s.CloudHasCover,
 	}
 	if len(s.Singers) > 0 {
 		out.Singers = make([]sessionSinger, 0, len(s.Singers))
@@ -97,6 +105,8 @@ func sessionToSong(ss sessionSong) Song {
 		Mid: ss.Mid, Name: ss.Name, Title: ss.Title, Subtitle: ss.Subtitle,
 		Artists: ss.Artists, Album: ss.Album, AlbumPmid: ss.AlbumPmid,
 		AlbumMid: ss.AlbumMid, Interval: ss.Interval, SongID: ss.SongID, SongType: ss.SongType,
+		CloudFileID: ss.CloudFileID, CloudKey: ss.CloudKey, CloudName: ss.CloudName,
+		CloudHasCover: ss.CloudHasCover,
 	}
 	if len(ss.Singers) > 0 {
 		out.Singers = make([]Singer, 0, len(ss.Singers))

@@ -540,3 +540,121 @@ func TestRadioMovesForwardOnlyAndExtendsAtRoundEnd(t *testing.T) {
 		t.Error("手动播放歌单后应退出电台")
 	}
 }
+
+// TestSeekWhilePausedMovesPosition 钉住「暂停时拖进度条」的回归：
+// 引擎已装载但暂停时心跳不再同步位置，SeekTo 必须自己把界面位置落定，
+// 否则拖动松手后进度条弹回原处，要等再次播放才「跳过去」。
+func TestSeekWhilePausedMovesPosition(t *testing.T) {
+	eng := &fakeEngine{}
+	p := New(stubBackend{}, eng, fakePrefs{})
+	p.queue = []Song{{Mid: "a", SongID: 1, SongType: 1, Interval: 100}}
+	p.index = 0
+	p.dur = 100
+	p.pos = 12
+	p.stream = &StreamInfo{URL: "x"}
+	p.playing = false
+	eng.paused = true
+
+	p.SeekTo(0.5)
+	if got := p.Position(); got != 50 {
+		t.Fatalf("暂停 seek 后界面位置 = %v，期望 50", got)
+	}
+	if eng.seekTo != 1 {
+		t.Fatalf("引擎 SeekTo 调用次数 = %d，期望 1", eng.seekTo)
+	}
+
+	// 暂停心跳不能把位置拉回旧值（引擎可能还没来得及回报新位置）。
+	p.tick()
+	if got := p.Position(); got != 50 {
+		t.Fatalf("暂停心跳后界面位置 = %v，期望 50", got)
+	}
+}
+
+// cloudBackend 给 stubBackend 补上微云取流/歌词能力（可选接口）。
+type cloudBackend struct {
+	stubBackend
+	gotFileID string
+	gotName   string
+	lyricKey  string
+}
+
+func (b *cloudBackend) ResolveCloud(mid, fileID, name string, durationMs int64) (*StreamInfo, error) {
+	b.gotFileID, b.gotName = fileID, name
+	return &StreamInfo{URL: "http://x/" + mid + "/weiyun", Tier: "weiyun", Token: "tok"}, nil
+}
+
+func (b *cloudBackend) FetchCloudLyric(key string) (string, string, string, error) {
+	b.lyricKey = key
+	return "[00:01.00]hello", "", "", nil
+}
+
+// TestCloudSongUsesCloudResolver 钉住网盘曲目的取流路径：有 CloudFileID 时
+// 走 ResolveCloud（而非 QQ 音质回退链），歌词走网盘接口，音响力不上报。
+func TestCloudSongUsesCloudResolver(t *testing.T) {
+	eng := &fakeEngine{}
+	be := &cloudBackend{}
+	p := New(be, eng, fakePrefs{})
+	p.OnNotify(func() {})
+	p.tiers = &TierTable{Tiers: []Tier{{ID: "flac", Rank: 70}}}
+	p.PlayList([]Song{{
+		Mid: "cloud:k", SongID: 42, SongType: 1, Interval: 180,
+		CloudFileID: "file123", CloudKey: "k", CloudName: "a.flac",
+	}}, 0)
+
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) && p.Loading() {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if err := p.Error(); err != "" {
+		t.Fatalf("网盘播放报错: %s", err)
+	}
+	if be.gotFileID != "file123" || be.gotName != "a.flac" {
+		t.Fatalf("ResolveCloud 参数 = %q / %q", be.gotFileID, be.gotName)
+	}
+	if st := p.Stream(); st == nil || st.Tier != "weiyun" {
+		t.Fatalf("stream = %+v", st)
+	}
+	if be.lyricKey != "k" {
+		t.Fatalf("网盘歌词 key = %q", be.lyricKey)
+	}
+	p.mu.RLock()
+	if p.listenTarget.SongID != 0 || p.listenTarget.StreamToken != "" {
+		t.Errorf("网盘曲目不应建立音响力上报目标: %+v", p.listenTarget)
+	}
+	p.mu.RUnlock()
+}
+
+// TestSetEngineSwitchesBackend 验证运行时切换后端：旧引擎关闭、新引擎接手
+// 音量；暂停态只保留进度，不自动起播。
+func TestSetEngineSwitchesBackend(t *testing.T) {
+	oldEng := &fakeEngine{}
+	be := &cloudBackend{}
+	p := New(be, oldEng, fakePrefs{})
+	p.OnNotify(func() {})
+	p.queue = []Song{{Mid: "cloud:k", CloudFileID: "f", CloudKey: "k", Interval: 100}}
+	p.index = 0
+	p.dur = 100
+	p.pos = 42
+	p.vol = 0.8
+	p.playing = false
+
+	newEng := &fakeEngine{}
+	p.SetEngine(newEng)
+
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) && !oldEng.closed {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if !oldEng.closed {
+		t.Error("旧引擎应被关闭")
+	}
+	if got := p.Position(); got != 42 {
+		t.Fatalf("切换后进度 = %v，期望 42", got)
+	}
+	if newEng.loaded != 0 {
+		t.Fatalf("暂停态切换不应自动起播，OpenURL 次数 = %d", newEng.loaded)
+	}
+	if newEng.vol != 0.8 {
+		t.Fatalf("新引擎音量 = %v，期望继承 0.8", newEng.vol)
+	}
+}

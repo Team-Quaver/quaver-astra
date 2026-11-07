@@ -10,18 +10,19 @@ import (
 // （24 网格线性风格，stroke-width 1.8）。COL 占位符替换为 currentColor，
 // 使图标随文本色变化。
 var iconBodies = map[string]string{
-	"play":      `<path d="M8 5.5v13l10-6.5z" fill="COL" stroke="none"/>`,
-	"pause":     `<rect x="7" y="5" width="3.4" height="14" rx="1" fill="COL" stroke="none"/><rect x="13.6" y="5" width="3.4" height="14" rx="1" fill="COL" stroke="none"/>`,
-	"prev":      `<path d="M7 5v14M20 5.5v13L10 12z" fill="COL" stroke="COL" stroke-width="1.6"/>`,
-	"next":      `<path d="M17 5v14M4 5.5v13L14 12z" fill="COL" stroke="COL" stroke-width="1.6"/>`,
-	"home":      `<path d="M4 11.2 12 4.5l8 6.7"/><path d="M6 10v9.5h12V10"/>`,
+	"play":  `<path d="M8 5.5v13l10-6.5z" fill="COL" stroke="none"/>`,
+	"pause": `<rect x="7" y="5" width="3.4" height="14" rx="1" fill="COL" stroke="none"/><rect x="13.6" y="5" width="3.4" height="14" rx="1" fill="COL" stroke="none"/>`,
+	"prev":  `<path d="M7 5v14M20 5.5v13L10 12z" fill="COL" stroke="COL" stroke-width="1.6"/>`,
+	"next":  `<path d="M17 5v14M4 5.5v13L14 12z" fill="COL" stroke="COL" stroke-width="1.6"/>`,
+	"home":  `<path d="M4 11.2 12 4.5l8 6.7"/><path d="M6 10v9.5h12V10"/>`,
 	// 无限电台：与其余导航图标同一条 1.8 描边，不用字体里的 ∞ 字形
 	//（字体字形随平台/字重变化，还会带彩色次像素边缘）。
-	"guess": `<path d="M12 12c-2.2-2.9-4.3-5-5.5-5a5 5 0 1 0 0 10c2.2 0 4.3-2.1 5.5-5c1.2 2.9 3.3 5 5.5 5a5 5 0 0 0 0-10c-2.2 0-4.3 2.1-5.5 5Z"/>`,
+	"guess":     `<path d="M12 12c-2.2-2.9-4.3-5-5.5-5a5 5 0 1 0 0 10c2.2 0 4.3-2.1 5.5-5c1.2 2.9 3.3 5 5.5 5a5 5 0 0 0 0-10c-2.2 0-4.3 2.1-5.5 5Z"/>`,
 	"daily":     `<rect x="4" y="5.5" width="16" height="15" rx="2"/><path d="M8 3.5v4M16 3.5v4M4 10h16"/><path d="M8 14h.01M12 14h.01M16 14h.01M8 17.5h.01M12 17.5h.01M16 17.5h.01"/>`,
 	"heart":     `<path d="M12 20s-7-4.6-9-9c-1.3-3 .8-6.5 4-6.5 2 0 3.5 1.2 5 3 1.5-1.8 3-3 5-3 3.2 0 5.3 3.5 4 6.5-2 4.4-9 9-9 9z"/>`,
 	"heartFill": `<path d="M12 20s-7-4.6-9-9c-1.3-3 .8-6.5 4-6.5 2 0 3.5 1.2 5 3 1.5-1.8 3-3 5-3 3.2 0 5.3 3.5 4 6.5-2 4.4-9 9-9 9z" fill="COL" stroke="COL"/>`,
 	"star":      `<path d="M12 3.6l2.6 5.3 5.8.85-4.2 4.1 1 5.78L12 16.9l-5.2 2.73 1-5.78-4.2-4.1 5.8-.85z"/>`,
+	"cloud":     `<path d="M7.5 18.5h9.8a3.7 3.7 0 0 0 .5-7.37 5.6 5.6 0 0 0-10.63-1.5A4.4 4.4 0 0 0 7.5 18.5Z"/>`,
 	"list":      `<path d="M9 6h11M9 12h11M9 18h11"/><circle cx="4.5" cy="6" r="1.3" fill="COL" stroke="none"/><circle cx="4.5" cy="12" r="1.3" fill="COL" stroke="none"/><circle cx="4.5" cy="18" r="1.3" fill="COL" stroke="none"/>`,
 	"search":    `<circle cx="11" cy="11" r="6.5"/><path d="M20 20l-4.4-4.4"/>`,
 	"back":      `<path d="M14.5 5.5 8 12l6.5 6.5"/>`,

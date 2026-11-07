@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/Team-Quaver/quaver-astra/internal/audio"
+	mpvaudio "github.com/Team-Quaver/quaver-astra/internal/audio/mpv"
 	"github.com/Team-Quaver/quaver-astra/internal/backend"
 	"github.com/Team-Quaver/quaver-astra/internal/colorprobe"
 	"github.com/Team-Quaver/quaver-astra/internal/conf"
@@ -137,6 +138,7 @@ type App struct {
 
 	// 各页面的数据态（历史上往返保留数据本身）
 	home        homeState
+	cloud       cloudState
 	liked       songListState
 	favLists    favListsState
 	daily       songListState
@@ -171,7 +173,6 @@ type App struct {
 // 当前构建版本，用于更新比较）。
 func New(base string, store *conf.Store, v *vault.Vault, version string) *App {
 	api := backend.NewClient(base)
-	eng := audio.New() // Liino 原生模式：进程内解码 + 直连系统音频
 	a := &App{
 		API:           api,
 		Conf:          store,
@@ -183,7 +184,7 @@ func New(base string, store *conf.Store, v *vault.Vault, version string) *App {
 		playlist:      map[int64]*playlistState{},
 		lastLyricLine: -2,
 	}
-	pl := player.New(newAPIAdapter(api, a.localCacheSeed), eng, store)
+	pl := player.New(newAPIAdapter(api, a.localCacheSeed), a.newPlaybackEngine(), store)
 	a.PL = pl
 	// 缓存上限只存在内嵌后端的内存里，启动后按用户设置重推一次。
 	a.applyLocalCacheLimit()
@@ -201,6 +202,8 @@ func New(base string, store *conf.Store, v *vault.Vault, version string) *App {
 			a.wasLoggedIn = a.PL.LoggedIn()
 			a.favLists = favListsState{}
 			a.profile = profileState{}
+			// 网盘条目按 QQ 账号隔离，换账号/登出都要重拉。
+			a.cloud = cloudState{}
 		}
 		a.syncSleep()
 		a.syncTray()
@@ -337,7 +340,7 @@ func (a *App) View(c *ui.Context) {
 	// 当前歌变化时重取色
 	if cur, ok := a.PL.Current(); ok && cur.Mid != a.probedMid {
 		a.probedMid = cur.Mid
-		a.probeCover(coverURL(cur.AlbumPmid, cur.AlbumMid, 300))
+		a.probeCover(a.songCoverURL(cur, 300))
 	}
 	root := ui.Column(c).Fill()
 	root.Children(func() {
@@ -398,6 +401,9 @@ func (a *App) routeArea(c *ui.Context) {
 		case r.Match("/playlists"):
 			r.Title("歌单")
 			a.playlistsView(c)
+		case r.Match("/cloud"):
+			r.Title("音乐网盘")
+			a.cloudView(c)
 		case r.Match("/favlists"):
 			r.Title("收藏的歌单")
 			a.favListsView(c)
@@ -446,6 +452,7 @@ var navItems = []navItem{
 	{"/guess", "guess", "猜你喜欢"},
 	{"/daily", "daily", "每日 30 首"},
 	{"/liked", "heart", "我喜欢"},
+	{"/cloud", "cloud", "音乐网盘"},
 	{"/playlists", "list", "歌单"},
 }
 
@@ -817,4 +824,38 @@ func (a *App) ApplyThemeSource() {
 	default:
 		mygo.Theme.SetSource(mygo.ThemeSystem)
 	}
+}
+
+// ===== 播放后端选择 =====
+
+// mpvBackendKey 是「使用 MPV 作为播放后端」开关。默认关闭：Liino 在
+// 进程内解码、直连系统音频；打开后改由 mpv 子进程播放（兼容性兜底，
+// 也保留 mpv 自己的缓存/断流重连能力）。
+const mpvBackendKey = "Playing.MPVBackend"
+
+func (a *App) mpvBackendEnabled() bool {
+	return a.Conf != nil && a.Conf.Bool(mpvBackendKey, false)
+}
+
+// newPlaybackEngine 按当前设置构造播放引擎。MPV 不可用时它的构造仍会
+// 成功（后台 spawn 失败后是哑引擎），首次播放会把原因报给播放器。
+func (a *App) newPlaybackEngine() player.Engine {
+	if a.mpvBackendEnabled() {
+		return mpvaudio.New()
+	}
+	return audio.New()
+}
+
+// setMPVBackend 切换播放后端并立即生效：正在播放时从当前进度重新取流，
+// 暂停时保留进度。
+func (a *App) setMPVBackend(v bool) {
+	if a.Conf == nil || a.Conf.Bool(mpvBackendKey, false) == v {
+		return
+	}
+	a.Conf.Set(mpvBackendKey, v)
+	a.settings.mpvInfoAt = time.Time{}
+	if a.PL != nil {
+		a.PL.SetEngine(a.newPlaybackEngine())
+	}
+	a.invalidate()
 }

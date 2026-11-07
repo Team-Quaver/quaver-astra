@@ -89,7 +89,7 @@ func (a *App) nowPlaying(c *ui.Context, t *ui.Theme) {
 	a.advanceLyricFollow(c)
 	coverLarge := ""
 	if hasCur {
-		coverLarge = coverURL(cur.AlbumPmid, cur.AlbumMid, 500)
+		coverLarge = a.songCoverURL(cur, 500)
 	}
 
 	np := ui.Box(c).Key("nowplaying").Absolute().Fill().Background(npBase).
@@ -350,7 +350,9 @@ func (a *App) npLeft(c *ui.Context, t *ui.Theme, cur player.Song, hasCur bool) {
 				a.qualityPillNP(c)
 				ui.Spacer(c)
 				if hasCur {
-					a.npLove(c, cur)
+					if cur.CloudFileID == "" {
+						a.npLove(c, cur)
+					}
 				}
 				more := a.npIconButton(c, "more", "更多操作", 17)
 				if more.Clicked() {
@@ -367,7 +369,7 @@ func (a *App) npLeft(c *ui.Context, t *ui.Theme, cur player.Song, hasCur bool) {
 func (a *App) npCover(c *ui.Context, cur player.Song, hasCur bool, size float32) {
 	var art *ui.Bitmap
 	if hasCur {
-		art = a.Covers.Get(coverURL(cur.AlbumPmid, cur.AlbumMid, 500), a.invalidate)
+		art = a.Covers.Get(a.songCoverURL(cur, 500), a.invalidate)
 	}
 	if art != nil {
 		ui.Image(c, art).Size(size, size).Fit(ui.Cover).Radius(18).
@@ -755,7 +757,7 @@ func (a *App) queueRow(c *ui.Context, s queuePalette, r player.QueueRowView, i i
 				ui.Textf(c, "%d", i+1).FontSize(fz(11)).TextColor(s.sub).AlignSelf(ui.Center)
 			}
 		})
-		if art := a.Covers.Get(coverURL(r.AlbumPmid, r.AlbumMid, 300), a.invalidate); art != nil {
+		if art := a.Covers.Get(a.queueRowCoverURL(r, 300), a.invalidate); art != nil {
 			ui.Image(c, art).Size(34, 34).Fit(ui.Cover).Radius(5)
 		} else {
 			ui.Box(c).Size(34, 34).Radius(5).Background(s.hover)

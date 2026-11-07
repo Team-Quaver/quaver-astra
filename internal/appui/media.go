@@ -37,7 +37,7 @@ func (a *App) mediaSnapshot() smedia.Snapshot {
 		s.Title = oneLine(cur.DisplayName())
 		s.Artist = oneLine(artistLine(cur))
 		s.Album = oneLine(cur.Album)
-		s.ArtURL = coverURL(cur.AlbumPmid, cur.AlbumMid, 500)
+		s.ArtURL = a.songCoverURL(cur, 500)
 	}
 	return s
 }

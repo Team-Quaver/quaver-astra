@@ -195,3 +195,75 @@ func TestDiscoveryHomeResponses(t *testing.T) {
 		t.Fatalf("榜单详情响应错误：%+v %v", d, err)
 	}
 }
+
+func TestResolveCloudStreamSendsFileIDAndName(t *testing.T) {
+	var got map[string]any
+	var query string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/stream/resolve" {
+			t.Errorf("path = %q", r.URL.Path)
+		}
+		query = r.URL.Query().Get("name")
+		_ = json.NewDecoder(r.Body).Decode(&got)
+		_, _ = w.Write([]byte(`{"code":0,"msg":"ok","data":{"token":"t","path":"/stream/t","tier":"weiyun","tier_label":"微云文件"}}`))
+	}))
+	defer srv.Close()
+
+	res, err := NewClient(srv.URL).ResolveCloudStream("cloud:key", "file123", "a b.flac", 120000, "seed")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got["cloud_file_id"] != "file123" || got["mid"] != "cloud:key" {
+		t.Fatalf("body = %#v", got)
+	}
+	if got["cache_seed"] != "seed" {
+		t.Fatalf("cache_seed = %#v", got["cache_seed"])
+	}
+	if query != "a b.flac" {
+		t.Fatalf("name query = %q", query)
+	}
+	if res.Tier != "weiyun" {
+		t.Fatalf("tier = %q", res.Tier)
+	}
+}
+
+func TestCloudLibraryDecodesItems(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/cloud/library" {
+			t.Errorf("path = %q", r.URL.Path)
+		}
+		_, _ = w.Write([]byte(`{"code":0,"msg":"ok","data":{"count":1,"stats":{"total":1,"playable":1,"withCover":1,"withLyric":1,"scraped":1},"scrape":{"running":false},"items":[{"key":"k","fileId":"f","fileName":"x.flac","title":"T","artist":"A","album":"B","hasCover":true,"hasLyric":true,"playable":true,"song":{"mid":"m","interval":180,"type":1,"id":42}}]}}`))
+	}))
+	defer srv.Close()
+
+	lib, err := NewClient(srv.URL).CloudLibrary()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(lib.Items) != 1 {
+		t.Fatalf("items = %#v", lib.Items)
+	}
+	it := lib.Items[0]
+	if it.Key != "k" || it.FileID != "f" || !it.HasCover || !it.Playable {
+		t.Fatalf("item = %+v", it)
+	}
+	if it.Song == nil || it.Song.Mid != "m" || it.Song.Interval != 180 {
+		t.Fatalf("song = %+v", it.Song)
+	}
+	if lib.Stats.WithLyric != 1 || lib.Stats.Total != 1 {
+		t.Fatalf("stats = %+v", lib.Stats)
+	}
+}
+
+func TestWeiyunAuthPending(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusConflict)
+		_, _ = w.Write([]byte(`{"code":11510,"msg":"尚未完成微云授权"}`))
+	}))
+	defer srv.Close()
+
+	err := NewClient(srv.URL).WeiyunAuthPoll()
+	if err == nil || !WeiyunAuthPending(err) {
+		t.Fatalf("err = %v, pending = %v", err, WeiyunAuthPending(err))
+	}
+}

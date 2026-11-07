@@ -2,6 +2,7 @@ package backend
 
 import (
 	"bytes"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -324,6 +325,93 @@ type MusicCacheStatus struct {
 	Items      int   `json:"items"`
 	Bytes      int64 `json:"bytes"`
 	LimitBytes int64 `json:"limit_bytes"`
+}
+
+// WeiyunStatus 是 GET /weiyun/status 的响应。configured 表示微云 MCP 令牌
+// 已保存（独立于 QQ 音乐登录）；has_qq_credential 是网盘列表来源的前提。
+type WeiyunStatus struct {
+	Configured      bool   `json:"configured"`
+	Endpoint        string `json:"endpoint"`
+	HasQQCredential bool   `json:"hasQqCredential"`
+}
+
+// WeiyunAuthStart 是 POST /weiyun/auth/start 的响应：URL 指向微云授权页，
+// UI 打开它后轮询 /weiyun/auth/poll 换取令牌。
+type WeiyunAuthStart struct {
+	URL          string `json:"url"`
+	ExpiresInSec int    `json:"expiresInSec"`
+}
+
+// CloudStats 是网盘库的汇总。
+type CloudStats struct {
+	Total     int `json:"total"`
+	Playable  int `json:"playable"`
+	WithCover int `json:"withCover"`
+	WithLyric int `json:"withLyric"`
+	Scraped   int `json:"scraped"`
+}
+
+// CloudScrapeState 是刮削任务状态（GET /cloud/scrape）。
+type CloudScrapeState struct {
+	Running    bool   `json:"running"`
+	Total      int    `json:"total"`
+	Processed  int    `json:"processed"`
+	Matched    int    `json:"matched"`
+	Unmatched  int    `json:"unmatched"`
+	Failed     int    `json:"failed"`
+	StartedAt  int64  `json:"startedAt"`
+	FinishedAt int64  `json:"finishedAt"`
+	LastError  string `json:"lastError"`
+}
+
+// CloudItem 是 GET /cloud/library 里的一条网盘曲目。
+//
+// Key 是后端按账号与 file_id 算出的稳定条目键（sha1），自定义封面/歌词与
+// 元数据都以它命名；FileId 是微云下载用的 file_id。Song 是上游匹配到的
+// QQ 音乐曲目（可能为空），曲长/歌手 mid/专辑 mid 都从它取。
+type CloudItem struct {
+	Key           string `json:"key"`
+	FileID        string `json:"fileId"`
+	FileName      string `json:"fileName"`
+	AddTime       int64  `json:"addTime"`
+	Matched       int    `json:"matched"`
+	Playable      bool   `json:"playable"`
+	Title         string `json:"title"`
+	Artist        string `json:"artist"`
+	Album         string `json:"album"`
+	SingerMid     string `json:"singerMid"`
+	AlbumMid      string `json:"albumMid"`
+	AlbumPmid     string `json:"albumPmid"`
+	CoverQq       bool   `json:"coverQq"`
+	LyricQq       bool   `json:"lyricQq"`
+	ScrapedAt     int64  `json:"scrapedAt"`
+	EditedMeta    bool   `json:"editedMeta"`
+	CoverManual   bool   `json:"coverManual"`
+	LyricImport   bool   `json:"lyricImport"`
+	ImportFormat  string `json:"importFormat"`
+	HasCover      bool   `json:"hasCover"`
+	HasLyric      bool   `json:"hasLyric"`
+	PlaybackState string `json:"playbackState"`
+	PlaybackError string `json:"playbackError"`
+	Song          *Song  `json:"song"`
+}
+
+// CloudLibrary 是 GET /cloud/library 的响应。
+type CloudLibrary struct {
+	Items  []CloudItem      `json:"items"`
+	Count  int              `json:"count"`
+	Stats  CloudStats       `json:"stats"`
+	Scrape CloudScrapeState `json:"scrape"`
+}
+
+// CloudLyric 是 GET /cloud/lyric/{key} 的响应；source=qq 时是后端刮削到的
+// QRC/LRC，source=import 时是用户导入的明文歌词。
+type CloudLyric struct {
+	Lyric  string `json:"lyric"`
+	Trans  string `json:"trans"`
+	Roma   string `json:"roma"`
+	Source string `json:"source"`
+	Format string `json:"format"`
 }
 
 // SoundPowerReport 一段真实听歌时长（秒）。stream_token 让后端复用当次
@@ -655,6 +743,175 @@ func (c *Client) ClearMusicCache() (MusicCacheStatus, error) {
 func (c *Client) SetMusicCacheLimit(bytes int64) (MusicCacheStatus, error) {
 	var out MusicCacheStatus
 	err := c.postJSONInto("/cache/music/limit", map[string]any{"bytes": bytes}, &out)
+	return out, err
+}
+
+// WeiyunStatus 查询微云令牌与 QQ 登录态。
+func (c *Client) WeiyunStatus() (WeiyunStatus, error) {
+	var out WeiyunStatus
+	err := c.getJSON("/weiyun/status", nil, &out)
+	return out, err
+}
+
+// WeiyunAuthStart 发起一次微云网页授权，返回需要打开的授权 URL。
+func (c *Client) WeiyunAuthStart() (WeiyunAuthStart, error) {
+	var out WeiyunAuthStart
+	err := c.postJSONInto("/weiyun/auth/start", map[string]any{}, &out)
+	return out, err
+}
+
+// WeiyunAuthPoll 轮询一次授权结果。用户还没在网页上确认时后端返回 409，
+// 调用方用 WeiyunAuthPending 判断而不是把它当成失败。
+func (c *Client) WeiyunAuthPoll() error {
+	_, err := c.postJSON("/weiyun/auth/poll", map[string]any{})
+	return err
+}
+
+// WeiyunAuthPending 报告轮询错误是否只是「网页上还没确认」。
+func WeiyunAuthPending(err error) bool {
+	e, ok := err.(*APIError)
+	return ok && e.Status == http.StatusConflict
+}
+
+// WeiyunAuthSet 直接保存用户手动粘贴的微云令牌。
+func (c *Client) WeiyunAuthSet(token, mcpURL string) (WeiyunStatus, error) {
+	var out struct {
+		Configured bool `json:"configured"`
+	}
+	err := c.postJSONInto("/weiyun/auth", map[string]any{
+		"token": token, "mcpUrl": mcpURL,
+	}, &out)
+	if err != nil {
+		return WeiyunStatus{}, err
+	}
+	return WeiyunStatus{Configured: out.Configured}, nil
+}
+
+// WeiyunAuthClear 清除已保存的微云令牌。
+func (c *Client) WeiyunAuthClear() (WeiyunStatus, error) {
+	var out struct {
+		Configured bool `json:"configured"`
+	}
+	raw, err := c.do(http.MethodDelete, "/weiyun/auth", nil)
+	if err != nil {
+		return WeiyunStatus{}, err
+	}
+	if err := decode(raw, &out); err != nil {
+		return WeiyunStatus{}, err
+	}
+	return WeiyunStatus{Configured: out.Configured}, nil
+}
+
+// CloudLibrary 拉取完整网盘库（后端会合并 QQ 云盘匹配结果与本地刮削状态）。
+// 后端最多翻 10 页上游列表，默认 20 秒超时在文件多时会不够，这里单独放宽。
+func (c *Client) CloudLibrary() (CloudLibrary, error) {
+	var out CloudLibrary
+	slow := &Client{Base: c.Base, h: &http.Client{Timeout: 90 * time.Second}}
+	raw, err := slow.get("/cloud/library", nil)
+	if err != nil {
+		return out, err
+	}
+	err = decode(raw, &out)
+	return out, err
+}
+
+// CloudScrapeStatus 查询刮削任务进度。
+func (c *Client) CloudScrapeStatus() (CloudScrapeState, error) {
+	var out CloudScrapeState
+	err := c.getJSON("/cloud/scrape", nil, &out)
+	return out, err
+}
+
+// CloudScrapeStart 启动刮削。keys 非空时只刮这些条目，all/force 控制是否
+// 重刮已完成的条目。
+func (c *Client) CloudScrapeStart(keys []string, all, force bool) (bool, error) {
+	if keys == nil {
+		keys = []string{}
+	}
+	var out struct {
+		Started bool `json:"started"`
+	}
+	err := c.postJSONInto("/cloud/scrape", map[string]any{
+		"keys": keys, "all": all, "force": force,
+	}, &out)
+	return out.Started, err
+}
+
+// CloudMetaSet 覆盖网盘条目的曲名/歌手/专辑（手动编辑后不再被刮削覆盖）。
+func (c *Client) CloudMetaSet(key, title, artist, album string) error {
+	_, err := c.postJSON("/cloud/meta/set", map[string]any{
+		"key": key, "title": title, "artist": artist, "album": album,
+	})
+	return err
+}
+
+// CloudPlayback 记录条目的播放状态（matched / resolved / blocked）。
+func (c *Client) CloudPlayback(key, state, errMsg string) error {
+	_, err := c.postJSON("/cloud/playback", map[string]any{
+		"key": key, "state": state, "error": errMsg,
+	})
+	return err
+}
+
+// CloudLyricImport 导入用户本地歌词文件（明文 LRC/QRC/TTML，不做解密）。
+func (c *Client) CloudLyricImport(key, name string, data []byte) (string, error) {
+	var out struct {
+		Format string `json:"format"`
+	}
+	err := c.postJSONInto("/cloud/lyric/import", map[string]any{
+		"key": key, "name": name, "data": base64.StdEncoding.EncodeToString(data),
+	}, &out)
+	return out.Format, err
+}
+
+// CloudLyricRevert 撤销导入歌词，恢复自动刮削的歌词。
+func (c *Client) CloudLyricRevert(key string) error {
+	_, err := c.do(http.MethodDelete, "/cloud/lyric/import/"+url.PathEscape(key), nil)
+	return err
+}
+
+// CloudCoverImport 导入用户本地封面图片（jpg/png/gif/webp）。
+func (c *Client) CloudCoverImport(key, name string, data []byte) error {
+	_, err := c.postJSON("/cloud/cover/import", map[string]any{
+		"key": key, "name": name, "data": base64.StdEncoding.EncodeToString(data),
+	})
+	return err
+}
+
+// CloudLyric 取网盘条目的歌词（刮削结果优先，其次用户导入）。
+func (c *Client) CloudLyric(key string) (CloudLyric, error) {
+	var out CloudLyric
+	err := c.getJSON("/cloud/lyric/"+url.PathEscape(key), nil, &out)
+	return out, err
+}
+
+// CloudCoverURL 拼网盘条目自定义封面地址。
+func (c *Client) CloudCoverURL(key string) string {
+	if key == "" {
+		return ""
+	}
+	return c.Base + "/cloud/cover/" + url.PathEscape(key)
+}
+
+// ResolveCloudStream 解析微云网盘曲目的播放流。云文件不走 QQ 音质协商，
+// 直接在 /stream/resolve 里带 cloud_file_id，复用后端的令牌与缓存链路。
+func (c *Client) ResolveCloudStream(mid, fileID, name string, durationMs int64, cacheSeed string) (Resolved, error) {
+	if durationMs < 0 {
+		durationMs = 0
+	}
+	body := map[string]any{
+		"mid": mid, "tier": "weiyun", "auto": true,
+		"cloud_file_id": fileID, "duration_ms": durationMs,
+	}
+	if cacheSeed != "" {
+		body["cache_seed"] = cacheSeed
+	}
+	path := "/stream/resolve"
+	if name != "" {
+		path += "?name=" + url.QueryEscape(name)
+	}
+	var out Resolved
+	err := c.postJSONInto(path, body, &out)
 	return out, err
 }
 

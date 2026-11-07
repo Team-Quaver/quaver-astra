@@ -99,6 +99,14 @@ type Song struct {
 	Interval                   float64
 	SongID                     int64
 	SongType                   int64 // 读侧枚举
+
+	// 微云音乐网盘条目。CloudFileID 非空表示这首歌从网盘播放：取流走
+	// ResolveCloud（cloud_file_id），歌词走网盘刮削结果，封面可以来自
+	// CloudKey 对应的自定义封面。CloudKey 是后端条目键（sha1）。
+	CloudFileID   string
+	CloudKey      string
+	CloudName     string // 微云原始文件名（取流票据用它判断是否 QMCv1 加密）
+	CloudHasCover bool
 }
 
 // Singer 歌手引用（跳歌手页需要 mid，不能只有拼好的名字）。
@@ -212,6 +220,18 @@ type Engine interface {
 	// 这类错误换档/跳歌都救不回来，player 据此直接收手。
 	LoadErrorFatal() bool
 	OnObserve(fn func())
+}
+
+// cloudResolver 是后端可选的微云取流能力。单独成接口，避免给所有测试
+// 假后端都加一个只有网盘才用到的方法。
+type cloudResolver interface {
+	ResolveCloud(mid, fileID, name string, durationMs int64) (*StreamInfo, error)
+}
+
+// cloudLyricFetcher 是后端可选的网盘歌词能力（刮削/导入结果，不走 QQ
+// 歌曲歌词接口）。
+type cloudLyricFetcher interface {
+	FetchCloudLyric(key string) (lrc, translation, romanization string, err error)
 }
 
 // startVolumeSetter is the optional fast path of an asynchronous audio
@@ -426,6 +446,8 @@ func (p *Player) QueueLen() int {
 // 字符串头，不复制整个 Song（其中还包含 Singers 切片）。
 type QueueRowView struct {
 	Mid, Title, Name, Artists, AlbumPmid, AlbumMid string
+	CloudFileID, CloudKey                          string
+	CloudHasCover                                  bool
 }
 
 func (s QueueRowView) DisplayName() string {
@@ -444,12 +466,15 @@ func (p *Player) QueueRow(i int) (QueueRowView, bool) {
 	}
 	s := p.queue[i]
 	return QueueRowView{
-		Mid:       s.Mid,
-		Title:     s.Title,
-		Name:      s.Name,
-		Artists:   s.Artists,
-		AlbumPmid: s.AlbumPmid,
-		AlbumMid:  s.AlbumMid,
+		Mid:           s.Mid,
+		Title:         s.Title,
+		Name:          s.Name,
+		Artists:       s.Artists,
+		AlbumPmid:     s.AlbumPmid,
+		AlbumMid:      s.AlbumMid,
+		CloudFileID:   s.CloudFileID,
+		CloudKey:      s.CloudKey,
+		CloudHasCover: s.CloudHasCover,
 	}, true
 }
 
@@ -493,6 +518,11 @@ func (p *Player) listenTargetLocked(seconds int) (ListenReport, bool) {
 // startCurrent 开头交出尾段，这里只建立新窗口。
 func (p *Player) listenSwitchLocked(song Song, info *StreamInfo) {
 	p.listenTarget = ListenReport{}
+	// 网盘曲目不能记到 QQ 音乐音响力：实际播放的是微云文件，不是
+	// song_info 指向的曲库音频。
+	if song.CloudFileID != "" {
+		return
+	}
 	if info == nil || info.Token == "" || song.Mid == "" || song.SongID <= 0 || p.dur <= 0 {
 		return
 	}
@@ -1168,6 +1198,52 @@ func (p *Player) Prev() {
 	p.playFrom(0, true, "")
 }
 
+// SetEngine 在运行时切换音频后端（设置页「使用 MPV 作为播放后端」）。
+//
+// 旧引擎先停后关；播到一半时用新引擎从同一进度重新取流，暂停态则只
+// 保留进度，等用户按播放再续。播放代数递增，旧起播协程的结果不会落到
+// 新引擎上。
+func (p *Player) SetEngine(e Engine) {
+	if e == nil {
+		return
+	}
+	p.mu.Lock()
+	old := p.eng
+	wasPlaying := p.playing
+	pos := p.pos
+	vol := p.vol
+	muted := p.muted
+	has := p.index >= 0 && p.index < len(p.queue)
+	p.playSeq++
+	p.eng = e
+	p.playing = false
+	p.loading = false
+	p.stream = nil
+	p.err = ""
+	p.listenResetLocked()
+	p.mu.Unlock()
+
+	if old != nil && old != e {
+		old.Stop()
+		// Close 可能等待解码线程/子进程收尾（最长 2s）；它已经不再服务
+		// 播放器，放到后台收，切换开关时不冻结 UI。
+		go old.Close()
+	}
+	if sv, ok := e.(startVolumeSetter); ok {
+		sv.SetStartVolume(vol)
+	} else {
+		e.SetVolume(vol)
+	}
+	if muted {
+		e.SetVolume(0)
+	}
+	e.OnObserve(p.notifyChange)
+	p.notifyChange()
+	if has && wasPlaying {
+		p.playFrom(pos, true, "")
+	}
+}
+
 // PlayOrPause 播放/暂停切换；没有当前曲则播第一首。
 func (p *Player) PlayOrPause() {
 	p.mu.Lock()
@@ -1468,21 +1544,26 @@ func (p *Player) listenStopTimersLocked() {
 // 这里不再自行重锚定）；待命态（会话刚恢复、停止/播完）引擎里没有媒体，
 // seek 只挪界面进度，用户按播放时以该位置续播。
 func (p *Player) SeekTo(frac float64) {
+	if frac < 0 {
+		frac = 0
+	}
+	if frac > 1 {
+		frac = 1
+	}
 	p.mu.Lock()
 	dur := p.dur
 	if p.stream == nil && !p.loading {
-		if frac < 0 {
-			frac = 0
-		}
-		if frac > 1 {
-			frac = 1
-		}
 		p.pos = frac * dur
 		p.mu.Unlock()
 		p.sessionSaveSoon(true)
 		p.notifyChange()
 		return
 	}
+	// 引擎装载了当前曲：真实位置由引擎回报。但暂停时心跳不会同步位置
+	//（tick 在暂停分支直接返回），所以这里先把界面位置落定——否则拖动
+	// 松手后进度条会弹回原处，直到用户按播放才「跳过去」。恢复播放后的
+	// 第一次心跳会用引擎时钟校正，不影响精度。
+	p.pos = frac * dur
 	p.mu.Unlock()
 	p.eng.SeekTo(frac, dur)
 	p.sessionSaveSoon(true)
@@ -1745,6 +1826,26 @@ var errLoadTimeout = errors.New("载入超时")
 
 // resolveWithFallback 按回退链尝试解析（档位受限支持集）。fallback 由调用方持有（会话局部）。
 func (p *Player) resolveWithFallback(song Song, want string, dep []string, seq uint64, fallback map[string]bool, allowAtmos bool) (*StreamInfo, string, error) {
+	durationMs := int64(song.Interval * 1000)
+	if durationMs < 0 {
+		durationMs = 0
+	}
+	// 微云网盘曲目没有 QQ 音质档位可协商：直接按 file_id 取一条流，
+	// 失败也不降档（换档对网盘文件没有意义）。
+	if song.CloudFileID != "" {
+		cr, ok := p.api.(cloudResolver)
+		if !ok {
+			return nil, "", errors.New("当前后端不支持微云播放")
+		}
+		info, err := cr.ResolveCloud(song.Mid, song.CloudFileID, song.CloudName, durationMs)
+		if err != nil {
+			return nil, "", err
+		}
+		if info == nil {
+			return nil, "", errors.New("微云取流失败")
+		}
+		return info, "weiyun", nil
+	}
 	var lastErr error
 	for _, tier := range fallbackChain(want, allowAtmos) {
 		if fallback[tier] {
@@ -1756,10 +1857,6 @@ func (p *Player) resolveWithFallback(song Song, want string, dep []string, seq u
 		p.mu.RUnlock()
 		if stale {
 			return nil, "", errStale
-		}
-		durationMs := int64(song.Interval * 1000)
-		if durationMs < 0 {
-			durationMs = 0
 		}
 		info, err := p.api.Resolve(song.Mid, "", song.SongType, tier, dep, durationMs)
 		if err == nil && info != nil {
@@ -1890,7 +1987,18 @@ func (p *Player) fetchLyric(song Song, seq uint64) {
 	p.lyricState = "loading"
 	p.mu.Unlock()
 	p.notifyChange()
-	src, trans, roma, err := p.api.FetchLyric(song.Mid, true, true)
+	var src, trans, roma string
+	var err error
+	if song.CloudFileID != "" {
+		// 网盘曲目没有 QQ 歌曲歌词可查，只能读后端刮削/导入的结果。
+		if cf, ok := p.api.(cloudLyricFetcher); ok {
+			src, trans, roma, err = cf.FetchCloudLyric(song.CloudKey)
+		} else {
+			err = errors.New("当前后端不支持网盘歌词")
+		}
+	} else {
+		src, trans, roma, err = p.api.FetchLyric(song.Mid, true, true)
+	}
 	p.mu.Lock()
 	if seq != p.playSeq {
 		p.mu.Unlock()
@@ -2026,6 +2134,10 @@ func (p *Player) LikedTotal() int64 {
 
 // ToggleLove 乐观切换收藏；失败回滚。
 func (p *Player) ToggleLove(song Song) {
+	// 网盘条目不是 QQ 曲库里的歌，收藏接口没有对应对象。
+	if song.CloudFileID != "" {
+		return
+	}
 	p.mu.Lock()
 	_, was := p.loved[song.Mid]
 	if was {

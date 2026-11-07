@@ -181,7 +181,7 @@ func TestHomeQuickStartNotCrushed(t *testing.T) {
 func TestTopBarNavIsCenteredAndEvenlySpaced(t *testing.T) {
 	_, tester := testApp(t)
 
-	labels := []string{"首页", "猜你喜欢", "每日 30 首", "我喜欢", "歌单"}
+	labels := []string{"首页", "猜你喜欢", "每日 30 首", "我喜欢", "音乐网盘", "歌单"}
 	boxes := make([]ui.Rect, 0, len(labels))
 	for _, l := range labels {
 		boxes = append(boxes, mustFind(t, tester, l))

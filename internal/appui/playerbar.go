@@ -12,7 +12,7 @@ import (
 var qualityShort = map[string]string{
 	"auto": "自动", "master": "Master", "atmos71": "全景7.1", "atmos51": "全景5.1",
 	"atmos2": "全景声", "flac": "FLAC", "640ogg": "640K", "320ogg": "320K",
-	"320": "320K", "128": "128K",
+	"320": "320K", "128": "128K", "weiyun": "微云",
 }
 
 func qualityLabel(tier string, degraded bool) string {
@@ -137,7 +137,7 @@ func (a *App) barTrack(c *ui.Context, t *ui.Theme, cur player.Song, hasCur bool)
 			cover := ui.Box(c).Size(52, 52).Shrink(0).Radius(8).Clip().
 				Background(t.SurfaceHover)
 			cover.Children(func() {
-				if art := a.Covers.Get(coverURL(cur.AlbumPmid, cur.AlbumMid, 300), a.invalidate); art != nil {
+				if art := a.Covers.Get(a.songCoverURL(cur, 300), a.invalidate); art != nil {
 					ui.Image(c, art).Fill().Fit(ui.Cover)
 				} else {
 					ui.Box(c).Fill().Center().Children(func() {
@@ -177,7 +177,7 @@ func (a *App) barTrack(c *ui.Context, t *ui.Theme, cur player.Song, hasCur bool)
 			a.npQInfoOpen = false
 		}
 		hits = append(hits, info)
-		if hasCur {
+		if hasCur && cur.CloudFileID == "" {
 			hits = append(hits, a.loveBtn(c, cur, hasCur, t))
 		} else {
 			ui.Box(c).Size(32, 32)
@@ -526,6 +526,10 @@ func (a *App) qualityPill(c *ui.Context, t *ui.Theme) ui.Element {
 	}
 	pill.Tooltip("音质")
 	pill.Label("音质")
+	// 微云文件没有 QQ 音质档位可切，胶囊只展示来源。
+	if cur, ok := a.PL.Current(); ok && cur.CloudFileID != "" {
+		return pill
+	}
 	if pill.Clicked() {
 		a.qualityOpen = !a.qualityOpen
 	}

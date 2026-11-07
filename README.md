@@ -20,7 +20,7 @@ Astra 名字取自《绝区零》角色耀嘉音（Astra Yao），也可以是�
 
 - **UI**：[MyGo](https://github.com/egoist/mygo) 的原生 UI 工具包（`ui` 包）——视图是状态的函数，由 MyGo 在 GPU 上直接绘制（Linux 走 OpenGL），不开 WebKitGTK，窗口秒开、内存占用小。已合并 MyGo 主线（增量绘制、文本测量缓存、局部布局重算、滚动惯性）；Linux GtkGLArea 渲染回调固定在持有 GL context 的原生线程，避免 Go 调度迁移后 libepoxy 找不到当前 GLX/EGL context；检测到 NVIDIA 显卡时在加载 GL 前设置 `__GL_THREADED_OPTIMIZATIONS=0`。
 - **后端**：[Typhoeus-go](https://github.com/Team-Quaver/typhoeus-go)（子模块 `third_party/Typhoeus-go`）**进程内嵌**——不再是 sidecar 独立进程，`quaver-server` 的完整路由表直接挂在本进程 `127.0.0.1` 的随机端口上。
-- **音频后端**：[Liino](https://github.com/Team-Quaver/liino)（子模块 `third_party/Liino`）**进程内嵌**，使用其 Native 模式：纯 Go（`CGO_ENABLED=0`）在 Astra 进程内完成解码 → DSP → 缓冲 → 系统输出，不启动 mpv 子进程。Linux 走 `decode/native`（ffgo 动态加载系统 FFmpeg）并输出到 PipeWire，Windows 优先 WMF + WASAPI，macOS 优先 AVFoundation + Core Audio。
+- **音频后端**：[Liino](https://github.com/Team-Quaver/liino)（子模块 `third_party/Liino`）**进程内嵌**，使用其 Native 模式：纯 Go（`CGO_ENABLED=0`）在 Astra 进程内完成解码 → DSP → 缓冲 → 系统输出，不启动 mpv 子进程。Linux 走 `decode/native`（ffgo 动态加载系统 FFmpeg）并输出到 PipeWire，Windows 优先 WMF + WASAPI，macOS 优先 AVFoundation + Core Audio。设置 → 播放可打开 **「使用 MPV 作为播放后端」** 切回 mpv 子进程模式（本地/随包/PATH 三级定位，保留 mpv 的缓存与断流重连），切换立即生效。
 
 > [!CAUTION]
 > 真爱音乐，尊重正版，音乐平台不易，该应用**不提供盗版 QQ 音乐曲目服务！**
@@ -86,6 +86,7 @@ CI 发布：每次 push 都会构建并发布一个带短 commit id 的 snapshot
 - **会话记忆**：退出时保留播放列表、当前曲目、循环模式与随机开关，以及正在播放的进度（播放中每跨 5 秒节流落盘，切歌/暂停/seek/退出即时；崩溃最多丢 5 秒进度）。下次启动原地恢复但只「就位」——不自动连网、不自动起播，按播放键（含媒体键/托盘）从退出位置续播。落盘在 `quaver-astra.json` 的 `Session.Queue` / `Session.Pos` 两个键，队列快照与进度按当前曲 mid 对齐，进度跟错歌时作废、队列照恢复
 - 封面动态取色：主题强调色随当前封面变化（含深浅色两套映射）
 - 明暗主题跟随系统（可在设置里强制；强制值优先于桌面外观，见下）
+- **微云音乐网盘**：顶栏「音乐网盘」页读取 QQ 云盘匹配结果；微云 MCP 令牌支持网页授权（自动轮询）与手动粘贴两种方式；可一键刮削曲名/歌手/专辑/封面/歌词（基于曲库匹配），网盘文件直接按 `file_id` 播放，后端透明处理 QMCv1 加密与 Range seek；网盘条目进入普通队列，退出后随会话恢复
 - 设置页可分别选择界面字体与歌词字体：系统、衬线、非衬线、等宽或自定义 family list；歌词字体同时作用于行级歌词、翻译和逐字高亮
 - **动效**：对齐主项目（桌面版 Quaver）的动效语言——正在播放页上滑开合、路由页错峰入场（route-in）、行/卡片底色过渡、进度条缓动、逐字歌词每帧推进
 - **顶栏**：菜单栏横置顶部、只显示图标（功能名走 tooltip），无限电台用 ∞ 标记；搜索是按钮 + 浮窗；设置与头像在右侧；自绘 CSD 在非 macOS 右置，macOS 按 HIG 改为左侧交通灯；布局有测试守护（菜单居中、按钮共线、搜索浮窗）
@@ -106,6 +107,7 @@ internal/backend/       quaver-server 进程内嵌 + HTTP 客户端（信封 {co
 internal/player/        播放器状态机（队列/模式/随机/回退链/歌词/收藏），与 UI 解耦
                         lyric.go = 行级 LRC 解析；qrc.go = 逐字 QRC 解码与解析
 internal/audio/         Liino 原生音频适配层（进程内解码 + 直连系统音频）
+                        mpv/ = 可选的 mpv 子进程后端（JSON IPC；设置 → 播放切换）
                         engine.go = 把 liino.Player 适配成 player.Engine（异步载入 / 时钟 / 事件）
                         status.go = 解码后端与输出驱动自检（设置 → 关于）
 internal/smedia/        系统媒体控制中心投影（Linux MPRIS / Windows SMTC / macOS Now Playing）
