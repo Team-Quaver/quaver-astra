@@ -276,6 +276,66 @@ func TestLyricFollowStaysResumedAfterScroll(t *testing.T) {
 	}
 }
 
+// TestLyricFollowDoesNotPauseAtListEnds 守住首句/末句不会触发假静默期：
+// 这两句居中所需的偏移超出列表可滚动范围，布局会夹回 0 / MaxY。若把
+// 这个夹回来的差值当成用户滚动，整片歌词的模糊就会突然消失 3 秒。
+func TestLyricFollowDoesNotPauseAtListEnds(t *testing.T) {
+	t.Run("first-line", func(t *testing.T) {
+		eng := &seekEngine{pos: 0.9}
+		app, tester := npTestAppEngine(t, color.RGBA{R: 96, G: 148, B: 210, A: 255}, lyricFollowQRC(40), "", eng)
+		app.PL.StartTicker()
+		waitLyricIndex(t, app, 0)
+		tester.Frame()
+		for i := 0; i < 90; i++ {
+			tester.Advance(16 * time.Millisecond)
+			if app.lyricFollowPaused(tester.Now()) {
+				t.Fatalf("首句跟随第 %d 帧被误判成用户滚动（y=%.1f seen=%.1f）",
+					i, app.npScroll.Y, app.npScrollSeen)
+			}
+		}
+	})
+
+	t.Run("last-line", func(t *testing.T) {
+		eng := &seekEngine{pos: 37.9}
+		app, tester := npTestAppEngine(t, color.RGBA{R: 96, G: 148, B: 210, A: 255}, lyricFollowQRC(40), "", eng)
+		app.PL.StartTicker()
+		waitLyricIndex(t, app, 37)
+		tester.Frame()
+		settleLyricFollow(t, app, tester)
+
+		eng.set(39.9)
+		waitLyricIndex(t, app, 39)
+		tester.Frame()
+		for i := 0; i < 90; i++ {
+			tester.Advance(16 * time.Millisecond)
+			if app.lyricFollowPaused(tester.Now()) {
+				t.Fatalf("末句跟随第 %d 帧被误判成用户滚动（y=%.1f seen=%.1f）",
+					i, app.npScroll.Y, app.npScrollSeen)
+			}
+		}
+	})
+
+	t.Run("last-two-lines", func(t *testing.T) {
+		eng := &seekEngine{pos: 38.9}
+		app, tester := npTestAppEngine(t, color.RGBA{R: 96, G: 148, B: 210, A: 255}, lyricFollowQRC(40), "", eng)
+		app.PL.StartTicker()
+		waitLyricIndex(t, app, 38)
+		tester.Frame()
+		settleLyricFollow(t, app, tester)
+
+		eng.set(39.9)
+		waitLyricIndex(t, app, 39)
+		tester.Frame()
+		for i := 0; i < 90; i++ {
+			tester.Advance(16 * time.Millisecond)
+			if app.lyricFollowPaused(tester.Now()) {
+				t.Fatalf("末两行跟随第 %d 帧被误判成用户滚动（y=%.1f seen=%.1f）",
+					i, app.npScroll.Y, app.npScrollSeen)
+			}
+		}
+	})
+}
+
 func TestDebugBlurFlicker(t *testing.T) {
 	eng := &seekEngine{pos: 4.5}
 	app, tester := npTestAppEngine(t, color.RGBA{R: 96, G: 148, B: 210, A: 255}, lyricFollowQRC(40), "", eng)

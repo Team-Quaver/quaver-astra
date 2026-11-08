@@ -156,6 +156,10 @@ type App struct {
 	toplists    map[int64]*toplistState // 排行榜页（按 top id 缓存）
 	toplistRec  []int64
 
+	// cloudCoverFresh 记下刚导入封面的网盘条目（key → true）。库列表
+	// 重新拉取前，当前播放曲目也要立刻改用新封面。
+	cloudCoverFresh sync.Map
+
 	// apiSlots 限制 UI 侧同时进行的 HTTP 请求，避免快速浏览时多个大响应
 	// 同时驻留。请求本身仍由各页面后台 goroutine 发起。
 	apiOnce  sync.Once

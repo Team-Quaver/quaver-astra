@@ -79,7 +79,7 @@ CI 发布：每次 push 都会构建并发布一个带短 commit id 的 snapshot
 - 登录：QQ / 微信 / 手机三通道扫码（自动生成 + 轮询），凭证加密保存、重启自动恢复
 - **个人中心**（点顶栏头像进入）：昵称、UID、当前档位，以及超级会员 / 豪华绿钻 / 绿钻**各自的到期时间**——三个档位是独立权益，到期日不同就不合并成一行；上游只给标志不给时间时如实写「未提供到期时间」。退出登录与「清除已保存的凭证」也收在这一页（原先埋在「设置 → 关于」最底下，点头像只会跳设置的人根本找不到）
 - 正在播放页：左侧封面与元信息，右栏默认歌词；点「队列」标签，播放队列从右缘滑入取代歌词，点「歌词」再淡回来（播放条的队列钮同样切换右栏）
-- 歌词：QQ 音乐 **QRC 逐字与振假名**，逐字高亮、翻译与音译辅助行；没有 QRC 时回退行级 LRC
+- 歌词：QQ 音乐 **QRC 逐字与振假名**，逐字高亮、翻译与音译辅助行；没有 QRC 时回退行级 LRC；网盘可导入 **LRC / QRC / TTML**（TTML 的逐字时间轴与翻译/音译同样生效，导入后当前曲目立即刷新）
 - 歌词辅助行支持**关闭 / 翻译优先 / 音译优先**三档，缺首选那一路时自动回落另一路（点击跳转、跟随高亮）；播放条提供音质胶囊
 - 播放条：底部细进度轨拖拽 seek（两端吸附到 0/1，支持 Home/End 与方向键）、音量弹层、循环模式、随机播放（每日一套确定性顺序）、音质菜单（会话级切换）、红心收藏、队列面板（可拖拽排序）；「回退到全景声」同时降权 7.1 与 5.1
 - 播放队列：插队播放 / 加入队列 / 删除 / 清空；双击歌曲即播
@@ -105,7 +105,7 @@ main.go                 启动：内嵌后端 → 配置 → MyGo 窗口
 internal/backend/       quaver-server 进程内嵌 + HTTP 客户端（信封 {code,msg,data}）
                         vip.go = 会员权益契约：档位顺序 + 只认各档 *_end 的到期解析
 internal/player/        播放器状态机（队列/模式/随机/回退链/歌词/收藏），与 UI 解耦
-                        lyric.go = 行级 LRC 解析；qrc.go = 逐字 QRC 解码与解析
+                        lyric.go = 行级 LRC 解析；qrc.go = 逐字 QRC 解码与解析；ttml.go = 导入 TTML 解析
 internal/audio/         Liino 原生音频适配层（进程内解码 + 直连系统音频）
                         mpv/ = 可选的 mpv 子进程后端（JSON IPC；设置 → 播放切换）
                         engine.go = 把 liino.Player 适配成 player.Engine（异步载入 / 时钟 / 事件）
@@ -147,7 +147,7 @@ player.startCurrent
 
 Astra 缺少以下内容：搜索联想、无歌单处理功能。桌面快捷键已实现：全局 + 窗口内两套绑定（Wayland 会话下全局快捷键经门户注册、设置页不展示全局列），见「设置 → 快捷键」。
 
-**逐字歌词**：请求歌词时带 `qrc=1&trans=1&roma=1`，上游把 QRC 明文塞在同一个 `lyric` 字段里（XML 信封形态，Typhoeus-go 在服务端解密）。解析在 `internal/player/qrc.go`；服务端万一解密失败、原样透传密文，再由 [jixunmoe-go/qrc](https://github.com/jixunmoe-go/qrc) 在本地兜底解一层。`[kana:]` 振假名在 `internal/player/qrc_kana.go` 按全曲可注音字符流对齐；翻译与音译分别挂行，由 `player.AuxText` 按档位取一路。
+**逐字歌词**：请求歌词时带 `qrc=1&trans=1&roma=1`，上游把 QRC 明文塞在同一个 `lyric` 字段里（XML 信封形态，Typhoeus-go 在服务端解密）。解析在 `internal/player/qrc.go`；服务端万一解密失败、原样透传密文，再由 [jixunmoe-go/qrc](https://github.com/jixunmoe-go/qrc) 在本地兜底解一层。`[kana:]` 振假名在 `internal/player/qrc_kana.go` 按全曲可注音字符流对齐；翻译与音译分别挂行，由 `player.AuxText` 按档位取一路。网盘导入的 TTML 由 `internal/player/ttml.go` 解析成同一套 `QrcLine`，逐字高亮与跟随滚动不需要区分来源。
 
 **明暗主题**：应用自己按 `Style.Theme` 定明暗，不依赖 MyGo 的 `Theme.IsDark()`——它的 Linux 后端 `SetSource("light")` 只清掉 GTK 的 `gtk-application-prefer-dark-theme`，紧接着 `IsDark()` 又去问 XDG portal 的 `color-scheme`，深色桌面上「强制浅色」会被 portal 盖掉（darwin / windows 后端没有这一段）。所以对桌面说的 `SetSource` 只当「尽力而为」（让原生窗口底色与标题栏尽量跟上），真正的明暗一律看 `Style.Theme`。
 

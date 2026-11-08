@@ -105,6 +105,8 @@ func (a *App) advanceLyricFollow(c *ui.Context) {
 	k, moving := m.at(now)
 	a.npScroll.Y = f.from + (f.to-f.from)*k
 	a.npScrollSeen, a.npScrollSeenOK = a.npScroll.Y, true
+	// 写偏移的这一帧都算「自己滚的」，包括走完的最后一帧：布局可能把
+	// 这次写入再校正一点，下一帧不能把它当成用户滚动。
 	a.npWrote = true
 	if moving {
 		c.AnimationFrame()
@@ -163,6 +165,18 @@ func (a *App) followLyricRow(c *ui.Context, row ui.Element, line int) {
 		a.npShown = a.npPassOff
 	}
 	to := a.npShown + (rr.Y + rr.H/2) - (lr.Y + lr.H/2)
+	// 首句/末句居中所需的偏移会落在列表可滚动范围之外，布局会把它夹回
+	// 0 / MaxY。目标若仍保留越界值，动画结束后这个「布局夹回来的差值」
+	// 会被误认成用户滚动，触发 3s 静默期——表现就是歌词模糊突然消失。
+	// 这里先按上一帧的滚动范围夹好，动画与布局写的才是同一个值。
+	if a.npListRect.H > 0 {
+		if to < 0 {
+			to = 0
+		}
+		if max := a.npScroll.MaxY; to > max {
+			to = max
+		}
+	}
 	if f.pending {
 		f.pending = false
 		f.active = true

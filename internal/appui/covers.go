@@ -26,10 +26,13 @@ type CoverCache struct {
 	raw      map[string][]byte // 原始字节，供派生模糊底图
 	blur     map[string]*ui.Bitmap
 	inflight map[string]bool
-	hc       *http.Client
-	ctx      context.Context
-	cancel   context.CancelFunc
-	slots    chan struct{}
+	// epoch 让 Invalidate 后仍在路上的旧请求作废：旧图不能在失效之后
+	// 又被写回缓存，否则刚导入的封面会被上一张盖住。
+	epoch  map[string]uint64
+	hc     *http.Client
+	ctx    context.Context
+	cancel context.CancelFunc
+	slots  chan struct{}
 }
 
 const (
@@ -50,6 +53,7 @@ func NewCoverCache() *CoverCache {
 		raw:      map[string][]byte{},
 		blur:     map[string]*ui.Bitmap{},
 		inflight: map[string]bool{},
+		epoch:    map[string]uint64{},
 		hc:       &http.Client{Timeout: 20 * time.Second},
 		ctx:      ctx,
 		cancel:   cancel,
@@ -77,17 +81,20 @@ func (cc *CoverCache) Get(url string, redraw func()) *ui.Bitmap {
 	}
 	busy := cc.inflight[url]
 	cc.inflight[url] = true
+	epoch := cc.epoch[url]
 	cc.mu.Unlock()
 	if !busy {
-		go cc.load(url, redraw)
+		go cc.load(url, epoch, redraw)
 	}
 	return nil
 }
 
-func (cc *CoverCache) load(url string, redraw func()) {
+func (cc *CoverCache) load(url string, epoch uint64, redraw func()) {
 	defer func() {
 		cc.mu.Lock()
-		delete(cc.inflight, url)
+		if cc.epoch[url] == epoch {
+			delete(cc.inflight, url)
+		}
 		cc.mu.Unlock()
 	}()
 	select {
@@ -105,12 +112,31 @@ func (cc *CoverCache) load(url string, redraw func()) {
 		return
 	}
 	cc.mu.Lock()
+	if cc.epoch[url] != epoch {
+		cc.mu.Unlock()
+		return
+	}
 	cc.m[url] = bmp
 	cc.raw[url] = data
 	cc.mu.Unlock()
 	if redraw != nil {
 		redraw()
 	}
+}
+
+// Invalidate 丢掉一张封面及其模糊底图，下一次 Get 会重新拉取。网盘
+// 导入/替换封面后地址不变，只能靠显式失效让新图立即生效。
+func (cc *CoverCache) Invalidate(url string) {
+	if url == "" {
+		return
+	}
+	cc.mu.Lock()
+	cc.epoch[url]++
+	delete(cc.m, url)
+	delete(cc.raw, url)
+	delete(cc.blur, url)
+	delete(cc.inflight, url)
+	cc.mu.Unlock()
 }
 
 func (cc *CoverCache) fetch(url string) ([]byte, error) {
@@ -217,10 +243,30 @@ func (a *App) queueRowCoverURL(r player.QueueRowView, size int) string {
 }
 
 func (a *App) cloudAwareCoverURL(cloudFileID, cloudKey string, hasCover bool, pmid, mid string, size int) string {
-	if cloudFileID != "" && hasCover && cloudKey != "" && a.API != nil {
+	if cloudFileID != "" && cloudKey != "" && (hasCover || a.cloudCoverJustImported(cloudKey)) && a.API != nil {
 		return a.API.CloudCoverURL(cloudKey)
 	}
 	return coverURL(pmid, mid, size)
+}
+
+func (a *App) cloudCoverJustImported(key string) bool {
+	if key == "" {
+		return false
+	}
+	_, ok := a.cloudCoverFresh.Load(key)
+	return ok
+}
+
+// noteCloudCoverImported 让导入的封面立刻参与地址选择，并作废旧缓存。
+// 后端库列表稍后才会把 hasCover 置为 true，当前播放曲目不能等它。
+func (a *App) noteCloudCoverImported(key string) {
+	if key == "" {
+		return
+	}
+	a.cloudCoverFresh.Store(key, true)
+	if a.Covers != nil && a.API != nil {
+		a.Covers.Invalidate(a.API.CloudCoverURL(key))
+	}
 }
 
 // coverURL 拼封面地址（pmid 优先，mid 兜底；均空返回 ""）。

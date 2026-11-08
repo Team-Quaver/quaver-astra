@@ -3,10 +3,13 @@ package appui
 import (
 	"bytes"
 	"errors"
+	"image"
 	"io"
 	"net/http"
 	"strings"
 	"testing"
+
+	"github.com/egoist/mygo/ui"
 )
 
 type roundTripFunc func(*http.Request) (*http.Response, error)
@@ -49,5 +52,33 @@ func TestCoverFetchAcceptsLimitedResponse(t *testing.T) {
 	}
 	if !bytes.Equal(got, want) {
 		t.Fatalf("fetch = %q, want %q", got, want)
+	}
+}
+
+func TestCoverInvalidateDropsBitmapAndBlur(t *testing.T) {
+	cc := NewCoverCache()
+	bmp := ui.NewBitmap(image.NewRGBA(image.Rect(0, 0, 1, 1)))
+	const url = "http://example.test/cloud/cover/k"
+	cc.mu.Lock()
+	cc.m[url] = bmp
+	cc.raw[url] = []byte("old")
+	cc.blur[url] = bmp
+	cc.inflight[url] = true
+	cc.mu.Unlock()
+
+	cc.Invalidate(url)
+
+	cc.mu.Lock()
+	_, hasBitmap := cc.m[url]
+	_, hasRaw := cc.raw[url]
+	_, hasBlur := cc.blur[url]
+	_, busy := cc.inflight[url]
+	epoch := cc.epoch[url]
+	cc.mu.Unlock()
+	if hasBitmap || hasRaw || hasBlur || busy {
+		t.Fatalf("失效后仍有缓存：bitmap=%v raw=%v blur=%v busy=%v", hasBitmap, hasRaw, hasBlur, busy)
+	}
+	if epoch != 1 {
+		t.Fatalf("失效代号 = %d，期望 1", epoch)
 	}
 }

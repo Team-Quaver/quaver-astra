@@ -49,6 +49,24 @@ func TestCloudSongFallsBackToFileName(t *testing.T) {
 	}
 }
 
+// TestImportedCoverOverridesStaleHasCover 守住导入封面后的即时生效：
+// 库列表刷新前 HasCover 仍是旧值，当前播放曲目也应改用网盘封面接口。
+func TestImportedCoverOverridesStaleHasCover(t *testing.T) {
+	app := &App{API: backend.NewClient("http://example.test")}
+	song := player.Song{CloudFileID: "f", CloudKey: "k"}
+	if got := app.songCoverURL(song, 300); got != "" {
+		t.Fatalf("导入前封面地址 = %q，期望空（没有专辑封面）", got)
+	}
+	app.noteCloudCoverImported("k")
+	if got, want := app.songCoverURL(song, 300), "http://example.test/cloud/cover/k"; got != want {
+		t.Fatalf("导入后封面地址 = %q，期望 %q", got, want)
+	}
+	it := backend.CloudItem{Key: "k", FileID: "f"}
+	if got, want := app.cloudCoverURL(it, 300), "http://example.test/cloud/cover/k"; got != want {
+		t.Fatalf("列表封面地址 = %q，期望 %q", got, want)
+	}
+}
+
 // TestCloudViewRendersSignedOut 网盘页在未登录时只展示提示，不触网。
 func TestCloudViewRendersSignedOut(t *testing.T) {
 	p := player.New(nil, nilEngine{}, &nullPrefs{})

@@ -21,7 +21,10 @@ import (
 type cloudState struct {
 	loaded  bool
 	loading bool
-	err     string
+	// reloadPending 表示加载途中又请求了刷新（例如刚导入歌词/封面）。
+	// 在途请求可能拿的是导入前的快照，结束后必须再拉一次。
+	reloadPending bool
+	err           string
 
 	items  []backend.CloudItem
 	stats  backend.CloudStats
@@ -65,8 +68,7 @@ func (a *App) cloudView(c *ui.Context) {
 			}
 			ui.Spacer(c)
 			linkButton(c, "刷新", func() {
-				st.loaded = false
-				a.ensureCloud()
+				a.refreshCloud(st)
 			})
 			if st.stats.Total > 0 {
 				linkButton(c, "刮削全部", func() { a.startCloudScrape(st, nil, true) })
@@ -90,8 +92,7 @@ func (a *App) cloudView(c *ui.Context) {
 		if st.err != "" {
 			ui.Text(c, st.err).FontSize(fz(13)).TextColor(c.Theme().TextMuted).Padding(12)
 			linkButton(c, "重试", func() {
-				st.loaded = false
-				a.ensureCloud()
+				a.refreshCloud(st)
 			})
 			return
 		}
@@ -153,8 +154,23 @@ func (a *App) ensureCloud() {
 			if lib.Scrape.Running {
 				a.pollCloudScrape(st)
 			}
+			if st.reloadPending {
+				st.reloadPending = false
+				a.refreshCloud(st)
+			}
 		})
 	}()
+}
+
+// refreshCloud 让网盘库重新拉取；加载中则记一笔，结束后立即补拉，
+// 避免导入的歌词/封面被在途的旧快照盖掉。
+func (a *App) refreshCloud(st *cloudState) {
+	st.loaded = false
+	if st.loading {
+		st.reloadPending = true
+		return
+	}
+	a.ensureCloud()
 }
 
 // cloudAuthPanel 显示微云授权状态；未授权时展开授权入口。
@@ -275,8 +291,7 @@ func (a *App) pollWeiyunAuth(st *cloudState, expiresInSec int) {
 					st.status.Configured = true
 					st.statusAt = time.Now()
 					st.items = nil
-					st.loaded = false
-					a.ensureCloud()
+					a.refreshCloud(st)
 				})
 				return
 			}
@@ -316,8 +331,7 @@ func (a *App) saveWeiyunToken(st *cloudState) {
 			st.authMsg = "令牌已保存"
 			st.status.Configured = true
 			st.statusAt = time.Now()
-			st.loaded = false
-			a.ensureCloud()
+			a.refreshCloud(st)
 		})
 	}()
 }
@@ -394,8 +408,8 @@ func (a *App) pollCloudScrape(st *cloudState) {
 				a.update(func() {
 					st.scrapePolling = false
 					// 刮削会改写标题/封面/歌词，结束后重新拉一次库。
-					st.loaded = false
-					a.ensureCloud()
+					a.refreshCloud(st)
+					a.reloadCloudLyric("")
 				})
 				return
 			}
@@ -608,7 +622,7 @@ func cloudDisplayTitle(it backend.CloudItem) string {
 
 // cloudCoverURL 优先用后端刮削/导入的封面，没有时回退曲库专辑封面。
 func (a *App) cloudCoverURL(it backend.CloudItem, size int) string {
-	if it.HasCover && it.Key != "" && a.API != nil {
+	if (it.HasCover || a.cloudCoverJustImported(it.Key)) && it.Key != "" && a.API != nil {
 		return a.API.CloudCoverURL(it.Key)
 	}
 	return coverURL(it.AlbumPmid, it.AlbumMid, size)
@@ -643,8 +657,7 @@ func (a *App) cloudEditDialog(c *ui.Context, st *cloudState) {
 								st.authMsg = "保存失败：" + err.Error()
 								return
 							}
-							st.loaded = false
-							a.ensureCloud()
+							a.refreshCloud(st)
 						})
 					}()
 				})
@@ -676,8 +689,8 @@ func (a *App) importCloudLyric(st *cloudState, it backend.CloudItem) {
 				return
 			}
 			st.authMsg = "歌词已导入"
-			st.loaded = false
-			a.ensureCloud()
+			a.refreshCloud(st)
+			a.reloadCloudLyric(it.Key)
 		})
 	}()
 }
@@ -691,8 +704,8 @@ func (a *App) revertCloudLyric(st *cloudState, it backend.CloudItem) {
 				return
 			}
 			st.authMsg = "已恢复自动刮削歌词"
-			st.loaded = false
-			a.ensureCloud()
+			a.refreshCloud(st)
+			a.reloadCloudLyric(it.Key)
 		})
 	}()
 }
@@ -720,10 +733,27 @@ func (a *App) importCloudCover(st *cloudState, it backend.CloudItem) {
 				return
 			}
 			st.authMsg = "封面已导入"
-			st.loaded = false
-			a.ensureCloud()
+			a.noteCloudCoverImported(it.Key)
+			a.refreshCloud(st)
+			a.invalidate()
 		})
 	}()
+}
+
+// reloadCloudLyric 让正在播放的网盘曲目重新取歌词。导入/恢复歌词后，
+// Player 里缓存的还是旧歌词，不刷新就要等下一首才看到变化。key 为空
+// 表示不限定条目（刮削完成时整库都可能更新）。
+func (a *App) reloadCloudLyric(key string) {
+	cur, ok := a.PL.Current()
+	if !ok || cur.CloudKey == "" {
+		return
+	}
+	if key != "" && cur.CloudKey != key {
+		return
+	}
+	// 新歌词的行数/时间轴可能变了，强制下一次构建重新跟一次当前句。
+	a.lastLyricLine = -2
+	a.PL.ReloadLyric()
 }
 
 var (

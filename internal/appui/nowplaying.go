@@ -162,7 +162,11 @@ func (a *App) npLyricPane(c *ui.Context, t *ui.Theme) {
 				LetterSpacing(1.4).TextColor(ui.RGBA(255, 255, 255, 0.42))
 			ui.Spacer(c)
 			if len(a.PL.QrcLines()) > 0 {
-				ui.Text(c, "歌词源 · QQ 音乐 QRC").FontSize(fz(10.5)).
+				source := "歌词源 · QQ 音乐 QRC"
+				if a.PL.LyricFormat() == "ttml" {
+					source = "歌词源 · TTML"
+				}
+				ui.Text(c, source).FontSize(fz(10.5)).
 					TextColor(ui.RGBA(255, 255, 255, 0.42)).SingleLine()
 			}
 		})

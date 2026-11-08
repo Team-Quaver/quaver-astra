@@ -41,10 +41,12 @@ type Player struct {
 	likedTotal int64
 	likedSeq   uint64
 
-	lyrics     []LyricLine
-	qrc        []QrcLine // 逐字时间轴，与 lyrics 同源同序；无逐字歌词时为空
-	lyricState string    // idle|loading|ok|none
-	lyricAux   string    // off|translation|romanization
+	lyrics      []LyricLine
+	qrc         []QrcLine // 逐字时间轴，与 lyrics 同源同序；无逐字歌词时为空
+	lyricState  string    // idle|loading|ok|none
+	lyricAux    string    // off|translation|romanization
+	lyricSeq    uint64    // 歌词请求代号：后发起的覆盖先发起的
+	lyricFormat string    // 逐字来源：qrc|ttml；行级歌词为空
 
 	// 猜你喜欢无限电台。Queue/Index 仍是唯一播放队列；radioEnd 是本轮
 	// 最后一首的下标，播到它时续一轮并裁掉当前曲之前的历史。
@@ -1983,8 +1985,18 @@ func (p *Player) failWithErr(seq uint64, err error) {
 // ===== 歌词 =====
 
 func (p *Player) fetchLyric(song Song, seq uint64) {
+	p.fetchLyricMode(song, seq, false)
+}
+
+// fetchLyricMode 拉取歌词。keepCurrent 为 true（网盘导入后刷新）时不把
+// 已有歌词切成 loading，避免正在看的那一页闪一下转圈。
+func (p *Player) fetchLyricMode(song Song, seq uint64, keepCurrent bool) {
 	p.mu.Lock()
-	p.lyricState = "loading"
+	p.lyricSeq++
+	lyricSeq := p.lyricSeq
+	if !keepCurrent || len(p.lyrics) == 0 {
+		p.lyricState = "loading"
+	}
 	p.mu.Unlock()
 	p.notifyChange()
 	var src, trans, roma string
@@ -2000,24 +2012,25 @@ func (p *Player) fetchLyric(song Song, seq uint64) {
 		src, trans, roma, err = p.api.FetchLyric(song.Mid, true, true)
 	}
 	p.mu.Lock()
-	if seq != p.playSeq {
+	if seq != p.playSeq || lyricSeq != p.lyricSeq {
 		p.mu.Unlock()
 		return
 	}
 	if err != nil || strings.TrimSpace(src) == "" {
 		p.lyrics, p.qrc = nil, nil
+		p.lyricFormat = ""
 		p.lyricState = "none"
 		p.mu.Unlock()
 		p.notifyChange()
 		return
 	}
-	// 先按逐字（QRC）解析：后端请求时带了 qrc=1，有逐字时间轴时 src 就是
-	// QRC 明文（XML 信封或纯文本）。解析不出词级时间轴就按行级 LRC 走。
+	// 先按逐字解析：TTML 是网盘导入的自制逐字歌词，QRC 是 QQ 音乐
+	// 的逐字格式。解析不出词级时间轴就按行级 LRC 走。
 	//
 	// 逐字歌词仍以「行级视图」喂给列表（滚动/索引/点击跳转那一套不用改），
 	// 词级时间轴平行存在 p.qrc 里，按行号回查。
-	if ql := ParseQRC(src); len(ql) > 0 {
-		alignQrcAux(ql, trans, roma)
+	if ql, format := parseWordLyric(src, trans, roma); len(ql) > 0 {
+		p.lyricFormat = format
 		p.lyrics = qrcToLines(ql)
 		if HasWordTiming(ql) {
 			p.qrc = ql
@@ -2025,19 +2038,50 @@ func (p *Player) fetchLyric(song Song, seq uint64) {
 			// 只有行时间、词时长全 0 的伪 QRC 仍按行级渲染，但保留
 			// QRC 行本身，避免退回 ParseLrc 时把 [kana:] 行级数据丢掉。
 			p.qrc = nil
+			p.lyricFormat = ""
 		}
 	} else {
 		p.qrc = nil
+		p.lyricFormat = ""
 		p.lyrics = ParseLrc(src, trans, roma)
 	}
 	if len(p.lyrics) == 0 {
 		p.lyrics, p.qrc = nil, nil
+		p.lyricFormat = ""
 		p.lyricState = "none"
 	} else {
 		p.lyricState = "ok"
 	}
 	p.mu.Unlock()
 	p.notifyChange()
+}
+
+// parseWordLyric 解析带词级时间轴的歌词：TTML 优先，其次 QRC。
+// TTML 自己可能带翻译/音译，只有后端另外给了辅助歌词时才覆盖。
+func parseWordLyric(src, trans, roma string) ([]QrcLine, string) {
+	if ql := ParseTTML(src); len(ql) > 0 {
+		if strings.TrimSpace(trans) != "" || strings.TrimSpace(roma) != "" {
+			alignQrcAux(ql, trans, roma)
+		}
+		return ql, "ttml"
+	}
+	if ql := ParseQRC(src); len(ql) > 0 {
+		alignQrcAux(ql, trans, roma)
+		return ql, "qrc"
+	}
+	return nil, ""
+}
+
+// ReloadLyric 重新拉取当前曲目的歌词，供网盘导入/恢复歌词后立即刷新。
+func (p *Player) ReloadLyric() {
+	p.mu.Lock()
+	song, ok := p.currentLocked()
+	seq := p.playSeq
+	p.mu.Unlock()
+	if !ok {
+		return
+	}
+	go p.fetchLyricMode(song, seq, true)
 }
 
 // QrcLines 返回逐字时间轴（与 LyricLines 同源同序）。长度为 0 表示这首
@@ -2056,6 +2100,13 @@ func (p *Player) QrcLineAt(i int) (QrcLine, bool) {
 		return QrcLine{}, false
 	}
 	return p.qrc[i], true
+}
+
+// LyricFormat 返回当前逐字歌词来源（qrc / ttml）；行级歌词返回空串。
+func (p *Player) LyricFormat() string {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.lyricFormat
 }
 
 func (p *Player) LyricLines() ([]LyricLine, string) {
