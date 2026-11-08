@@ -297,7 +297,9 @@ func npTestAppEngine(t *testing.T, cover color.RGBA, qrc, trans string, eng play
 		t.Fatalf("生成封面失败：%v", err)
 	}
 	covers := NewCoverCache()
-	for _, size := range []int{300, 500} {
+	// 正在播放页的候选链从 1500 起，测试必须把同一张图放进链上会命中的档位，
+	// 否则 GetBest 会去真实 CDN 挑档位（离线环境下永远拿不到图）。
+	for _, size := range []int{300, 500, 800, 1200, 1500} {
 		covers.PutRaw(coverURL(pmid, "", size), buf.Bytes())
 	}
 

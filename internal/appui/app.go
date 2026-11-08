@@ -832,13 +832,24 @@ func (a *App) ApplyThemeSource() {
 
 // ===== 播放后端选择 =====
 
-// mpvBackendKey 是「使用 MPV 作为播放后端」开关。默认关闭：Liino 在
-// 进程内解码、直连系统音频；打开后改由 mpv 子进程播放（兼容性兜底，
-// 也保留 mpv 自己的缓存/断流重连能力）。
+// mpvBackendKey 是「使用 MPV 作为播放后端」开关。Linux/Windows 默认关闭：
+// Liino 在进程内解码、直连系统音频；打开后改由 mpv 子进程播放（兼容性兜底，
+// 也保留 mpv 自己的缓存/断流重连能力）。macOS 上 Liino 仍是实验性后端，
+// 默认打开 MPV，避免其严重问题影响播放体验。
 const mpvBackendKey = "Playing.MPVBackend"
 
+// mpvBackendDefault 返回「使用 MPV 作为播放后端」的平台默认值。
+func mpvBackendDefault() bool {
+	return runtime.GOOS == "darwin"
+}
+
+// liinoExperimental 表示 Liino 在当前平台是否属于实验性后端。
+func liinoExperimental() bool {
+	return runtime.GOOS == "darwin"
+}
+
 func (a *App) mpvBackendEnabled() bool {
-	return a.Conf != nil && a.Conf.Bool(mpvBackendKey, false)
+	return a.Conf != nil && a.Conf.Bool(mpvBackendKey, mpvBackendDefault())
 }
 
 // newPlaybackEngine 按当前设置构造播放引擎。MPV 不可用时它的构造仍会
@@ -853,7 +864,7 @@ func (a *App) newPlaybackEngine() player.Engine {
 // setMPVBackend 切换播放后端并立即生效：正在播放时从当前进度重新取流，
 // 暂停时保留进度。
 func (a *App) setMPVBackend(v bool) {
-	if a.Conf == nil || a.Conf.Bool(mpvBackendKey, false) == v {
+	if a.Conf == nil || a.mpvBackendEnabled() == v {
 		return
 	}
 	a.Conf.Set(mpvBackendKey, v)

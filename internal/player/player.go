@@ -77,7 +77,8 @@ type Player struct {
 	sessionWrotePos sessionPos
 
 	// listenTick 是音响力物理流水的采样窗口：只有真实出声的时间会累计，
-	// 满 60 秒切一片；goroutine 只负责发送，状态全部由 p.mu 保护。
+	// 整曲只在切歌/停止/退出时提交一次；goroutine 只负责发送，
+	// 状态全部由 p.mu 保护。
 	listenActive     bool
 	listenLast       time.Time
 	listenSeen       float64
@@ -88,6 +89,9 @@ type Player struct {
 	listenTimer      *time.Timer
 	listenRetryTimer *time.Timer
 	listenTarget     ListenReport
+	// listenKeep 标记下一次起播是同一首歌带进度重新取流（换音质、换后端、
+	// 断流重连），不是新的一次收听；累计要保留，不能拆成两条记录。
+	listenKeep bool
 }
 
 // Song / StreamInfo / TierTable / UserInfo 是 player 与外界解耦的最小形状，
@@ -163,7 +167,7 @@ type Backend interface {
 	LikeSong(songID int64, writeType int64, like bool) error
 }
 
-// ListenReport 一段归属明确的真实听歌时间。60 秒一片、尾片随切歌交给后端。
+// ListenReport 一段归属明确的真实听歌时间。整曲累计、切歌时一次交给后端。
 type ListenReport struct {
 	StreamToken string
 	SongID      int64
@@ -517,7 +521,7 @@ func (p *Player) listenTargetLocked(seconds int) (ListenReport, bool) {
 }
 
 // listenSwitchLocked 在新流真正载入后切换上报目标。旧目标此时已在
-// startCurrent 开头交出尾段，这里只建立新窗口。
+// startCurrent 开头交出整曲累计，这里只建立新窗口。
 func (p *Player) listenSwitchLocked(song Song, info *StreamInfo) {
 	p.listenTarget = ListenReport{}
 	// 网盘曲目不能记到 QQ 音乐音响力：实际播放的是微云文件，不是
@@ -550,37 +554,55 @@ func (p *Player) listenEnabled() bool {
 	return p.conf != nil && p.conf.Bool("Playing.ReportListenTime", true)
 }
 
-// listenSyncLocked 把采样窗口对齐真实出声状态；停止时顺手交出尾段。
+// listenTargetReadyLocked 表示当前有可归属的上报目标。加载间隙与恢复会话
+// （没有新取的 token）都不算听歌时间，采样窗口也不该启动。
+func (p *Player) listenTargetReadyLocked() bool {
+	return p.listenTarget.StreamToken != "" && p.listenTarget.SongID > 0
+}
+
+// listenSyncLocked 把采样窗口对齐真实出声状态；停止时顺手交出整曲累计。
 func (p *Player) listenSyncLocked(active bool) {
+	if active && !p.listenTargetReadyLocked() {
+		active = false
+	}
 	if p.listenActive == active {
 		if active {
 			if p.listenLast.IsZero() {
 				p.listenLast = time.Now()
 			}
-			if p.listenTimer == nil {
-				p.listenTimer = time.AfterFunc(listenTickInterval, func() { go p.listenTick() })
-			}
+			p.listenArmLocked()
 		}
 		return
 	}
 	if active {
 		p.listenActive = true
 		p.listenLast = time.Now()
-		if p.listenTimer == nil {
-			p.listenTimer = time.AfterFunc(listenTickInterval, func() { go p.listenTick() })
-		}
+		p.listenArmLocked()
 		return
 	}
-	p.listenResetLocked()
+	// 暂停/缓冲不是换曲：本曲累计要留给下一次续播，交出去就会把
+	// 同一首听歌拆成两条记录。
+	p.listenPauseLocked()
+}
+
+// listenArmLocked 排下一次采样心跳。必须幂等：tick 的 200ms 循环每次都会
+// 走到这里，重复排定时器会让累计速度成倍。
+func (p *Player) listenArmLocked() {
+	if p.listenTimer != nil || !p.listenActive {
+		return
+	}
+	p.listenTimer = time.AfterFunc(listenTickInterval, func() { go p.listenTick() })
 }
 
 const (
-	listenChunkSeconds     = 60
-	listenMinTailSeconds   = 5
+	listenMinReportSeconds = 5
 	listenMaxSampleSeconds = 5
 	listenTickInterval     = time.Second
 	listenRetryBase        = 30 * time.Second
 	listenRetryMax         = 5 * time.Minute
+	// listenCloseFlushWait 是退出时等待最后一次上报的上限。整曲累计只在
+	// 切歌/停止/退出时提交，退出时丢了就真的没了；但也不能让用户等太久。
+	listenCloseFlushWait = 3 * time.Second
 )
 
 // PlayList 用给定列表替换队列并从 i 开始播放。
@@ -1222,7 +1244,10 @@ func (p *Player) SetEngine(e Engine) {
 	p.loading = false
 	p.stream = nil
 	p.err = ""
-	p.listenResetLocked()
+	// 换后端不是换曲：之后的重新取流/续播要接着累计。这里只打标记，
+	// 真正是否同一首由 listenRestartLocked 按 SongID+Mid 再确认一次。
+	p.listenKeep = p.listenTargetReadyLocked()
+	p.listenPauseLocked()
 	p.mu.Unlock()
 
 	if old != nil && old != e {
@@ -1354,7 +1379,9 @@ func (p *Player) PlayingAudio() bool {
 }
 
 func (p *Player) listenAudioLocked() bool {
-	return p.listenEnabled() && p.playing && !p.eng.Paused() && p.eng.IsPlaying()
+	// loading 期间引擎里可能还是上一段流（换音质/换后端正在重新取流），
+	// 这段等待不是听歌时间，别算进累计。
+	return p.listenEnabled() && p.playing && !p.loading && !p.eng.Paused() && p.eng.IsPlaying()
 }
 
 func (p *Player) Loading() bool {
@@ -1389,6 +1416,10 @@ func (p *Player) Stream() *StreamInfo {
 
 // listenTick 是音响力的采样心跳。上报与 HTTP 重试全部走后台 goroutine，
 // 采样本身只做时间差累计，不阻塞播放心跳。
+//
+// 这里刻意不做分片上报：上游会把每次提交都记成一条独立听歌记录，
+// 同一首歌切成几片就会在「最近播放」里重复出现。整曲只累计，
+// 到切歌/停止时由 listenFlushLocked 一次交出。
 func (p *Player) listenTick() {
 	p.mu.Lock()
 	if !p.listenEnabled() {
@@ -1400,13 +1431,17 @@ func (p *Player) listenTick() {
 		p.mu.Unlock()
 		return
 	}
-	if p.listenTimer == nil && p.listenActive {
-		p.listenTimer = time.AfterFunc(listenTickInterval, func() { go p.listenTick() })
-	}
 	if !p.listenActive {
 		p.mu.Unlock()
 		return
 	}
+	// 本次心跳已经触发，AfterFunc 不会自己续期。先停掉（对已触发的定时器
+	// 是空操作）再清句柄，避免与 listenSyncLocked 并发时各排一个。
+	if p.listenTimer != nil {
+		p.listenTimer.Stop()
+		p.listenTimer = nil
+	}
+	p.listenArmLocked()
 	now := time.Now()
 	elapsed := now.Sub(p.listenLast).Seconds()
 	p.listenLast = now
@@ -1417,12 +1452,6 @@ func (p *Player) listenTick() {
 		elapsed = 0
 	}
 	p.listenSeen += elapsed
-	for p.listenSeen >= listenChunkSeconds {
-		p.listenSeen -= listenChunkSeconds
-		if job, ok := p.listenTargetLocked(listenChunkSeconds); ok {
-			p.listenQueue = append(p.listenQueue, job)
-		}
-	}
 	p.mu.Unlock()
 	p.listenDrain()
 }
@@ -1435,31 +1464,71 @@ func (p *Player) listenSetPlaying(active bool) {
 	p.listenDrain()
 }
 
-// listenFlushLocked 把当前曲的尾段入队。调用方必须持有 p.mu 且已先采样。
+// listenFlushLocked 把当前曲的累计时长入队。调用方必须持有 p.mu 且已先采样。
 func (p *Player) listenFlushLocked() {
-	if job, ok := p.listenTargetLocked(int(p.listenSeen)); ok && int(p.listenSeen) >= listenMinTailSeconds {
-		job.Seconds = int(p.listenSeen)
+	seconds := int(p.listenSeen)
+	if job, ok := p.listenTargetLocked(seconds); ok && seconds >= listenMinReportSeconds {
 		p.listenQueue = append(p.listenQueue, job)
 	}
 	p.listenSeen = 0
 }
 
-// listenResetLocked 结束当前目标：交出尾段并停住采样。新歌要等引擎
-// 真正重新出声（listenSetPlaying）才开始累计，加载间隙不算听歌时间。
-func (p *Player) listenResetLocked() {
-	if p.listenActive && !p.listenLast.IsZero() {
-		now := time.Now()
-		if elapsed := now.Sub(p.listenLast).Seconds(); elapsed > 0 {
-			if elapsed > listenMaxSampleSeconds {
-				elapsed = listenMaxSampleSeconds
-			}
-			p.listenSeen += elapsed
-		}
-		p.listenLast = time.Time{}
+// listenSampleLocked 把上次采样点到现在的真实出声时间记进本曲累计。
+// 事件循环被挂起时最多只认 listenMaxSampleSeconds，避免把整段空白算成听歌。
+func (p *Player) listenSampleLocked() {
+	if !p.listenActive || p.listenLast.IsZero() {
+		return
+	}
+	elapsed := time.Now().Sub(p.listenLast).Seconds()
+	p.listenLast = time.Time{}
+	if elapsed <= 0 {
+		return
+	}
+	if elapsed > listenMaxSampleSeconds {
+		elapsed = listenMaxSampleSeconds
+	}
+	p.listenSeen += elapsed
+}
+
+// listenPauseLocked 暂停/缓冲：结算已听时长但不上报，续播时接着累计。
+func (p *Player) listenPauseLocked() {
+	p.listenSampleLocked()
+	p.listenActive = false
+	p.listenStopSampleLocked()
+}
+
+// listenRestartLocked 在起播新流前结算当前目标。同一首歌带进度重新取流
+// （换音质、换播放后端、断流重连）不是新的一次收听：累计保留，等新 token
+// 到位后继续记在同一段里。真正换曲或从头重播才交出整曲累计。
+func (p *Player) listenRestartLocked(song Song, ok bool) {
+	p.listenSampleLocked()
+	sameSong := ok && p.listenKeep &&
+		p.listenTarget.SongID > 0 && p.listenTarget.SongID == song.SongID &&
+		p.listenTarget.Mid == song.Mid
+	p.listenKeep = false
+	if sameSong {
+		// 旧目标先留着：万一重新取流失败，listenResetLocked 还能把这段
+		// 时长归到这首歌上（后端可按 mid 重新取 vkey）。新流载入后
+		// listenSwitchLocked 会换成新 token。
+		p.listenActive = false
+		p.listenStopSampleLocked()
+		return
 	}
 	p.listenFlushLocked()
+	// 旧 token 只服务旧的那一次收听；新曲要等自己的流载入后重新建立目标。
+	p.listenTarget = ListenReport{}
 	p.listenActive = false
-	p.listenStopTimersLocked()
+	p.listenStopSampleLocked()
+}
+
+// listenResetLocked 结束当前目标：交出整曲累计并停住采样。新歌要等引擎
+// 真正重新出声（listenSetPlaying）才开始累计，加载间隙不算听歌时间。
+func (p *Player) listenResetLocked() {
+	p.listenSampleLocked()
+	p.listenFlushLocked()
+	p.listenKeep = false
+	p.listenActive = false
+	p.listenStopSampleLocked()
 }
 
 // listenDrain 串行发送队列。网络失败按 30 秒起步的指数退避重试；
@@ -1532,13 +1601,19 @@ func (p *Player) listenKickRetryLocked() {
 }
 
 func (p *Player) listenStopTimersLocked() {
-	if p.listenTimer != nil {
-		p.listenTimer.Stop()
-		p.listenTimer = nil
-	}
+	p.listenStopSampleLocked()
 	if p.listenRetryTimer != nil {
 		p.listenRetryTimer.Stop()
 		p.listenRetryTimer = nil
+	}
+}
+
+// listenStopSampleLocked 只停采样心跳。上报的重试定时器与采样无关：
+// 暂停/切歌时顺手停掉它，退避中的那一条就再也没人来唤醒。
+func (p *Player) listenStopSampleLocked() {
+	if p.listenTimer != nil {
+		p.listenTimer.Stop()
+		p.listenTimer = nil
 	}
 }
 
@@ -1597,6 +1672,9 @@ func (p *Player) RestartAtPosition() {
 	p.mu.RLock()
 	pos := p.pos
 	p.mu.RUnlock()
+	p.mu.Lock()
+	p.listenKeep = true
+	p.mu.Unlock()
 	p.playFrom(pos, true, "")
 }
 
@@ -1673,9 +1751,11 @@ func (p *Player) startCurrent(resumeTo float64, autoplay bool, overrideTier stri
 	p.mu.Lock()
 	p.playSeq++
 	seq := p.playSeq
-	// 先结束旧目标：正在播的尾段归属旧流，不能在解析成功后记到新歌头上。
-	p.listenResetLocked()
 	song, ok := p.currentLocked()
+	// 先结束旧目标：正在播的时长归属旧流，不能在解析成功后记到新歌头上。
+	// 同一首重新取流（换音质、换后端、单曲循环）只是换 token，累计要带过去，
+	// 否则一次连续收听会被拆成两条听歌记录。
+	p.listenRestartLocked(song, ok)
 	if !ok {
 		p.loading = false
 		p.mu.Unlock()
@@ -2343,8 +2423,25 @@ func (p *Player) Close() {
 	p.playing = false
 	p.loading = false
 	p.listenResetLocked()
+	// 退出时不受退避窗口限制：这是这一段的最后一次机会。
+	p.listenRetryAt = time.Time{}
 	eng := p.eng
 	p.mu.Unlock()
+	// 退出也要把本曲累计交出去：分片时代这条尾段本来就丢，现在整曲
+	// 都押在这一次提交上。给发送一个有界的等待窗口，别让进程先走。
+	p.listenDrain()
+	deadline := time.Now().Add(listenCloseFlushWait)
+	for time.Now().Before(deadline) {
+		p.mu.Lock()
+		// 失败会进入退避并把任务放回队列：那说明这次退出已经尽力，
+		// 不该让用户为一次注定失败的请求等满整个窗口。
+		pending := p.listenSending || (len(p.listenQueue) > 0 && p.listenRetryAt.IsZero())
+		p.mu.Unlock()
+		if !pending {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
 	if eng != nil {
 		eng.Close()
 	}

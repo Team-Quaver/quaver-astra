@@ -87,9 +87,11 @@ func (a *App) nowPlaying(c *ui.Context, t *ui.Theme) {
 	cur, hasCur := a.PL.Current()
 	a.resetLyricFollowOnSongChange(cur.Mid)
 	a.advanceLyricFollow(c)
-	coverLarge := ""
+	var coverURLs []string
+	var blurURLs []string
 	if hasCur {
-		coverLarge = a.songCoverURL(cur, 500)
+		coverURLs = a.songCoverURLs(cur, npCoverSizes)
+		blurURLs = a.songCoverURLs(cur, npBlurSizes)
 	}
 
 	np := ui.Box(c).Key("nowplaying").Absolute().Fill().Background(npBase).
@@ -100,7 +102,7 @@ func (a *App) nowPlaying(c *ui.Context, t *ui.Theme) {
 			Exit:     &ui.Motion{Y: 56, Opacity: 0},
 		})
 	np.Children(func() {
-		a.npBackdrop(c, coverLarge)
+		a.npBackdrop(c, coverURLs, blurURLs)
 
 		// 内容层：必须也是绝对定位。
 		//
@@ -264,7 +266,7 @@ func (a *App) npTab(c *ui.Context, text, label string, active bool, run func()) 
 // 换曲时按封面地址重置淡入时钟：旧图的模糊底会消失、新图要等下载，中间空出
 // 的那一拍就是主项目注释里说的「切歌闪一下」——淡入把它盖过去。这里只淡入
 // 装饰层、不动内容层，所以哪怕动画没跑完，封面与歌词也始终是实心的。
-func (a *App) npBackdrop(c *ui.Context, cover string) {
+func (a *App) npBackdrop(c *ui.Context, covers, blurCovers []string) {
 	top, foot, tinted := npBackdropColors(a)
 	if tinted {
 		ui.Box(c).Absolute().Fill().Gradient(top, foot, 180)
@@ -272,9 +274,13 @@ func (a *App) npBackdrop(c *ui.Context, cover string) {
 		ui.Box(c).Absolute().Fill().Gradient(npBase, ui.Hex("#05060b"), 180)
 	}
 
-	if blur := a.Covers.GetBlur(cover, a.invalidate); blur != nil {
-		if a.npBlurKey != cover {
-			a.npBlurKey, a.npBlurAt = cover, c.Now()
+	coverKey := ""
+	if len(blurCovers) > 0 {
+		coverKey = blurCovers[0]
+	}
+	if blur := a.Covers.GetBestBlur(blurCovers, a.invalidate); blur != nil {
+		if a.npBlurKey != coverKey {
+			a.npBlurKey, a.npBlurAt = coverKey, c.Now()
 		}
 		img := ui.Image(c, blur).Absolute().Fill().Fit(ui.Cover)
 		styleFade(c, motion{
@@ -373,7 +379,7 @@ func (a *App) npLeft(c *ui.Context, t *ui.Theme, cur player.Song, hasCur bool) {
 func (a *App) npCover(c *ui.Context, cur player.Song, hasCur bool, size float32) {
 	var art *ui.Bitmap
 	if hasCur {
-		art = a.Covers.Get(a.songCoverURL(cur, 500), a.invalidate)
+		art = a.Covers.GetBest(a.songCoverURLs(cur, npCoverSizes), a.invalidate)
 	}
 	if art != nil {
 		ui.Image(c, art).Size(size, size).Fit(ui.Cover).Radius(18).

@@ -280,9 +280,15 @@ func (a *App) settingsPlayback(c *ui.Context, t *ui.Theme) {
 		a.prefRow(c, "使用 MPV 作为播放后端", func() bool {
 			return a.mpvBackendEnabled()
 		}, a.setMPVBackend)
-		ui.Text(c, "默认由 Liino 在进程内解码并直连系统音频；打开后改用 mpv 子进程，"+
-			"适合系统 FFmpeg/PipeWire 缺失或需要 mpv 缓存与重连能力的场景。").
-			FontSize(fz(11.5)).TextColor(t.TextMuted).MaxLines(2)
+		if liinoExperimental() {
+			ui.Text(c, "macOS 默认使用 mpv 子进程；Liino 在 macOS 上属于实验性后端，"+
+				"关闭开关后会切回 Liino，遇到播放异常可重新打开。").
+				FontSize(fz(11.5)).TextColor(t.TextMuted).MaxLines(2)
+		} else {
+			ui.Text(c, "默认由 Liino 在进程内解码并直连系统音频；打开后改用 mpv 子进程，"+
+				"适合系统 FFmpeg/PipeWire 缺失或需要 mpv 缓存与重连能力的场景。").
+				FontSize(fz(11.5)).TextColor(t.TextMuted).MaxLines(2)
+		}
 		if a.mpvBackendEnabled() {
 			info := a.mpvStatus()
 			if info.OK {
@@ -336,7 +342,7 @@ func (a *App) settingsPlayback(c *ui.Context, t *ui.Theme) {
 		a.prefRow(c, "上报每日听歌音响力", func() bool {
 			return a.Conf.Bool("Playing.ReportListenTime", true)
 		}, func(v bool) { a.Conf.Set("Playing.ReportListenTime", v) })
-		ui.Text(c, "只统计真实出声时间：每满 60 秒提交一次，切歌或退出时补报尾段；关闭后立即停止累计。").
+		ui.Text(c, "只统计真实出声时间：整曲累计，切歌/停止/退出时一次提交（分片上报会被记成多条听歌记录）；关闭后立即停止累计。").
 			FontSize(fz(11.5)).TextColor(t.TextMuted).MaxLines(2)
 
 		// 本地音乐缓存：播放过的整曲加密落盘（<配置目录>/cache/music/），
@@ -424,8 +430,13 @@ func (a *App) settingsAbout(c *ui.Context, t *ui.Theme) {
 			} else {
 				ui.Text(c, info.Detail).FontSize(fz(12)).TextColor(t.TextMuted).MaxLines(4)
 			}
-			ui.Text(c, "可在设置 → 播放中随时切回 Liino。").
-				FontSize(fz(11.5)).TextColor(t.TextMuted).MaxLines(2)
+			if liinoExperimental() {
+				ui.Text(c, "可在设置 → 播放中随时切回 Liino（macOS 上为实验性后端）。").
+					FontSize(fz(11.5)).TextColor(t.TextMuted).MaxLines(2)
+			} else {
+				ui.Text(c, "可在设置 → 播放中随时切回 Liino。").
+					FontSize(fz(11.5)).TextColor(t.TextMuted).MaxLines(2)
+			}
 		} else {
 			if a.settings.backendStatusAt.IsZero() || time.Since(a.settings.backendStatusAt) > 5*time.Second {
 				a.settings.backendStatus = audio.NewStatus()
@@ -441,6 +452,10 @@ func (a *App) settingsAbout(c *ui.Context, t *ui.Theme) {
 				}
 				ui.Text(c, "Liino "+st.Version).FontSize(fz(13))
 				ui.Text(c, "Native 原生模式").FontSize(fz(12)).TextColor(t.TextMuted)
+				if liinoExperimental() {
+					badge := ui.Badge(c, "实验性")
+					badge.Background(ui.Hex("#d29922").Alpha(0.16)).TextColor(ui.Hex("#d29922"))
+				}
 				ui.Spacer(c)
 				ui.Text(c, "进程内解码 · 直连系统音频").
 					FontSize(fz(11.5)).TextColor(t.TextMuted).SingleLine().Ellipsis("…")

@@ -20,7 +20,7 @@ Astra 名字取自《绝区零》角色耀嘉音（Astra Yao），也可以是�
 
 - **UI**：[MyGo](https://github.com/egoist/mygo) 的原生 UI 工具包（`ui` 包）——视图是状态的函数，由 MyGo 在 GPU 上直接绘制（Linux 走 OpenGL），不开 WebKitGTK，窗口秒开、内存占用小。已合并 MyGo 主线（增量绘制、文本测量缓存、局部布局重算、滚动惯性）；Linux GtkGLArea 渲染回调固定在持有 GL context 的原生线程，避免 Go 调度迁移后 libepoxy 找不到当前 GLX/EGL context；检测到 NVIDIA 显卡时在加载 GL 前设置 `__GL_THREADED_OPTIMIZATIONS=0`。
 - **后端**：[Typhoeus-go](https://github.com/Team-Quaver/typhoeus-go)（子模块 `third_party/Typhoeus-go`）**进程内嵌**——不再是 sidecar 独立进程，`quaver-server` 的完整路由表直接挂在本进程 `127.0.0.1` 的随机端口上。
-- **音频后端**：[Liino](https://github.com/Team-Quaver/liino)（子模块 `third_party/Liino`）**进程内嵌**，使用其 Native 模式：纯 Go（`CGO_ENABLED=0`）在 Astra 进程内完成解码 → DSP → 缓冲 → 系统输出，不启动 mpv 子进程。Linux 走 `decode/native`（ffgo 动态加载系统 FFmpeg）并输出到 PipeWire，Windows 优先 WMF + WASAPI，macOS 优先 AVFoundation + Core Audio。设置 → 播放可打开 **「使用 MPV 作为播放后端」** 切回 mpv 子进程模式（本地/随包/PATH 三级定位，保留 mpv 的缓存与断流重连），切换立即生效。
+- **音频后端**：[Liino](https://github.com/Team-Quaver/liino)（子模块 `third_party/Liino`）**进程内嵌**，使用其 Native 模式：纯 Go（`CGO_ENABLED=0`）在 Astra 进程内完成解码 → DSP → 缓冲 → 系统输出，不启动 mpv 子进程。Linux 走 `decode/native`（ffgo 动态加载系统 FFmpeg）并输出到 PipeWire，Windows 优先 WMF + WASAPI，macOS 优先 AVFoundation + Core Audio。macOS 上 Liino 为**实验性**后端，默认使用 mpv 子进程；可在设置 → 播放关闭 **「使用 MPV 作为播放后端」** 切回 Liino。mpv 按本地/随包/PATH 三级定位，保留其缓存与断流重连能力，切换立即生效。
 
 > [!CAUTION]
 > 真爱音乐，尊重正版，音乐平台不易，该应用**不提供盗版 QQ 音乐曲目服务！**
