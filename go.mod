@@ -21,7 +21,10 @@ require (
 	github.com/deploymenttheory/go-bindings-win32 v0.5.0 // indirect
 	github.com/go-text/typesetting v0.3.5 // indirect
 	github.com/gorilla/websocket v1.5.3 // indirect
+	github.com/jfreymuth/oggvorbis v1.0.5 // indirect
+	github.com/jfreymuth/vorbis v1.0.2 // indirect
 	github.com/team-quaver/ffgo v0.0.0 // indirect
+	github.com/thesyncim/gopus v0.2.3 // indirect
 	github.com/vcaesar/audio-go v0.10.0 // indirect
 	golang.org/x/net v0.59.0 // indirect
 	golang.org/x/text v0.43.0 // indirect
