@@ -86,7 +86,8 @@ func dragRegion(t *testing.T, w *mygo.Window, pressed func(n int)) {
 
 	// Slowly: the pointer is still when the drag is asked, which goes to
 	// the window server. It does not move the window for a made up press,
-	// so the press's drags still come: past a few points, MyGo moves it.
+	// so the press's drags still come: past a few points, and a few drags
+	// for the window server to say it begins, MyGo moves it.
 	start := w.ContentBounds()
 	x, y := start.X+200, start.Y+20
 	down := at(x, y)
@@ -98,6 +99,10 @@ func dragRegion(t *testing.T, w *mygo.Window, pressed func(n int)) {
 	if got := w.ContentBounds(); got != start {
 		t.Errorf("a drag of a point moved the window's content to %+v from %+v", got, start)
 	}
+	mouse(at(x+30, y+20))
+	if got := w.ContentBounds(); got != start {
+		t.Errorf("the drag after the ask moved the window's content to %+v from %+v, before the window server could begin", got, start)
+	}
 	mouse(at(x+60, y+40))
 	movedTo("a slow drag", shifted(start, 60, 40))
 	up := at(x+60, y+40)
@@ -107,14 +112,16 @@ func dragRegion(t *testing.T, w *mygo.Window, pressed func(n int)) {
 		t.Errorf("after the release the press is %s, want idle", p)
 	}
 
-	// Quickly: the pointer moves before the drag is asked. The window
-	// catches up with the pointer once it is, without waiting for
-	// another drag, and follows it.
+	// Quickly: the pointer moves before a page's drag is asked. The
+	// window catches up with the pointer once it is, without waiting for
+	// another drag, and follows it. Native UI asks with the press, so
+	// its window server has the first drags to begin, and MyGo takes
+	// over with the third.
 	start = w.ContentBounds()
 	x, y = start.X+200, start.Y+20
 	down = at(x, y)
 	down.Down = true
-	mouse(down, at(x+6, y+3), at(x+20, y+10))
+	mouse(down, at(x+6, y+3), at(x+12, y+6), at(x+20, y+10))
 	pressed(2)
 	eventually(t, "the window moved by MyGo", func() bool { return phase() == "manual" })
 	if got := w.ContentBounds(); got == start {

@@ -320,7 +320,7 @@ export const formatters = {
    * "percent", or a skeleton ("::percent .00"), of which this formatter
    * reads percent, integer, precision-integer, the precision of fraction
    * digits (.00, .0#, .##), group-off and currency/, and writes the rest
-   * as the default. Package i18n reads the same, but currencies.
+   * as the default. Package i18n reads the same.
    */
   number(locale: string, n: number, style: string, digits?: number): string {
     const options: Intl.NumberFormatOptions & { roundingMode?: string } = {};

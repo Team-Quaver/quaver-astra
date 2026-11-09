@@ -17,6 +17,8 @@ const softHyphen = '\u00AD'
 // them with the engine, which breaks at one width. A line that breaks at
 // a soft hyphen ends with a hyphen, for which only Pango leaves room: one
 // that does not fit with it is broken again, narrower by the hyphen.
+// So is a line that does not fit with the padding of its spans' pieces
+// (Span.PaddingX), which engines know nothing of: narrower by it.
 // What follows the indented line, or a line that broke elsewhere then, is
 // broken anew: a paragraph without either is shaped once. hy is nil for a
 // text without soft hyphens.
@@ -25,7 +27,8 @@ func (s *System) breakLines(text []rune, style Style, spans []Span, width, inden
 	if width <= 0 {
 		return e.shape(text, style, spans, 0, rtl, wholeWords)
 	}
-	if indent <= 0 && hy == nil {
+	pads := padded(spans)
+	if indent <= 0 && hy == nil && !pads {
 		return e.shape(text, style, spans, width, rtl, wholeWords)
 	}
 	var out []shapedLine
@@ -54,6 +57,17 @@ func (s *System) breakLines(text []rune, style Style, spans []Span, width, inden
 				// Nothing before fits but a part of a word: the hyphen
 				// overflows, as a word too long for a line does.
 			}
+			if pads {
+				if w, pad := paddedWidth(l, text, spans); w+pad > limit+1e-3 {
+					narrow := e.shape(text[l.start:l.end], style, spansIn(spans, l.start, l.end), max(limit-pad, 1), rtl, wholeWords)
+					if len(narrow) > 0 && narrow[0].end > 0 && narrow[0].end != l.end-l.start {
+						offsetLines(narrow[:1], l.start)
+						out = append(out, narrow[0])
+						break
+					}
+					// Its one word overflows with its padding, as without.
+				}
+			}
 			out = append(out, l)
 		}
 		end := out[len(out)-1].end
@@ -63,6 +77,75 @@ func (s *System) breakLines(text []rune, style Style, spans []Span, width, inden
 		pos = end
 	}
 	return out
+}
+
+// padded reports whether a span pads its pieces of lines (Span.PaddingX).
+func padded(spans []Span) bool {
+	for _, sp := range spans {
+		if sp.PaddingX > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// padOf returns the padding of span k at each end of its pieces of lines,
+// 0 past the spans.
+func padOf(spans []Span, k int) float32 {
+	if k < 0 || k >= len(spans) {
+		return 0
+	}
+	return max(spans[k].PaddingX, 0)
+}
+
+// paddedWidth returns the width of the glyphs of a shaped line of a
+// paragraph text, the whitespace ending it left out, and the padding of
+// its spans' pieces.
+func paddedWidth(l shapedLine, text []rune, spans []Span) (w, pad float32) {
+	trim := l.end
+	for trim > l.start && hangs(text[trim-1]) {
+		trim--
+	}
+	k := -1
+	for _, r := range l.runs {
+		for _, g := range r.glyphs {
+			if g.Cluster >= trim && g.Cluster < l.end {
+				continue
+			}
+			w += g.Advance
+			if g.Cluster < 0 {
+				continue // the ellipsis, with the glyphs before it
+			}
+			if j := spanIndex(spans, g.Cluster); j != k {
+				pad += padOf(spans, k) + padOf(spans, j)
+				k = j
+			}
+		}
+	}
+	return w, pad + padOf(spans, k)
+}
+
+// padLine moves the glyphs of a line, in visual order, apart by the
+// padding of its spans' pieces, at both ends of each, as CSS pads each
+// line's fragment of an inline box with box-decoration-break: clone, and
+// widens the line by it. The line's runes start at rune offset of the
+// spans' text.
+func padLine(line *Line, spans []Span, offset int) {
+	dx, k := float32(0), -1
+	for i := range line.Glyphs {
+		g := &line.Glyphs[i]
+		// The ellipsis goes with the glyphs before it.
+		if g.Runes > 0 {
+			if j := spanIndex(spans, g.Cluster-offset); j != k {
+				dx += padOf(spans, k) + padOf(spans, j)
+				k = j
+			}
+		}
+		g.X += dx
+	}
+	dx += padOf(spans, k)
+	line.Width += dx
+	line.padding = dx
 }
 
 // offsetLines moves lines an engine shaped from rune offset of a
@@ -245,8 +328,49 @@ func (h *hyphens) place(l shapedLine, text []rune, broken, rtl bool) shapedLine 
 			}
 		}
 		l.runs[ri].glyphs = slices.Concat(l.runs[ri].glyphs, h.glyphsAt(c, x, rtl))
+		placed = true
+	}
+	if placed {
+		inVisualOrder(&l, l.end-1)
 	}
 	return l
+}
+
+// inVisualOrder moves the glyphs of cluster c, a hyphen the line shows
+// where the engine left its soft hyphen, among the glyphs of the line to
+// where it shows, keeping them in visual order: in a right-to-left run
+// or line, the hyphen, which ends it, is at its left, and the engine may
+// have given its soft hyphen a run, or a place in one, of its own.
+func inVisualOrder(l *shapedLine, c int) {
+	var hy []Glyph
+	for ri := range l.runs {
+		l.runs[ri].glyphs = slices.DeleteFunc(l.runs[ri].glyphs, func(g Glyph) bool {
+			if g.Cluster == c {
+				hy = append(hy, g)
+				return true
+			}
+			return false
+		})
+	}
+	if len(hy) == 0 {
+		return
+	}
+	x := hy[0].X
+	for _, g := range hy {
+		x = min(x, g.X)
+	}
+	// Before the first glyph right of it.
+	for ri := range l.runs {
+		gs := l.runs[ri].glyphs
+		for j, g := range gs {
+			if g.X > x {
+				l.runs[ri].glyphs = slices.Concat(gs[:j], hy, gs[j:])
+				return
+			}
+		}
+	}
+	last := len(l.runs) - 1
+	l.runs[last].glyphs = append(l.runs[last].glyphs, hy...)
 }
 
 // glyphsAt returns the glyphs of the hyphen of rune i, standing for it,
@@ -270,7 +394,7 @@ func (h *hyphens) glyphsAt(i int, x float32, rtl bool) []Glyph {
 // or is that wide already.
 func justifyLine(line *Line, runes []rune, width float32) (left float32, ok bool) {
 	end := line.End
-	for end > line.Start && unicode.IsSpace(runes[end-1]) {
+	for end > line.Start && hangs(runes[end-1]) {
 		end--
 	}
 	// The extent of each cluster of what stretches, by its first rune,
@@ -281,7 +405,8 @@ func justifyLine(line *Line, runes []rune, width float32) (left float32, ok bool
 	}
 	clusters := make([]cluster, end-line.Start)
 	seen := make([]bool, end-line.Start)
-	var content float32
+	// The padding of spans' pieces takes room as the glyphs do.
+	content := line.padding
 	last := -1
 	left = float32(1e30)
 	for i, g := range line.Glyphs {

@@ -535,6 +535,35 @@ func TestRichTextLinkOpensSafely(t *testing.T) {
 	}
 }
 
+// TestRichTextLinkCanceledPress presses a link and has the system cancel
+// the press: the link opens only for a click.
+func TestRichTextLinkCanceledPress(t *testing.T) {
+	doc := NewDocument(TextOf(
+		Paragraph{Runs: []Run{{Text: "site", Attributes: Attributes{Link: "https://example.com"}}}},
+	))
+	tt, _ := richTester(t, doc)
+	var x, y float32
+	for y = 2; y < 40; y += 2 {
+		if tt.Move(10, y); tt.Cursor() == ui.CursorPointer {
+			x = 10
+			break
+		}
+	}
+	if x == 0 {
+		t.Fatal("no link under the pointer")
+	}
+	tt.Press(x, y)
+	tt.CancelPress()
+	if got := tt.OpenedURLs(); len(got) != 0 {
+		t.Fatalf("a canceled press opened %q", got)
+	}
+	tt.Advance(time.Second) // no double click
+	tt.ClickAt(x, y)
+	if got := tt.OpenedURLs(); !slices.Equal(got, []string{"https://example.com"}) {
+		t.Fatalf("a click opened %q", got)
+	}
+}
+
 // TestRichTextCJKWords deletes and moves by words in Chinese and
 // Japanese: a character at a time, as they have no spaces (#668).
 func TestRichTextCJKWords(t *testing.T) {

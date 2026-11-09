@@ -4,6 +4,9 @@ package linux
 
 import (
 	"fmt"
+	"maps"
+	"slices"
+	"strings"
 	"sync"
 	"unsafe"
 
@@ -214,6 +217,8 @@ var xtest struct {
 	button func(dpy ptr, button uint32, press bool, delay uint64) int32
 	motion func(dpy ptr, screen int32, x, y int32, delay uint64) int32
 	sync   func(dpy ptr, discard bool) int32
+
+	queryPointer func(dpy ptr, window uint64, root, child *uint64, rootX, rootY, winX, winY *int32, mask *uint32) bool
 }
 
 // gdkEventsPending reports whether GDK has events it has yet to handle.
@@ -230,7 +235,8 @@ func loadXTest() ptr {
 		x, xerr := open("libX11.so.6")
 		if err != nil || xerr != nil || !bind(lib, &xtest.button, "XTestFakeButtonEvent") ||
 			!bind(lib, &xtest.motion, "XTestFakeMotionEvent") || !bind(x, &xtest.sync, "XSync") ||
-			!bind(libGDK, &gdkEventsPending, "gdk_events_pending") || !bind(lib, &xtest.key, "XTestFakeKeyEvent") {
+			!bind(libGDK, &gdkEventsPending, "gdk_events_pending") || !bind(lib, &xtest.key, "XTestFakeKeyEvent") ||
+			!bind(x, &xtest.queryPointer, "XQueryPointer") {
 			return 0
 		}
 	}
@@ -271,6 +277,108 @@ func TestPressKeys(names ...string) bool {
 	}
 	sent(dpy)
 	return true
+}
+
+// TestHoldKey presses the key of X keysym name and holds it, or releases
+// it, through the XTEST extension: held, the X server's auto-repeat
+// presses it again until it is released. It reports false without an X
+// server, or without that key in the keyboard's layout.
+func TestHoldKey(name string, press bool) bool {
+	dpy := loadXTest()
+	if dpy == 0 {
+		return false
+	}
+	code := x11.keysymToKeycode(dpy, x11.stringToKeysym(cs(name)))
+	if code == 0 {
+		return false // the keyboard's layout has no such key, for now
+	}
+	xtest.key(dpy, uint32(code), press, 0)
+	sent(dpy)
+	if press {
+		testHeld[name] = true
+	} else {
+		delete(testHeld, name)
+	}
+	return true
+}
+
+// testHeld holds the X keysym names of the keys TestHoldKey holds. It keeps
+// them itself rather than ask the server, whose keys down may be a person's
+// on a desktop.
+var testHeld = map[string]bool{}
+
+// testLockKeys are the keys that lock a modifier for the keys after them, by
+// the modifier's bit in the X state, as the keyboard layouts X servers start
+// with have them.
+var testLockKeys = []struct {
+	mask uint32
+	key  string
+}{
+	{0x02, "Caps_Lock"}, // LockMask
+	{0x10, "Num_Lock"},  // Mod2Mask
+}
+
+// TestKeyboard is what the X server keeps of a keyboard from one test to the
+// next, as all of a package's tests share it.
+type TestKeyboard struct {
+	Locks uint32 // the bits of testLockKeys on
+	Held  string // the keys TestHoldKey holds, sorted
+}
+
+func (k TestKeyboard) String() string {
+	var on []string
+	for _, l := range testLockKeys {
+		if k.Locks&l.mask != 0 {
+			on = append(on, l.key)
+		}
+	}
+	if len(on) == 0 {
+		on = append(on, "no lock key")
+	}
+	s := strings.Join(on, " and ") + " on"
+	if k.Held != "" {
+		s += ", holding " + k.Held
+	}
+	return s
+}
+
+// TestKeyboardState returns the keyboard's state, and false without an X
+// server.
+func TestKeyboardState() (TestKeyboard, bool) {
+	dpy := loadXTest()
+	if dpy == 0 {
+		return TestKeyboard{}, false
+	}
+	var root, child uint64
+	var rootX, rootY, winX, winY int32
+	var mask uint32
+	xtest.queryPointer(dpy, x11.defaultRoot(dpy), &root, &child, &rootX, &rootY, &winX, &winY, &mask)
+	k := TestKeyboard{Held: strings.Join(slices.Sorted(maps.Keys(testHeld)), " ")}
+	for _, l := range testLockKeys {
+		k.Locks |= mask & l.mask
+	}
+	return k, true
+}
+
+// TestRestoreKeyboard puts the keyboard back in state k, which held no key
+// that it doesn't hold now, pressing the lock keys that differ.
+func TestRestoreKeyboard(k TestKeyboard) {
+	held := strings.Fields(k.Held)
+	for name := range testHeld {
+		if !slices.Contains(held, name) {
+			TestHoldKey(name, false)
+		}
+	}
+	now, ok := TestKeyboardState()
+	if !ok {
+		return
+	}
+	for _, l := range testLockKeys {
+		if (now.Locks^k.Locks)&l.mask != 0 {
+			TestHoldKey(l.key, true)
+			TestHoldKey(l.key, false)
+		}
+	}
 }
 
 // TestMovePointer moves the pointer to a point of the screen through the
@@ -676,6 +784,22 @@ func TestActivateTray() bool {
 	return true
 }
 
+// TestTrayIcon returns the icon the tray icon made last gives the panel
+// (app_indicator_get_icon), "" for none.
+func TestTrayIcon() string {
+	var last *tray
+	for _, t := range theBackend.trays {
+		if last == nil || t.id > last.id {
+			last = t
+		}
+	}
+	var get func(ind ptr) ptr
+	if last == nil || !bind(libIndicator, &get, "app_indicator_get_icon") {
+		return ""
+	}
+	return goStr(get(last.ind))
+}
+
 // Decorations are what TestDecorations reports.
 type Decorations struct {
 	// CSD tells that GTK decorates the window itself (useCSD).
@@ -829,4 +953,78 @@ func TestMockCaptureDevices(handle uintptr) bool {
 	gObjectSetBool(settings, cs("enable-media-stream"), true, 0)
 	gObjectSetBool(settings, cs("enable-mock-capture-devices"), true, 0)
 	return true
+}
+
+// TitleBarStyle is how GTK styles a header bar and its title buttons.
+type TitleBarStyle struct {
+	// Button is the size a title button asks for, in DIPs, inside its CSS
+	// margins: its border box.
+	Button [2]int
+	// Background is the header bar's background color.
+	Background [4]float64
+}
+
+var (
+	titleBarStyleOnce                 sync.Once
+	gtkButtonNew                      func() ptr
+	gtkWidgetGetPreferredSize         func(w ptr, minimum, natural *[2]int32)
+	gtkStyleContextGetState           func(c ptr) uint32
+	gtkStyleContextGetMargin          func(c ptr, state uint32, margin *[4]int16)
+	gtkStyleContextGetBackgroundColor func(c ptr, state uint32, color *gdkRGBA)
+)
+
+func loadTitleBarStyle() {
+	titleBarStyleOnce.Do(func() {
+		mustBind(libGTK, &gtkButtonNew, "gtk_button_new")
+		mustBind(libGTK, &gtkWidgetGetPreferredSize, "gtk_widget_get_preferred_size")
+		mustBind(libGTK, &gtkStyleContextGetState, "gtk_style_context_get_state")
+		mustBind(libGTK, &gtkStyleContextGetMargin, "gtk_style_context_get_margin")
+		mustBind(libGTK, &gtkStyleContextGetBackgroundColor, "gtk_style_context_get_background_color")
+	})
+}
+
+// borderBox takes a widget's CSS margins, which GTK 3 counts in its size
+// and its allocation, off a size.
+func borderBox(widget ptr, width, height int32) [2]int {
+	style := gtkWidgetGetStyleContext(widget)
+	var m [4]int16 // GtkBorder: left, right, top, bottom
+	gtkStyleContextGetMargin(style, gtkStyleContextGetState(style), &m)
+	return [2]int{int(width) - int(m[0]) - int(m[1]), int(height) - int(m[2]) - int(m[3])}
+}
+
+// TestTitleBarStyle makes a header bar holding a title button, as GTK's
+// own title bars do, and returns how the style providers style them.
+func TestTitleBarStyle() TitleBarStyle {
+	loadTitleBarStyle()
+	bar := gObjectRefSink(gtkHeaderBarNew())
+	defer gObjectUnref(bar)
+	defer gtkWidgetDestroy(bar)
+	button := gtkButtonNew()
+	gtkStyleContextAddClass(gtkWidgetGetStyleContext(button), cs("titlebutton"))
+	gtkContainerAdd(bar, button)
+	gtkWidgetShow(button) // GTK sizes hidden widgets 0x0
+	var s TitleBarStyle
+	var minimum, natural [2]int32
+	gtkWidgetGetPreferredSize(button, &minimum, &natural)
+	s.Button = borderBox(button, natural[0], natural[1])
+	style := gtkWidgetGetStyleContext(bar)
+	var bg gdkRGBA
+	gtkStyleContextGetBackgroundColor(style, gtkStyleContextGetState(style), &bg)
+	s.Background = [4]float64{bg.R, bg.G, bg.B, bg.A}
+	return s
+}
+
+// TestTitleButtonSizes returns the sizes GTK gave the title buttons over
+// the page of a window with a hidden title bar, in DIPs, inside their CSS
+// margins.
+func TestTitleButtonSizes(handle uintptr) [][2]int {
+	loadTitleBarStyle()
+	_, buttons := titleButtons(windowByHandle(handle))
+	sizes := make([][2]int, len(buttons))
+	for i, b := range buttons {
+		var a gdkRectangle
+		gtkWidgetGetAllocation(b, &a)
+		sizes[i] = borderBox(b, a.Width, a.Height)
+	}
+	return sizes
 }

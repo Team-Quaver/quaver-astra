@@ -179,6 +179,39 @@ func TestOverlayGivesTheFocusBack(t *testing.T) {
 	}
 }
 
+// An input focused in the frame that first builds it is within its
+// panel once the frame settles, as a popover's search field taking the
+// focus as the popover opens, with no frame to come.
+func TestFocusWithinAnElementFocusedAsItIsBuilt(t *testing.T) {
+	for _, popover := range []bool{false, true} {
+		open, text := false, ""
+		var ref Ref
+		var focused, within, refWithin bool
+		tt := NewTester(func(c *Context) {
+			anchor := ButtonBase(c).Size(40, 20).Label("anchor")
+			if anchor.Clicked() {
+				open = true
+			}
+			body := func(panel Element) {
+				panel.Ref(&ref).Children(func() {
+					focused = TextInputBase(c, &text).Size(100, 20).AutoFocus().Focused()
+				})
+				within = panel.FocusWithin()
+			}
+			if popover {
+				PopoverBase(c, anchor, &open, body)
+			} else if open {
+				body(Column(c))
+			}
+			refWithin = ref.FocusWithin(c)
+		}, 400, 300)
+		tt.Click("anchor")
+		if !focused || !within || !refWithin {
+			t.Errorf("popover %v: focused %v, within the panel %v, within its ref %v", popover, focused, within, refWithin)
+		}
+	}
+}
+
 func TestPopoverRestoresFocusWithToastViewport(t *testing.T) {
 	open := false
 	tt := coreNewTester(func(c *context) {

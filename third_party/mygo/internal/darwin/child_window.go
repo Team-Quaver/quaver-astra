@@ -246,7 +246,7 @@ func (w *window) applyLevel() {
 	if w.onTop {
 		level = nsFloatingWindowLevel
 	}
-	if w.isChild() {
+	if w.isChild() || w.modalToFlyout() && !w.parent.closed && w.parent.win != 0 {
 		level = max(level, sendInt(w.parent.win, "level"))
 	}
 	if sendInt(w.win, "level") != level {

@@ -11,6 +11,8 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/egoist/mygo/internal/update"
 )
 
 // debData returns the files of the data archive of a Debian package: their
@@ -227,6 +229,25 @@ func TestBuildLinuxSlug(t *testing.T) {
 	files := debData(t, filepath.Join(out, "cloud-music_0.1.0_amd64.deb"))
 	if _, ok := files["opt/cloud-music/cloud-music"]; !ok {
 		t.Error("the package has no opt/cloud-music/cloud-music")
+	}
+	// The list of what the version installs, from which its update knows
+	// what to remove, is in the app's archive.
+	f, err := os.Open(filepath.Join(out, "cloud-music-0.1.0-linux-amd64.tar.gz"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	unpacked := filepath.Join(t.TempDir(), "app")
+	err = update.ExtractArchive(f, unpacked)
+	f.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	list, err := os.ReadFile(filepath.Join(unpacked, update.FileList))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if entries, _ := entryNames(unpacked); len(entries) < 2 || !slices.Equal(update.ParseFileList(list), entries) {
+		t.Errorf("the list names %q, the archive holds %q", list, entries)
 	}
 	if !strings.HasPrefix(debMember(t, filepath.Join(out, "cloud-music_0.1.0_amd64.deb"), "control.tar.gz")["control"], "Package: cloud-music\n") {
 		t.Error("the package is not named cloud-music")

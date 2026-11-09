@@ -26,7 +26,8 @@ func TestGlassMargins(t *testing.T) {
 
 // TestGlassFromBottom checks which windows extend their frame from the
 // bottom: a frameless window, whose styles keep a caption whose buttons DWM
-// would draw over its page, and not a flyout, a popup without a caption.
+// would draw over its page, a maximized one, whose buttons DWM would draw
+// past its title bar, and not a flyout, a popup without a caption.
 func TestGlassFromBottom(t *testing.T) {
 	frameless := &window{frameless: true, opts: &platform.WindowOptions{Frameless: true}}
 	if !frameless.glassFromBottom() {
@@ -35,6 +36,10 @@ func TestGlassFromBottom(t *testing.T) {
 	flyout := &window{frameless: true, opts: &platform.WindowOptions{Frameless: true, Flyout: &platform.Flyout{}}}
 	if flyout.glassFromBottom() {
 		t.Error("a flyout extends its frame from the bottom")
+	}
+	maximized := &window{showMaximized: true, opts: &platform.WindowOptions{}}
+	if !maximized.glassFromBottom() {
+		t.Error("a maximized window with the system's title bar extends its frame all over: DWM draws caption buttons past its title bar")
 	}
 	fullScreen := &window{hiddenTitleBar: true, fullScreen: true, opts: &platform.WindowOptions{}}
 	if fullScreen.glassFromBottom() {

@@ -14,13 +14,15 @@ on:
 permissions:
   contents: read
 
-# A push supersedes the runs before it, on main as on a pull request: the
-# newest commit's run covers theirs. A release commit runs on its own, so
-# that it is neither queued behind nor canceled by others, as its tag waits
-# for its run.
+# A push supersedes the runs before it on a pull request: the newest commit's
+# run covers theirs. On main a run that started finishes, so that main has a
+# history to tell whether a test that fails on a pull request fails without
+# it; at most the newest commit waits behind it, and GitHub cancels the older
+# ones waiting. A release commit runs on its own, so that it is neither queued
+# behind nor canceled by others, as its tag waits for its run.
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}${{ startsWith(github.event.head_commit.message, 'Release ') && format('-{0}', github.sha) || '' }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
   test:
@@ -97,6 +99,8 @@ jobs:
           go build $(go list -f '{{if .GoFiles}}{{.ImportPath}}{{end}}' ./... | grep -v /cmd/mygo)
           go vet $(go list ./... | grep -v /cmd/mygo)
           go test -exec "$(go env GOROOT)/lib/wasm/go_js_wasm_exec" ./internal/web ./internal/gpu/gl
+          # The canvas engine's line breaking, with a canvas of its test's.
+          go test -exec "$(go env GOROOT)/lib/wasm/go_js_wasm_exec" -run 'TestCanvas|TestKeepWords' ./internal/text
       # The plugins' tests load the native libraries their mygo-plugin.json
       # pins, and on Windows the installer tests run the NSIS that
       # internal/nsis pins, all of which they download into the user's cache
@@ -121,7 +125,10 @@ jobs:
             ${{ runner.os == 'Windows' && '~/AppData/Local' || runner.os == 'macOS' && '~/Library/Caches' || '~/.cache' }}/mygo/natives
             ${{ runner.os == 'Windows' && '~/AppData/Local' || runner.os == 'macOS' && '~/Library/Caches' || '~/.cache' }}/mygo/nsis-*
           key: ${{ steps.downloads.outputs.cache-primary-key }}
-      - run: go test ./...
+      # cmd/mygo builds and packages apps, which takes the macOS runners
+      # about six minutes and, on a slow one beside the other packages,
+      # past go test's ten: the same tests, more time.
+      - run: go test -timeout ${{ runner.os == 'macOS' && '20m' || '10m' }} ./...
       - name: Test without the inspector, as production builds
         if: runner.os == 'Linux'
         run: go test -tags mygo_noinspector ./ui .

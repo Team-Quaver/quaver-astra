@@ -121,6 +121,35 @@ func TestWideAndGraphemes(t *testing.T) {
 	}
 }
 
+// The rows of a shell's prompt (OSC 133): where it starts, and those its
+// input wraps onto, which the terminal and a render state tell alike.
+func TestRowPrompt(t *testing.T) {
+	loadLib(t)
+	term, _ := NewTerminal(10, 5, Effects{})
+	defer term.Free()
+	term.Write([]byte("out\r\n\x1b]133;A\a$ \x1b]133;B\aecho hello world"))
+	want := []struct {
+		prompt RowPrompt
+		wrap   bool
+	}{{NoPrompt, false}, {PromptStart, true}, {PromptContinuation, false}, {NoPrompt, false}}
+	r, _ := NewRenderState()
+	defer r.Free()
+	r.Update(term)
+	r.Rows()
+	for y, w := range want {
+		r.NextRow()
+		if p, wrap := term.Row(y); p != w.prompt || wrap != w.wrap {
+			t.Errorf("row %d is %d, wrapping %v; want %d, %v", y, p, wrap, w.prompt, w.wrap)
+		}
+		if p := r.RowPrompt(); p != w.prompt {
+			t.Errorf("render state's row %d is %d, want %d", y, p, w.prompt)
+		}
+	}
+	if p, _ := term.Row(99); p != NoPrompt {
+		t.Errorf("row 99 is %d", p)
+	}
+}
+
 func TestEncoders(t *testing.T) {
 	loadLib(t)
 	term, _ := NewTerminal(80, 24, Effects{})
@@ -288,6 +317,24 @@ func TestKeyboardModes(t *testing.T) {
 	term.Write([]byte("\x1b[>5u"))
 	if f := term.KittyKeyboardFlags(); f != 5 {
 		t.Errorf("kitty keyboard flags %d, want 5", f)
+	}
+	// A sequence split across writes sets it, with the Kitty protocol on
+	// as well; a reset of the key formats, and of the terminal, clears it.
+	term.Write([]byte("\x1b[>4"))
+	term.Write([]byte(";2m"))
+	if !term.ModifyOtherKeys() {
+		t.Error("modifyOtherKeys off after a split CSI > 4 ; 2 m")
+	}
+	for _, reset := range []string{"\x1b[>m", "\x1b[>4n", "\x1bc"} {
+		term.Write([]byte("\x1b[>4;2m" + reset))
+		if term.ModifyOtherKeys() {
+			t.Errorf("modifyOtherKeys on after %q", reset)
+		}
+	}
+	term.Write([]byte("\x1b[>4;2m"))
+	term.Reset()
+	if term.ModifyOtherKeys() {
+		t.Error("modifyOtherKeys on after Reset")
 	}
 }
 

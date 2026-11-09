@@ -154,8 +154,13 @@ func styleButton(c *context, b *node, primary bool) {
 	b.Padding(t.Space(1.5), t.Space(3.5)).Gap(t.Space(1.5)).Radius(t.Radius)
 	base, hover, pressed, fg, border := t.Surface, t.SurfaceHover, t.SurfacePressed, t.Text, t.Border
 	switch {
-	case primary:
+	case primary && c.emphasized(t):
 		base, hover, pressed, fg, border = t.Accent, t.AccentHover, t.AccentPressed, t.AccentText, Color{}
+	case primary:
+		// As other buttons in a window not drawn as active, as AppKit's
+		// default button: its border inside the padding, so that it is as
+		// large as active and nothing around it moves.
+		b.Padding(t.Space(1.5)-1, t.Space(3.5)-1)
 	case c.buttons == toolbarButtons:
 		b.Padding(t.Space(1.5), t.Space(2.5))
 		base, border = Color{}, Color{}
@@ -199,7 +204,10 @@ func coreLink(c *context, label, url string) *node {
 			}
 		}
 		if e.Hovered() {
+			// Whole, through descenders: a link's URL is mostly slashes
+			// and letters below the baseline, which skipping ink cuts up.
 			e.Underline()
+			e.ts.solid = true
 		}
 	})
 	return e
@@ -214,32 +222,33 @@ func checkPath(r Rect) *Path {
 func coreCheckbox(c *context, checked *bool, label string) *node {
 	t := c.theme
 	row := coreCheckboxBase(c, checked).Gap(t.Space(2)).FocusRing(false)
-	on := *checked
+	checkboxFace(c, row, 1+int8(b2f(*checked)), label)
+	return row
+}
+
+// CheckboxState creates a check box that can be mixed, with a label: a
+// click, or Space while it has the focus, checks it, or unchecks it when
+// it is checked, setting *state, and Changed reports a click. It shows a
+// dash while mixed, and assistive technology sees it mixed. CheckboxGroup
+// is one over the check boxes it holds.
+func coreCheckboxState(c *context, state *CheckState, label string) *node {
+	t := c.theme
+	row := coreCheckboxStateBase(c, state).Gap(t.Space(2)).FocusRing(false)
+	checkboxFace(c, row, checkedOf(*state), label)
+	return row
+}
+
+// checkboxFace builds the box of check box row, off (1), on (2) or mixed
+// (3), and its label.
+func checkboxFace(c *context, row *node, state int8, label string) {
+	t := c.theme
 	row.Children(func() {
 		box := coreBox(c).Size(t.Space(4), t.Space(4)).Radius(t.Space(1)).Shrink(0)
-		if on {
-			box.Background(t.Accent)
-		} else {
-			box.Background(t.Background).Border(1, t.Border.Mix(t.Text, 0.25))
-		}
-		box.DrawOver(func(p *Painter, r Rect) {
-			if on {
-				p.StrokePath(checkPath(r), t.Space(0.5), t.AccentText)
-			}
-			if row.FocusVisible() {
-				p.FocusRing(r, box.radius)
-			}
-		})
-		box.styleFn = func(box *node) {
-			if !on && row.Hovered() {
-				box.borderC = t.Accent
-			}
-		}
+		paintCheckbox(c, row, box, state)
 		if label != "" {
 			coreText(c, label)
 		}
 	})
-	return row
 }
 
 // Radio creates a radio button that selects value into *selected, with a
@@ -251,7 +260,7 @@ func coreRadio[T comparable](c *context, selected *T, value T, label string) *no
 	row.Children(func() {
 		dot := coreBox(c).Size(t.Space(4), t.Space(4)).Radius(t.Space(2)).Shrink(0)
 		if on {
-			dot.Background(t.Accent)
+			dot.Background(c.accent(t))
 		} else {
 			dot.Background(t.Background).Border(1, t.Border.Mix(t.Text, 0.25))
 		}
@@ -261,7 +270,7 @@ func coreRadio[T comparable](c *context, selected *T, value T, label string) *no
 				p.Fill(Rect{r.X + (r.W-d)/2, r.Y + (r.H-d)/2, d, d}, t.AccentText, d/2)
 			}
 			if row.FocusVisible() {
-				p.FocusRing(r, dot.radius)
+				p.focusRingOf(row, r, dot.radius)
 			}
 		})
 		dot.styleFn = func(dot *node) {
@@ -282,7 +291,11 @@ func coreSwitch(c *context, on *bool) *node {
 	sw := coreSwitchBase(c, on).Size(t.Space(9), t.Space(5)).Radius(t.Space(2.5))
 	pos := sw.Animate("knob", b2f(*on), 140*time.Millisecond)
 	off := t.Border.Mix(t.Text, 0.15)
-	sw.Background(off.Mix(t.Accent, pos))
+	if pos > 0 {
+		sw.Background(off.Mix(c.accent(t), pos))
+	} else {
+		sw.Background(off)
+	}
 	rtl := sw.rtl()
 	sw.Draw(func(p *Painter, r Rect) {
 		in := t.Space(0.5)
@@ -331,7 +344,8 @@ func slider(c *context, value *float64, lo, hi, step float64) *node {
 	if rtl {
 		frac = 1 - frac
 	}
-	held := s.Animate("held", b2f(s.st.pressed), 150*time.Millisecond)
+	held := s.Animate("held", b2f(s.st.pressedPrimary()), 150*time.Millisecond)
+	fill := c.accent(t)
 	s.Draw(func(p *Painter, r Rect) {
 		// As thick as Progress; above the ticks.
 		h := t.Space(1.5)
@@ -346,9 +360,9 @@ func slider(c *context, value *float64, lo, hi, step float64) *node {
 		}
 		p.Fill(track, t.Border, h/2)
 		if rtl {
-			p.Fill(Rect{x, track.Y, track.X + track.W - x, h}, t.Accent, h/2)
+			p.Fill(Rect{x, track.Y, track.X + track.W - x, h}, fill, h/2)
 		} else {
-			p.Fill(Rect{track.X, track.Y, x - track.X, h}, t.Accent, h/2)
+			p.Fill(Rect{track.X, track.Y, x - track.X, h}, fill, h/2)
 		}
 		paintKnob(p, t, k, held, s.FocusVisible())
 	})
@@ -466,6 +480,7 @@ func coreProgress(c *context, value float64) *node {
 	rad := t.Space(0.75)
 	e := coreBox(c).Height(t.Space(1.5)).Radius(rad).Background(t.Border).Clip()
 	e.role, e.hasRange, e.accRange = RoleProgress, true, [3]float64{0, 1, value}
+	fill := c.accent(t)
 	e.Draw(func(p *Painter, r Rect) {
 		fromRight := e.reverse != e.rtl()
 		if value >= 0 {
@@ -474,7 +489,7 @@ func coreProgress(c *context, value float64) *node {
 			if fromRight {
 				x = r.X + r.W - w
 			}
-			p.Fill(Rect{x, r.Y, w, r.H}, t.Accent, rad)
+			p.Fill(Rect{x, r.Y, w, r.H}, fill, rad)
 			return
 		}
 		// It moves while it shows, painted again without building the
@@ -486,7 +501,7 @@ func coreProgress(c *context, value float64) *node {
 		if fromRight {
 			x = r.X + r.W - (r.W+w)*phase
 		}
-		p.Clip(r, rad, func() { p.Fill(Rect{x, r.Y, w, r.H}, t.Accent, rad) })
+		p.Clip(r, rad, func() { p.Fill(Rect{x, r.Y, w, r.H}, fill, rad) })
 	})
 	return e
 }
@@ -584,6 +599,23 @@ func (e *node) intrinsicSize() (w, h float32) {
 
 // Fit sets how an Image fills its box.
 func (e *node) Fit(f Fit) *node { e.fit = f; return e }
+
+// ObjectPosition places an Image's picture in its box where Fit leaves
+// room around it, or crops it, as CSS's object-position: x and y are
+// fractions of that room across and down, 0 by the left or top edge, 1 by
+// the right or bottom one, and 0.5, as by default, in the middle. An
+// avatar's face, near the top of its photo, stays in view with
+//
+//	ui.Image(c, photo).Size(40, 40).Fit(ui.Cover).ObjectPosition(0.5, 0.15)
+//
+// as object-position: 50% 15%; the edge keywords are 0 and 1, as
+// ObjectPosition(1, 0) for right top. Values beyond 0 and 1 move the
+// picture further, past the box's edges.
+func (e *node) ObjectPosition(x, y float32) *node {
+	finiteTransform(x, y)
+	e.objectPos = [2]float32{x - 0.5, y - 0.5}
+	return e
+}
 
 // Overlay builds fn's elements above the rest of the window. Place them
 // with Absolute, Left and Top, in DIPs relative to the window, or beside
@@ -725,8 +757,11 @@ func coreMenuButton(c *context, label string, build func(m *Menu)) *node {
 //			}
 //		}
 //	})
-func corePopoverMenuButton(c *context, label string, build func(m *Menu)) *node {
-	return menuButton(c, label).PopoverMenuButton(build)
+//
+// Its options place the menu and open it from the app, as
+// Element.PopoverMenuButton's do.
+func corePopoverMenuButton(c *context, label string, build func(m *Menu), options ...PopoverMenuButtonOptions) *node {
+	return menuButton(c, label).PopoverMenuButton(build, options...)
 }
 
 // menuButton creates the button of a MenuButton, showing label and an

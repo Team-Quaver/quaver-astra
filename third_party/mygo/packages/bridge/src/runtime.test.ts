@@ -186,6 +186,34 @@ describe("channels", () => {
     expect(await pending).toEqual({ value: undefined, done: true });
   });
 
+  for (const failure of ["duplicate", "serialization"]) {
+    test(`a channel can be used after ${failure} rejects before sending`, async () => {
+      const { sent, runtime, internal } = setup();
+      const got: unknown[] = [];
+      const ch = runtime.channel((value) => got.push(value));
+      const bad = failure === "duplicate"
+        ? runtime.call("Svc.Stream", ch, ch)
+        : runtime.call("Svc.Stream", ch, 1n);
+      await expect(bad).rejects.toThrow();
+      expect(sent).toHaveLength(0);
+      expect(ch.closed).toBe(false);
+
+      const pending = runtime.call("Svc.Stream", ch);
+      const reply = pending.catch((err) => err);
+      expect(sent).toHaveLength(1);
+      const { id, k, a } = sent[0] as CallMsg;
+      const channelID = a[0] as number;
+      internal.receive([
+        { t: "chan", c: channelID, k, p: "value" },
+        { t: "chan", c: channelID, k, end: true },
+        { t: "reply", id, k, ok: true },
+      ]);
+      expect(await reply).toBeUndefined();
+      expect(got).toEqual(["value"]);
+      expect(ch.closed).toBe(true);
+    });
+  }
+
   test("a failed call ends its channels", async () => {
     const { sent, runtime, internal } = setup();
     const ch = runtime.channel();

@@ -179,3 +179,64 @@ func TestWriteCacheFileConcurrent(t *testing.T) {
 		}
 	}
 }
+
+// lcdFilterRule gives subpixel glyphs FreeType's LCD filter where
+// fontconfig names no filter, as cairo 1.17 and later do by default, and
+// keeps a filter fontconfig names (#1025).
+func TestLCDFilterRule(t *testing.T) {
+	if _, err := newPango(); err != nil {
+		t.Skip(err)
+	}
+	l := &pangoLib
+	if l.cairoVersion() < 11700 || l.fcConfigParseFromMemory == nil {
+		t.Skip("needs cairo 1.17 or later, whose default filter is FreeType's")
+	}
+	draw := func() []byte {
+		e, err := newPango()
+		if err != nil {
+			t.Fatal(err)
+		}
+		e.setFontRendering("subpixel", "slight", "rgb")
+		var out []byte
+		for _, r := range e.shape([]rune("Illumination 测试"), Style{Family: "sans-serif", Size: 13}, nil, 0, false, false)[0].runs {
+			for _, g := range r.glyphs {
+				if b := e.draw(r.font, g.ID, 1, 0, true); b.pix != nil {
+					if !b.subpixel {
+						t.Fatal("glyph not drawn with subpixel antialiasing")
+					}
+					out = append(out, b.pix...)
+				}
+			}
+		}
+		return out
+	}
+	// Rules loaded later apply later, as the user's after the system's.
+	rule := func(xml string) {
+		t.Helper()
+		if l.fcConfigParseFromMemory(l.fcConfigGetCurrent(), xml, int32(gTrue)) == 0 {
+			t.Fatalf("fontconfig refused %s", xml)
+		}
+	}
+	set := func(edit string) string {
+		return `<?xml version="1.0"?><!DOCTYPE fontconfig SYSTEM "fonts.dtd"><fontconfig><match target="font">` + edit + `</match></fontconfig>`
+	}
+	rule(set(`<edit name="lcdfilter" mode="assign"><const>lcdlegacy</const></edit>`))
+	legacy := draw()
+	rule(lcdFilterRule)
+	if !bytes.Equal(draw(), legacy) {
+		t.Error("lcdFilterRule replaced the legacy filter fontconfig names")
+	}
+	rule(set(`<edit name="lcdfilter" mode="delete"/>`))
+	unnamed := draw()
+	if bytes.Equal(unnamed, legacy) {
+		t.Fatal("cairo draws subpixel glyphs with the legacy filter by default")
+	}
+	rule(lcdFilterRule)
+	if !bytes.Equal(draw(), unnamed) {
+		t.Error("where fontconfig names no filter, lcdFilterRule draws otherwise than cairo's default")
+	}
+	rule(set(`<edit name="lcdfilter" mode="assign"><const>lcddefault</const></edit>`))
+	if !bytes.Equal(draw(), unnamed) {
+		t.Error("cairo's default filter is not FreeType's")
+	}
+}

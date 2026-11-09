@@ -53,6 +53,9 @@ type view struct {
 	widths  charWidths
 	maxLine float32 // the widest line laid out, for scrolling sideways
 	wrapAt  int     // the next line to measure the wraps of
+	// wrapHidden are the lines hidden as wraps were measured last, which
+	// were left: lines shown since are measured anew.
+	wrapHidden []lineSpan
 	// approx tells that a frame showed tokens from states the
 	// highlighter has not confirmed yet.
 	approx      bool
@@ -925,13 +928,22 @@ func isCJK(r rune) bool {
 
 // measureWraps measures the wraps of lines not measured yet, from those
 // around near, for at most budget, and reports whether all are measured.
+// Lines hidden, as the unchanged ones a diff folds away, show no rows,
+// measured or not: they are left until they show, which a long file's
+// diff, measured anew at each width a window is resized through, would
+// else spend most of its frames on.
 func (v *view) measureWraps(near int, budget time.Duration) bool {
 	w := &v.heights.wraps
 	if !w.on {
 		return true
 	}
 	n := v.text.LineCount()
-	if w.known >= n {
+	hidden := v.heights.hidden
+	if !slices.Equal(v.wrapHidden, hidden) {
+		v.wrapHidden = append(v.wrapHidden[:0], hidden...)
+		v.wrapAt = 0
+	}
+	if w.known >= n || v.wrapAt >= n {
 		return true
 	}
 	start := time.Now()
@@ -952,20 +964,44 @@ func (v *view) measureWraps(near int, budget time.Duration) bool {
 	a := v.text.LineStart(near)
 	lo := max(near-200, v.text.LineOf(a-64<<10))
 	hi := min(near+200, v.text.LineOf(a+64<<10)+1)
-	v.text.EachLine(lo, hi, measure)
-	count, bytes := 0, 0
-	v.text.EachLine(v.wrapAt, n, func(i, at int, s string) bool {
-		measure(i, at, s)
-		v.wrapAt = i + 1
-		count++
-		bytes += len(s)
-		if count&255 != 0 && bytes < 64<<10 {
-			return true
+	v.text.EachLine(lo, hi, func(i, at int, s string) bool {
+		if !v.heights.isHidden(i) {
+			measure(i, at, s)
 		}
-		bytes = 0
-		return time.Since(start) <= budget
+		return true
 	})
-	return w.known >= n
+	count, bytes := 0, 0
+	for v.wrapAt < n {
+		from := v.wrapAt
+		// Past the hidden lines from here, up to the next.
+		k := sort.Search(len(hidden), func(k int) bool { return hidden[k].to >= from })
+		if k < len(hidden) && hidden[k].from <= from {
+			v.wrapAt = hidden[k].to + 1
+			continue
+		}
+		to := n
+		if k < len(hidden) {
+			to = min(n, hidden[k].from)
+		}
+		stopped := false
+		v.text.EachLine(from, to, func(i, at int, s string) bool {
+			measure(i, at, s)
+			v.wrapAt = i + 1
+			count++
+			bytes += len(s)
+			if count&255 != 0 && bytes < 64<<10 {
+				return true
+			}
+			bytes = 0
+			stopped = time.Since(start) > budget
+			return !stopped
+		})
+		if stopped {
+			break
+		}
+		v.wrapAt = max(v.wrapAt, to)
+	}
+	return v.wrapAt >= n
 }
 
 // rowOf returns the row of l holding displayed byte d, the row it ends

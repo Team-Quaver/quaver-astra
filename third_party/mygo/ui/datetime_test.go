@@ -296,6 +296,15 @@ func TestColorPicker(t *testing.T) {
 	if h := toHSVA(color); h.s < 0.98 || h.v < 0.98 || h.h < 115 || h.h > 125 {
 		t.Fatalf("the top-right corner: %v (%+v)", hexOf(color), h)
 	}
+	// Let go at the bottom-left corner before a frame: black, though the
+	// pointer went back.
+	tt.Press(float32(sq.X+sq.W-1), float32(sq.Y+1))
+	tt.rt.event(platform.SurfaceEvent{Kind: platform.PointerUp, X: sq.X + 1, Y: sq.Y + sq.H - 1})
+	tt.rt.event(platform.SurfaceEvent{Kind: platform.PointerMove, X: sq.X + sq.W - 1, Y: sq.Y + 1})
+	tt.settle()
+	if h := toHSVA(color); h.v > 0.02 {
+		t.Errorf("let go at the bottom-left corner before a frame: %v (%+v)", hexOf(color), h)
+	}
 	// A gray keeps the hue it came from.
 	tt.ClickAt(float32(sq.X+1), float32(sq.Y+sq.H/2))
 	tt.Key(0, KeyRight)

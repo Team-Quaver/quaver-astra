@@ -35,6 +35,12 @@ type Glass struct {
 	// Interactive makes the glass grow a little while the element is
 	// pressed, as AppKit's interactive glass does.
 	Interactive bool
+	// Native asks for the system's glass where the window has it (macOS
+	// 26 and later), drawn under the content: it samples what is under the
+	// window's surface, as a ui.WebView's page, not the elements the frame
+	// painted. Elsewhere, and with Reduce Transparency, the shader draws
+	// it.
+	Native bool
 	// Clarity, from 0 to 1, makes panes as large as sidebars clearer,
 	// the content under them reading through: 0, the default, is
 	// macOS's material, as frosty as a control's; 0.5 blurs half as much
@@ -43,6 +49,40 @@ type Glass struct {
 	// 200. On Clear glass, which barely tones already, it only lights the
 	// rim and curves the bezel.
 	Clarity float32
+	// hover follows the pointer over an interactive glass, from 0 to 1.
+	hover float32
+}
+
+// pressKey is the key of an interactive glass's animation.
+type pressKey struct{}
+
+// hoverKey is the key of an interactive glass's hover animation.
+type hoverKey struct{}
+
+// pressed is an interactive glass as its element is built: how far it
+// has grown, from 0 to 1, and how far the pointer hovers it.
+type pressed struct {
+	Glass
+	grow, hover float32
+}
+
+// BuildMaterial follows the press and hover of an interactive glass's
+// element: the glass grows as it is pressed, and lights its rim as the
+// pointer enters it, within 150 ms, as AppKit's does.
+func (g Glass) BuildMaterial(e ui.Element) ui.Material {
+	if !g.Interactive {
+		return g
+	}
+	target := float32(0)
+	if e.Pressed() {
+		target = 1
+	}
+	hover := float32(0)
+	if e.Hovered() {
+		hover = 1
+	}
+	return pressed{g, e.Animate(pressKey{}, target, 150*time.Millisecond),
+		e.Animate(hoverKey{}, hover, 120*time.Millisecond)}
 }
 
 // Style is the material of Glass.
@@ -58,32 +98,26 @@ const (
 	Clear
 )
 
-// pressKey is the key of an interactive glass's animation.
-type pressKey struct{}
-
-// pressed is an interactive glass as its element is built: how far it
-// has grown, from 0 to 1.
-type pressed struct {
-	Glass
-	grow float32
-}
-
-// BuildMaterial follows the press of an interactive glass's element: the
-// glass grows as it is pressed and shrinks back as it is let go, within
-// 150 ms, as AppKit's does.
-func (g Glass) BuildMaterial(e ui.Element) ui.Material {
-	if !g.Interactive {
-		return g
+// NativeGlass asks for the system's glass, which ui places under the
+// surface, where it has Liquid Glass.
+func (g Glass) NativeGlass() (ui.NativeGlassSpec, bool) {
+	if !g.Native {
+		return ui.NativeGlassSpec{}, false
 	}
-	target := float32(0)
-	if e.Pressed() {
-		target = 1
+	style := 0
+	if g.Style == Clear {
+		style = 1
 	}
-	return pressed{g, e.Animate(pressKey{}, target, 150*time.Millisecond)}
+	return ui.NativeGlassSpec{Style: style, Tint: g.Tint}, true
 }
 
 // PaintMaterial paints the glass over box, rounded by radii.
 func (g Glass) PaintMaterial(p *ui.Painter, box ui.Rect, radii [4]float32) {
+	if g.Native && p.NativeGlassSupported() && !p.Preferences().ReduceTransparency {
+		// The system's glass, under the surface, shows through this hole.
+		p.Hole(box, radii)
+		return
+	}
 	paint(p, box, radii, g)
 }
 
@@ -91,6 +125,10 @@ func (g Glass) PaintMaterial(p *ui.Painter, box ui.Rect, radii [4]float32) {
 // macOS 27's, measured from NSGlassEffectView, by about 1.1 DIPs left and
 // right and 0.45 DIPs above and below, whatever its size. AppKit stretches
 // the content too, a pixel or so, which the children here are not.
+func (pressed) NativeGlass() (ui.NativeGlassSpec, bool) {
+	return ui.NativeGlassSpec{}, false
+}
+
 func (g pressed) PaintMaterial(p *ui.Painter, box ui.Rect, radii [4]float32) {
 	dx, dy := 1.1*g.grow, 0.45*g.grow
 	box = ui.Rect{X: box.X - dx, Y: box.Y - dy, W: box.W + 2*dx, H: box.H + 2*dy}
@@ -99,6 +137,7 @@ func (g pressed) PaintMaterial(p *ui.Painter, box ui.Rect, radii [4]float32) {
 			radii[i] += dy
 		}
 	}
+	g.Glass.hover = g.hover
 	paint(p, box, radii, g.Glass)
 }
 
@@ -110,6 +149,9 @@ func (g Glass) String() string {
 	}
 	if g.Tint.A > 0 {
 		s += fmt.Sprintf(" tint(#%02x%02x%02x%02x)", g.Tint.R, g.Tint.G, g.Tint.B, g.Tint.A)
+	}
+	if g.Native {
+		s += " native"
 	}
 	if g.Interactive {
 		s += " interactive"
@@ -142,13 +184,47 @@ func paint(p *ui.Painter, box ui.Rect, radii [4]float32, g Glass) {
 	if box.W <= 0 || box.H <= 0 {
 		return
 	}
+	if p.Preferences().ReduceTransparency {
+		paintOpaque(p, box, radii, g)
+		return
+	}
 	mat := paneMaterial(min(box.W, box.H), p.Scale(), g.Clarity, g.Style == Clear, p.Theme().Dark)
+	if p.Preferences().HighContrast {
+		mat.rim = min(mat.rim+0.15, 1)
+		mat.rimWidth = max(mat.rimWidth, 1.5)
+	}
+	if g.hover > 0 {
+		// As the pointer enters an interactive glass, its rim lights and
+		// its surface lifts a little.
+		mat.rim = min(mat.rim+0.18*g.hover, 1)
+		mat.low = min(mat.low+0.02*g.hover, 1)
+		mat.high = min(mat.high+0.02*g.hover, 1)
+	}
 	if g.Tint.A > 0 {
 		mat.tint, mat.wideTint = p.EffectColor(g.Tint)
-		mat.tint[3] *= 0.88
-		mat.wideTint[3] *= 0.88
+		a := 0.88 * (1 + 0.1*g.hover)
+		mat.tint[3] = min(mat.tint[3]*a, 1)
+		mat.wideTint[3] = min(mat.wideTint[3]*a, 1)
 	}
 	p.Effect(Effect, box, radii, mat.blur, mat.params())
+}
+
+// paintOpaque paints g as the opaque surface that the desktop asks for
+// with Reduce Transparency: the theme's surface, or its background for
+// clear glass, tinted as g is, without blur, refraction or a rim.
+func paintOpaque(p *ui.Painter, box ui.Rect, radii [4]float32, g Glass) {
+	t := p.Theme()
+	c := t.Surface
+	if g.Style == Clear {
+		c = t.Background
+	}
+	if g.Tint.A > 0 {
+		c = c.Mix(g.Tint, float32(g.Tint.A)/255*0.88)
+	}
+	p.FillRadii(box, radii, c)
+	if p.Preferences().HighContrast {
+		p.Stroke(box, t.Border, max(radii[0], radii[1], radii[2], radii[3]), 1)
+	}
 }
 
 // paneMaterial is the material of a pane whose shorter side is m DIPs,

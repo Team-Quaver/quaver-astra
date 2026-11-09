@@ -174,6 +174,11 @@ func (ed *editor) run(cmd Command) bool {
 			ed.find.open = false
 			ed.needsBuild = true
 			ed.refocus = true
+		case ed.snippet != nil:
+			ed.snippet = nil
+			p := ed.primary()
+			p.collapse(p.head)
+			ed.setSels([]sel{p}, revealFit)
 		case len(ed.sels) > 1:
 			p := ed.primary()
 			ed.setSels([]sel{p}, revealFit)
@@ -265,10 +270,16 @@ func (ed *editor) run(cmd Command) bool {
 	case Indent:
 		return ed.indentLines(1)
 	case Outdent, Backtab:
+		if cmd == Backtab && ed.stepSnippet(true) {
+			return true
+		}
 		return ed.indentLines(-1)
 	case Tab:
 		if ed.complete.open() {
 			return ed.acceptCompletion()
+		}
+		if ed.stepSnippet(false) {
+			return true
 		}
 		if ed.acceptSuggestion() {
 			return true

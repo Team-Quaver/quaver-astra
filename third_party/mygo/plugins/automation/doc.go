@@ -22,5 +22,7 @@
 //
 // Builds without the inspector of native UI (-tags mygo_noinspector, as
 // mygo build makes for release) leave the plugin out: it never listens
-// there. See docs/plugins/automation.md for the protocol.
+// there. See docs/plugins/automation.md for the protocol, and for
+// mygo-automation (cmd/mygo-automation), its command line client for
+// agents.
 package automation

@@ -21,12 +21,27 @@ type Options struct {
 	// Extensions is the syntax read beyond CommonMark: Default when zero.
 	Extensions parser.Extensions
 
+	// LinkMenu, when set, builds the context menu of a link, given its
+	// destination, as a chat's Copy Path and Reveal in Finder for a link
+	// to a file. The link's menu replaces the one around the view, as its
+	// Selectable container's, since the innermost element with a context
+	// menu gets the click; m.EditItems adds the text's Copy and Select
+	// All to it. Links to #a-heading, footnote references and a link
+	// whose destination is still coming keep the menu around them.
+	LinkMenu func(m *ui.Menu, url string)
 	// OnLink, when set, handles a click on a link, given its destination.
 	// Without it, links to http, https and mailto addresses open as a
 	// ui.Link opens them, a path without a scheme goes there in the
 	// router around the view, a link to #a-heading scrolls to that
 	// heading, and links of other schemes do nothing.
 	OnLink func(url string)
+	// LinkIcon, when set, makes an object at the start of a link's text,
+	// from its destination and the size of the text around it in DIPs:
+	// one on the baseline, inside the link, which stays on the line of
+	// the link's first word and copies as nothing. When it returns false,
+	// the link has none; a link still being written has none yet. It is
+	// asked again whenever the paragraph changes: keep what it makes.
+	LinkIcon func(dest string, size float32) (InlineObject, bool)
 	// Anchor scrolls to the heading of this slug, with or without its "#",
 	// when the document first shows, when another document replaces it,
 	// and when Anchor changes: a docs reader opens guide.md#install at
@@ -35,6 +50,21 @@ type Options struct {
 	// AnchorVersion scrolls to Anchor again when it changes, for the same
 	// heading asked for twice.
 	AnchorVersion uint64
+	// Resolve, when set, makes mentions (@octocat) and references to
+	// issues and pull requests (#123) links: it returns where one goes,
+	// which OnLink, or else the router or a ui.Link, opens, as a path of
+	// the app's to open it in place, or false to leave it text, as
+	// GitHub does for a person or an issue it does not know. Without it,
+	// they show as text. It is asked for each one shown whenever the view
+	// builds, so it looks up what the app has at hand, as in a map, and
+	// paragraphs follow when its answers change.
+	Resolve func(in parser.Inline) (dest string, ok bool)
+	// Preview, when set, returns what shows while the pointer rests on a
+	// link to dest, a mention's or a reference's included: a function
+	// filling the tip, as ui.TooltipBase does, or nil for the address
+	// alone. It runs as the view builds, so it shows what the app has at
+	// hand, fetching the rest in the background.
+	Preview func(c *ui.Context, dest string) func(tip ui.Element)
 	// LoadImage loads the image at url, on a goroutine of its own, for the
 	// views to show; until it has, they show its description. Without
 	// it, images show as their descriptions. FileImages loads files.
@@ -77,8 +107,8 @@ type Options struct {
 	images sync.Map // url → *imageEntry
 }
 
-// InlineObject is math within text, as Options.InlineMath makes it: a
-// box Width wide, Height above the baseline and Depth below it, in DIPs,
+// InlineObject is math within text, as Options.InlineMath makes it, or a
+// link's icon, as Options.LinkIcon does: a box Width wide, Height above the baseline and Depth below it, in DIPs,
 // which Draw paints in r, its box in the window. Draw only paints: it
 // may run more than once a frame.
 type InlineObject struct {
@@ -114,6 +144,38 @@ func View(c *ui.Context, src string, o *Options) ui.Element {
 //	}
 func Stream(c *ui.Context, src string, o *Options) ui.Element {
 	return build(c, src, o, true)
+}
+
+// Revealed reports whether el, a view View or Stream returned this frame,
+// shows all of its source, done fading in. A chat shows a reply's time
+// and actions once its reply is complete and Revealed, not as its last
+// bytes arrive, while words still come in:
+//
+//	var md ui.Element
+//	if msg.done {
+//		md = markdown.View(c, msg.text, &app.md)
+//	} else {
+//		md = markdown.Stream(c, msg.text, &app.md)
+//	}
+//	if msg.done && markdown.Revealed(md) {
+//		ui.Text(c, msg.time)
+//	}
+//
+// It tells what this frame shows, so call it after View or Stream, and
+// build what it decides after them. The view asks for a frame each
+// refresh while it reveals or fades, so a caller that reads it every
+// frame sees it turn true without other input, once the last unit shows
+// and its fade ends. Text that shows at once (AtOnce, a View given text
+// no Stream left to reveal, an edit) is revealed in the frame it comes;
+// without a fade (Reveal.Fade negative, or the desktop's Reduce Motion),
+// text is revealed once its last unit shows. It turns false again when
+// more text comes. Of a Stream, it tells only that the text that came so
+// far shows: whether more is coming is the caller's to know, and text
+// held back for a sentence, a line or a paragraph to end keeps it false
+// until View shows it. It is false for an element neither returned.
+func Revealed(el ui.Element) bool {
+	st := ui.Local(el, stateKey{}, func() *viewState { return nil })
+	return st != nil && *st != nil && (*st).reveal.revealed()
 }
 
 // stateKey keys a view's state among its root's.
@@ -263,7 +325,8 @@ func (st *viewState) blocks(c *ui.Context, parent int, tight bool, base spanStyl
 	prevHeading := 0
 	for j := parent + 1; j < d.Block(parent).Next; j = d.Block(j).Next {
 		b := d.Block(j)
-		if b.Kind == parser.FootnoteDefinition {
+		if b.Kind == parser.FootnoteDefinition || b.Kind == parser.Paragraph && d.LineCount(j) == 0 {
+			// Footnotes show at the end, and an alert's marker not at all.
 			continue
 		}
 		top := float32(0)
@@ -360,6 +423,9 @@ func (st *viewState) defaultBlock(c *ui.Context, i int, tight bool, base spanSty
 			st.note(el.ID(), i, 0)
 		})
 	case parser.Quote:
+		if b.Alert != parser.NoAlert {
+			return st.alert(c, i, b.Alert, base)
+		}
 		s := base
 		s.color = th.QuoteText
 		// The bar on the side lines start: the right right to left.
@@ -371,6 +437,24 @@ func (st *viewState) defaultBlock(c *ui.Context, i int, tight bool, base spanSty
 		return st.table(c, i, base)
 	}
 	return ui.Box(c)
+}
+
+// alert builds a GitHub alert: a quote whose bar, icon and title take
+// its kind's color, its text the color of text.
+func (st *viewState) alert(c *ui.Context, i int, a parser.Alert, base spanStyle) ui.Element {
+	th := &st.th
+	color := th.Alerts[a-1]
+	q := ui.Column(c).BorderStartWidth(th.QuoteBarWidth).BorderColor(color).PaddingStart(th.em(0.85))
+	return q.Children(func() {
+		title := ui.Row(c).AlignItems(ui.Center).Gap(th.em(0.5)).TextColor(color).Margin(0, 0, th.em(th.ItemSpacing*2), 0)
+		title.Children(func() {
+			if icon := alertIcon(a); icon != nil {
+				ui.Icon(c, icon)
+			}
+			ui.Text(c, a.String()).FontWeight(th.StrongWeight)
+		})
+		st.blocks(c, i, false, base)
+	})
 }
 
 // fadeIn fades in a block revealed a moment ago: text fades by its
@@ -399,7 +483,7 @@ func (st *viewState) para(i int, base spanStyle) *para {
 	st.doc.Inlines(i) // their revision
 	pc := &st.paras[i]
 	fading := st.fade != nil && st.fade(max(b.End-1, b.Start)) < 1
-	if pc.ok && pc.start == b.Start && pc.end == b.End && pc.kind == b.Kind && pc.rev == b.Revision() && pc.base == base && !pc.p.fading && !fading && !b.Healed() {
+	if pc.ok && pc.start == b.Start && pc.end == b.End && pc.kind == b.Kind && pc.rev == b.Revision() && pc.base == base && !pc.p.fading && !fading && !b.Healed() && st.sameResolved(i, &pc.p) {
 		return &pc.p
 	}
 	pc.start, pc.end, pc.kind, pc.rev, pc.base, pc.ok = b.Start, b.End, b.Kind, b.Revision(), base, true
@@ -408,8 +492,36 @@ func (st *viewState) para(i int, base spanStyle) *para {
 	sb.fade = st.fade
 	sb.notes = st.noteNumber
 	sb.math = st.o.InlineMath
+	sb.linkIcon = st.o.LinkIcon
+	sb.resolve = st.o.Resolve
 	sb.build(&pc.p, base)
 	return &pc.p
+}
+
+// sameResolved reports whether the mentions and references of block i
+// resolve where they did as p was built, Options.Resolve set or not
+// alike.
+func (st *viewState) sameResolved(i int, p *para) bool {
+	if len(p.refs) == 0 {
+		return true
+	}
+	if (st.o.Resolve != nil) != p.withResolve {
+		return false
+	}
+	if st.o.Resolve == nil {
+		return true
+	}
+	in := st.doc.Inlines(i)
+	for k, x := range p.refs {
+		dest, ok := st.o.Resolve(in[x])
+		if !ok {
+			dest = ""
+		}
+		if dest != p.resolved[k] {
+			return false
+		}
+	}
+	return true
 }
 
 // paragraph builds the text of block i: a paragraph, a heading or a cell.
@@ -461,6 +573,10 @@ func (st *viewState) piece(c *ui.Context, block int, pc *piece) {
 		}
 	default:
 		in := st.doc.Inlines(block)[pc.link]
+		if pc.dest != "" {
+			// A mention or a reference, which Options.Resolve made a link.
+			in.Dest, in.Auto = pc.dest, true
+		}
 		st.link(c, &in, func() { ui.RichText(c, pc.spans...) })
 	}
 }
@@ -487,13 +603,27 @@ func (st *viewState) link(c *ui.Context, in *parser.Inline, children func()) {
 	default:
 		l = ui.Link(c, "", "")
 	}
+	if st.o.LinkMenu != nil && !in.Pending && dest != "" && !strings.HasPrefix(dest, "#") {
+		l.ContextMenu(func(m *ui.Menu) { st.o.LinkMenu(m, dest) })
+	}
 	l.TextColor(st.th.Link)
 	l.Children(children)
-	switch {
-	case in.Title != "":
-		l.Tooltip(in.Title)
-	case !in.Auto && !in.Pending && dest != "" && !strings.HasPrefix(dest, "#"):
-		l.Tooltip(dest)
+	// What the tip says, which describes the link to assistive technology.
+	tip := in.Title
+	if tip == "" && !in.Auto && !in.Pending && dest != "" && !strings.HasPrefix(dest, "#") {
+		tip = dest
+	}
+	if st.o.Preview != nil && !in.Pending && dest != "" {
+		if fill := st.o.Preview(c, dest); fill != nil {
+			if tip != "" {
+				l.Description(tip)
+			}
+			ui.TooltipBase(c, l, fill)
+			return
+		}
+	}
+	if tip != "" {
+		l.Tooltip(tip)
 	}
 }
 

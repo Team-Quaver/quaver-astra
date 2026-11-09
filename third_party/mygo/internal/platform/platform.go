@@ -132,6 +132,39 @@ type Backend interface {
 	WebViewAvailable() bool
 }
 
+// WindowStateWindow is a window whose bounds in DIPs change with the
+// scales of the displays where they differ (Windows).
+// WindowStateBounds is its rectangle in the screen's pixels, which window
+// states keep with them.
+type WindowStateWindow interface {
+	WindowStateBounds() Rect
+}
+
+// WindowStateBackend restores windows at their pixels (Windows):
+// RestoreWindowState sets opts.StateBounds and returns true when pixels,
+// zero for none, would show on a connected display. Otherwise the core
+// restores the state's DIPs where every display has the same scale, and
+// centers the window where they have not.
+type WindowStateBackend interface {
+	RestoreWindowState(opts *WindowOptions, pixels Rect) bool
+}
+
+// StyleBackend styles the widgets the toolkit draws for the app with the
+// app's own style sheet (Linux: GTK's CSS, Theme.SetGTKCSS). SetStyleSheet
+// replaces the sheet set before, or removes it for "", and keeps that one
+// when css does not parse, returning why.
+type StyleBackend interface {
+	SetStyleSheet(css string) error
+}
+
+// WindowButtonsBackend reports the window buttons the desktop puts at the
+// start and at the end of title bars (Linux): "minimize", "maximize" and
+// "close", in their order, none where the desktop wants none. Main thread
+// only.
+type WindowButtonsBackend interface {
+	WindowButtons() (start, end []string)
+}
+
 // AppOptions configures Backend.Init.
 type AppOptions struct {
 	Name string
@@ -142,6 +175,9 @@ type AppOptions struct {
 	// ActivationPolicy is "regular" (default), "accessory" or "prohibited".
 	// Only meaningful on macOS.
 	ActivationPolicy string
+	// DMABUFRenderer is "off" (or ""), "on" or "auto": whether WebKitGTK
+	// may draw with its DMA-BUF renderer. Only meaningful on Linux.
+	DMABUFRenderer string
 }
 
 // AppHandler receives application level events from the backend.
@@ -336,6 +372,10 @@ type WindowOptions struct {
 	UseContentSize bool
 	MinSize        Size
 	MaxSize        Size
+	// StateBounds is the window's restored normal rectangle in the
+	// screen's pixels, set by WindowStateBackend. It overrides X, Y,
+	// Width and Height.
+	StateBounds *Rect
 
 	Resizable      bool
 	Movable        bool
@@ -368,6 +408,9 @@ type WindowOptions struct {
 	HideWindowButtons    bool
 	TrafficLightPosition *Point
 	Vibrancy             string
+	// VibrancyTint tints the material, where the platform's material takes
+	// one (macOS 26's Liquid Glass): nil for none.
+	VibrancyTint *Color
 	// CornerRadius rounds a frameless window's corners, in DIPs: its
 	// content and material are cut to them (macOS), or the system rounds
 	// it with its own corners (Windows 11).
@@ -553,6 +596,10 @@ type Window interface {
 	SetIgnoreMouseEvents(v bool)
 	SetContentProtection(v bool)
 	SetVibrancy(material string)
+	// SetVibrancyTint tints the window's material, where it takes one
+	// (macOS 26's Liquid Glass); nil removes the tint. Other materials and
+	// platforms ignore it.
+	SetVibrancyTint(c *Color)
 	// SetActiveAppearance keeps the window drawn as active, as the key
 	// window of the app in front, while it is not (macOS).
 	SetActiveAppearance(v bool)
@@ -636,6 +683,10 @@ type Page interface {
 	// the backend reports for the page (see Page.ProcessID in package
 	// mygo for which one), 0 when it reports none.
 	ProcessID() int
+	// GPUProcessID returns the ID of the operating system's process that
+	// does the page's graphics and media (see Page.GPUProcessID in
+	// package mygo), 0 when the backend reports none.
+	GPUProcessID() int
 	// IsAudible reports whether the page plays sound, from any of its
 	// frames, as WindowHandler.AudibleChanged reports its changes; false
 	// where the backend cannot tell.
@@ -736,14 +787,51 @@ type WebView interface {
 // (Surface.PlaceWebViews), in DIPs relative to the surface.
 type WebViewPlacement struct {
 	WebView WebView
-	// Frame is the web view's box; Clip the part of it that shows, which
-	// the frames leave transparent but where the content painted over it.
+	// Frame is the web view's box as it shows; Clip the part of it that
+	// shows, which the frames leave transparent but where the content
+	// painted over it.
 	Frame, Clip RectF
+	// Width and Height are the size the page lays out at, in its own
+	// DIPs: the element's content box before a scale of the transforms
+	// around it, which shows the page in Frame scaled as a picture of it,
+	// its viewport the same (Scale). Zero is Frame's size.
+	Width, Height float64
+	// Radii are those of the page's corners, in its DIPs, from its
+	// top-left clockwise, as the hole showing it has: the page shows, and
+	// takes the pointer, inside them.
+	Radii [4]float64
 	// Covers are the boxes, within Clip, of what the content painted over
 	// the web view that takes the pointer: there the pointer is the
 	// surface's, elsewhere in Clip the web view's.
 	Covers []RectF
 }
+
+// Size returns the size the page lays out at, in its DIPs.
+func (p *WebViewPlacement) Size() (w, h float64) {
+	if p.Width <= 0 || p.Height <= 0 {
+		return p.Frame.W, p.Frame.H
+	}
+	return p.Width, p.Height
+}
+
+// Scale returns how much Frame scales the page: 1, 1 unless a transform
+// scales it.
+func (p *WebViewPlacement) Scale() (x, y float64) {
+	w, h := p.Size()
+	if w <= 0 || h <= 0 {
+		return 1, 1
+	}
+	return p.Frame.W / w, p.Frame.H / h
+}
+
+// ToPage converts a point of the surface to the page's DIPs.
+func (p *WebViewPlacement) ToPage(x, y float64) (float64, float64) {
+	sx, sy := p.Scale()
+	return (x - p.Frame.X) / sx, (y - p.Frame.Y) / sy
+}
+
+// Rounded reports whether the page's corners are rounded.
+func (p *WebViewPlacement) Rounded() bool { return p.Radii != [4]float64{} }
 
 // At reports whether the pointer at x, y is the web view's.
 func (p *WebViewPlacement) At(x, y float64) bool {
@@ -752,6 +840,32 @@ func (p *WebViewPlacement) At(x, y float64) bool {
 	}
 	for _, c := range p.Covers {
 		if c.Contains(x, y) {
+			return false
+		}
+	}
+	if p.Rounded() {
+		w, h := p.Size()
+		px, py := p.ToPage(x, y)
+		return InsideCorners(w, h, p.Radii, px, py)
+	}
+	return true
+}
+
+// InsideCorners reports whether x, y is inside the corners of radii
+// (from the top-left clockwise) of a box w by h at the origin.
+func InsideCorners(w, h float64, radii [4]float64, x, y float64) bool {
+	// Each corner's center, and the side of it the corner is on.
+	for i, c := range [4][2]float64{{0, 0}, {1, 0}, {1, 1}, {0, 1}} {
+		r := radii[i]
+		if r <= 0 {
+			continue
+		}
+		cx, cy := r+c[0]*(w-2*r), r+c[1]*(h-2*r)
+		dx, dy := x-cx, y-cy
+		if (c[0] == 0) != (dx < 0) || (c[1] == 0) != (dy < 0) {
+			continue // not in the corner's square
+		}
+		if dx*dx+dy*dy > r*r {
 			return false
 		}
 	}
@@ -832,8 +946,10 @@ type WindowHandler interface {
 	// it. For FileDragOver and FileDrop it reports whether the content
 	// takes the files where they are, for KeyPressed whether it took
 	// the key itself, which the system then leaves alone (Windows opens no
-	// menu for Alt and the key), and for SurfaceCommandEnabled whether the
-	// command would act; it returns false for other events.
+	// menu for Alt and the key), for TextComposition whether it took the
+	// composition, which the input method gives up otherwise (macOS), and
+	// for SurfaceCommandEnabled whether the command would act; it returns
+	// false for other events.
 	SurfaceEvent(ev SurfaceEvent) bool
 }
 
@@ -930,6 +1046,7 @@ type MenuItem struct {
 	ID          int
 	Type        MenuItemType
 	Label       string
+	Subtitle    string
 	Role        string
 	Accelerator string
 	Enabled     bool
@@ -937,8 +1054,11 @@ type MenuItem struct {
 	Checked     bool
 	ToolTip     string
 	// Icon is the image beside the label, nil for none.
-	Icon    *MenuIcon
-	Submenu *Menu
+	Icon *MenuIcon
+	// IconColor, when set, is the color of a template Icon in the menus
+	// package ui draws, in place of the text's; backends ignore it.
+	IconColor *Color
+	Submenu   *Menu
 	// Native is set on the web view's own items of a page's context menu
 	// (WindowHandler.ContextMenu): the backend's number for the item,
 	// from 1, which it shows where the core puts it, doing what the web
@@ -950,10 +1070,12 @@ type MenuItem struct {
 	Name   string
 }
 
-// FileFilter restricts the files shown in file dialogs.
+// FileFilter restricts the files shown in file dialogs: those of its
+// Extensions, and of its MIMETypes, which may be "kind/*".
 type FileFilter struct {
 	Name       string
 	Extensions []string
+	MIMETypes  []string
 }
 
 // OpenDialogOptions configures an open panel.
@@ -1037,6 +1159,14 @@ type Clipboard interface {
 	AvailableFormats() []string
 }
 
+// LaterClipboard is a clipboard whose writes finish later, as a
+// browser's, whose clipboard answers with a promise: WriteTextThen puts
+// text there as WriteText does, and gives done what came of it, on the
+// main thread. Desktops' clipboards answer at once (WriteData).
+type LaterClipboard interface {
+	WriteTextThen(text string, done func(error))
+}
+
 // Shell integrates with the desktop environment.
 type Shell interface {
 	OpenExternal(url string) error
@@ -1047,6 +1177,10 @@ type Shell interface {
 	// FileIcon returns the icon the file manager shows for a file, a
 	// folder or an application, as a PNG image of size by size pixels.
 	FileIcon(path string, size int) ([]byte, error)
+	// TypeIcon returns the icon the file manager shows for files with the
+	// extension ext (without its dot), as FileIcon does, though no such
+	// file exists.
+	TypeIcon(ext string, size int) ([]byte, error)
 	// OpenApplication starts the application at Application.Path, or
 	// brings it to the front.
 	OpenApplication(path string) error
@@ -1115,7 +1249,27 @@ type Preferences struct {
 	// UIFontSize is the size of the desktop's interface font in points,
 	// as gtk-font-name's on Linux; 0 where the desktop doesn't say one.
 	UIFontSize float64
+	// Pointer is how accurate the primary pointing device is, and
+	// AnyPointer the most accurate of all, as Media Queries 4's pointer
+	// and any-pointer: PointerFine, a mouse's, where it is not known.
+	Pointer, AnyPointer PointerAccuracy
+	// NoHover tells that the primary pointing device cannot hover, as a
+	// touch screen, and NoAnyHover that none can (hover and any-hover:
+	// none).
+	NoHover, NoAnyHover bool
 }
+
+// PointerAccuracy is how accurately a pointing device points.
+type PointerAccuracy uint8
+
+const (
+	// PointerFine is a mouse's, a touchpad's or a pen's.
+	PointerFine PointerAccuracy = iota
+	// PointerCoarse is a finger's on a touch screen.
+	PointerCoarse
+	// PointerNone is that of no pointing device at all.
+	PointerNone
+)
 
 // FontRendering is how the desktop's settings say to rasterize text, as
 // GTK's gtk-xft settings: each field is "" for the default, or unknown.
@@ -1254,7 +1408,11 @@ type Notification struct {
 	Silent   bool
 	// Group gathers the notifications that share it (threadIdentifier on
 	// macOS).
-	Group  string
+	Group string
+	// Image is shown with the notification: PNG or JPEG, or nil. The core
+	// links the backend's code of images (LinkNotificationImages) before
+	// it gives one.
+	Image  []byte
 	Sender *NotificationSender
 }
 

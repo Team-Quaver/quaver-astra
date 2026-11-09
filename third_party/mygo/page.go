@@ -19,7 +19,7 @@ type Page struct{ w *Window }
 // Page returns the web page the window shows, or nil for a window that
 // shows native UI.
 func (w *Window) Page() *Page {
-	if w.content != nil {
+	if w.content {
 		return nil
 	}
 	return w.pg

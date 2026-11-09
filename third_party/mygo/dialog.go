@@ -14,10 +14,22 @@ type DialogModule struct{}
 var Dialog DialogModule
 
 // FileFilter limits the files a file dialog shows, e.g.
-// {Name: "Images", Extensions: []string{"png", "jpg"}}.
+// {Name: "Images", Extensions: []string{"png", "jpg"}}, or by type, as
+// HTML's accept: {Name: "Images", MIMETypes: []string{"image/*"}} takes
+// every picture the system knows.
 type FileFilter struct {
-	Name       string
+	Name string
+	// Extensions are file name extensions, with or without the dot, or
+	// "*" for every file.
 	Extensions []string
+	// MIMETypes are media types, as "image/png", or all of one kind, as
+	// "image/*", which the system's picker takes as its own: types
+	// (UTType) on macOS 11 and later, which knows image/*, audio/*,
+	// video/*, text/* and font/* (earlier versions only those kinds), GTK's
+	// MIME patterns, and on Windows the extensions the registry gives the
+	// type, or of the kind (its PerceivedType too). The filter takes the
+	// files of its extensions and of its types.
+	MIMETypes []string
 }
 
 // OpenDialogOptions configures Dialog.Open.

@@ -31,6 +31,19 @@ func TestFileIcon(t *testing.T) {
 	}
 }
 
+func TestTypeIcon(t *testing.T) {
+	data, err := Shell.TypeIcon(".pdf", 24)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if img, err := png.Decode(bytes.NewReader(data)); err != nil || img.Bounds().Dx() != 24 {
+		t.Errorf("TypeIcon: %v, %v", img, err)
+	}
+	if _, err := Shell.TypeIcon("pdf", 0); err == nil {
+		t.Error("TypeIcon of size 0 did not fail")
+	}
+}
+
 func TestTrashItemRelativePath(t *testing.T) {
 	t.Chdir(t.TempDir())
 	defer func() { fake.Trashed = nil }()

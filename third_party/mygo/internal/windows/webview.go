@@ -229,6 +229,9 @@ func (w *window) setUp(controller uintptr) {
 	w.applyWebViewBackground()
 
 	w.addUserScripts()
+	if w.host != nil {
+		forwardKeys(w)
+	}
 
 	// The add methods write a registration token. Its address is taken in
 	// each call (go:uintptrescapes), as a uintptr saved earlier goes stale
@@ -629,7 +632,7 @@ func (w *window) acceleratorKeyPressed(_, args uintptr) {
 // pageAccelerator returns the menu command a key pressed in a page runs,
 // if any. A page keeps the keys of the edit roles, as in a browser and in
 // native UI: WebView2 cuts, copies and pastes with the page's own events
-// and every format of the clipboard, where editRole pastes text alone.
+// and every format of the clipboard.
 func (w *window) pageAccelerator(key accelKey) (uint16, bool) {
 	cmd, ok := w.accels[key]
 	if !ok {
@@ -667,7 +670,7 @@ func (w *window) LoadURL(raw string) {
 func (w *window) LoadHTML(html, baseURL string) {
 	w.withWebView(func() {
 		w.programmatic = true
-		if baseURL == "" {
+		if !servedAtBase(baseURL) {
 			comCall(w.webview, wvNavigateToString, uintptr(unsafe.Pointer(u16(html))))
 			return
 		}
@@ -681,6 +684,15 @@ func (w *window) LoadHTML(html, baseURL string) {
 		}
 		comCall(w.webview, wvNavigate, uintptr(unsafe.Pointer(u16(target))))
 	})
+}
+
+// servedAtBase reports whether LoadHTML serves its document at baseURL,
+// answering the navigation's request for it. WebView2 requests no about:
+// URL, about:blank among them, so their documents, as those without a base
+// URL, go through NavigateToString, which shows them at about:blank.
+func servedAtBase(baseURL string) bool {
+	scheme, _, _ := strings.Cut(baseURL, ":")
+	return baseURL != "" && !strings.EqualFold(scheme, "about")
 }
 
 func (w *window) LoadFile(path, _ string) {
@@ -949,6 +961,44 @@ func (w *window) ProcessID() int {
 		return 0
 	}
 	return int(pid)
+}
+
+// GPUProcessID returns the GPU process of the web view's environment,
+// which its web views share, from ICoreWebView2Environment8's
+// GetProcessInfos; 0 before the web view is made, on runtimes older than
+// it, and while the environment runs no GPU process.
+func (w *window) GPUProcessID() int {
+	if w.webview == 0 {
+		return 0
+	}
+	env8 := queryInterface(w.b.env, &iidICoreWebView2Environment8)
+	if env8 == 0 {
+		return 0
+	}
+	defer release(env8)
+	var infos uintptr
+	if failed(comCall(env8, env8GetProcessInfos, uintptr(unsafe.Pointer(&infos)))) || infos == 0 {
+		return 0
+	}
+	defer release(infos)
+	var n uint32
+	if failed(comCall(infos, procInfosGetCount, uintptr(unsafe.Pointer(&n)))) {
+		return 0
+	}
+	for i := range n {
+		var info uintptr
+		if failed(comCall(infos, procInfosGetValueAtIndex, uintptr(i), uintptr(unsafe.Pointer(&info)))) || info == 0 {
+			continue
+		}
+		var kind, pid int32
+		ok := !failed(comCall(info, procInfoGetKind, uintptr(unsafe.Pointer(&kind)))) && kind == processKindGPU &&
+			!failed(comCall(info, procInfoGetProcessId, uintptr(unsafe.Pointer(&pid))))
+		release(info)
+		if ok {
+			return int(pid)
+		}
+	}
+	return 0
 }
 
 // webView8 returns the web view's ICoreWebView2_8, which the caller

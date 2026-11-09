@@ -75,28 +75,81 @@ func (p *Painter) paintEffect(e *node) bool {
 		m = e.effect.EffectMargin()
 	}
 	m.X, m.Y = max(m.X, 0), max(m.Y, 0)
+	grown := func(r Rect) Rect { return Rect{r.X - m.X, r.Y - m.Y, r.W + 2*m.X, r.H + 2*m.Y} }
 	box := Rect{e.x, e.y, e.w, e.h}
-	from := Rect{box.X - m.X, box.Y - m.Y, box.W + 2*m.X, box.H + 2*m.Y}
-	if e.cache != nil && e.effect == nil {
-		// What the element paints, blurred as far as the blur shows.
-		from = e.cache.area(e)
-		from = Rect{from.X - m.X, from.Y - m.Y, from.W + 2*m.X, from.H + 2*m.Y}
+	// What the layer holds: the box for an effect, which draws over it;
+	// for a blur or a Cache, what the element paints, as far as it
+	// painted the last time too (inkArea), blurred as far as the blur
+	// shows.
+	content, view := box, Rect{}
+	if e.effect == nil {
+		// Out of view, but for what the blur brings into it, nothing
+		// shows; but a kept layer holds what it holds wherever it shows,
+		// so as not to be drawn again as it moves.
+		view = grown(p.clipIn(e))
+		if e.cache != nil {
+			content, view = e.cache.area(e), everywhere
+		}
+		content = p.inkArea(e, content)
 	}
+	from := grown(content)
 	if box.W <= 0 || box.H <= 0 || !p.visible(from, 4) {
 		return true
 	}
+	if e.effect == nil && p.opacity*e.fade() <= 0.001 {
+		return true // faded out
+	}
 	s := p.scale
-	// The content's pixels, from the box grown by the margin (or the
-	// area a kept layer takes), on the pixel grid.
-	x0 := float32(math.Floor(float64(from.X * s)))
-	y0 := float32(math.Floor(float64(from.Y * s)))
+	var cv *Canvas
+	var x0, y0 float32
+	var w, h int
+	for again := false; ; again = true {
+		if cv, x0, y0, w, h = p.layer(e, from); cv == nil {
+			return false // too large to render apart: as it is
+		}
+		render := layerPaint(e, -x0/s, -y0/s, p.lifting, view)
+		if e.cache != nil {
+			e.cache.draw(cv, p, s, w, h, render)
+		} else {
+			cv.drawPart(p, s, w, h, render)
+		}
+		if e.effect != nil || again {
+			break
+		}
+		// What it painted beyond the layer, as a shadow or a blur inside
+		// it, which the layer cut: drawn again, holding it.
+		more := grown(inkUnion(content, p.keepInk(e, cv, x0, y0)))
+		if layerHolds(x0, y0, w, h, s, more) {
+			break
+		}
+		from = more
+	}
+	if e.effect != nil {
+		// The content is the bitmap's top left w×h pixels: the effect
+		// draws over those, and reads it transparent beyond.
+		e.effect.PaintEffect(p, box, cv.region(w, h), Point{box.X*s - x0, box.Y*s - y0})
+		return true
+	}
+	// The canvas, blurred unless kept alone, in its pixels, where it was
+	// drawn from, faded with e's opacity as one image (paintGroup).
+	p.layerOp(cv, x0, y0, w, h, p.opacity*e.fade(), e.blur*s)
+	return true
+}
+
+// layer returns e's state's canvas, made or resized to hold the pixels
+// of from, an area of e's own space, on the pixel grid: their corner and
+// their size, or a nil canvas when too large to render apart.
+func (p *Painter) layer(e *node, from Rect) (cv *Canvas, x0, y0 float32, w, h int) {
+	s := p.scale
+	x0 = float32(math.Floor(float64(from.X * s)))
+	y0 = float32(math.Floor(float64(from.Y * s)))
 	x1 := float32(math.Ceil(float64((from.X + from.W) * s)))
 	y1 := float32(math.Ceil(float64((from.Y + from.H) * s)))
-	w, h := int(x1-x0), int(y1-y0)
+	w, h = int(x1-x0), int(y1-y0)
 	if w <= 0 || h <= 0 || w > maxEffectLayer || h > maxEffectLayer {
-		return false // too large to render apart: as it is
+		return nil, 0, 0, 0, 0
 	}
-	cv := e.st.effectLayer
+	cv = e.st.effectLayer
 	switch {
 	case cv == nil:
 		cv = NewCanvas(layerSide(w), layerSide(h))
@@ -106,10 +159,23 @@ func (p *Painter) paintEffect(e *node) bool {
 	}
 	// Drawn anew whenever it shows, unless kept (Cache).
 	cv.img.Transient = e.cache == nil
-	dx, dy := -x0/s, -y0/s
+	return cv, x0, y0, w, h
+}
+
+// layerPaint returns what paints e's subtree into its layer, moved by dx,
+// dy to the layer's corner, with lifting the element flying that the
+// painter paints (Painter.lifting), as it paints e in its place. Unless
+// empty, view is the area of e's own space that may show, out of which it
+// leaves things out rather than out of the layer: what it paints beyond
+// the layer then tells how large the layer has to be (keepInk).
+func layerPaint(e *node, dx, dy float32, lifting *node, view Rect) func(cp *Painter) {
 	world := e.world
-	render := func(cp *Painter) {
+	return func(cp *Painter) {
 		e.effecting = true
+		cp.lifting = lifting
+		if view.W > 0 && view.H > 0 {
+			cp.clip = Rect{view.X + dx, view.Y + dy, view.W, view.H}
+		}
 		// The subtree in e's own space, moved to the bitmap's corner:
 		// positions shift, and the transforms of those transformed lose
 		// e's own, as a layer of e's content.
@@ -124,26 +190,18 @@ func (p *Painter) paintEffect(e *node) bool {
 		shift(e, -dx, -dy)
 		e.effecting = false
 	}
-	if e.cache != nil {
-		e.cache.draw(cv, p, s, w, h, render)
-	} else {
-		cv.drawPart(p, s, w, h, render)
-	}
-	if e.effect != nil {
-		// The content is the bitmap's top left w×h pixels: the effect
-		// draws over those, and reads it transparent beyond.
-		e.effect.PaintEffect(p, box, cv.region(w, h), Point{box.X*s - x0, box.Y*s - y0})
-		return true
-	}
-	// The canvas, blurred unless kept alone, in its pixels, where it was
-	// drawn from.
+}
+
+// layerOp paints the top left w×h pixels of cv where they were drawn from,
+// at x0, y0 pixels, with opacity and blurred by blur pixels.
+func (p *Painter) layerOp(cv *Canvas, x0, y0 float32, w, h int, opacity, blur float32) {
+	s := p.scale
 	area := Rect{X: x0 / s, Y: y0 / s, W: float32(w) / s, H: float32(h) / s}
 	rect := p.snap(area)
 	if p.transform.Set {
 		rect = scene.Rect{X: x0, Y: y0, W: float32(w), H: float32(h)}
 	}
-	p.add(scene.Op{Kind: scene.OpImage, Rect: rect, Image: cv.img, Src: scene.Rect{W: float32(w), H: float32(h)}, Opacity: p.opacity, Blur: e.blur * s})
-	return true
+	p.add(scene.Op{Kind: scene.OpImage, Rect: rect, Image: cv.img, Src: scene.Rect{W: float32(w), H: float32(h)}, Opacity: opacity, Blur: blur})
 }
 
 // unworld takes off the transform w of e's subtree, laid out as it moved

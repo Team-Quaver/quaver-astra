@@ -5,7 +5,7 @@ takes the options of the standard `fetch` and returns a standard
 `Response`, but the request leaves from the Go side of the app, so:
 
 - it is not subject to CORS: any server answers, and every response header
-  is readable but `Set-Cookie`, which a `Response` cannot hold;
+  is readable but `Set-Cookie` and `Set-Cookie2`, which the plugin filters;
 - it may set any header, including those the webview forbids, such as
   `Origin`, `Cookie`, `Referer` and `User-Agent`;
 - its body streams to the page as Go reads it, and aborting it cancels the

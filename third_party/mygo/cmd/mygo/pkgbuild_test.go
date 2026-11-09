@@ -80,18 +80,24 @@ func TestArchDepends(t *testing.T) {
 
 func TestArchLicenseAndURL(t *testing.T) {
 	for _, tc := range []struct {
+		config       string
 		packageJSON  string
 		github       string
 		license, url string
 	}{
-		{"", "", "LicenseRef-custom", ""},
-		{`{"license": "MIT", "homepage": "https://example.com"}`, "me/app", "MIT", "https://example.com"},
-		{`{"license": "(MIT OR Apache-2.0)"}`, "me/app", "MIT OR Apache-2.0", "https://github.com/me/app"},
-		{`{"license": "UNLICENSED"}`, "", "LicenseRef-custom", ""},
-		{`{"license": "SEE LICENSE IN LICENSE.txt"}`, "", "LicenseRef-custom", ""},
-		{`{"license": {"type": "MIT"}}`, "", "LicenseRef-custom", ""},
+		{"", "", "", "LicenseRef-custom", ""},
+		{"", `{"license": "MIT", "homepage": "https://example.com"}`, "me/app", "MIT", "https://example.com"},
+		{"", `{"license": "(MIT OR Apache-2.0)"}`, "me/app", "MIT OR Apache-2.0", "https://github.com/me/app"},
+		{"", `{"license": "UNLICENSED"}`, "", "LicenseRef-custom", ""},
+		{"", `{"license": "SEE LICENSE IN LICENSE.txt"}`, "", "LicenseRef-custom", ""},
+		{"", `{"license": {"type": "MIT"}}`, "", "LicenseRef-custom", ""},
+		// mygo.json's license wins over the one of package.json, which a
+		// frontend may declare for npm rather than for the app.
+		{"MIT", "", "", "MIT", ""},
+		{"(MPL-2.0)", `{"license": "MIT"}`, "", "MPL-2.0", ""},
+		{"UNLICENSED", "", "", "LicenseRef-custom", ""},
 	} {
-		c := &Config{root: t.TempDir()}
+		c := &Config{root: t.TempDir(), License: tc.config}
 		if tc.packageJSON != "" {
 			if err := os.WriteFile(filepath.Join(c.root, "package.json"), []byte(tc.packageJSON), 0o644); err != nil {
 				t.Fatal(err)
@@ -101,7 +107,8 @@ func TestArchLicenseAndURL(t *testing.T) {
 			c.Updates = &Updates{GitHub: tc.github}
 		}
 		if license, url := archLicense(c), archURL(c); license != tc.license || url != tc.url {
-			t.Errorf("package.json %s, updates.github %q: license %q, url %q", tc.packageJSON, tc.github, license, url)
+			t.Errorf("mygo.json license %q, package.json %s, updates.github %q: license %q, url %q",
+				tc.config, tc.packageJSON, tc.github, license, url)
 		}
 	}
 }

@@ -21,6 +21,15 @@ MYGO_AUTOMATION=/tmp/app.sock ./app
 echo '{"id": 1, "method": "windows"}' | socat - UNIX-CONNECT:/tmp/app.sock
 ```
 
+Agents drive it with `mygo-automation`, a command line client with
+compact snapshots, short refs and diffs once the UI settled, whose guide
+it prints:
+
+```sh
+go install github.com/egoist/mygo/plugins/automation/cmd/mygo-automation
+mygo-automation skills
+```
+
 It listens only when `MYGO_AUTOMATION` is set, and builds without the
 inspector (`-tags mygo_noinspector`, the release builds of `mygo build`)
 leave it out. See [the documentation](../../docs/plugins/automation.md).

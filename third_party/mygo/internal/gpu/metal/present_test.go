@@ -262,6 +262,63 @@ func TestDroppedPendingFrame(t *testing.T) {
 	r.pre.drain()
 }
 
+// TestPendingFramesSweep checks that frames drawn once their drawable
+// comes (finishPending) free the textures of the transient canvases of
+// frames before, as frames drawn at once do. Only these swept, so an
+// animation, whose frames mostly wait for their drawable, kept a texture
+// for every frame's transient canvases: hundreds of megabytes on the GPU
+// within seconds of a player's moving lyrics.
+func TestPendingFramesSweep(t *testing.T) {
+	if err := load(); err != nil {
+		t.Skip("no Metal:", err)
+	}
+	var layer id
+	pool(func() { layer = send(class("CALayer"), "new") })
+	if layer == 0 {
+		t.Skip("no Core Animation")
+	}
+	defer pool(func() { release(&layer) })
+	r, err := New(uintptr(layer))
+	if err != nil {
+		unavailable(t, err)
+	}
+	defer r.Release()
+	posted := make(chan func(), 4)
+	r.SetPost(func(fn func()) { posted <- fn })
+	gate := make(chan struct{})
+	next := nextDrawable
+	nextDrawable = func(l id) id { <-gate; return next(l) }
+	defer func() { nextDrawable = next }()
+	frame := func(i int) {
+		t.Helper()
+		s := &scene.Scene{}
+		s.Reset(64, 32, scene.Color{A: 255})
+		s.Ops = append(s.Ops, scene.Op{Kind: scene.OpFill, Rect: scene.Rect{X: float32(i % 56), W: 8, H: 8}, Color: scene.Color{R: 255, A: 255}})
+		c := scene.NewCanvas(16, 16)
+		c.Transient = true
+		s.Canvases = []*scene.Image{c}
+		if err := r.Render(s); err != nil {
+			t.Fatal(err)
+		}
+	}
+	frame(0) // with the transaction: no fetch after
+	frame(1) // takes its drawable, then the presenter fetches the next
+	for i := 2; i < 2+3*sweepEvery; i++ {
+		frame(i) // built, waiting for the fetch
+		if r.pending.cb == 0 {
+			t.Fatalf("frame %d did not wait for its drawable", i)
+		}
+		gate <- struct{}{} // the fetch ends
+		finish := wait.For(t, "the post", posted)
+		finish()
+	}
+	if n := len(r.canvases); n > sweepEvery+1 {
+		t.Errorf("%d canvas textures after %d frames waiting for their drawables, want at most %d", n, 3*sweepEvery, sweepEvery+1)
+	}
+	close(gate)
+	r.pre.drain()
+}
+
 // TestStalePost checks that the post of a fetch whose frame pending a
 // frame not paced drew meanwhile neither blocks the main thread for the
 // next frame's drawable, being fetched, nor draws that frame before it

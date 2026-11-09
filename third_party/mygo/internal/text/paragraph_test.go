@@ -383,7 +383,7 @@ func TestBaselineShift(t *testing.T) {
 	}
 	// Decorations follow the span.
 	under := func(l *Layout, i int) float32 {
-		st := s.Decorate(l, 0, i, i+1, 0, 0, 1, Underline, 0)
+		st := s.Decorate(l, 0, i, i+1, 0, 0, 1, Underline, LineStyle{})
 		if len(st) == 0 {
 			t.Fatalf("no underline of glyph %d", i)
 		}
@@ -399,5 +399,55 @@ func TestBaselineShift(t *testing.T) {
 	obj := s.Layout(Params{Text: "a\uFFFC", Style: Style{Size: 16}, Spans: EncodeSpans([]Span{{End: 1}, {End: 2, ObjectWidth: 5, ObjectHeight: 30, BaselineShift: 10}})})
 	if obj.Lines[0].Ascent < 40 {
 		t.Errorf("a raised object leaves an ascent of %v", obj.Lines[0].Ascent)
+	}
+}
+
+// TestBalance wraps a paragraph in as many lines as it takes, at the
+// narrowest width that keeps them as many, aligned within the width: no
+// word alone on the last line.
+func TestBalance(t *testing.T) {
+	s := breakSystem(0)
+	p := Params{Text: "aaa bbb ccc ddd e", Style: Style{Size: 10}, Width: 160}
+	if l := s.Layout(p); len(l.Lines) != 2 || lineText(l, 1) != "e" {
+		t.Fatalf("unbalanced, %d lines, the last %q", len(l.Lines), lineText(l, len(l.Lines)-1))
+	}
+	p.Balance = true
+	l := s.Layout(p)
+	if len(l.Lines) != 2 || lineText(l, 0) != "aaa bbb " || lineText(l, 1) != "ccc ddd e" {
+		t.Fatalf("balanced, %d lines: %q, %q", len(l.Lines), lineText(l, 0), lineText(l, len(l.Lines)-1))
+	}
+	if l.Lines[0].Width != 70 || l.Lines[1].Width != 90 || l.Width != 90 {
+		t.Errorf("balanced, the lines are %v and %v wide, the text %v", l.Lines[0].Width, l.Lines[1].Width, l.Width)
+	}
+	// Laid out once, and kept: a frame laying it out again finds it.
+	made := s.LayoutsMade()
+	if s.Layout(p) != l || s.LayoutsMade() != made {
+		t.Error("the balanced layout was made again")
+	}
+	// Aligned within the width, each paragraph balanced on its own.
+	p.Text, p.Align = "aaa bbb ccc ddd e\naa bb", Center
+	l = s.Layout(p)
+	if len(l.Lines) != 3 || l.Lines[0].X != 45 || l.Lines[1].X != 35 || lineText(l, 2) != "aa bb" || l.Lines[2].X != 55 {
+		t.Errorf("centered, %d lines at %v, %v, %v", len(l.Lines), l.Lines[0].X, l.Lines[1].X, l.Lines[len(l.Lines)-1].X)
+	}
+	// A line it fits on, it keeps.
+	if l := s.Layout(Params{Text: "aaa bbb", Style: Style{Size: 10}, Width: 160, Balance: true}); len(l.Lines) != 1 || l.Width != 70 {
+		t.Errorf("one line: %d lines, %v wide", len(l.Lines), l.Width)
+	}
+	// Three lines of about the same length, rather than two full ones
+	// and a short one.
+	p = Params{Text: "aaa bbb ccc ddd eee fff g", Style: Style{Size: 10}, Width: 120, Balance: true}
+	l = s.Layout(p)
+	if len(l.Lines) != 3 || lineText(l, 0) != "aaa bbb " || lineText(l, 1) != "ccc ddd " || lineText(l, 2) != "eee fff g" {
+		t.Errorf("three lines: %q", []string{lineText(l, 0), lineText(l, 1), lineText(l, len(l.Lines)-1)})
+	}
+	// MaxLines cutting the paragraph, it wraps as without Balance.
+	p = Params{Text: "aaa bbb ccc ddd e", Style: Style{Size: 10}, Width: 160, MaxLines: 1, Balance: true}
+	if l := s.Layout(p); len(l.Lines) != 1 || !l.Truncated || !strings.HasPrefix(lineText(l, 0), "aaa bbb ccc") {
+		t.Errorf("cut to a line: %d lines, %q", len(l.Lines), lineText(l, 0))
+	}
+	// Without a width, nothing wraps.
+	if l := s.Layout(Params{Text: "aaa bbb ccc ddd e", Style: Style{Size: 10}, Balance: true}); len(l.Lines) != 1 {
+		t.Errorf("without a width, %d lines", len(l.Lines))
 	}
 }

@@ -419,12 +419,10 @@ func (a *App) pollCloudScrape(st *cloudState) {
 
 func (a *App) cloudList(c *ui.Context, st *cloudState) {
 	t := c.Theme()
-	st.list.Label = func(i int) string { return st.items[i].Title }
-
 	lst := ui.List(c, &st.list, len(st.items), func(i int) {
 		it := st.items[i]
 		row := ui.Row(c).FillWidth().Height(58).PaddingX(10).Gap(12).
-			AlignItems(ui.Center).Radius(8).Transition(hoverFade)
+			AlignItems(ui.Center).Radius(8).Label(cloudDisplayTitle(it)).Transition(hoverFade)
 		cur, _ := a.PL.Current()
 		isCur := cur.CloudKey != "" && cur.CloudKey == it.Key
 		playing := isCur && a.PL.Playing()

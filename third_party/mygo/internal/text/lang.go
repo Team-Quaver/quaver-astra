@@ -40,6 +40,35 @@ func isCJK(r rune) bool {
 	return unicode.Is(unicode.Han, r)
 }
 
+// languageShapes reports whether a language can change how a text is drawn
+// or broken, and so whether the text engine must be told it, which costs Core
+// Text a new break iterator for each line it breaks. Latin letters look the
+// same in the languages but those whose fonts draw some of them apart (the
+// Turkic languages' i and fi, Dutch's ij, Polish's ó, Catalan's l·l), and in
+// the languages writing Han, the marks beyond ASCII may come from a font of
+// that language rather than the text's.
+func languageShapes(text []rune, lang string) bool {
+	if lang == "" {
+		return false
+	}
+	base, _, _ := strings.Cut(strings.ToLower(lang), "-")
+	base, _, _ = strings.Cut(base, "_")
+	switch base {
+	case "tr", "az", "crh", "tt", "kk", "ba", "nl", "pl", "ca":
+		return true
+	}
+	limit := rune(0xFF)
+	if writesHan(lang) {
+		limit = 0x7F
+	}
+	for _, r := range text {
+		if r > limit {
+			return true
+		}
+	}
+	return false
+}
+
 // langRun is a run of runes of a text, from start to end, in one language
 // as the text engine is to be told it.
 type langRun struct {

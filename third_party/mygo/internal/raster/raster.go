@@ -54,6 +54,9 @@ type clip struct {
 	transform, inverse scene.Affine
 	valid              bool
 	round              bool
+	// masked tells that mask masks the clip too (scene.ClipShape.Masks).
+	masked bool
+	mask   clipMasking
 	// spans is where in spanBuf the clip, with continuous corners, keeps
 	// the spans clipSolid found for the rows of the area, lo and hi a row
 	// (noSpan until found), or -1.
@@ -297,11 +300,14 @@ func (r *renderer) render(dst *Image, s *scene.Scene, area image.Rectangle, boun
 				}
 			}
 		case scene.OpPushClip:
-			rect, transform := scene.MovedClip(op.Rect, op.Transform)
-			radii := scene.Corners(rect, op.Radii, op.Continuous)
-			c := clip{shape: newShape(rect, radii), round: hasRadii(radii), spans: -1}
-			c.transform = transform
-			c.inverse, c.valid = transform.Inverse()
+			cs := scene.ClipShapeOf(op, s.Stops)
+			radii := scene.Corners(cs.Rect, cs.Radii, cs.Continuous)
+			c := clip{shape: newShape(cs.Rect, radii), round: hasRadii(radii), spans: -1}
+			c.transform = cs.Transform
+			c.inverse, c.valid = cs.Transform.Inverse()
+			if c.masked = cs.Masks(); c.masked {
+				c.mask = newClipMasking(&cs)
+			}
 			if c.continuous && !c.transform.Set {
 				// Continuous corners take long to find the spans of, which
 				// every operation within the clip needs.
@@ -381,6 +387,9 @@ func (r *renderer) clipCoverage(x, y int) float32 {
 			// Partial pixels at fractional clip edges.
 			cov *= clamp01(min(px-c.r.X, c.r.X+c.r.W-px)+0.5) * clamp01(min(py-c.r.Y, c.r.Y+c.r.H-py)+0.5)
 		}
+		if c.masked && cov > 0 {
+			cov *= c.mask.atFrame(c.transform, c.inverse, px, py)
+		}
 		if cov == 0 {
 			return 0
 		}
@@ -394,7 +403,7 @@ func (r *renderer) clipSolid(y int) (lo, hi int) {
 	lo, hi = r.x0, r.x1
 	for i := range r.clips {
 		c := &r.clips[i]
-		if c.transform.Set {
+		if c.transform.Set || c.masked {
 			return lo, lo
 		}
 		var l, h int
@@ -598,6 +607,25 @@ func blend(p []byte, c [4]float32, cov float32) {
 	p[1] = to8(c[1]*cov + float32(p[1])/255*inv)
 	p[2] = to8(c[0]*cov + float32(p[2])/255*inv)
 	p[3] = to8(a + float32(p[3])/255*inv)
+}
+
+// blendFilled composites a fill of color f covering fc of a pixel and a
+// border over it of color b covering bc, times the clips' coverage clip,
+// as one color, which the shaders blend: under a clip that lets a part
+// through, as a mask's gradient does, the fill does not show through the
+// border.
+func blendFilled(p []byte, f [4]float32, fc float32, b [4]float32, bc, clip float32) {
+	if clip >= 1 {
+		blend(p, f, fc)
+		blend(p, b, bc)
+		return
+	}
+	k := 1 - b[3]*bc
+	var c [4]float32
+	for i := range c {
+		c[i] = f[i]*fc*k + b[i]*bc
+	}
+	blend(p, c, clip)
 }
 
 // blendSubpixel composites a straight color c over a pixel with the
@@ -957,22 +985,27 @@ func (r *renderer) fill(op *scene.Op) {
 				}
 			}
 			p := row[4*x : 4*x+4]
+			var fc [4]float32
 			if hasFill {
-				blend(p, pt.at(px, py), oc*clipCov)
+				fc = pt.at(px, py)
 			}
-			if hasBorder {
-				ic := float32(0)
-				if !inner.r.Empty() {
-					ic = coverage(&inner, px, py)
-				}
-				bc := oc - ic
-				if bc > 0 && op.Dashed {
-					bc *= dash(op.Rect, bw, px, py)
-				}
-				if bc > 0 {
-					blend(p, borderAt(bp, border, op.BorderColor, px, py), bc*clipCov)
-				}
+			if !hasBorder {
+				blend(p, fc, oc*clipCov)
+				continue
 			}
+			ic := float32(0)
+			if !inner.r.Empty() {
+				ic = coverage(&inner, px, py)
+			}
+			bc := oc - ic
+			if bc > 0 && op.Dashed {
+				bc *= dash(op.Rect, bw, px, py)
+			}
+			var bcol [4]float32
+			if bc > 0 {
+				bcol = borderAt(bp, border, op.BorderColor, px, py)
+			}
+			blendFilled(p, fc, oc, bcol, max(bc, 0), clipCov)
 		}
 	}
 }

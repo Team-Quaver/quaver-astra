@@ -84,6 +84,7 @@ func TestFlyoutFitContent(t *testing.T) {
 	parent, _ := testWindow(t, WindowOptions{X: 100, Y: 100, Width: 400, Height: 300})
 	fl, fw := testFlyout(t, FlyoutOptions{
 		Parent:     parent,
+		Anchor:     Rectangle{Y: 200},
 		Width:      150,
 		Height:     120,
 		FitContent: true,
@@ -132,21 +133,238 @@ func TestFlyoutFitContent(t *testing.T) {
 	page(fw, `{"t":"content-size","w":60,"h":30}`)
 	size("zoomed content", 120, 60)
 
-	// Native UI does not fit; nor does a flyout without FitContent.
+	// A flyout without FitContent does not fit; native UI fits without a
+	// bridge (TestFlyoutFitNativeContent).
 	native, nfw := testFlyout(t, FlyoutOptions{Parent: parent, FitContent: true, Content: ui.View(func(c *ui.Context) {})})
 	plain, pfw := testFlyout(t, FlyoutOptions{Parent: parent})
 	onMain(func() {
-		if native.fit != nil || plain.fit != nil {
+		if native.fit == nil || plain.fit != nil {
 			t.Errorf("fit of native UI %v, of a flyout without FitContent %v", native.fit, plain.fit)
 		}
 	})
 	if strings.Contains(pfw.Opts.UserScripts[0].Source, `"fit"`) || len(nfw.Opts.UserScripts) > 0 && strings.Contains(nfw.Opts.UserScripts[0].Source, `"fit"`) {
-		t.Error("limits in the bridge of a flyout that does not fit")
+		t.Error("limits in the bridge of a flyout that does not fit, or of native UI")
 	}
 	page(pfw, `{"t":"content-size","w":50,"h":50}`)
 	if b := plain.Bounds(); b.Width != 200 || b.Height != 200 {
 		t.Errorf("a flyout without FitContent took its content's size: %+v", b)
 	}
+}
+
+// A flyout of native UI with FitContent takes the size its content
+// measures, within its limits and the work area, and follows it as it
+// changes, placed against its anchor at each size: two frames, the first
+// laid out at the size the flyout has, the next at the size it took.
+func TestFlyoutFitNativeContent(t *testing.T) {
+	// The fake display's work area is 1440x875 at 0,25: the anchor is 100
+	// DIPs above its bottom.
+	parent, _ := testWindow(t, WindowOptions{X: 100, Y: 600, Width: 400, Height: 300})
+	rows, width := 2, float32(100)
+	fl, fw := testFlyout(t, FlyoutOptions{
+		Parent:     parent,
+		Anchor:     Rectangle{Y: 200},
+		Width:      150,
+		Height:     120,
+		FitContent: true,
+		MinWidth:   100,
+		MinHeight:  40,
+		MaxWidth:   300,
+		MaxHeight:  250,
+		Content: ui.View(func(c *ui.Context) {
+			ui.Column(c).Fill().Padding(10).Gap(5).Children(func() {
+				for i := 0; i < rows; i++ {
+					ui.Box(c).Size(width, 20)
+				}
+			})
+		}),
+	})
+	s := fw.FakeSurface()
+	resizes := 0
+	// settle draws the frames the flyout asks for, as the display would,
+	// and runs the resize each posts; a surface tells its content it
+	// resized, which asks for the next frame.
+	settle := func() {
+		t.Helper()
+		for i := 0; ; i++ {
+			if i == 10 {
+				t.Fatal("the flyout keeps resizing")
+			}
+			before := fl.Bounds()
+			drew := false
+			onMain(func() { drew = s.Frame() })
+			onMain(func() {})
+			if b := fl.Bounds(); b.Width == before.Width && b.Height == before.Height {
+				if !drew {
+					return
+				}
+				continue
+			}
+			resizes++
+			onMain(func() { s.Send(platform.SurfaceEvent{Kind: platform.SurfaceResize}) })
+		}
+	}
+	bounds := func(what string, x, y, w, h int) {
+		t.Helper()
+		if b := fl.Bounds(); b != (Rectangle{X: x, Y: y, Width: w, Height: h}) {
+			t.Errorf("%s: flyout %+v, want %dx%d at %d,%d", what, b, w, h, x, y)
+		}
+	}
+	update := func(fn func()) {
+		t.Helper()
+		fl.Update(fn)
+		onMain(func() {})
+		settle()
+	}
+	bounds("before its first frame, above the anchor", 100, 800-120, 150, 120)
+	settle()
+	bounds("its content's size, below the anchor", 100, 800, 120, 65)
+	if resizes != 1 {
+		t.Errorf("%d resizes for the first frame", resizes)
+	}
+
+	// It follows the content, flipping above the anchor where the work
+	// area has no room below.
+	update(func() { rows = 12 })
+	bounds("taller, above the anchor", 100, 800-250, 120, 250) // 12 rows: 315 DIPs, the most 250
+	update(func() { rows, width = 1, 20 })
+	bounds("smaller, below again", 100, 800, 100, 40)
+	update(func() { width = 500 })
+	bounds("wider than the most", 100, 800, 300, 40)
+
+	// The same content resizes nothing, and a size SetSize gives holds
+	// until the content's changes.
+	resizes = 0
+	fl.Invalidate()
+	onMain(func() {})
+	settle()
+	if resizes != 0 {
+		t.Errorf("%d resizes for the same content", resizes)
+	}
+	fl.SetSize(220, 90)
+	fl.Invalidate()
+	onMain(func() {})
+	settle()
+	bounds("the same content after SetSize", 100, 800, 220, 90)
+	update(func() { width = 180 })
+	bounds("other content after SetSize", 100, 800, 200, 40)
+
+	// Without limits, the work area bounds it.
+	free, ffw := testFlyout(t, FlyoutOptions{
+		Parent:     parent,
+		FitContent: true,
+		Content:    ui.View(func(c *ui.Context) { ui.Box(c).Size(2000, 2000) }),
+	})
+	s = ffw.FakeSurface()
+	fl = free
+	settle()
+	if b := free.Bounds(); b.Width != 1440 || b.Height != 875 {
+		t.Errorf("huge content: flyout %+v, want the work area's 1440x875", b)
+	}
+}
+
+// A hidden flyout of native UI with FitContent draws no frames, as a
+// hidden window does: content that changed meanwhile lays out as the
+// flyout shows, which shows at the size it takes, not at the size it hid
+// at with a resize after its first frame.
+func TestFlyoutFitNativeContentHidden(t *testing.T) {
+	parent, _ := testWindow(t, WindowOptions{X: 100, Y: 100, Width: 400, Height: 300})
+	rows, width, builds := 2, float32(100), 0
+	fl, fw := testFlyout(t, FlyoutOptions{
+		Parent:     parent,
+		Anchor:     Rectangle{Y: 200},
+		Width:      150,
+		Height:     120,
+		FitContent: true,
+		MinWidth:   100,
+		MinHeight:  40,
+		Hidden:     true,
+		Content: ui.View(func(c *ui.Context) {
+			builds++
+			ui.Column(c).Fill().Padding(10).Gap(5).Children(func() {
+				for i := 0; i < rows; i++ {
+					ui.Box(c).Size(width, 20)
+				}
+			})
+		}),
+	})
+	s := fw.FakeSurface()
+	resizes := 0
+	// settle draws the frames the flyout asks for, as the display would
+	// while it shows, and runs the resizes they post.
+	settle := func() {
+		t.Helper()
+		for i := 0; ; i++ {
+			if i == 10 {
+				t.Fatal("the flyout keeps resizing")
+			}
+			before := fl.Bounds()
+			drew := false
+			onMain(func() { drew = s.Frame() })
+			onMain(func() {})
+			if b := fl.Bounds(); b.Width == before.Width && b.Height == before.Height {
+				if !drew {
+					return
+				}
+				continue
+			}
+			resizes++
+			onMain(func() { s.Send(platform.SurfaceEvent{Kind: platform.SurfaceResize}) })
+		}
+	}
+	// The size the platform has the flyout at as it shows it.
+	var shown platform.Size
+	fl.OnShow(func() {
+		b := fw.Bounds()
+		shown = platform.Size{Width: b.Width, Height: b.Height}
+	})
+	show := func(what string, showFn func(), w, h int) {
+		t.Helper()
+		resizes = 0
+		showFn()
+		if want := (platform.Size{Width: w, Height: h}); shown != want {
+			t.Errorf("%s: shown at %v, want %v", what, shown, want)
+		}
+		settle()
+		if b := fl.Bounds(); b.Width != w || b.Height != h || resizes != 0 {
+			t.Errorf("%s: %+v after %d resizes once shown, want %dx%d after none", what, b, resizes, w, h)
+		}
+	}
+
+	// Its first frame draws while hidden, which makes it ready to show.
+	settle()
+	if b := fl.Bounds(); b.Width != 120 || b.Height != 65 {
+		t.Fatalf("hidden, after its first frame: %+v, want 120x65", b)
+	}
+	// Changed while hidden, before its first Show: 4 rows.
+	fl.Update(func() { rows = 4 })
+	onMain(func() {})
+	show("changed before its first Show", fl.Show, 120, 115)
+
+	// Shown, hidden, changed and shown again.
+	fl.Hide()
+	fl.Update(func() { rows, width = 1, 20 })
+	onMain(func() {})
+	show("changed while hidden", fl.ShowInactive, 100, 40)
+
+	// Changed on the main thread, with Invalidate, and shown at once.
+	fl.Hide()
+	show("invalidated and shown at once", func() {
+		onMain(func() {
+			rows = 3
+			fl.Invalidate()
+			fl.Show()
+		})
+	}, 100, 90)
+
+	// Unchanged while hidden: nothing builds before it shows.
+	fl.Hide()
+	show("unchanged", func() {
+		n := builds
+		fl.Show()
+		if builds != n {
+			t.Errorf("%d builds as a flyout shows again unchanged", builds-n)
+		}
+	}, 100, 90)
 }
 
 // A window with FitContent sizes its page area to its content, in the

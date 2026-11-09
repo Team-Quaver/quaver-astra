@@ -83,6 +83,7 @@ framework safely. Read it before changing anything under `internal/`.
 │   ├── web/            browsers (js/wasm): native UI on canvases, through syscall/js
 │   ├── unsupported/    stub for other platforms
 │   ├── fake/           in-memory backend for unit tests
+│   ├── automationcli/  mygo-automation, the command line client of plugins/automation's socket
 │   ├── watchdriver/    the goroutine that runs a backend's file watcher
 │   ├── bridge/         embeds bridge.js, built from packages/bridge
 │   ├── surface/        the connection between a window and its native UI
@@ -121,9 +122,13 @@ framework safely. Read it before changing anything under `internal/`.
 │                       terminal, a view of native UI running programs with
 │                       libghostty-vt, glass, game, what games need
 │                       beyond what apps do (game/gamepad), loading,
-│                       loading.dev's indicators for native UI, and
+│                       loading.dev's indicators for native UI,
 │                       automation, a socket other processes drive the
-│                       app through, for end-to-end tests
+│                       app through, for end-to-end tests, with its
+│                       command line client for agents
+│                       (automation/cmd/mygo-automation), and
+│                       permissionflow, the system's permissions and a
+│                       guide to System Settings, after PermissionFlow
 ├── ui/                 native UI: views, layout, widgets, text editing, Tester;
 │                       ui/chart: charts without a look, on ui's public API;
 │                       ui/editor: the code editor and the diff viewer;
@@ -144,7 +149,8 @@ framework safely. Read it before changing anything under `internal/`.
 │                       native UI); wind (a texture of glyphs lit by a
 │                       wind, two shaders of ui/shader); loading (the
 │                       loading plugin's indicators); video (a GIF
-│                       looping behind a window's content)
+│                       looping behind a window's content); permissionflow
+│                       (the permissions, asked for and guided to)
 ├── docs/               the user guides, the official plugins' pages
 │                       (plugins/), and this architecture guide
 └── website/            the website, with these docs: TanStack Start, prerendered
@@ -190,8 +196,9 @@ rules are:
    functions directly, and generate mode never initializes it. So a public
    method that reaches the backend either keeps its value in the core
    until the backend can take it, for settings (`SetActivationPolicy`
-   through `AppOptions`, `SetMenu` once ready, `Theme.SetSource` and
-   `Dock.SetMenu` right after `Init`), or starts with `needsApp`, which
+   through `AppOptions`, `SetMenu` once ready, `Theme.SetSource`,
+   `Theme.SetGTKCSS` and `Dock.SetMenu` right after `Init`), or starts
+   with `needsApp`, which
    panics on the main thread before `Run` with the name of the call,
    rather than letting it crash on Linux, hang in `await` or answer wrong
    on macOS. Only calls that work before `Init` on every backend (`Locale`,
@@ -283,7 +290,11 @@ purego gives three primitives, used everywhere:
   web view and, with vibrancy, an `NSVisualEffectView` behind it. WebKit
   docks the inspector next to the web view in its superview; were that the
   window's frame view, AppKit would draw a broken legacy title bar from then
-  on.
+  on. Liquid Glass is an `NSGlassEffectView` there instead, which shows
+  what is under it in the window rather than behind it: an opaque window
+  is made clear while it shows one, and so is the content view a rounded
+  window's color went to (`clearForGlass`), the color given back once the
+  glass goes.
 - **Memory is managed by hand.** Objects created with `alloc`/`init` are owned
   (+1) and must be released; convenience constructors return autoreleased
   objects. Code that creates temporary objects runs inside `withPool`,
@@ -417,8 +428,24 @@ purego gives three primitives, used everywhere:
   decorations, unlike a frameless one, so the compositor's title bar, or a
   tiling compositor's lack of one, stands for the buttons, whatever the
   layout says.
-- `WEBKIT_DISABLE_DMABUF_RENDERER=1` is set unless the user set it, which
-  avoids blank webviews on NVIDIA drivers, VMs and containers.
+- The app's GTK style sheet (`Theme.SetGTKCSS`, `style.go`) is a
+  `GtkCssProvider` of its own for the default screen, at
+  `GTK_STYLE_PROVIDER_PRIORITY_USER`: GTK 3 looks providers up from the
+  highest priority, and among equal ones from the last added, so it wins
+  over the theme, MyGo's own provider (600) and the user's `gtk.css`.
+  Each sheet loads into a new provider, which replaces the one before only
+  once it parsed (`gtk_css_provider_load_from_data` with a `GError`, which
+  takes GTK's first parse error instead of a warning). The core reaches it
+  through `platform.StyleBackend`, which only Linux and the fake backend
+  implement, so apps that never set a sheet do not link it; one set on the
+  main goroutine before `Run` waits in `pendingGTKCSS` until `Init`.
+- `WEBKIT_DISABLE_DMABUF_RENDERER=1` is set before GTK starts unless the
+  user set it, which avoids blank webviews on NVIDIA drivers, VMs and
+  containers, at the cost of drawing pages on the CPU. `App.SetDMABUFRenderer`
+  (`AppOptions.DMABUFRenderer`) leaves it unset: always (`on`), or where
+  `dmabufSafe` (`dmabuf.go`) finds Wayland and a GPU of Mesa's outside
+  containers and virtual machines (`auto`, whose call links that probe in
+  with `LinkDMABUFProbe`).
 - XDG desktop portal calls go through `portalCall` (`portal.go`), which
   first registers the app's ID, the name of its desktop entry, with
   `org.freedesktop.host.portal.Registry`: the portal only accepts that
@@ -556,8 +583,13 @@ features GTK 4 lacks become X11-only code beside it.
   base URL serves the document from that URL the same way.
 - **Eval** goes through the DevTools protocol (`Runtime.evaluate` with
   `awaitPromise`), which reports syntax errors and ignores the page's CSP.
-  Edit roles run `document.execCommand` with a user gesture; paste inserts
-  the clipboard text.
+  Edit roles run `document.execCommand` with a user gesture, except Paste:
+  `Input.dispatchKeyEvent` carries Chromium's `paste` command on an
+  `Unidentified` raw key-down, followed by key-up once it completes. The
+  page sees these events without modifiers, avoiding its Ctrl+V handlers,
+  and a paste event with the clipboard's formats. The controller gets
+  focus first, after the menu closes. Paste and Match Style still inserts
+  the clipboard's text with `Input.insertText`.
 - Scripts injected at document creation run in every frame, so the
   main-frame-only ones (the bridge) are wrapped in `window === window.top`.
   Iframes get no `chrome.webview` handler.
@@ -571,8 +603,20 @@ features GTK 4 lacks become X11-only code beside it.
   in assembly (`uia_*.s`), which move the doubles' bits to the integer
   registers of their positions, touching only registers a call may
   change, and jump to the callbacks.
-- DPI: the process is per-monitor aware (v2); the backend converts between
-  pixels and DIPs with the window's or monitor's DPI. Frameless windows, and
+- DPI: the process is per-monitor aware (v2); the backend converts sizes
+  between pixels and DIPs with the window's or monitor's DPI, and points
+  and rectangles of the screen (windows' bounds, the displays, the cursor,
+  tray icons) through one space of DIPs in which displays never overlap
+  and a point names one display (`dipSpace`, in `dips.go`, which builds
+  on every platform for its tests): a display's DIPs start at its
+  top-left pixel scaled by the smallest scale of the displays, as Qt
+  anchors them at that pixel, and go on in its own scale. The primary
+  display's DIPs, and those of displays that all have one scale, are the
+  screen's pixels at that scale. A window takes the scale of the display
+  it is the most on, whose DPI Windows gives it; it is created on its
+  display, at its rectangle, and `place` moves it, keeping its rectangle
+  in `WM_DPICHANGED`, whose suggested one would scale the size, already
+  in the new display's scale, a second time (#1039). Frameless windows, and
   those with a hidden title bar, drop the caption in `WM_NCCALCSIZE` but
   keep the side and bottom borders, which Windows 10+ draws invisibly
   outside the window, so they still resize. On Windows 11 a hidden title
@@ -626,15 +670,55 @@ features GTK 4 lacks become X11-only code beside it.
   widens every owner-drawn item past the width it asks for, by as much as
   it doesn't tell (not `SM_CXMENUCHECK`, #922): items ask for all they need
   until one draws, whose width less the widest asked for in its menu is
-  that widening at the DPI, and for that much less after. The items
+  that widening at the DPI, and for that much less after. Labels are
+  measured by their advance and drawn unclipped (`DT_NOCLIP`), into the
+  item's padding where their ink reaches past it (Microsoft YaHei UI,
+  Chinese Windows' menu font, by a pixel, #1028). The items
   keep their strings, which mnemonics, screen readers and the tests read.
   A menu with owner-drawn items loses Windows 11's frame, its window square
   under its class's drop shadow (`CS_DROPSHADOW`) along two sides: while
   menus show (`WM_ENTERMENULOOP` to `WM_EXITMENULOOP`, and around
   `TrackPopupMenuEx`, which creates its window before), a `WH_CALLWNDPROC`
   hook of the main thread rounds the windows of class `#32768` in their
-  `WM_CREATE` (`DWMWCP_ROUNDSMALL`, outlined in the colors of Windows'
-  menus) and takes the shadow off the class, for DWM's around the window.
+  `WM_CREATE` (`DWMWCP_ROUND`, WinUI's 8 pixels), gives them one outline
+  (`DWMWA_BORDER_COLOR`: a pixel of WinUI's `SurfaceStrokeColorFlyout`
+  over the menu's background, `#00000019` in the light appearance and
+  `#FFFFFF19` in the dark, a color of its own rather than the accent) and
+  takes the shadow off the class, for DWM's around the window. It also
+  subclasses them: on Windows 11 22H2 with transparency effects on, no
+  contrast theme, energy saver off, outside remote sessions and with a
+  GPU (`glassConditions`: DWM draws no material when the first DXGI
+  adapter is Microsoft's Basic Render Driver or a software one, unless
+  its `ForceEffectMode` policy is 2), a window that says (`MN_GETHMENU`, before it shows
+  or paints) that it shows a menu MyGo draws gets Acrylic
+  (`DWMSBT_TRANSIENTWINDOW`, in the appearance through
+  `DWMWA_USE_IMMERSIVE_DARK_MODE`) with the frame extended over all of
+  it, and is framed active (`WM_NCACTIVATE` to `DefWindowProc` as active
+  with an lParam of -1, again once shown and whatever it is told after,
+  as Firefox's popups with Acrylic are): DWM draws a system backdrop as a
+  flat grey in a window it frames inactive, as a menu's window, never
+  activated, otherwise is. Its background brush turns black, which DWM
+  shows as transparent, its border too (`WM_NCPAINT`, and `WM_PRINT` for
+  animations), and its items wear the veil of WinUI's Acrylic tint over
+  the material: the fallback color at the opacity of its luminosity layer
+  (`acrylicLuminosity`, 85% in either appearance), so that a menu is as
+  light as the shell's flyouts over a dark desktop, the material showing
+  a seventh of the way through, and the highlights and separators are
+  WinUI's translucent fills over it, their rounded corners leaving DWM's
+  window to show. The labels, the shortcuts and the icons go over the
+  veil's own color, opaque, and once: what shows is the text as GDI draws
+  it on the color the shell's menus draw theirs on, its ClearType
+  blending with it, rather than the grayscale antialiasing of text drawn
+  over black and over white for unblend to tell its alpha, and the pixels
+  GDI leaves no alpha to take the item's. A window that shows another
+  menu, as Windows' window menu, stays as it is, and so do its items.
+  Elsewhere a menu MyGo draws has WinUI's solid background, the fallback
+  of its Acrylic (`#F9F9F9`, dark `#2C2C2C`), its window's own border
+  painted in it, for that one outline to be the menu's only border. Tray
+  menus open on Windows 11 as the system's do, centered on the icon 12
+  DIPs from the taskbar (`ABM_GETTASKBARPOS`, aligned by
+  `TrackPopupMenuEx` and kept off the taskbar by its `rcExclude`), and at
+  the pointer on Windows 10 or for an icon not on the taskbar.
   The bar grows from `WM_UAHMEASUREMENUITEM` and its items get inset
   backplates with rounded corners. A contrast theme keeps the system's
   colors: the bar is Windows' again, the popup items take the system's.
@@ -724,7 +808,7 @@ gained one field, `SurfaceNative.Canvas`.
   set before each frame to the frame's size, `ceil(width × scale)` as
   package ui computes it. `RequestFrame` asks `requestAnimationFrame`;
   `Occluded` is `document.hidden`, where browsers give no frames, and
-  `visibilitychange` brings `SurfaceShown`.
+  `visibilitychange` brings `SurfaceShown`, or `SurfaceHidden`.
 - **Drawing.** The canvas's WebGL 2 context (`gl.NewContext`: premultiplied
   alpha, no depth, stencil or antialiasing) is current while a frame is
   handled, as a GtkGLArea's is in its render signal, and
@@ -766,7 +850,14 @@ gained one field, `SurfaceNative.Canvas`.
   wider or narrower than a page's in the same font.
 - **Input.** Pointer events (captured on press) are the pointer, with
   clicks counted from presses close in time and place, buttons 3 and 4
-  the back and forward keys; `wheel` events scroll, lines and pages
+  the back and forward keys. Those of a pointer that is not the primary
+  one (`isPrimary`), as a second finger, are left out, as no second finger
+  presses on the desktops; a button going down or up while another is
+  held, which comes as a `pointermove` with its `button`, is a
+  `PointerDown` or `PointerUp` as on the desktops (`chord`); their
+  `pointerType` and `pressure` are the device and the pressure
+  (`device`). `pointercancel`, the browser taking the pointer, as a touch
+  it scrolls the page with, is a `PointerCancel`, not a release. `wheel` events scroll, lines and pages
   turned into DIPs, notches of 120 not `Precise`. The textarea, out of
   sight at the caret (`SetTextInput`), has the keyboard: `keydown` and
   `keyup` are keys, by what they type (`key`) and else by where they are
@@ -885,7 +976,32 @@ document start into the main frame. It installs:
   within its display's work area; a size equal to the last it took does
   nothing, so a user's resize holds. The same in every engine: WebKit's
   private `-[WKWebView _setSizeToContentAutoSizeMaximumSize:]` is not
-  used.
+  used. A flyout of native UI fits without the bridge: its
+  `surface.Conn` gets `FitWidth` (the width's limits and the work area's
+  width, from the display the flyout is on) and `ContentSize`, through
+  `fitContent.native`, which `NewFlyout` sets so that apps without such a
+  flyout link none of the core's side, and
+  `ui/fit.go` measures the root as each frame lays out, right after
+  `layoutTree`: `contentWidth(root, true)` within those widths, and
+  `contentHeight` at that width, the non-committing layout flex columns
+  measure their items with, so percentages and `Grow` measure as their
+  content, as `height: auto`; absolutely placed elements and the
+  inspector take none of it. It tells a size only when it differs from
+  the last it told, and the core clamps it as a page's (`fitNative`),
+  then resizes and places the flyout after the frame (`postMain`, as the
+  backends' resizes may send the surface events at once): the surface's
+  `SurfaceResize` brings the frame laid out at the new size. A frame laid
+  out at a new size that measures the size told before the last one
+  holds, so that a view building its content after `Context.Size` does
+  not resize the flyout back and forth. A hidden window draws no frames,
+  so `Show` and `ShowInactive` of a hidden flyout first call
+  `fitContent.show` (`fitBeforeShow`), which `NewFlyout` sets with
+  `native`: where the content waits to draw a frame, `surface.Conn.Fit`
+  builds and lays it out at once, as a capture does, and the flyout
+  takes the size it measured before the platform shows it; the
+  surface's next frame draws it at that size. `Fit` builds nothing
+  within the content's frame or before its first, so the view never
+  runs within `NewFlyout`.
 - Find in page (`find.ts`, `Page.FindInPage`): the bridge walks the
   visible text nodes, marks matches with the CSS Custom Highlight API (a
   constructed style sheet, which a Content Security Policy allows) and
@@ -1045,7 +1161,9 @@ on Linux), which awaits promises and ignores the page's Content Security
 Policy. The code is first wrapped as `return JSON.stringify({ok, v: await (code)})`;
 if that fails to compile the code is not an expression, and it is run again as
 a function body. A compile error means nothing executed, so code never runs
-twice. The result travels as a JSON string and is decoded in Go.
+twice. The result travels as a JSON string and is decoded in Go. A page whose
+window closed never answers, so a window closing fails the evals waiting for
+it, and an eval with the quit under way fails at once.
 
 ### Trust
 
@@ -1321,7 +1439,21 @@ build` like mygo-runtime and released with the same version.
   from SwiftUI's `safeAreaBar` over test patterns, its layers dumped).
   Both effects' shaders are compiled ahead of time on macOS
   (`shaders_darwin.go`) and on Windows (`shaders_windows.go`), with
-  `internal/gen`.
+  `internal/gen`. `glass.Group` paints one surface over a row of elements:
+  a shader of package `ui/shader` (Kage, compiled for every renderer and
+  the CPU) takes up to 8 rectangles and radii, unions them with a smooth
+  minimum (so panes that nearly touch bridge), and draws the glass once
+  around the union's bezel. `Glass{Native: true}` asks the window's
+  surface for the system's glass: `ui.NativeGlassMaterial`, noted when the
+  frame commits (`ui/nativeglass.go`), tells the surface where the glass
+  is (`platform.GlassSurface.PlaceGlass`). On macOS the surface puts an
+  `NSGlassEffectView` under the content and above the web views, and the
+  material leaves a hole where it shows, so the glass samples a web view's
+  page or the window's material, never the frame's own pixels; elsewhere,
+  and with Reduce Transparency, the shader draws it. The materials read
+  `ui.Painter.Preferences`: Reduce Transparency draws opaque surfaces,
+  Increase Contrast lights the rim. Window-level glass takes a tint
+  through `NSGlassEffectView`'s `tintColor`.
 - **loading** is loading.dev's 29 indicators (`loading-dev`, React and
   CSS) for native UI, on ui's public API only. Each is a box of
   `RoleProgress` whose draw function asks for the next frame
@@ -1451,6 +1583,18 @@ Package `i18n` is a leaf (it imports golang.org/x/text/language only):
   `scripts/format-golden.ts` records Node's `Intl` (upstream ICU) for
   every locale; `TestFormatMatchesICU` compares, and `knownDifference`
   lists, with reasons, the cases that differ on purpose.
+- **Relative times** (`relative.go`) use dateFields from the same pinned
+  cldr-dates-full tarball, written to `relative_tables.go` in a compressed
+  blob of their own: runs of slots as `recordSections` writes them, by
+  style, unit, and words for offsets -2 to 2 or past/future plural form.
+  Only `NewRelativeTimeFormatter` reaches it, so formatting dates or
+  numbers links none of it. The formatter uses the number formatter
+  (half-even, as ICU's RelativeDateTimeFormatter does), the plural form
+  of its rounded number, and ICU's rounding of offsets to hundredths
+  when choosing words with `Auto`. `scripts/relative-time-golden.ts`
+  records Node's Intl for every formatting locale, with the full matrix
+  compressed in `testdata/relative_time_icu.json.gz`; the tests name the
+  CLDR/ICU data differences explicitly.
 - **MessageFormat** (`message.go`, `format.go`) parses ICU's syntax as
   ICU's MessagePattern does (apostrophe mode DOUBLE_OPTIONAL, `#` only in
   a plural's own cases), and formats numbers and dates with the
@@ -1553,6 +1697,24 @@ as in Tauri:
 - `NewWindow` validates options, waits for readiness when called off the main
   thread, builds `platform.WindowOptions` (all defaults applied, bridge and
   preload scripts, registered schemes) and registers the window.
+- Called on the main thread, `NewWindow` leaves showing a window of
+  native UI to the main loop's next turn (`showLater`, `settleShow`), so
+  that its view first runs once `NewWindow` returned and can use the
+  window kept from it (#1053): shown within `NewWindow`, a window draws
+  its first frame at once on
+  some systems, as AppKit may display a window it orders in, and Windows
+  a window maximized as it shows (`WM_SIZE`). The frame the content asked
+  for draws on that turn too, while the window is still hidden, as a
+  window made `Hidden` draws its first (`drawSoon`, `drawHidden`), or as
+  it shows. A method acting on the native window (`do`, `get`) shows it
+  first, so that it finds the window as `NewWindow` returned it, but not
+  from within a frame (`framing`), whose view may call one (`Title`): a
+  frame drawn as the window shows would run inside it. `Show`,
+  `ShowInactive` and `Hide` take the deferred show's place, so `Hide`
+  right after `NewWindow` keeps the window from showing. Called from
+  another goroutine, which `NewWindow` returns to while the main thread
+  goes on, `NewWindow` shows the window before it returns, as it does a
+  window of a page, whose page loads later anyway.
 - A window's page API is on `Page`, a handle on the window that
   `Window.Page` returns unless the window shows native UI; the page's state
   stays in `Window`, where IPC and the backend's callbacks reach it.
@@ -1579,7 +1741,15 @@ as in Tauri:
   state) and when the window closes; it is saved when a window closes
   and when the app quits, if it changed, and kept for the next save when
   saving fails. A saved window that would not show on any
-  display keeps its size and is centered. `WindowOptions.Maximized` starts
+  display keeps its size and is centered. On Windows, where a window's
+  position in DIPs changes with the displays' scales (`dipSpace`), and
+  earlier versions' could not tell displays of different scales apart,
+  the state also keeps the window's
+  rectangle in pixels (`platform.WindowStateWindow`), and the backend
+  creates the restored window at it, on its display
+  (`platform.WindowStateBackend`, `WindowOptions.StateBounds`); a state
+  without pixels is restored in DIPs where every display has the same
+  scale, and centered elsewhere. `WindowOptions.Maximized` starts
   a window maximized: `zoom:` on macOS, `gtk_window_maximize` before
   mapping on Linux, `SW_SHOWMAXIMIZED` on the first show on Windows, where
   `Maximize` on a hidden window also waits for it to be shown.
@@ -1627,7 +1797,17 @@ as in Tauri:
   directories and relative links only) and swaps it in: the bundle is
   renamed on macOS, the entries of the app directory on Linux and Windows,
   where the running executable is renamed away and removed at the next
-  launch. `App.Relaunch` then starts the new version from the path the app
+  launch. There the app directory holds `update.FileList` (`.mygo-files`),
+  its top-level entries as installed, one per line: `mygo build` writes it
+  into the app (so the archive, installer and packages have it), and
+  `swapFiles` rewrites it in the update with the update's entries before
+  swapping it in with them. The entries that the installed list names and
+  the update lacks are renamed aside first, as replaced ones are, and
+  deleted once the swap succeeds, so a failed swap puts them back; entries
+  that no list names (the user's, the uninstaller) and all of an app
+  without a list stay, and so does the running executable. Deltas never
+  make the list from the installed one, which the updater rewrote.
+  `App.Relaunch` then starts the new version from the path the app
   started from. Development builds are never updated. Delta updates work
   as Sparkle's (`internal/update/delta.go`): `mygo build` fetches the
   published manifest of the target, downloads the archives of up to
@@ -1714,6 +1894,44 @@ as in Tauri:
   (`SecTrustEvaluateAsyncWithError`) only while
   `HandlesCertificateErrors` is true, and Linux and Windows extract the
   certificate only then. Client certificates are left to the platform.
+- Active windows (`active.go`): a window is drawn as active, the one the
+  user's input goes to, while it or a flyout of it (through flyouts'
+  parents) has the keyboard (`windows.focused`), always while
+  `SetActiveAppearance` keeps it so, and so are panels and flyouts
+  without a parent; a flyout with one is as active as its parent, and a
+  window that never had the keyboard nor showed without it
+  (`focusKnown`) counts as active, so that the first frame of a window
+  about to take it draws active, which package `ui` assumes too. No
+  backend reports it: `Focused` and `Blurred` post `updateActive` once
+  (`scheduleActive`), which works out every window's state after the
+  native event returns, so that a window blurred by its flyout taking
+  the keyboard in the same event (AppKit's resign and become key,
+  Win32's `WM_ACTIVATE`s, GTK's focus events before an idle source)
+  never shows inactive for a frame. A change reaches native UI through
+  `surface.Conn.Active` and `ActiveChanged`, and pages, and those of the
+  window's web views, as the `mygo:window-active` event (true or
+  false); pages start active, and one whose DOM is ready in an inactive
+  window is told so. The bridge keeps it for mygo-runtime's
+  `windowActive()`, telling listeners of changes only, and sets the
+  `data-mygo-window-inactive` attribute of `<html>` while it is false.
+  The system draws the materials itself: macOS's `NSVisualEffectView` of
+  a window follows AppKit's active state
+  (`NSVisualEffectStateFollowsWindowActiveState`), the main window's
+  look, which agrees for flyouts (a panel never becomes main) and differs
+  while a sheet or one of AppKit's own panels (Fonts, Colors) is key: the
+  material stays active there while the content is not. Panels',
+  flyouts' and those of windows `SetActiveAppearance` keeps active stay
+  `NSVisualEffectStateActive`, as they did for all windows before;
+  `NSGlassEffectView` has no such state and follows AppKit's. DWM draws
+  Mica and Acrylic as a solid fill in a window it frames inactive: a
+  window whose focusable flyout Windows activates, as a window of its
+  own, keeps its frame active (`keepsActive`: `WM_NCACTIVATE` passed to
+  `DefWindowProc` as active, and its drawn caption), until the
+  activation leaves the flyout for another app's window
+  (`ownersInactive`, `flyoutLeft`). GTK styles a window `:backdrop` by
+  GDK's focus, which a focusable flyout takes from its parent: the
+  window's own title bar then shows it, while its content stays active.
+  In browsers, a window is active while its canvas has the focus.
 - Flyouts (`flyout.go`, `internal/platform/flyout.go`): `NewFlyout`
   creates a window with `platform.WindowOptions.Flyout`, which backends
   make a borderless, transparent popup owned by its parent, and place
@@ -1751,12 +1969,29 @@ as in Tauri:
   (Windows), and on Linux, whose AppIndicator tells no bounds, an
   undecorated utility toplevel in the middle of the work area, which a
   focusable one closes as it loses the keyboard. A press on the icon
-  does not dismiss its flyout (`tray.pressed` in `popoverShouldClose:`
-  and on resigning key, the cursor over `Shell_NotifyIconGetRect` on
-  Windows), so its click toggles it. A global monitor of mouse downs
+  does not dismiss its flyout (`tray.pressed` on resigning key, the
+  cursor over `Shell_NotifyIconGetRect` on Windows), so its click
+  toggles it, but a popover's: AppKit eats a click on a transient
+  popover's positioning view, the status item's button, whatever
+  `popoverShouldClose:` answers, so the button sends no action, and the
+  click closes the popover (AppKit asks on the release on macOS 26, on
+  the press elsewhere: one kept open there stayed open for good, #1050).
+  A global monitor of mouse downs
   closes macOS's focusable panels on clicks outside the app, which a
   panel taking the keyboard of an app that was not activated never
-  hears as the key window changing. The design follows GPUI's
+  hears as the key window changing. A window modal to a flyout
+  (`WindowOptions.Parent`, `Modal`) is centered over it by the core
+  (`overFlyout`), in its display's work area, and keeps it open: the
+  flyout's dismissals skip a flyout a window is modal to (`modalChild`
+  on macOS and Linux, `hasModal` on Windows, where `EnableWindow`
+  disables the owner as for any modal window). macOS attaches the window
+  as an AppKit child window at the flyout's level rather than a sheet,
+  and a local monitor eats the flyout's mouse and key events while it
+  shows (`watchModalInput`); `popoverShouldClose:` keeps a popover.
+  Windows makes it topmost over a topmost flyout. On X11 the popup lets
+  its grab go while the window shows and grabs again as it hides
+  (`enterFlyout`, `leaveFlyout`); a tray's flyout, a toplevel, does not
+  close as it loses the keyboard to it. The design follows GPUI's
   `WindowKind::AnchoredPopup` and winit's `WindowType::Popup`, which
   model xdg_positioner too.
 - Panels (`WindowOptions.Panel`), the windows of launchers: the core makes
@@ -1814,7 +2049,12 @@ as in Tauri:
   `window.open()` without one itself before asking
   (`javascript-can-open-windows-automatically` stays off), so the handler
   sees those only on macOS and Windows; on Windows the event arguments'
-  `get_IsUserInitiated`, WebView2 having no pop-up blocker.
+  `get_IsUserInitiated`, WebView2 having no pop-up blocker. Only main-frame
+  navigations reach `OnWillNavigate`: on Linux the action's target frame
+  says so (`webkit_navigation_action_get_target_frame_info`, 2.56+, bound
+  when present); before it WebKitGTK tells no navigation's frame, and
+  `mainFrameNavigation` takes all for the main frame's but `about:srcdoc`,
+  which only an iframe shows.
 
 ## Menus
 
@@ -1831,9 +2071,10 @@ backend, which:
 - performs edit roles natively (first responder on macOS,
   `webkit_web_view_execute_editing_command` on Linux; on Windows a page
   keeps their keys, which WebView2 performs, and the menu items run
-  `document.execCommand` through DevTools, paste typing the clipboard's
-  text), or sends them to a window showing native UI as a
-  `SurfaceCommand`, and reports everything
+  `document.execCommand` through DevTools, except Paste, which runs
+  Chromium's paste command with the clipboard's formats, and Paste and
+  Match Style, which inserts text), or sends them to a window showing
+  native UI as a `SurfaceCommand`, and reports everything
   else through `WindowHandler.MenuItemClicked` for a window's menu, or
   `AppHandler.MenuItemClicked` for menus without one; the core toggles
   checkbox/radio state, performs window and view roles and calls `Click`
@@ -1907,6 +2148,14 @@ object or user data. Native reads copy bytes so application data outlives
 native handles. See [Clipboard and drag data](data-transfer.md) for API and
 format mappings.
 
+Native UI's `Context.WriteClipboardThen` writes its text with `WriteData`
+and posts the error to the main thread for the next frame. A browser's
+clipboard answers later: the web backend's is a `platform.LaterClipboard`,
+whose `WriteTextThen` keeps the text for the page's own pastes and
+answers once `navigator.clipboard.writeText` settles (it rejects without
+transient user activation, and outside secure contexts there is no
+`navigator.clipboard` to write).
+
 ## Audio (`audio`)
 
 Package `audio` is independent of windows and the main thread: it neither
@@ -1919,6 +2168,23 @@ stereo with a Catmull-Rom spline at their rate times their speed, and ramp
 their gains (a 2×2 matrix of volume and pan) over 5 ms on every change,
 pause and resume. Looping happens in the source, so a loop has no gap; the
 voice counts frames past it modulo the length for `Position`.
+
+A player that preserves pitch (`SetPreservesPitch`) gets a stretcher
+(`audio/stretch.go`) between its source and its resampler, which then
+resamples at the rate alone. It is WSOLA: hops of about 16 ms, each a
+Hann crossfade from the natural continuation of the last segment into a
+new one, which the speed puts a hop times the speed further on and a
+search within about 10 ms moves to where the waveforms match best
+(normalized cross-correlation in mono, every frame of about 16 kHz, then
+each frame around the best; the natural continuation itself when in reach,
+so at 1× it passes the source through). Its buffers are allocated once,
+the first time; it reads ahead what a step needs, skipping what fast speeds
+leave out, reads silence past the source's end and fades out once the
+speed puts the next segment there, and tags each
+frame it gives with the source frame the speed puts it at, which the voice
+keeps beside its four frames of history for `Position`. Turned off, it
+passes the source through from the natural continuation, and a voice keeps
+it, so that voices that never preserved pitch pay one nil check.
 
 `Position` is where a voice is heard, not mixed. The mixer counts the
 frames it mixed and, of the latest, those the device holds: as many as it
@@ -2135,7 +2401,9 @@ Recent (about 290 KB).
   `flock` or `LockFileEx` while the instance runs; at launch an instance
   takes the sessions whose lock it gets, reopens their documents edited
   (in conflict when the file's stamp changed), writes them into its own
-  session, then removes the old ones.
+  session, then removes only the old copies it restored. A copy it skips or
+  cannot read, and one whose new copy cannot be written, stays for the next
+  launch.
 - *Watches.* One `WatchFiles` per file of open documents, shared by
   reference count, which costs the same whatever else its folder holds: a
   watch covers the folder, not each file in it. A batch
@@ -2167,7 +2435,11 @@ The public API keeps one stable `*Context` per window. Child builders share
 it and temporarily change its parent. `Element` is a 16-byte checked value:
 a direct owner record, arena slot and 32-bit generation. The owner detaches
 from the engine on close and retires before generation wrap. Old elements
-cannot alias recycled nodes. Development builds and `Tester` diagnose stale
+cannot alias recycled nodes. A closed window keeps nothing of what it
+showed (#1281): `mygo.Window` keeps only that it shows Content, handing the
+Content to its surface as it attaches, and the closed engine drops its view,
+the last frame's elements, states and scene, and the host its last scene,
+renderers and placements, in case anything still holds them. Development builds and `Tester` diagnose stale
 use; production methods return empty results or ignore it. `Handle` stores
 persistent control identity separately for each window. Focus queries read
 identity without depending on construction order; focus requests wait for a
@@ -2252,10 +2524,29 @@ either.
   `XF86Forward` on Linux, and `WM_XBUTTONUP` (taken, so that
   DefWindowProc sends no `WM_APPCOMMAND` as well), `VK_BROWSER_BACK` and
   `VK_BROWSER_FORWARD`, and `WM_APPCOMMAND`'s browser commands on Windows.
+  A key held down repeats as `KeyPressed` with `Repeat`, which the
+  shortcut that takes it tells (`shortcutReg.repeat`,
+  `Context.ShortcutRepeated`): `isARepeat` on macOS (and the current
+  event's, for the Edit menu's commands that reach shortcuts), bit 30 of
+  `WM_KEYDOWN`'s lParam on Windows, `KeyboardEvent.repeat` in browsers.
+  GdkEventKey flags none, so the Linux surface notes the hardware
+  keycodes held (`keysDown`, before the input method sees the key): a
+  press of one held already, with no release between, is a repeat, as X11
+  with detectable auto-repeat (which GDK turns on) and GTK's own repeat on
+  Wayland send them.
   A key typed while the input method composes is the input method's
   alone, as Enter choosing a candidate: on macOS `keyDown:` sends no
   `KeyPressed` while there is marked text, as GTK's input method filters
   such keys on Linux and IMM32 makes them `VK_PROCESSKEY` on Windows.
+  A composition an input method gives up, as with Escape, goes: the
+  Microsoft Japanese IME sends `WM_IME_COMPOSITION` with neither
+  `GCS_COMPSTR` nor `GCS_RESULTSTR` then, which empties the marked text
+  (`InputComposition.Cancel`) before `WM_IME_ENDCOMPOSITION` unmarks it.
+  A composition the content does not take (`SurfaceEvent` returns false
+  for `TextComposition`) macOS gives up (`discardMarkedText`, once
+  `interpretKeyEvents:` returns), as the terminal leaves the dead key ´
+  of Option-E that it sent as Alt, so that the next key is not composed
+  with it.
   Input methods name what text and compositions replace in the text
   around the caret (`Replace`, `From`, `To`): NSTextInputClient's
   replacement ranges, GtkIMContext's `delete-surrounding`, IMM32's
@@ -2290,7 +2581,21 @@ either.
   the flags are all taken, and of its state, which the elements inside
   it inherit at commit) adds no hits nor stop of Tab and drops the focus,
   but stays in the tree, its presses counted as any other's; it offers no
-  focus, nor the increments that go through the keys.
+  focus, nor the increments that go through the keys. One hidden from
+  assistive technology (`AccessHidden`, a field of the node and of its
+  inherited state, as `IgnoreInput`; inert ones count too) paints and
+  takes input, but `accessElement` skips it with what is inside it, as an
+  invisible one, its text names no ancestor (`innerText`), and its
+  state drops what `AccessAction` sends it.
+  One only unavailable (`AccessDisabled`, ARIA's aria-disabled, a
+  field of the node and of its inherited state too) keeps
+  `flagDisabled` off, and so its hits, its stop of Tab and its look,
+  but its node is `AccessDisabled`, which the backends already map
+  (`AXEnabled`, ATK's enabled and sensitive states, UI Automation's
+  `IsEnabled`), still `AccessFocusable`, with no actions but the focus
+  and scrolling into view, and its state drops the others; UI
+  Automation's `SetFocus` reaches a disabled element that offers the
+  focus, as Chromium's does one aria-disabled.
   `AccessTree.Announcements` are texts to read out once
   (`Context.Announce`, toasts, routers): `AXAnnouncementRequested` posted
   on the application with a medium priority on macOS, AtkObject's
@@ -2302,7 +2607,113 @@ either.
   Statuses, as toasts, are polite live regions too (`LiveSetting`).
   Widgets of an app's own set what the bases set with element methods
   (`Checked`, `Mixed`, `Expanded`, `Value`, `Range`, `Level`,
-  `ActiveDescendant`). Menus drawn in the window are AppKit's `AXMenu`,
+  `ActiveDescendant`, `Busy`, `Current`, `AutoComplete`,
+  `PositionInSet`). `AccessSelected` is `Selected` without its accent
+  background and text color: it sets the same state (`checked`, which
+  is `AccessChecked`, read as selected on tabs, options, rows, cells and
+  tree items), so every bridge, a table's or a grid's choice of cells
+  and rows included, reads it as it reads `Selected`'s. `PositionInSet`
+  (`accSet`, aria-posinset and aria-setsize, each 0 for not given) wins
+  over the `setPos` and `setSize` the bases give their items, which
+  count those built, but not over a List's rows, whose place among all
+  its rows also places them in their table on macOS and Windows. `Busy`
+  (`AccessBusy`, ARIA's aria-busy) is WebKit's `AXElementBusy`, with `AXElementBusyChanged`, on
+  macOS, ATK's busy state, and `busy=true` in UI Automation's
+  AriaProperties; `Current` (`AccessNode.Current`, aria-current's
+  kinds) is WebKit's `AXARIACurrent`, ATK's `current` attribute with the
+  active state, as Chromium's, and `current=page` in AriaProperties. Both
+  bring a generic element into the tree as a group, as ARIA's global
+  states do. `AutoComplete` (`AccessNode.AutoComplete`,
+  aria-autocomplete's inline, list and both; none writes nothing) is
+  WebKit's `AXAutocompleteValue`, answered through
+  `accessibilityAttributeValue:`, ATK's `autocomplete` object attribute
+  with the supports-autocompletion state, as Core-AAM maps it (and as
+  IAccessible2's object attribute and state), and `autocomplete=list`
+  in AriaProperties, which UI Automation has for ARIA's properties
+  without one of its own: Core-AAM maps nothing in UI Automation nor in
+  AX API, and Chromium nothing in UI Automation; `Combobox`,
+  `Autocomplete` and a `TokenField` with suggestions set it to list.
+  `RoleDescription` (`AccessNode.RoleDescription`,
+  aria-roledescription) is AppKit's `accessibilityRoleDescription`,
+  which elements override, ATK's `roledescription` attribute and UIA's
+  LocalizedControlType; `Controls` (`AccessNode.Controls`, the IDs of
+  the elements, aria-controls) is `AXLinkedUIElements`, ATK's
+  `controller-for` relation and `controlled-by` back, from the nodes'
+  `ref_relation_set`, and UIA's ControllerFor; `DescribedBy`
+  (`AccessNode.DescribedBy`, aria-describedby) adds the text of the
+  elements to `Description` (their Label, else the texts inside them,
+  hidden or not, joined by spaces, after the element's own), and is
+  ATK's `described-by` relation with `description-for` back, and UIA's
+  DescribedBy beside FullDescription; AX API has no relation for it,
+  only the text in `AXHelp`. `ErrorMessage` (`AccessNode.ErrorMessage`,
+  aria-errormessage) is given only while the element is invalid
+  (`Invalid` sets `AccessInvalid` alone, or `Error`), puts the text
+  first in `Description`, as `Error` does its message, and is WebKit's
+  `AXErrorMessageElements`, answered as `AXInvalid` is, ATK's
+  `error-message` relation with `error-for` back, and UIA's
+  ControllerFor, as Core-AAM maps it; UIA also raises
+  IsDataValidForForm and FullDescription changing, as a field turns
+  invalid as it blurs. `Orientation` (aria-orientation) sets
+  `AccessVertical` or `AccessHorizontal` on any element: `AXOrientation`,
+  ATK's vertical or horizontal state and UIA's Orientation, a slider and
+  a separator across unless told, others without one. `Search` on a
+  text input sets `AccessSearch`: `AXSearchField`, ATK's
+  `xml-roles:searchbox` and `text-input-type:search`, UIA's Edit with
+  "search box" and the searchbox AriaRole. `RoleDeletion` and
+  `RoleInsertion` (ARIA's deletion and insertion) are `AXGroup` with
+  `AXDeleteStyleGroup` and `AXInsertStyleGroup`, ATK's content deletion
+  and content insertion with `xml-roles`, and UIA's Text named
+  "deletion" and "insertion"; `HasPopup`
+  (`AccessNode.HasPopup`, aria-haspopup) is `AXPopupValue`, answered as
+  `AXInvalid` is, with `AXShowMenu` pressing the element, ATK's
+  has-popup state and `haspopup` attribute, and UIA's ExpandCollapse
+  with `haspopup=` in AriaProperties; `Sort` sets a header's
+  `AccessSortAscending`, `AccessSortDescending` or `AccessSortOther`
+  (ATK's `sort:other`, UIA's ItemStatus and `sort=` in AriaProperties,
+  AppKit's unknown direction). A cell (`RoleCell` or a header) that
+  `Checked` or `Selected` marks is `AccessSelectable`, chosen while
+  `AccessChecked`, as ARIA's gridcells with aria-selected, and the
+  table around it `AccessSelectable` too: `AXSelected` and the table's
+  `AXSelectedCells` (with `AXSelectedCellsChanged`), ATK's selectable
+  and selected states rather than checked, UIA's SelectionItem in the
+  table's Selection. `RoleNavigation`, a landmark (`Breadcrumbs`), is
+  `AXGroup` with the subrole `AXLandmarkNavigation`, ATK's landmark with
+  `xml-roles:navigation`, and UI Automation's Group with the navigation
+  LandmarkType and AriaRole. Native UI in browsers has no accessibility
+  tree yet (`UpdateAccessibility` is empty in `internal/web`), so there
+  is no ARIA to map them to. The other landmarks, live regions and rules
+  map as WAI-ARIA's Core Accessibility API Mappings do: `RoleRegion` is
+  one only with a name (a group without), `AXLandmarkRegion`, ATK's
+  landmark with `xml-roles:region`, and UIA's custom LandmarkType;
+  `RoleSearch` is `AXGroup` with `AXLandmarkSearch`, ATK's landmark
+  with `xml-roles:search`, and UIA's Group with the search LandmarkType;
+  `RoleArticle`, no landmark, is `AXGroup` with `AXDocumentArticle`,
+  ATK's article, and UIA's Group named "article";
+  `RoleLog`, `RoleTimer` and `RoleAlert` are `AXGroup` with
+  `AXApplicationLog`, `AXApplicationTimer` and `AXApplicationAlert`,
+  ATK's log, timer and notification, and UIA's Group named "log",
+  "timer" and "alert"; `RoleSeparator` is `AXSplitter`, ATK's separator
+  and UIA's Separator, vertical when taller than wide (`AccessVertical`,
+  with `AXOrientation`, ATK's vertical state and UIA's Orientation);
+  `RoleRowHeader` is `AXCell`, ATK's row header and UIA's HeaderItem,
+  named by its content but keeping what is inside it, as a cell does
+  (ARIA's rowheader is not children-presentational).
+  Live regions (`AccessRole.Live`) say how they are read: `AXARIALive`,
+  `AXARIAAtomic` and `AXARIARelevant`, answered as `AXInvalid` is; ATK's
+  `live`, `atomic` and `relevant` attributes, with their `container-`
+  forms on what is inside them; UIA's LiveSetting. Screen readers read
+  the platforms' live regions in web content alone (WebKit's and
+  Chromium's `AXLiveRegionChanged`, Orca's web scripts), so the engine
+  reads them out itself (`ui/access_live.go`): it compares each frame's
+  tree with the last, announces what a log that showed gained, joined
+  for each log, and puts the text an alert shows that no alert showed
+  in the last tree into `AccessTree.Alerts`, which interrupt:
+  `AXAnnouncementRequested` with a high priority, ATK's `notification`
+  signal with `ATK_LIVE_ASSERTIVE` (ATK 2.50, else an announcement), and
+  an assertive live region beside the announcements' on Windows. Alerts
+  are told apart by their text, as an element's ID shifts when others
+  appear before it; the tree assistive technology first gets, and a log
+  first showing, read nothing out. Menus drawn in the window are AppKit's `AXMenu`,
   `AXMenuBar` and `AXMenuItem`, whose choice shows as
   `AXMenuItemMarkChar` (answered through `accessibilityAttributeValue:`,
   as `AXInvalid` is), ATK's menu, menu bar, menu item, check menu item and
@@ -2322,6 +2733,13 @@ either.
   `isAccessibilitySelectorAllowed:` says, so elements answer the older
   `accessibilityIsAttributeSettable:` themselves, as AppKit would but for
   that value: `NSAccessibilityElement` has no implementation to call.
+  The keys that press or focus an element (`KeyShortcuts`, ARIA's
+  aria-keyshortcuts) are formatted as `ui` writes a menu's shortcuts
+  (`shortcutText`) as the view builds, so that an app not giving any
+  links no formatting, and reach the backends as one string
+  (`AccessNode.KeyShortcuts`): WebKit's `AXKeyShortcutsValue`, answered
+  through `accessibilityAttributeValue:`, ATK's `keyshortcuts` object
+  attribute and UI Automation's `AcceleratorKey`, as Chromium's.
   The rows of a `List` (list items) and a `Table` (rows) are named by
   their content and say which of all the rows they are (`PosInSet`,
   `SetSize`, the list giving its total), as only those in view are built;
@@ -2333,18 +2751,53 @@ either.
   focusing a row chooses it, as screen readers expect of an active
   descendant. On macOS, lists are tables (`AXTable`) of rows
   (`AXTableRow`), as AppKit's, with `AXIndex`, `AXRowCount`,
-  `AXVisibleRows`, `AXSelectedRows` and `AXSelectedRowsChanged`, and
+  `AXVisibleRows`, `AXSelectedRows` and `AXSelectedRowsChanged` (a
+  list without a `SetSize` or `RowCount` of its own counting as many rows as its
+  items' `SetSize` says, if more than it holds), and
   `AXScrollToVisible`, an action of AppKit's older API, which elements
   then answer for all their actions; on Linux, a list choosing rows is a
   list box with `AtkSelection` and `selection-changed`, rows carry the
-  `posinset` and `setsize` object attributes, and `AtkComponent`'s
+  `posinset` and `setsize` object attributes (as any item's), and `AtkComponent`'s
   `scroll_to` (ATK 2.30) scrolls; on Windows, rows have `PositionInSet`,
   `SizeOfSet`, `IsOffscreen`, `SelectionItem` (raising `ElementSelected`)
   in their list's `Selection`, and `ScrollItem`. A list choosing several
   rows is `AccessMultiselectable` (ATK's `multiselectable`, UIA's
   `CanSelectMultiple`, rows then raising `ElementAddedToSelection` and
   `ElementRemovedFromSelection` unless chosen alone), and its focus is on
-  the row last chosen.
+  the row last chosen. `RoleListBox` and `RoleOption`, a list box of an
+  app's own (ARIA's `listbox` and `option`), are `RoleList` and
+  `RoleListItem` with `AccessSelectable`, as a `ComboboxBase`'s popup and
+  its options (`choosesItems`, `flagChoosable`) and a `SelectBase`'s
+  are, so the bridges show them as the lists above, selected with
+  `Checked`; unlike `flagChoosable`'s rows, they take the focus only
+  when `Focusable`. A `SelectBase`'s options are selected while
+  highlighted, the trigger's `ActiveDescendant` the one highlighted, as a
+  native select's popup: assistive technology focusing one
+  (`focusHighlights`) notes it on its state (`focusAsked`), which the
+  select highlights as it builds it, rather than clicking it, which
+  would choose it. Grids and tree grids (`RoleGrid`, `RoleTreeGrid`)
+  are tables to the backends (`AccessRole.Tabular`), whose rows a `List`
+  shown as one makes rows rather than list items; a row of an app's own
+  saying whether it is chosen (`Checked`, `Selected`) is
+  `AccessSelectable`, as is the table or grid holding it, which holds
+  its cells' choice too. The counts and indexes an app gives a grid built only where it shows (`RowCount`,
+  `ColCount`, `RowIndex`, `ColIndex`, ARIA's aria-rowcount and the like)
+  go to WebKit's `AXARIARowCount` and the like, and the rows' `AXIndex`
+  and the table's `AXRowCount` where `PosInSet` and `SetSize` say
+  nothing; to ATK's `rowcount`, `colcount`, `rowindex` and `colindex`
+  attributes beside `xml-roles` `grid` or `treegrid`, as Chromium's; and
+  to UI Automation's `Grid`, `GridItem`, `Table` and `TableItem`
+  patterns of tables and their cells (`uia_grid.go`), which count from 0
+  as the app gave them, else as rows say which of all they are after the
+  header rows above them, else by what is built, found as a client asks;
+  their `RowHeader`s are the `Table` pattern's row headers. A cell's
+  `ColumnSpan` and `RowSpan` (`node.cellSpan`, from the layout's
+  `gridCell`, whether or not its row is a grid) are `AccessNode.ColSpan`
+  and `RowSpan` (aria-colspan, aria-rowspan): the lengths of its
+  `AXColumnIndexRange` and `AXRowIndexRange` (`placeCells`, which puts
+  the next cell after the columns it covers), ATK's `colspan` and
+  `rowspan` attributes, and `GridItem`'s `ColumnSpan` and `RowSpan`,
+  `Grid.GetItem` finding the cell at each place it covers.
 - **The connection.** `content.go` attaches the content to its window
   through `internal/surface.Conn`, which carries the surface and, as
   functions, what the content needs of the app (the clipboard, dragging
@@ -2371,17 +2824,41 @@ either.
   only what changed since the last frame (see below); commits the boxes to the elements'
   states with the hit list in paint order, the focus order and the labels;
   paints a `scene.Scene`; and presents it. Input between frames goes to the
-  states of the last frame's elements. An element's identity hashes its
+  states of the last frame's elements. A release that comes with moves no
+  pass read waits in the element's state (`releaseLater`) for the pass
+  that reads them, which applies it as it ends (`forgetInput`): the view
+  sees the element still pressed where the pointer let go, and released
+  in the pass after. An element's identity hashes its
   parent's with its position or `Key`, so focus, scroll offsets, editors and
-  animations survive rebuilding. `Context` is stable for the window; `Element` values expire between build
+  animations survive rebuilding. `prune` drops the states the frame did
+  not build (but those of pages Routers keep) and recycles them; a state
+  with `Local` values that are `io.Closer`s (`state.closes`, which
+  `Local` fills as it makes one, so that other states cost nothing) hands
+  them to `engine.dropped`, which `endFrame` closes on the main thread
+  once the frame ended, last made first. Those of an element whose copy,
+  or an ancestor's, leaves with an `Exit` wait in `engine.exits` until
+  the transition's record is gone or no longer holds that copy (the
+  exit ended, or the element came back), and the engine's `close` closes
+  every state's as the window closes. `Context` is stable for the window; `Element` values expire between build
   passes and validate their owner, slot and generation before accessing storage. `ListState` resolves
   its focus owner only for the current context, frame and pass, exposing
   focus and shortcuts without retaining an element in app state. Scroll
   offsets move in the layout too
   (`ui/scroll.go`): elements that asked to `ScrollIntoView`, and the focus,
-  come into view before the boxes are placed, and placing keeps each offset
-  within its content; a `ScrollState` mirrors an offset both ways, and a
-  frame that moved one builds another for what read the old one. Frames
+  come into view before the boxes are placed, lined up as its options say
+  (or glide there as a wheel's notches do, by what they went each frame,
+  `glideScroll`), and placing keeps each offset within its content; a
+  `ScrollState` mirrors an offset both ways, and a frame that moved one
+  builds another for what read the old one. A container that snaps
+  (`ScrollSnap`, `ui/snap.go`) finds the places its elements mark as it
+  is placed, from their boxes relative to it, and
+  keeps the offset at the one it rests at; a notch or a key heads for the
+  next place at once, a touchpad's scrolling once it has been still for a
+  moment (not every platform tells when the fingers lift or a fling's
+  momentum ends), along a spring that the frames advance (`glideSnaps`).
+  Only `ScrollSnap` installs what snapping takes (`placeSnapper`, the
+  `snapper` interface of the container's state), so apps that do not snap
+  leave it out. Frames
   happen only when asked: input, `Invalidate`, `After`, or `AnimationFrame`
   while something moves.
   The view builds the whole tree each frame, but layout reuses what did not
@@ -2403,10 +2880,13 @@ either.
   again by their parameters, as Taffy keeps a node's measurements: an
   element laid out anew whose text is the same, as the rows of a List
   each frame, asks nothing of the text system's cache, whose key costs
-  more to hash than to compare. A grid measures the widths of only the
-  items its columns read (`contributes`): none for Fr columns with room
-  known, as CSS's minmax(0, 1fr). Transforms and scroll offsets of other
-  containers apply after layout and change nothing there. Elements that lay
+  more to hash than to compare, and one laid out at another width asks
+  for it from the last (`text.System.LayoutFrom`). A grid measures the
+  widths of only the items its columns read (`contributes`): none for Fr
+  columns with room known, as CSS's minmax(0, 1fr), unless they are
+  `MinContent`; a minimum (`Track.Min`) measures nothing. Transforms and scroll
+  offsets of other containers apply after layout and change nothing
+  there. Elements that lay
   out by more than they are built with are never reused, nor anything
   around them: a List (rows built as it lays out), a Form, a Table's
   fitted columns and a toolbar (which change elements inside them as they
@@ -2461,7 +2941,8 @@ either.
   While nothing of the window shows (`platform.OccludableSurface`: a macOS
   window hidden, minimized or covered by other windows, whose display link
   still ticks, at the display's rate for half a minute, then at about 40
-  Hz), what moves asks for no frame, and a frame asked for by a change of
+  Hz; a minimized window on Linux, as GDK's `window-state-event` tells
+  on X11, and on Windows, as `WM_SIZE` does), what moves asks for no frame, and a frame asked for by a change of
   the state waits (`holdFrame`; both `held`), as browsers draw nothing for
   windows out of sight and as Apple asks of Mac apps: the view function,
   `Draw` and the work `After` drives wait until some of the window shows.
@@ -2481,11 +2962,19 @@ either.
   as assistive technology turns on, and for `CapturePage`, which builds
   the frame waiting; and none waits before the window's first frame
   reached its surface (`windowHost.occluded`), which a window made hidden
-  waits for to become ready to show.
+  waits for to become ready to show. `Context.WindowHidden` reads
+  `occluded`; once a view asked (`hiddenAsked`), `SurfaceHidden`, which
+  the surfaces send as none of the window shows any more, builds one
+  frame out of sight, as input does, for the view to stop its work, and
+  `SurfaceShown` one whether a frame was held or not.
   The window gaining or losing the keyboard focus draws a frame only when
   the last frame read it (`windowFocus`, as a focus ring, a caret, a
   selection's color or a focused text input's IME state do): a window
-  hiding or showing again draws nothing it would draw the same. Each
+  hiding or showing again draws nothing it would draw the same. So does
+  the window becoming active or inactive (`windowActive`, which the
+  widgets read through `context.emphasized` and `context.accent` where
+  they would fill with the accent, and `Context.WindowActive`), told by
+  `surface.Conn.ActiveChanged`. Each
   frame matters on macOS, where the Metal driver takes 30 to 45 MB of the
   process's footprint ("owned unmapped (graphics)") for the first command
   buffer encoding anything after a pause, and gives them back a second or
@@ -2510,7 +2999,21 @@ either.
   into its parent's plane as CSS's flat transform-style does, composes
   with its ancestors after layout as a projective map
   (`scene.Affine`, with G and H in perspective); boxes keep their original
-  layout space. Painting stores the composed transform on scene
+  layout space. A `scene.Affine`'s divisor is 1 at its origin, or -1
+  (`Behind`) when the origin is behind the viewer though what is drawn is
+  in front: a turn in perspective around an element far from the
+  window's origin puts the window's origin past the turned plane's
+  horizon (#1406). Products and inverses keep the divisor's sign, and the
+  shaders take it from the instance (`Transform2.z`). Elements and
+  `Painter.Transform` flatten a 3D transform around its own origin and
+  move it there in 2D. A transform that puts all of its plane behind the
+  viewer (`TranslationZ` as far as `Perspective`'s distance, not turned)
+  flattens to a singular map, which shows nothing; `BackfaceHidden` tests the normal through the whole 4×4
+  inverse, perspective included (`facesAway`, as Chromium's
+  `IsBackFaceVisible`). `TranslatePercent` stays apart from the transform
+  (`translatePct`): `transformAt` resolves it from the box as laid out,
+  after the transform and before the pose, as a pose's percents
+  (`showPose`) and a `Motion`'s (`tbox.moved`) are. Painting stores the composed transform on scene
   operations and clips, and committing keeps it on the state for
   inverse-mapped pointer input, carets, accessibility bounds, and overlays
   attached to visual bounds. The CPU renderer inverse maps pixels for
@@ -2523,11 +3026,29 @@ either.
   CPU renderer's sample points, mapped back from the pixel's center
   through the inverse. Nested
   transformed or rounded clips use cached masks, independent of content
-  moving within them; hard clips in the drawing's coordinates evaluate on
-  the GPU. Backdrop effects map local samples into the frame. With a GPU,
-  every frame draws there, including resting changes to transformed content.
+  moving within them, once they hold content that a transform does more
+  than move (`scene.Reshaped`), or a clip reaching into their rounded
+  corners (`scene.ClipCorners`, which the scissor rectangles of outer
+  clips would not cut); hard clips in the drawing's coordinates,
+  and clips around content only moved, evaluate on the GPU. Backdrop
+  effects map local samples into the frame. With a GPU, every frame draws
+  there, including resting changes to transformed content.
   Metal retains wide colors under transforms. See
   [Transforms](ui/transforms.md#rendering) for rendering details.
+- **Masked clips** (`ui/mask.go`, `scene.ClipShapeOf`). A clip
+  (`OpPushClip`) may carry a gradient paint, whose alpha masks it
+  (`MaskLinearGradient` and the others, around the element's inset
+  rectangle from `ClipInset`), or an image, whose alpha masks it over its
+  rectangle (`Painter.ClipPath`: the path's coverage, rasterized by
+  `internal/vec` once for each shape and kept by the engine while paints
+  use it). The GPU builders draw such clips into the cached clip-mask
+  textures, as transformed or rounded clips do (`raster.ClipMask`), and
+  never evaluate them in the shaders, so no shader changed for them. The
+  CPU renderer multiplies the clip's coverage by the mask
+  (`raster.clipMasking`). Each op under a mask is masked on its own,
+  rather than through a group layer as `Opacity` fades (below). A clip moved
+  by a translation moves its gradient with it (`scene.MovedClipOp`), and
+  damage compares the version of its image.
 - **Motion** (`ui/motion.go`): every animated value of an element
   (`AnimateTo`, `Animate`, `AnimateWith`, `Spring`, `Jump`) is a `channel`
   by key, with a value, a velocity and the time they hold for, moving
@@ -2539,9 +3060,15 @@ either.
   while the old path goes on. `Jump` sets values and derives a velocity
   from successive ones; presses keep their last moves (`dragTrack`), in
   the element's axes and the window's, for `DragVelocity` and
-  `DragEnded`. Keyframe sequences keep one sequence per
+  `DragEnded`, and their button (`state.pressButton`, `PressedButton`):
+  `Pressed`, `Dragged` and the controls that follow the pointer (sliders,
+  `Draggable`, value drags) take the primary button's alone
+  (`pressedPrimary`), a right or middle press only clicking or opening a
+  menu. Keyframe sequences keep one sequence per
   key with an explicit replay token. All ask for frames only while moving,
-  and end at their targets under reduced motion. Poses (`ui/pose.go`,
+  and end at their targets under reduced motion, but for those whose
+  `NonMotion` (of `Animation`, `KeyframeOptions`, `TimelineOptions`) says
+  they move nothing, which play on. Poses (`ui/pose.go`,
   `AnimatePose`) are channels sampled as frames commit, into a transform
   after the element's own (`poseM`) and a fade; frames that only paint
   (`repaintFrame`) move the posed elements of the last frame built on
@@ -2567,20 +3094,86 @@ either.
   which then moves itself). Moving with a parent or a scroll offset is no
   change; resizing the window animates nothing, and reduced motion only
   fades and colors. Each moving component (position, size, opacity, and a
-  `Motion`'s scale and rotation) is a motion `channel`, so a spring keeps
-  its velocity through changes and a delay holds them. Colors move as
-  elements paint, after their `styleFn`. A `Match` moves an element
+  `Motion`'s scale, rotation and blur) is a motion `channel`, so a spring keeps
+  its velocity through changes and a delay holds them. A blur goes with
+  the opacity, as it moves nothing, and adds to the element's `Blur` as
+  Gaussians compose, which `paintEffect` draws on every renderer. Colors move as
+  elements paint, after their `styleFn`, mixed premultiplied in sRGB, or
+  in Oklab (`mixLab`) with the `Oklab` of their `Animation`. A `Match` moves an element
   appearing where another of the same identity showed the frame before
-  (`rt.matched`, in window coordinates) after `place` (`animateMatches`),
-  laying it out anew at each box on the way, across parents and scroll
-  offsets. An element appears with
-  its `Enter` only in a parent the frame before had. One no longer built,
+  (`ui/match.go`, `matchRec`, in window coordinates) after `place`
+  (`matches.move`), laying it out anew at each box on the way, or scaling
+  it (`ScaleContent`), across parents and scroll offsets, from the colors
+  the other showed (`matches.claim` notes them before `animateExits`
+  forgets it). With `Fly`, it blends the other's corners, opacity, text
+  color and transform into its own (decomposed as CSS does, in 3D into a
+  quaternion slerped the short way, whose sign holds at half a turn), and
+  the transform of the
+  elements around the other into that of its own (`worldAround`, shown
+  with a transform of its own, `under`). The element it came from goes
+  with it if it flies too, fading out as it fades in (Motion's crossfade
+  curves): itself while still built, as in a page going away, else a copy
+  that `matches.claim` takes, in place of its `Exit`, from the arena of
+  the frame before, which frames with an element flying keep as those
+  with an `Exit` do, with the text style and the theme of the elements
+  around it; copies of its ancestors going away hide theirs. Both are
+  `lift`ed, over the rest of their layer: the window's content, which the
+  root paints them over before the overlays, or the overlay they are in,
+  which its layer paints them over (`matches.paint`), out of their
+  ancestors' clips and opacity, in the theme of the `Themed` around them.
+  `commit` lists their hits there too (`engine.liftHits`, put over each
+  layer as the next starts), where `contains` stops at them the clips
+  around them, so that they take the pointer where they paint. Each is
+  placed where its content sits on the pixels as at rest, and shown where
+  it is with a translation (`matches.pin`), which elements flying inside
+  it take into account, so that its text moves as one, smoothly, and ends
+  as text at rest; a flight ends with its look, its box within a quarter
+  of a point of its own. One gone with an ancestor going as its `Exit`
+  says flies on as its copy in the ancestor's (`matches.flyOn`), from
+  where it showed to where that copy has it, its colors going on as its
+  transition moved them, fading as that copy fades; other copies of
+  elements flying (`ghostOf`) no longer fly. A text flying with
+  `ContentTransition`'s `Morph` takes the other's text layout into its
+  content transition instead, whose `morph` (`ui/morph.go`) pairs the
+  glyphs it comes from (`morphGlyph`, the old layout's, colored by the
+  spans its rich text last painted with, which `morphRest` keeps) with
+  the clusters of its layout (their longest common sequence, then the
+  nearest of the same characters left) and moves, scales and recolors the
+  glyphs of each pair, fading the others, the old text's going with the
+  element's box, and the lines and highlights of both texts' styles and
+  spans. It places each glyph as text at rest where the box goes would
+  (`text.System.Origin`), drawn at the quarter of an octave nearest the
+  size it shows, and moves it from there with a transform, so that the
+  glyphs move smoothly and together, rather than each a pixel at a time,
+  and end as text at rest. A text sent back to the one it morphs from
+  before it got there morphs back from as far from the end as it was from
+  the start, which shows the same; one that another text takes over
+  morphs from its glyphs as they showed (`snapMorph`, from the same walk
+  of them, `morphPairs.each`, as painting them). `ContentTransition`
+  links `morph` only for a `Morph`, so that apps without one link none of
+  it. A frame without an
+  element on its way notes only where each `Match` showed and the element
+  that showed it (`matchRec.node`), whose look and the transform of the
+  elements around it an element flying from it reads in the next frame,
+  from the arena kept, rather than each frame noting them. The engine has
+  its `matcher` only once a `Transition` has a `Match` or `ScaleContent`,
+  so that apps without them link none of it. An element appears with
+  its `Enter` only in a parent the frame before had; the overlay layer,
+  built only while it holds something, counts as the root there. One no longer built,
   whose parent still is, goes with its `Exit` as an inert copy, laid out
-  and painted under its siblings without taking room: frames that built
+  and painted under its siblings of its z-index without taking room; the frames after
+  one in the overlay layer, or its copy, build the layer, empty but for
+  the copies, which lets the pointer and the focus through
+  (`engine.overlayExits`). Frames that built
   elements with an `Exit` leave their arena to the next frame, which
   builds in the other (`Context.spare`), so that the next one copies those
   gone (`ghostOf`), with states of their own and nothing referring to the
-  app's state. Siblings are not laid out around a size moving; they move
+  app's state. The parent's `ChildExit` in the frame it goes
+  (`context.childExits`) takes the place of its `Exit`. An element
+  appearing with `AfterExits` waits unseen (`transition.held`,
+  `flagInvisible`) while copies leave under its parent (`ghosts`, which
+  `animateExits` sets after the elements built have moved), and comes in
+  with its `Enter` in the frame they are gone. Siblings are not laid out around a size moving; they move
   with their own transitions, in step when they share it.
 - **The inspector** (`ui/inspector.go`, `inspector_details.go`,
   `inspector_panel.go`, `inspector_overlay.go`), as Chrome's developer
@@ -2609,6 +3202,31 @@ either.
   parent share one state: `rekey` reports it (`duplicateKey`), logged
   once and listed as an issue, and in a `Tester` it panics
   (`engine.strict`), without package testing in apps.
+  The Styles tab edits (`inspector_edit.go`): a view builds its elements
+  anew each frame, so edits are kept by element ID and applied to the
+  frame's elements after the view and before layout (`applyEdits`), through
+  `setStyle` and `unsetStyle`, which `ownStyles` must read back; a property
+  they don't know stays read-only (`styleKnown`). `describe` then overlays
+  what the elements can't show: values as typed, declarations turned off or
+  not understood (`overlayEdits`). Rules are keyed by their element, as the
+  bar of changes comes above them. Closing the inspector drops the edits.
+  `changesAsGo` (`inspector_gocode.go`) writes them as calls of package ui,
+  whose methods a test looks up on `Element`, from what `setStyle` parsed.
+  `:hov` forces states by element (`inspector.forced`): `Hovered`, `Pressed`,
+  `Focused`, `FocusVisible`, `FocusWithin` and `ringShown` ask `isForced`,
+  which the stub of `mygo_noinspector` answers with false.
+  The tree's `flex` and `grid` badges show layouts over the content
+  (`inspector_layout.go`). A grid's tracks exist only as it lays out, so
+  `gridLayout` gives them to `noteGridTracks`, behind the constant
+  `inspectorBuilt` since an empty stub would still grow its frame and code,
+  with the layout cache off while a badge is on for it to run.
+  Laying a grid out again after `place` would move its baseline items, which
+  are in window coordinates by then.
+  `main.go:42` opens in the developer's editor (`inspector_editor.go`):
+  `MYGO_EDITOR`, `VISUAL` or `EDITOR` names the command, started in a session
+  of its own so that it outlasts `mygo dev` restarting the app, and failures
+  go to the Issues tab. Browsers and phones keep `os/exec` out
+  (`inspector_editor_none.go`).
   Production builds of `mygo build` leave the inspector out with the build
   tag `mygo_noinspector` (`inspector_off.go` stands in for it, never
   open), added to the tags of `GOFLAGS`, unless `-debug` or
@@ -2627,23 +3245,66 @@ either.
   `Conn.Event` on the main thread, as the backend's events do; menu items
   are chosen through the backends' test hooks (`TestPerformMenuItem`,
   `TestActivateMenuItem`); captures and scripts through `Window`'s and
-  `Page`'s methods.
+  `Page`'s methods. `mygo-automation` (`plugins/automation/cmd/mygo-automation`, its code
+  in `internal/automationcli` so that `internal/e2e` runs it in process)
+  is a client of the socket on Go's standard library alone: it prints
+  trees as lines with refs (`@e7`) that a session's file maps to windows
+  and element IDs, gives a number once per session so that a stale ref
+  never names another element, and after `--settle` (`idle`, then
+  `tree`) diffs the elements by ID against what the session saw last.
+  Its guide, `SKILL.md`, is embedded in the command (`skills`), so that
+  it matches the version installed.
 - **Input taken as it comes.** An element with `HandleInput` gets its
   input on the main thread as the backend reports it, before the frame
   (`ui/handler.go`): keys (with their releases, which ui otherwise
   ignores), text, compositions and edit commands while it has the focus,
   unless a `Shortcut` around it claims the key, and the pointer pressed on
   it, moving over it or scrolling over it; once it takes a press, the
-  moves and the release come to it, as to a pressed element. Its
+  moves and the release come to it, as to a pressed element, and the
+  release comes as the window loses the focus or once a frame builds the
+  element no more (not built again, or built over by an element without
+  `HandleInput`, as when the press moved it into a split), so that the
+  next press starts anew. Those releases, and a press the system takes
+  (`platform.PointerCancel`: a browser's `pointercancel`, a pen's or a
+  finger's `WM_POINTERUP` with `POINTER_MESSAGE_FLAG_CANCELED`, or
+  `WM_CAPTURECHANGED` while a button is down, on Windows, which
+  `WM_CANCELMODE` brings too, GDK's `GDK_GRAB_BROKEN` of the pointer on
+  Linux, a context menu's loop that takes the release on macOS), are
+  `InputEvent.Canceled`: the handler still gets its release, so that
+  what holds a press lets go, but the engine commits nothing of it
+  (`pointerUp`'s `canceled`): no click or right-click, no drop (the
+  value's drag is given up, as with Escape), no `DragEnded`, no context
+  menu waiting for the release, and `PressCanceled` reports it, which
+  sends `Draggable` back to where the press took it. A cancel coming
+  while nothing is pressed does nothing, so a backend sends it whenever
+  it loses a press, but not as a data drag of its own takes the pointer
+  (OLE's loop, `gtk_drag_begin`), whose end ends the press. The Linux
+  touchscreen's `GDK_TOUCH_CANCEL` taps nothing (`touch.go`), as its
+  taps press only once the finger lifts. The pointer's events carry their device and
+  pressure (`SurfaceEvent.Pointer` and `Pressure`), which the engine
+  keeps with the buttons they leave down (`engine.pointerDevice`): a
+  device that tells no pressure presses 0.5 while a button is down and 0
+  otherwise, as Pointer Events have it, a move that changes the
+  pressure alone is a move, and the element pressed keeps the device and
+  pressure of its press's last move for `PressedPointer`
+  (`state.pressPointer`). Its
   `TextCaret` turns on the input method at that caret, with no text around
   it; `InputMethod(false)` (`TextInputState.NoInputMethod`) keeps text on
   but input methods off, as winit's `set_ime_allowed(false)`: macOS skips
   `interpretKeyEvents:` and inserts the event's `characters`, Windows
   disassociates the IMM context and keeps `WM_CHAR`, and GTK takes the
   focus from the IM context and sends the keyval's character; browsers
-  cannot. `ui.Shape` lays out text without the cache of layouts, for widgets
-  that keep their glyphs, and `Painter.Glyphs` draws them where they
-  placed them.
+  cannot. A composition fn leaves (returns false for `InputCompose`), the
+  input method gives up on macOS. `ui.Shape` lays out text without the
+  cache of layouts, for widgets that keep their glyphs, and
+  `Painter.Glyphs` draws them where they placed them.
+  `ObserveInput` has an element see, without taking it, what comes to
+  the focus while the focus is it or inside it (keys up and down, text,
+  compositions, edit commands), and the presses and releases over it:
+  `observeFocus` and `observePointer` (`ui/handler.go`) walk the focus or
+  hit chain, outermost first, before anything handles the event, and do
+  nothing while the last commit found no element observing
+  (`engine.observers`).
   A text input's `OnTextKey` gets the keys that type no text as they
   come too, after `HandleInput`, but first applies the input queued for
   the editor (`widgetTextInput.prepare`, as the platform's queries do),
@@ -2663,6 +3324,48 @@ either.
   `ShapeRichText` retain per-paragraph `TextLayout` geometry, its lines
   included (`Lines`), as a paginating reader needs; an application
   owns its buffer, selections, rendering, editing and undo policy.
+- **Sticky elements** (`ui/sticky.go`). `Sticky` sets `layoutStyle.sticky`,
+  which keeps the insets of an element in the flow from moving it as
+  relative positioning (`relative`); `place`, which reaches an element
+  after its parent and the scroll containers around it, then moves it and
+  what is inside it by `stickyShift`, as CSS Positioned Layout's sticky
+  positioning does: per axis, the padding box of the nearest container
+  scrolling that way (or following one, `ScrollWith`), or the window's,
+  less the insets, is where its margin box stays, within its parent's
+  content box (the content it scrolls, for a scroll container), the
+  start's inset winning (`stick`). Unlike CSS, which makes a container
+  scrolling one way scroll both, each axis looks for its own container,
+  as one here scrolls only the ways it says. Being in window coordinates
+  once placed, the box is where hits, ink, accessibility bounds and the
+  focus ring read it; `laidOutOrigin`, which overlays attach by before
+  `place`, and `reveal` add the same shift, so that a popover follows it
+  and the focus coming to it where it shows scrolls nothing. It paints in
+  its parent's second pass, among the absolute children, and commit moves
+  its hits there (`stickyHits`), while it commits in the flow, so that
+  Tab and assistive technology keep its place among its siblings.
+- **Paint order** (`ui/zindex.go`). `ZIndex` sets `node.zIndex` and, on
+  the parent, `zOrder`, which `add` sets too for a child added with one
+  (a copy leaving); a parent without it paints and commits its children
+  as before, in two passes, with no sorting nor allocation. One with it
+  paints and commits them through `zPaint` and `zCommit`, which `ZIndex`
+  sets, so that an app never calling it links none of this. It paints
+  them in `paintOrder`: the two passes' order sorted stably by
+  z-index, so that equal values keep it, the copies leaving, which keep
+  the z-index their elements had, first among those of theirs,
+  and, of the root, the overlay layer and what follows it last
+  (`zPinned`), so that overlays stay above the content and keep their
+  order (the overlay layer's own children are never sorted). Commit
+  (`commitByZ`) commits them in the usual order, which the focus order
+  and the labels follow, noting each child's hits and web views, and
+  then moves them, child by child, to the same order (sorting pointers to
+  the notes, whose code all slices of pointers share), the web views'
+  indexes into the hits with them, so that the pointer and what covers a
+  web view agree with the paint. The order is among siblings alone: a
+  child with a z-index moves with its subtree, inside its parent's clips,
+  and makes no stacking context that would mix it with its parent's
+  siblings. The engine's `zScratch` holds the buffers, as a stack for the
+  paint's nesting; the scene's order changing makes a `Cache` layer draw
+  again, as its `scene.Differ` sees.
 - **Right to left** (`ui/direction.go`). Each element has a direction
   (`node.dir`): built, it takes its parent's, and the root the window's,
   which `surface.Conn.RightToLeft` gives (package `mygo` from the app's
@@ -2719,12 +3422,21 @@ either.
   `SPI_GETHIGHCONTRAST` and Accessibility's `TextScaleFactor`, with
   `WM_SETTINGCHANGE`; on Linux, GTK's `gtk-enable-animations` and the
   settings portal's accent, contrast and GNOME's text scaling factor
-  (`ReadAll`, `SettingChanged`). A change goes through
-  `Handler.ThemeChanged`, as the appearance's does; package `ui` reads them
+  (`ReadAll`, `SettingChanged`). What the pointing devices can do
+  (`Pointer`, `AnyPointer`, `NoHover`, `NoAnyHover`, Media Queries 4's
+  interaction features), whose zero is a mouse's, as macOS's always is,
+  comes from the media queries in browsers; on Linux from the sources of
+  the default seat's pointing devices (`gdk_seat_get_slaves`), followed
+  through its `device-added` and `device-removed`; on Windows from
+  `SM_MOUSEPRESENT` and `SM_DIGITIZER`, the touch screen primary in
+  tablet mode (`SM_CONVERTIBLESLATEMODE`, whose `ConvertibleSlateMode`
+  setting changes), as Chromium tells them, primary the finest. A change
+  goes through `Handler.ThemeChanged`, as the appearance's does; package `ui` reads them
   once until the next, the default theme follows them (`Theme.follow`), and
   `Animate` follows reduced motion. Package `mygo` reads them the same way:
   `Theme.Preferences()` keeps them until the next change, with reduced
-  transparency too, which package `ui` does not follow. Pages get them as
+  transparency too, which package `ui` does not follow, and without the
+  pointing devices, which pages' own media queries answer. Pages get them as
   `ThemePreferences`' JSON (its `MarshalJSON`, the accent a CSS color or
   `null`), which is mygo-runtime's `ThemePreferences`: `tsgen` imports that
   type for it rather than declaring one (`runtimeTypes`). A user script
@@ -2817,7 +3529,11 @@ either.
   over the page left, the one going away built too, inert (`flagInert`:
   painted, without hits, focus, labels, accessibility nor `Context`
   shortcuts), absolutely positioned over the one in flow, both offset by
-  their insets as relative positioning; others fade in alone. The first
+  their insets as relative positioning; others fade in alone. With
+  `TransitionMatch`, the page going away is built too, inert, fading out
+  under the page coming, absolutely positioned and fading in, while the
+  elements of a `Match` move between them: those of the page going away
+  that flew with the page's show no more (`inert`, in `match.go`). The first
   router of a frame takes the back and forward keys for the window, each
   one also for the focus inside it, which comes first.
 - **Comboboxes** (`ui/combobox.go`). A combobox is a text input with a
@@ -2933,12 +3649,25 @@ either.
     edits and gives tokens per line; the default tokenizes lines from the
     state the line above ended in (`lexer.go`, `lexers.go`), keeping the
     states, and after an edit goes on below it only until a line starts
-    as it did before. Optional interfaces give a parser's structure to
-    Select Larger, folding, brackets and indentation, so that tree-sitter
-    can plug in as a `Language.Highlighter` without the editor changing.
+    as it did before. A patch's texts start each hunk in state 0, at
+    lines the buffer moves with its edits (`setRestarts`). Optional
+    interfaces give a parser's structure to Select Larger, folding,
+    brackets and indentation, so that tree-sitter can plug in as a
+    `Language.Highlighter` without the editor changing.
     Brackets are matched by scanning lines a batch at a time
     (`rope.Text.EachLine`), skipping strings and comments by their tokens,
     and only lines holding brackets are tokenized for it.
+  - *Snippets* (`snippet.go`). `ParseSnippet` reads the flat tab-stop and
+    placeholder subset of TextMate/LSP into an immutable template;
+    unsupported constructs return errors. Inserting a template, directly
+    or as a `Completion.Snippet`, makes each occurrence of the active
+    stop an ordinary selection. Existing typing, input methods and undo
+    handle them together. A session follows only its next local buffer
+    change, through `apply`/`sync`; external edits end it. Fields move in
+    template order, preserving ownership at adjacent boundaries, and
+    linked deletions stay separate before the editor merges overlapping
+    deletions. Tab ends the typing group and selects the next numbered
+    stop, 0 last; undo, Escape or leaving the fields ends the session.
   - *Diffs* (`internal/diff`, `diffmodel.go`). Lines are interned and
     compared with git's histogram algorithm, falling back to Myers' with
     xdiff's cost limit, then slid by git's indent heuristic; changed
@@ -2946,10 +3675,24 @@ either.
     character apart joined (Pierre's word-alt). An edit re-diffs only the
     region of the hunks it touched, extended to the unchanged lines
     around. The split view is two editors sharing their scroll, their
-    lines aligned by spacer blocks; the unified view one editor of the
-    new text, with blocks painting the deleted lines from a view of the
-    old one. Unchanged runs collapse into hidden spans under separator
-    blocks.
+    lines aligned by spacer blocks, unchanged lines too where the sides
+    wrap at unlike widths; the unified view one editor of the new text,
+    with blocks painting the deleted lines from a view of the old one.
+    The split view's sides share its width by `SplitPercent`, across a
+    divider that moves as `ui.Split`'s does. The view lays both editors
+    out in its `Draw`, before they paint, to align them, so the build
+    gives the sides factors of growth from nothing (`diffSplit`), whose
+    widths the `Draw` works out with the layout's own arithmetic, to the
+    bit: a width off by a rounding would wrap a line otherwise and build
+    the view again, frame after frame. The sides' minimum is kept
+    against the last frame's width, and a resize builds the view again
+    to keep it at the new one. Unchanged runs collapse into hidden spans under separator
+    blocks. The split view's editors scroll as it is drawn, the unified
+    view's as it is built; a frame whose layout or build moved the scroll
+    builds the view again (`rebuildIfMoved`, `DiffView`), as one laying
+    an editor out at another height does (`builtViewH`), so that what
+    read `ScrollY` or `ViewportHeight` before, as an app's minimap,
+    follows.
   - *Parts* (`parts.go`, `diffparts.go`). The bars and popups around the
     text (find, go to line, completions, hovers) and a diff's separators,
     actions on changes and gutter button are elements the editor places
@@ -2985,7 +3728,10 @@ either.
   the document in its root's local state and the spans of each paragraph
   by block, links as inline `Link` elements, a code block's tokens by line
   and its text in chunks of 32 lines; it reveals text at a pace, fading it
-  by span colors and element opacity, which only paint. A `Selectable`
+  by span colors and element opacity, which only paint, and `Revealed`
+  reads from the root's state whether the frame showed all of the source
+  with no fade left, a query rather than a callback, as the frames
+  that change it are those the reveal already asks for. A `Selectable`
   root's `CopyData` and `SelectedTexts` map paragraphs' runes back to
   source offsets, to copy text with block separators, Markdown, and the
   HTML of that Markdown parsed again, which `ui/richtext` pastes with its
@@ -3082,7 +3828,20 @@ either.
   an `AXOutline` with `AXDisclosureLevel` and `AXDisclosing`, which keeps
   its rows as a table does; on Linux, the `level` attribute and the
   expandable state; on Windows, Level, and ExpandCollapse with LeafNode
-  for items without children.
+  for items without children. `OutlineState.Prefix` builds the start of
+  the rows in place of the indentation and the arrow (`prefix`), with
+  `OutlineRow.Arrow` the arrow's click and Option-click.
+- **Trees** (`ui/tree.go`). `TreeBase` builds every item that shows, in
+  the order the app builds them, each `Group` a column keyed by its item
+  so the items inside keep their IDs as items above open and close; the
+  `Tree` widget is `TreeBase` with its look. The tree is a `FocusGroup`,
+  one stop of Tab, with the items taking the focus themselves. An item's
+  keys open and close it as it is built; those moving the focus, and the
+  first letters typed (`flagTypeSelect`, carried over to the item they
+  move to), apply once the view is built (`treeBuild.finish`, from
+  `context.onBuilt`), against this pass's items in order, which also
+  says to assistive technology which of how many each is, as an
+  outline's rows.
 - **Drag and drop within a window** (`ui/dragdrop.go`). An element
   dragging a value notes it in its state (`Drag`), or a function giving it
   as a drag starts, as a list's rows chosen. The engine starts the drag
@@ -3136,7 +3895,11 @@ either.
   as they register with it (`Context.checks`), then applies a click to
   them all. A text input notes the modifiers of the Enter submitting it
   (`submitMods`), as the editor takes Shift+Enter: the find bar goes back
-  with it.
+  with it. A toast keeps the time it showed (`spent`) and since when it
+  runs (`at`): its time stops while the pointer rests on the toasts or
+  the keyboard focus is in them with the window's (`toastsPaused`), and
+  runs on while the window is in the background: a toast whose time is
+  over by then closes on the next frame, before the toasts build.
 - **Dates, times and colors** (`ui/date.go`, `ui/timeinput.go`,
   `ui/colorpicker.go`). `DateInput` and `Calendar` share one month's grid,
   whose day under the keys is its active descendant. A time input's
@@ -3228,19 +3991,25 @@ either.
   backend's `platform.WebView` and window methods from the host's, which
   drag regions use. `ui.WebView` places it: committing a frame notes where
   each web view's element shows (`noteWebView`: its content box on whole
-  pixels, clipped as its hits are), and painting it makes a hole
+  pixels, clipped as its hits are, with the hole's corners and, under a
+  transform that only moves and scales, the size the page lays out at,
+  `WebViewPlacement.Width` and `Height`, which `Frame` shows scaled; under
+  another transform, the bounds, upright), and painting it makes a hole
   (`OpHole`) through what the window painted, rounded as the border's
   inner edge and cut by the clips around it, so that what paints after
   the element paints over the page. The native web view is under the
   surface, which shows it through its transparent frames; what shows over
   it blends with it as over any pixels. After presenting a frame, the
   engine gives the surface each web view's frame and clip and the boxes
-  of the hits after its own within its clip (`Covers`): the pointer is the
-  page's where it shows and nothing painted over it takes the pointer
-  (`WebViewPlacement.At`), as a dialog's backdrop does over all of it. A
+  of the hits after its own within its clip, as they show (`Covers`): the
+  pointer is the page's where it shows, inside its corners (`Radii`), and
+  nothing painted over it takes the pointer (`WebViewPlacement.At`), as a
+  dialog's backdrop does over all of it. Backends cut the page to the
+  corners and show it scaled, keeping its layout, so that it shows as its
+  hole does over a transparent window too. A
   press there goes to the page and comes to the content as `WebViewPress`,
-  which notes it for `PressedOutside` and takes the focus from the
-  content; the engine sets no cursor while the pointer is over a web view
+  which notes it for `PressedOutside` and moves the focus to the web
+  view's element, unshown; the engine sets no cursor while the pointer is over a web view
   (`cursorUnknown`), whose page sets it. Web views the frame does not build
   hide and keep their pages. Glyphs over a hole are not on an opaque
   background (`Painter.holes`), so that subpixel ones do not color the
@@ -3248,13 +4017,23 @@ either.
   it away (`OpHole`'s `Opacity`), so the page blends over it. The element
   is a Tab stop: focusing it gives the page the keyboard
   (`WebView.TabInto`, from its end going back), and Tab past the page's
-  ends comes back as `WebViewTabOut`, from which the focus moves on. The
+  ends comes back as `WebViewTabOut`, from which the focus moves on. A
+  key the page leaves unhandled comes as `WebViewKey`: the engine moves
+  the focus to the web view's element, if it was elsewhere, and takes the
+  key as from the keyboard (`webViewKey`), so that the shortcuts around
+  the element and the window's see it; Tab never comes. The
   access tree has a node for each page, inside its element
   (`AccessNode.WebView`), which the backends fill with the page's own
   accessibility, as SwiftUI's `WebView` is in place. Backends:
   - macOS: the WKWebView is in a flipped clip view (`MyGoClipView`, its
     layer masking to its bounds) placed at the clip, under the surface in
-    the content view, in paint order; the Metal layer is not opaque, and
+    the content view, in paint order, in a pane (another) at its frame,
+    whose bounds are the page's size: AppKit draws it scaled and finds the
+    pointer in it as in any view of scaled bounds, and the pane's layer is
+    cut to the corners (`cornerRadius`, continuous, and `maskedCorners`;
+    a `CAShapeLayer` mask for corners of different radii), in the layer's
+    units and orientation, which `convertPointToLayer:` tells, whatever
+    AppKit does to scale it. The Metal layer is not opaque, and
     frames drawn in memory have their alpha. The surface's `hitTest:`
     returns nil where a web view takes the pointer, so AppKit finds the
     page under it. A web view's tracking areas get the mouse's moves
@@ -3270,7 +4049,15 @@ either.
     into `WebViewTabOut`. The page's node lists the WKWebView, whose
     `accessibilityParent` is that node; the clip view lists none. With
     `ScrollToContainer`, `MyGoWebView`'s `scrollWheel:` gives the event to
-    the surface's conversion (`scrollWheel`) instead of WebKit.
+    the surface's conversion (`scrollWheel`) instead of WebKit. WebKit
+    sends a key the page did not handle again, and the WKWebView on up
+    the responder chain: `MyGoClipView`'s `keyDown:` sends it to the
+    surface as `WebViewKey` (`unhandledKey`), Tab aside. An Escape (or
+    Cmd+.) comes as `cancelOperation:` first: WebKit sends a command its
+    web process does not know up the chain and resends the key only if
+    no responder took the command, and the `NSPanel` of a flyout takes
+    it, so `MyGoClipView` takes `cancelOperation:` itself and sends
+    `WebViewKey` with Escape (`unhandledCommand`).
   - Linux: the first web view puts the surface's area in a `GtkOverlay`,
     over a `GtkLayout` holding the WebKitWebViews (which, unlike a
     `GtkFixed`, asks for no size), as an overlay, which GTK realizes again
@@ -3290,7 +4077,20 @@ either.
     surface's alone. With `ScrollToContainer`, a handler of the view's
     `scroll-event`, which runs before WebKit's class handler, converts the
     event as the area's does (`scrollEvent`, moved by the view's
-    allocation), sends it to the content and stops the signal.
+    allocation), sends it to the content and stops the signal. A scaled
+    page's view is as large as it shows, and WebKit zooms it by the scale
+    over the page's own zoom (`pageScale`), so that it lays out at the same
+    width in CSS pixels. GTK runs each handler of `draw` with a clip of its
+    own, and GDK draws WebKit's frames with OpenGL within a clip's
+    rectangles alone: the view's handler of `draw` clips to the page's
+    corners on whole pixels and calls WebKit's class handler itself
+    (`GtkWidgetClass.draw`), and the region shaping the area keeps the
+    pixels the corners cut off. WebKitGTK dispatches a key the page did not
+    handle again once its web process says so, and its class handler of
+    `key-press-event` then passes it on: a handler connected after it
+    (`cbWebViewKey`) gets those keys alone and sends them as `WebViewKey`,
+    but Tab, modifier keys on their own and the shortcuts of menu items with
+    a role, which go on to the menu (`cbMenuKey`).
   - Windows: WebView2 in visual hosting, a composition controller
     (`ICoreWebView2Environment3`) whose visual is in a DirectComposition
     target of the surface's window that is not topmost (a window has one
@@ -3302,7 +4102,11 @@ either.
     chain for composition, or shows frames drawn in memory through the
     compositor; GDI would draw under the web views. Each web view's
     visual is in one clipped to its clip, the page at its bounds in the
-    surface's pixels. The surface gets the mouse everywhere and sends it on
+    surface's pixels, cut to its corners by a rectangle clip
+    (`IDCompositionRectangleClip`, its setters taking floats through
+    purego) and, scaled, at the page's size, which the visual's transform
+    scales to its frame; the mouse goes to the page through the inverse.
+    The surface gets the mouse everywhere and sends it on
     (`SendMouseInput`) where a web view takes the pointer, or to the one a
     press went to until the buttons are let go (with the capture), with a
     leave as the pointer goes; it sets the cursor the page asks for
@@ -3314,7 +4118,18 @@ either.
     keeps the wheel over that web view (`WM_MOUSEWHEEL`, `WM_MOUSEHWHEEL`)
     for the surface, which scrolls the content as over its own elements;
     a touchpad's pinch, the wheel by less than a notch with Ctrl held,
-    still goes to the page, as pinches do on the other platforms. For UI
+    still goes to the page, as pinches do on the other platforms.
+    WebView2 tells of no key a page leaves unhandled: `keys.js`, built
+    from `packages/bridge/src/keys-world.ts`, runs in an isolated world of
+    each document of the web view, frames in its process included
+    (`Page.addScriptToEvaluateOnNewDocument` with a `worldName`), decides
+    after the page's handlers ran with the rules of `keys.ts`, and calls
+    a binding of that world alone (`Runtime.addBinding` with an
+    `executionContextName`, after `Runtime.enable`), which WebView2
+    raises as `Runtime.bindingCalled` (`GetDevToolsProtocolEventReceiver`);
+    `bindingCalled` sends `WebViewKey`. The page's scripts reach neither
+    the world nor the binding, bridge or not, and their events are not
+    trusted. For UI
     Automation the root also answers `IRawElementProviderHwndOverride`:
     for the window WebView2 shows a page with, it returns the page's node,
     which answers with WebView2's provider of the page
@@ -3328,31 +4143,77 @@ either.
   next frame runs its `ContextMenu` function to collect a `platform.Menu`;
   after the frame, package mygo shows it with `Menu.popup`, posted to the
   main loop, since native menus wait in a loop of their own. A choice
-  comes back as the item's place and label, which the next frame's run of
-  the function matches to report `Chosen`; text inputs' menus queue their
-  editing commands instead. `PopoverMenu` opens the same way and draws
+  comes back as the item's place and label, and its ID when the view gave
+  it one (`MenuItem.ID`, `menuRun.keys`), which the next frame's run of
+  the function matches to report `Chosen`, by the ID alone when there is
+  one; text inputs' menus queue their editing commands instead. `PopoverMenu` opens the same way and draws
   the menu in the window instead (`ui/popovermenu.go`): the frame that
-  would show it notes it (`menuState.drawn`: where it opened, from the
-  element's corner, and the submenus open with their highlights), and
-  while it shows, each frame runs the function to collect the
-  `platform.Menu` and builds from it an overlay of a point attached to
-  the element where the menu opened, so that the menu flips about that
-  point at the window's edges, and a panel (`RoleMenu`) for the menu and
-  each submenu open, each attached to the item opening it. A panel keeps
-  the focus for its items, which the keys and the pointer highlight
-  (`ActiveDescendant`), and the menu closes for presses outside it but in
-  the frame it opened, whose press opened it. An item chosen runs the
-  function again at once, as the choice from a menu of the system's does
-  in the next frame, or does its editing command; the overlay going gives
-  the focus back to the element that had it. A menu whose element a pass
-  does not build closes (`resolveMenu`). `PopoverMenuButton` draws a menu
-  button's menu so (`drawnMenu.below`): opened below the button itself
-  (`menuState.below`, which `openMenuButton` sets), its panel attaches to
-  the button's bottom, flipping above it, and the button shows expanded;
-  opened from a toolbar's overflow menu, it goes at the overflow button's
-  corner as a context menu goes at its point. Opened by the keys or
-  assistive technology (`menuState.key`), it starts on its first item,
-  and a press on the button while it shows closes it (`buildMenu`).
+  would show it notes it (`menuState.drawn`, whose `menuShown` holds where
+  it opened, from the element's corner, and the submenus open with their
+  highlights), and while it shows, each frame runs the function to
+  collect the `platform.Menu` and builds the menu from it with the parts
+  of `MenuBase` (`menuParts`), which hold the keyboard and focus model of
+  every drawn menu: themed, and headless for `MenuBase` and
+  `ContextMenuBase`, whose `menuShown` is a local of their trigger and
+  whose open state is the app's `*bool`. `Popup` builds an overlay of a
+  point attached to the element where the menu opened, so that the menu
+  flips about that point at the window's edges, and a panel (`RoleMenu`)
+  for the menu and each submenu open, each attached to the item opening
+  it (the submenus that `Submenu` registers, built after their menu's
+  panel, as its siblings). A panel keeps the focus for its items, which
+  the keys and the pointer highlight (`ActiveDescendant`), by their
+  element IDs; the keys are read once the panel's items are built, which
+  they move among, and Enter clicks the item highlighted for the next
+  pass (`clickLater`), which reports it as `Clicked`; an item clicked
+  closes the menu once its panel is built (`finish`), unless the view
+  marked it `KeepOpen` after making it. A `Group`'s items are a range of
+  its panel's, which the keys take as one stop (`menuStops`: the item
+  checked, else the first), Left and Right moving within it. The menu
+  closes for presses outside it but in the frame it opened, whose press
+  opened it.
+  An item chosen runs the function again at once, as the choice from a
+  menu of the system's does in the next frame, or does its editing
+  command; the overlay going gives the focus back to the element that
+  had it. A menu whose element a pass does not build closes
+  (`resolveMenu`). `PopoverMenuButton` draws a menu button's menu so
+  (`menuShown.below`): opened below the button itself (`menuState.below`,
+  which `openMenuButton` sets), its panel attaches to the button's
+  bottom, flipping above it, and the button shows expanded; opened from a
+  toolbar's overflow menu, it goes at the overflow button's corner as a
+  context menu goes at its point. Opened by the keys or assistive
+  technology (`menuState.key`), it starts on its first item, and a press
+  on the button while it shows closes it (`buildMenu`, and `newMenu` for
+  the bases).
+  A window whose view sets `PopoverMenus` (`ui/menupresentation.go`,
+  `engine.menuPresentation`) draws every menu so: `ContextMenu` and `Menu`
+  take `PopoverMenu`'s and `PopoverMenuButton`'s path, and so do the
+  widgets built on them. The drawn path is reached only through function
+  values `SetMenuPresentation` sets (`menusInWindow`), so apps that never
+  draw their menus do not link it.
+  A text input's or selectable text's own editing menu has no function of
+  the view's to build it. `resolveMenu` notes it as a drawn menu
+  (`drawnMenu.edit`) and asks for another pass. After that pass's view,
+  before the overlay layer joins the root, the frame finds the text's
+  element in the content or the overlays (`node.find`) and draws the menu
+  of its `EditItems` there, in the element's theme. One in a part that
+  takes no input (`flagInert`), as a page going away, is not drawn, which
+  closes it. The inspector's fields keep the system's: its panel is built
+  after the overlays, over them.
+  The `Tester` reads a drawn menu's items as last built (`drawnMenu.items`)
+  and chooses one by its ID (`drawnMenu.choose`), which the next build
+  takes as a click, so its menu helpers work on either.
+  What a drawn item shows beyond its `platform.MenuItem` (`Danger`,
+  `Trailing`, `Content`) stays on the `MenuItem` of the run collecting
+  it (`menuRun.items`), which `drawnItem` reads, so that the system's
+  menus and their backends never see it. An item with an ID keys its row
+  (`menuItemKey`), whose highlight then follows it as items around it
+  come and go. Once a pass built the menu, the items its levels highlight
+  (`drawnMenu.highlighted`, by ID or else place and label) go to the
+  next run of the function, whose `MenuItem.Highlighted` reports them;
+  when they changed, the pass asks for another, so the function sees the
+  highlight it built. `Menu.MaxWidth` (`menuRun.widths`, by
+  `platform.Menu`) caps a panel's width, its rows' labels shrinking to an
+  ellipsis.
 - **Scenes** are flat lists of operations in device pixels: rounded
   rectangles with borders of a width per side, solid or dashed, filled
   with a color, a linear gradient mixed in sRGB or Oklab, a gradient of
@@ -3450,9 +4311,29 @@ either.
   it (`keptLayer.area`: each one's box and shadows grown by 4, in its
   space, clipped by those that clip). Its code is reached only through
   the interface `Cache` stores (`layerKeeper`), so apps that never call
-  it do not link it. `ui/shader` gives an
-  effect's entry point (`ColorEffect`, `DistortionEffect`, `LayerEffect`)
-  a `Fragment` that calls it, and the bridge reads the content as image 3
+  it, nor fade a group (below), do not link it. `Opacity` below 1 (a transition's fade and a pose's
+  `Fade` too) fades an element with children as one group, as CSS's
+  group opacity (`ui/group.go`): the subtree renders into the same
+  transient canvas, the area `keptLayer.area` gives within the clip,
+  drawn as one image at the opacity (`paintGroup`), so every renderer
+  draws it as it draws an effect's, and kept as `Cache` keeps its layer
+  while what it holds is the same (`keptLayer.draw`). A layer costs a
+  render pass, so a group paints flat first, its opacity multiplied into
+  each op as before, and `checkFlat` looks at the ops it painted
+  (`overlapping`: their bounds within the clips pairwise, at most 32 of
+  them, so that what culling skips counts for nothing): when two
+  overlap, it renders the layer, takes the flat ops back (`takeBack`:
+  the scene's slices, its canvases and the parts drawn,
+  `engine.drawn`) and paints the layer in their place. The state's
+  `grouped` then has the next frames go to the layer at once, back to
+  flat when it no longer overlaps, so the frames before change what a
+  group costs, never what shows. Holes (web views) and effects reading
+  their backdrop keep a group flat, as no layer shows what is behind
+  it. The code is linked by `Opacity`, `Transition` and `AnimatePose`
+  (`linkGroups`). A blurred or kept element fades its canvas at its
+  opacity rather than each op in it, and paints nothing faded out.
+  `ui/shader` gives an effect's entry point (`ColorEffect`,
+  `DistortionEffect`, `LayerEffect`) a `Fragment` that calls it, and the bridge reads the content as image 3
   (`LayerImage`) from where the box's corner lies in it
   (`__layerInset`). A shader reading its backdrop (`backdropAt`,
   `backdropSample`) is an effect with `Backdrop`: `Painter.EffectBackdrop`
@@ -3508,10 +4389,39 @@ either.
   2D context (`canvas_js.go`, see [Browsers](#browsers-internalweb)). They find the fonts, fall
   back to other fonts for what one lacks, shape, run the bidirectional
   algorithm and break lines; font files stay memory mapped and shared with
-  every other process. The package assembles their lines into layouts, with
-  its own whitespace trimming, ellipsis, alignment, carets and selection, so
-  those behave the same everywhere, and caches layouts by their parameters.
-  The engines rasterize glyphs too (`IDWriteGlyphRunAnalysis`,
+  every other process. A text wrapped again at another width, as in a window
+  being resized, keeps its `CTTypesetter` while frames use it, and gives it up
+  8 frames after the last, or as windows go idle. Core Text opens a break
+  iterator for each line of text with a language attribute, so
+  `languageShapes` leaves the attribute out where it changes nothing. A
+  number, new in each frame on a dashboard, is put together from the glyphs
+  and kerning of its characters, measured once for each font and checked
+  against Core Text from time to time (`numbers_darwin.go`). Latin text
+  kept across widths is shaped into one line that its lines take their glyphs
+  from, breaking at the spaces before plain words and asking Core Text for
+  every other break, checked in the same way (`wrap_darwin.go`). Korean text
+  breaks between words, as CSS's `word-break: keep-all` (`keepWordsWhole`
+  takes the breaks between two letters or digits out of Unicode's): Core Text
+  moves the break it suggests back to the last one left in the line; Pango
+  is told not to break within the words (`pango_attr_allow_breaks_new`), and
+  lays out again from a line a word longer than it overflows, without that
+  word kept; DirectWrite's lines, when one ends within a word, are broken
+  anew from its cluster metrics and shaped one by one; the canvas engine
+  leaves those breaks out of its own. Every engine gives a line's glyphs in visual order,
+  from the left, through right-to-left runs too (DirectWrite's runs, whose
+  glyphs come in logical order, are reversed), so that what walks them,
+  and `ui.Shape`'s callers, rely on one order. The package assembles their
+  lines into layouts, with its own whitespace trimming, ellipsis,
+  alignment, carets and selection, so those behave the same everywhere,
+  and caches layouts by their parameters.
+  A text that wraps none of its lines lays out alike at any width they
+  fit in, but for where its alignment puts its lines: `LayoutFrom` lays
+  it out at another width as the layout it is given (`ui` gives an
+  element's last), or as the text's layout without a width, once made,
+  sharing its lines, or copying those its alignment moves (`realign`), so
+  that a text whose box grows or shrinks, as a transition or the window
+  resizes it, is shaped once, and one measured, then laid out at the
+  width it gets, too. The engines rasterize glyphs too (`IDWriteGlyphRunAnalysis`,
   `CTFontDrawGlyphs`, cairo) into a coverage atlas, color glyphs (emoji)
   into a color atlas, and subpixel glyphs, the coverage of each pixel's
   red, green and blue, into the color atlas as well. Text looks as each
@@ -3562,19 +4472,54 @@ either.
   - *Decorations.* `System.Decorate` places underlines and strikethroughs
     as the platform does: Core Text's own geometry for AppKit, snapped in
     points, an underline as low and thick as the fonts under it want,
-    skipping the ink of descenders, a strikethrough through the middle of
+    skipping the ink of descenders (but a link's, on hover:
+    `SolidUnderline`), a strikethrough through the middle of
     the x-height, from the text's start to its width rounded up to a
     point; Direct2D's, an underline at the font's offset rounded to whole
     pixels from the snapped baseline, a strikethrough from the baseline as
     laid out, with edges where its eight samples across and down a pixel
     put them; GTK's, at Pango's metrics in whole pixels, the underline
     along a run's ink and advances, the strikethrough along its ink.
+    `LineStyle` overrides the font: a thickness (`DecorationThickness`)
+    around the line's middle, and an underline's offset
+    (`UnderlineOffset`, CSS's `text-underline-offset`), its top that many
+    DIPs from the baseline the engine draws on, in whole pixels, for every
+    engine, the browsers' canvas included; Core Text skips the ink where
+    the offset puts the underline.
   - *Joined glyphs.* Renderers blend each glyph in turn, as Core Graphics
     and Direct2D do, but cairo adds the coverage of a run's glyphs before
     blending it, which differs where antialiased edges of neighbors share
     a pixel. There, on Linux, package ui has the text system join them
     (`System.GlyphRun`): their coverage added and clamped, cached as one
     bitmap.
+  - *Strokes.* `TextStroke` draws each glyph's stroke as a mask of its
+    own (`System.StrokeGlyph`), made in Go from the glyph's coverage for
+    every engine: the coverage dilated by half the width less the
+    coverage eroded by it, each edge pixel's coverage placing the edge
+    within it, so the stroke is centered on the outline, round at its
+    corners and as smooth as the glyph; color glyphs stroke their alpha.
+    Cached with the glyphs, under a key with the width, and drawn by
+    every renderer as any mask glyph, all of a text's before its glyphs
+    (`paint-order: stroke fill`). `TextStroke` links it, so that apps that
+    stroke no text do not.
+  - *Shadows.* `TextShadow` and `Span.Shadow` draw each glyph's shadow
+    as a mask of its own (`System.ShadowGlyph`), the glyph's coverage
+    (the alpha of a color glyph) blurred in Go by a separable Gaussian
+    of sigma half the blur, as CSS has it, padded by three sigmas and
+    capped at 64 pixels. Cached with the glyphs, under a key with the
+    sigma, and drawn as a mask glyph at the offset, all of a text's
+    before its strokes and glyphs. `NewTextShadow`, which
+    `Element.TextShadow` and a `Span`'s `Shadow` take, links it: a
+    `TextShadow` has no fields to set otherwise, so a shadow that paints
+    is one that linked it.
+  - *Tabs.* `Style.TabSize` sets tab stops every that many spaces of the
+    style's font, letter spacing included, from the start of each line,
+    which each engine takes natively: Core Text's paragraph style (no
+    tab stops but a `DefaultTabInterval`), DirectWrite's
+    `SetIncrementalTabStop`, a Pango tab array of one stop, which it
+    repeats, and the canvas engine's own lines, which otherwise measure a
+    tab as the canvas does, as a space. The first `TabSize` links it
+    (`System.UseTabSize`), as `Justify` does `UseJustify`.
   Paths drawn with
   `Painter` are masks in the coverage atlas, rasterized by `internal/vec`,
   cached by their shape relative to the pixel grid in quarters of a pixel,
@@ -3583,10 +4528,27 @@ either.
   4095 pixels a side, draws as tiles of it (`pathTiles`), each a mask of
   the whole path clipped to the tile: only the tiles that show and that
   its edges reach, and, inside a fill, tiles covered whole, which share
-  one mask. A stroke's mask is the outline of its center line, each edge
-  drawn once (`strokeInto`): one side, turning at corners and ends as the
-  path's joins and caps say (`Path.Join`, `Path.Cap`), and back along the
-  other. Its dashes (`Path.Dash`) are cut from the center line as the mask
+  one mask: those its edges wind around by its rule (`Path.FillRule`),
+  which also picks the mask's (`vec.Rasterizer.MaskEvenOdd` for
+  `EvenOdd`) and keys it, as it keys a path's clip. A path larger than
+  a tile (511 pixels a side) draws as tiles too when the atlas has
+  lately had no room for a path's mask (`pathCrowdedPaints`): such a mask takes a shelf of the atlas of its
+  own, mostly empty for a long thin stroke, and a few of them, as wires
+  redrawn every frame, leave no room for the frame's other paths, which
+  would not show. A path whose mask finds no room draws as tiles at once,
+  and the runtime's repaint (`System.MakeRoom`) draws the frame's large
+  paths as tiles, which pack eight to a row of the largest atlas: the
+  room made lets go of the masks of those the paint drew before
+  (`System.Unkeep`), which it would keep as the frame drew them, and
+  which would leave the tiles no room. On the
+  pixel grid tiles show the pixels of one mask; under a transform off
+  it, a faint line where they meet. `Path.Contains` counts the winding
+  of the path flattened at four times its scale; an element's `HitTest`,
+  kept in its state, is one more test of `engine.contains`, after its
+  box and its own clip. A stroke's mask is the outline of
+  its center line, each edge drawn once (`strokeInto`): one side,
+  turning at corners and ends as the path's joins and caps say
+  (`Path.Join`, `Path.Cap`), and back along the other. Its dashes (`Path.Dash`) are cut from the center line as the mask
   is drawn, from where each polyline starts in their pattern, so that a
   trimmed path's dashes stay where they are, and its key holds that place,
   in quarters of a pixel within one pattern, with the caps, joins and
@@ -3598,7 +4560,11 @@ either.
   Opaque `Painter.StrokePolyline` on a GPU is the exception: each segment
   is a rotated fill with round ends, drawn as other fills are, without a
   mask; translucent ones, and the CPU renderer, take the mask's way, so
-  that overlapping segments do not show darker.
+  that overlapping segments do not show darker. A translucent line of one
+  segment overlaps nothing, and is a rotated fill too: the stripes of a
+  diff's fillers are hundreds of these, whose one mask would be as wide
+  and as high as the filler in view is high, rasterized again as that
+  changes, and drawn that large for each stripe.
   So are icons: `internal/svg` parses SVG documents (with `encoding/xml`
   and its own small CSS cascade) into nodes of paths, paints and layers,
   and draws them on the CPU with `internal/vec`, compositing gradients,
@@ -3616,7 +4582,10 @@ either.
   ranges of runes (`text.Span`): DirectWrite's setters over a range, the
   fonts of a Core Text attributed string's ranges, Pango's attributes
   between byte indices. `Params.Spans` holds them encoded as a string, so
-  `Params` stays a key of the layout cache. Laying out reuses what shaping
+  `Params` stays a key of the layout cache. A span's letter spacing of 0
+  is the text's unless `SpacingSet` (ui's `Span.NoLetterSpacing`, or an
+  inline element's `LetterSpacing(0)`) makes it its own, which each engine
+  sets over the span's range as any other. Laying out reuses what shaping
   throws away: engines take the glyphs, runs and lines `shape` returns from
   a scratch each layout resets (`shapeScratch`), as the layout copies them
   into its lines, which share one allocation; Core Text keeps its buffers,
@@ -3654,14 +4623,32 @@ either.
   Only Pango leaves room for it as it breaks, so a line whose hyphen does
   not fit is broken again, narrower by the hyphen, where Unicode's line
   breaking allows (else the hyphen overflows, as a long word does), and
-  the rest anew (`breakLines`). A paragraph without an indent or a soft
-  hyphen is shaped once.
+  the rest anew (`breakLines`). The padding of a span (`Span.PaddingX`),
+  which engines know nothing of, is the shared layout's too: `padLine`
+  moves the glyphs of each line's piece of the span in, and those after
+  it on, by the padding at both ends of each piece, as CSS's
+  `box-decoration-break: clone`, and widens the line; a line that does
+  not fit with the padding of its pieces is broken again, narrower by it,
+  and the rest anew, and an ellipsis leaves room for it. A paragraph
+  without an indent, a soft hyphen or a padded span is shaped once.
+  `Params.Balance` (`Element.Balance`) breaks a paragraph that wraps at
+  narrower widths, bisecting to a quarter of a DIP, for the narrowest
+  that keeps its count of lines (`System.balance`); `Params.Pretty`
+  (`Element.Pretty`) breaks again only its last two lines, when the last
+  is a word alone, bisecting for the widest width at which the line
+  before gives it a word and they stay two, at a space
+  (`System.prettyLines`), which `Element.Pretty` and a `TextShape` that
+  asks for it link (`System.UsePretty`). The layout cache keys both with
+  the other params, so a build lays it out once.
   Text elements built inside a text (`ui/inline.go`) are inline: the
   paragraph takes their text when its `Children` returns, and their
   styles as spans over its own when it lays out. At commit, each gets the
   boxes of its runes in the paragraph's layout (`Selection`), one hit
   each, so the pointer, the focus order, tooltips and menus work as for
-  any element; they paint only their focus ring, and assistive
+  any element; they paint only their focus ring (their `Opacity`,
+  `Invisible` and dimming fade the colors of their spans, `Span.faded`,
+  and a color faded to nothing stays the span's own, `colorSet`, so the
+  paragraph skips their glyphs but keeps their advance), and assistive
   technology sees those that are more than text, such as links, as nodes
   inside the paragraph's.
   Fontconfig knows no desktop's interface font, so on Linux `system-ui`
@@ -3673,7 +4660,8 @@ either.
   and moves to the lasting zone at the top once another frame draws it, so
   animated shapes never fill the atlas. When an atlas fills up during a
   frame anyway, the engine calls `MakeRoom`, which repacks what the frame
-  drew, grows the atlas when that is much of it and forgets the rest, and
+  drew, grows the atlas when that is much of it (what the frame left
+  out counting once, however many times it draws it) and forgets the rest, and
   paints the frame again: no frame shows with glyphs missing. The mask
   atlas starts at 256×256, and the color atlas at one transparent texel
   until a color or subpixel glyph draws. Growth accounts for the width
@@ -3685,7 +4673,8 @@ either.
   shader that computes the signed distance to rounded rectangles, Evan
   Wallace's blurred rounded box, gradients, stripes, the dashes of borders,
   atlas coverage and the innermost rounded clip; outer clips are scissor
-  rectangles. The builder omits operations wholly hidden by the certainly
+  rectangles, and a clip reaching into an outer one's rounded corners cuts
+  with that one's mask as well. The builder omits operations wholly hidden by the certainly
   opaque core of a later fill, keeping at most eight occluders and treating
   backdrop-reading effects as barriers. Its planner shares clipping rules
   with drawing, grows shadow support before transforming it, and skips
@@ -3712,8 +4701,8 @@ either.
   everywhere, stay whole and join their neighbors' batches.
   Metal opts into three further builder capabilities: marking fills whose
   clip coverage is one, splitting opaque cores from blended edges, and
-  batching by fragment class. Other renderers keep the original instance
-  flags and class-independent batching. Metal binds the instance buffer
+  batching by fragment class, the last of which Direct3D 11 takes too. OpenGL
+  keeps the original instance flags and class-independent batching. Metal binds the instance buffer
   once a pass and draws each batch with its first instance as the base
   instance, which `[[instance_id]]` includes; a batch binds its pipeline,
   image, clip mask and scissor rectangle only when they changed, with
@@ -3780,19 +4769,37 @@ either.
     `shader.hlsl` falls back to compiling that with the same DLL, which
     Windows has, and its test fails. Both compilation paths enable IEEE
     strictness with optimization, avoiding a native compiler optimizer crash
-    on transformed coverage sampling. It draws into a flip-model swap
+    on transformed coverage sampling. Batches of a class (`gpu.Class`) draw
+    with shaders of their own (`classes.hlsl`, after `shader.hlsl`, whose
+    functions they share, which leaves the sources effects are compiled from
+    as they are): instances of a class are not transformed, so they leave out
+    the general shader's coordinates, pass on 6 to 10 values rather than 15,
+    skip the clip where the vertex shader finds it holds the whole quad, and
+    write one color, blended by its alpha, but for subpixel glyphs, which need
+    dual-source blending. A plain fill takes 83 instruction slots rather than
+    the general shader's 3,627. A set of classes draws with the first of
+    `classShaders` holding them, made as first drawn: each class, the sets that
+    small batches join most, and all of them, which still costs less than the
+    general shader, which only transformed instances and effects need. It draws
+    into a flip-model swap
     chain on the surface's window, or, over a material, one for
     DirectComposition shown on it, with WARP when no hardware device
     works. At most one frame waits ahead of the screen, not DXGI's three,
-    so frames that follow each other, as when scrolling or animating,
-    show their input two frames sooner, and `Present` does not block for
+    and `Present` does not block for
     it: the swap chain's frame latency object (`latency.go`) tells room
     for a frame, and a frame drawn before there is presents once there is,
     as a goroutine waiting on the object has the main thread present it
     (`SetPost`); frames paced by the display (`WM_PAINT`, but a resize's
     and `FrameNow`'s) are not built meanwhile (`Renderer.Ready`). Every
     present takes one of the object's signals, so its count stays the
-    frames the screen can take. A frame of a new size is
+    frames the screen can take. Frames that make the refresh without building
+    ahead, as the last ones' cost tells (`frameCost`: the main thread's time and
+    the GPU's timestamps, taken after the frame's clear, which waits for the
+    window manager to give the buffer back; a frame no `Ready` started, as a
+    resize's, counts none, its main thread's time not known), build once it composed the last
+    (`DwmFlush`) and there is room, and present with sync interval 0, to show at
+    its next composition. Heavier frames build ahead and present with sync
+    interval 1, which keeps them at the display's pace a refresh later. A frame of a new size is
     presented at once (sync interval 0), not after the frame queued
     before it, and waits until DWM shows it (`DwmFlush`), so a live
     resize shows no stretched frames: the window takes its next size
@@ -3860,7 +4867,14 @@ either.
     shows no stretched frames; the others present as soon as the GPU has
     them (`presentDrawable:`), sparing a pass of AppKit's display cycle
     and a commit of the transaction each: an animation at 120 Hz takes
-    about half the main thread's time it would. The main thread never
+    about half the main thread's time it would. A resize's frame that
+    AppKit asks for (`updateLayer`) after one presented with the
+    transaction, outside a live resize, draws at the display link's next
+    tick, as for a window resized from its view, or right after the frame
+    that took back the drawables given back when idle: drawn in AppKit's
+    display of the view, presented with the transaction too, it did not
+    show, and the window kept the last frame stretched to its new size
+    (#1044). The main thread never
     waits for the display: after each frame presented as soon as drawn, a
     goroutine on a thread of its own (`present.go`) takes the next frame's
     drawable, which `nextDrawable` holds back while the display holds the
@@ -3987,7 +5001,20 @@ either.
     draws the batches scissored to each. GTK keeps the GtkGLArea's framebuffer from render to
     render, but makes its buffers anew, holding nothing defined, whenever
     it allocates the area, at the same size too: a `SurfaceResize` has the
-    next frame draw whole (`Invalidate`). A canvas's WebGL 2 context keeps
+    next frame draw whole (`Invalidate`). Once the area has a context, GTK
+    composites the whole window with OpenGL and tells EGL what each paint
+    changed (`eglSwapBuffersWithDamageEXT`) in the window's coordinates
+    unscaled, where EGL takes the buffer's pixels from the bottom left: at
+    a scale of 2, Mesa told a compositor that a change at the top of the
+    window was in its lower half, at half its size. A compositor that
+    redraws only what it is told changed (Mesa's llvmpipe tells it whole
+    frames changed, a GPU's buffers what GTK said) then showed title
+    buttons the pointer hovered flickering or gone, and a shadow missing on
+    some sides (#1071). At a scale of 2 or more on Wayland, the toplevel's
+    `draw` signal adds what GTK repaints (cairo's clip) as
+    `wl_surface.damage`, in the surface's coordinates, to the commit of the
+    swap that follows (`damageGLPaint`); `TestGLDamageWayland` checks it
+    under `weston --scale=2`. A canvas's WebGL 2 context keeps
     its drawing buffer (`preserveDrawingBuffer`), which browsers then copy
     as they composite each frame drawn; in Chrome on an M5 a caret blinking
     still took a quarter of the GPU's time it took drawn whole, and a frame
@@ -4063,6 +5090,24 @@ either.
   `SurfaceRenew`, so that the first in its `render` signal makes the GPU
   renderer, which the hidden one could not.
 
+  GTK's frame clock waits, after each frame, the refresh interval of that
+  frame's timings, and 1/60 s while none has one. GDK fills it in only
+  from the compositor: on Wayland in the frame callback of a paint it
+  commits itself, which it never asks for when it composites the window
+  with OpenGL (`eglSwapBuffers` commits, with a swap interval of 0), and
+  on X11 from a compositor sending `_NET_WM_FRAME_TIMINGS`. A GtkGLArea
+  drew 60 frames a second on a 165 Hz display under Niri (#1219). The
+  surface writes the interval of the monitor showing the window
+  (`gdk_monitor_get_refresh_rate`, asked again each frame, so it follows
+  the window to another monitor) into the timings of each frame it draws
+  (`paceFrameClock`), unless they have one. `GdkFrameTimings` is private,
+  and GTK 3.24.24 moved its `refresh_interval`: the offset is the one
+  `gdk_frame_timings_get_refresh_interval` reads the write back from. A
+  monitor of unknown rate, as Xvfb's, keeps 60 Hz, and a compositor's
+  interval arriving later replaces the surface's. The clock still runs
+  only while frames are asked for. On Wayland these frames follow a timer
+  at the display's rate, not its refreshes.
+
   On Windows, `RequestFrame` invalidates the surface's window, whose
   `WM_PAINT` comes as soon as the message queue is empty, and frames drawn
   in memory show at once, through GDI or DirectComposition: nothing held
@@ -4105,8 +5150,14 @@ either.
   (`ui/headless.go`) with the CPU renderer, at its own time
   (`engine.clock`), which stands still until `Tester.Advance` moves it.
   Its host runs no timer; it notes their deadlines, and `Advance` runs
-  the frames due. The fake backend's surface lets the core's tests drive
-  content windows through `package mygo`.
+  the frames due. `Tester.Access` and `AccessByRole`
+  (`ui/tester_access.go`) build the last frame's accessibility tree on
+  demand, as `accessTree` does for a window, and give its nodes as
+  `AccessInfo`: the role an element was given (`node.role`), so that
+  roles sharing a node's role stay apart, or the one following the
+  node's in the order of `Role`; a role added to both needs nothing
+  there, a state a field. The fake backend's surface lets the core's
+  tests drive content windows through `package mygo`.
   `BenchmarkFrame` in `ui` measures a frame of a large window on the CPU,
   and `BenchmarkListScroll` the frames scrolling a list of a million rows;
   `BenchmarkDiff*` the frames of a window as godiff's, two lists of texts
@@ -4268,11 +5319,22 @@ renderer's (`gputest.Compare`).
   `darwin-arm64` and `darwin-amd64` are walked as pairs whose names must
   match: identical files and links ship once, an arm64 and an x86_64
   Mach-O file become a universal binary (`writeUniversal`) when copied,
-  anything else fails. Names starting with a dot are skipped; the entries
-  of these directories and listed paths are followed when they are links,
-  links inside them are copied as links, permissions are kept. Installed
-  paths must be unique ignoring case (listed resources never merge), and
-  top-level names must not replace the packaging's own files
+  anything else fails. A name starting with a dot is skipped when it is a
+  directory or a file manager's dropping (`.DS_Store`, `Thumbs.db`,
+  `desktop.ini`), and at the top level of `resources/` whatever it is; a
+  dotfile inside a resource directory ships (`junkName`, `hiddenName`),
+  since packages read such names. So is what `resourceFilter` excludes
+  from `resources/` (but not from listed paths): Go source files, which
+  only builds read, and the paths there that match `resourcesExclude`
+  (`path.Match` segments, `**` for any number of them), with what a
+  matching directory holds; the merger's
+  listings and `resource.walk`, which copies and fingerprints, apply it,
+  while `mygo dev`'s watcher still sees those files, which a package may
+  embed. The entries of these directories and listed paths are followed
+  when they are links, links inside them are copied as links,
+  permissions are kept. Installed paths must be unique ignoring case
+  (listed resources never merge), and top-level names must not replace
+  the packaging's own files
   (`AppIcon.icns`, `Assets.car`, the executable, the `.desktop` entry). Code
   among them is signed before the app (`signNestedCode`), since
   `codesign --deep` only covers code directories and notarization rejects
@@ -4395,7 +5457,8 @@ renderer's (`gputest.Compare`).
   the `/Applications` link, the volume icon and a `.DS_Store` written in
   pure Go (`dsstore.go`, byte-identical to dmgbuild's `ds_store` package)
   that lays out the Finder window in a folder, `hdiutil` creates a writable
-  HFS+ image of it, as large as its files need, the CLI sets the volume's
+  HFS+ image of it, as large as its files need (APFS where HFS+ fails, as
+  on macOS 26.7.1), the CLI sets the volume's
   Finder flags, then `hdiutil convert` compresses it with LZMA.
   No AppleScript or Finder automation is involved, so it works headless and
   in CI. The image is signed with a real identity and, with `macos.notarize`,
@@ -4415,18 +5478,20 @@ profile).
 
 ## Testing
 
-Regenerate checked UI wrappers with `go generate ./ui`. Native library and
-shader generation commands are listed in [AGENTS.md](../AGENTS.md).
+Regenerate checked UI wrappers with `go generate ./ui`, then what
+`mygo migrate-ui` knows of their results (`internal/uimigrate/uiapi.go`,
+which `TestUIAPI` checks) with `go test ./internal/uimigrate -update`.
+Native library and shader generation commands are listed in [AGENTS.md](../AGENTS.md).
 
 | suite | command | covers |
 |---|---|---|
 | core | `go test .` | lifecycle, quit, documents, IPC, channels, events, Eval, protocol, frontend URLs and serving, menus, trust, single instance, dev ready signal (fake backend); `go test -run '^$' -bench .` measures the Go side of IPC and custom schemes |
 | generator | `go test ./internal/tsgen` | TS output, json/v2 rules, source lookup; type-checks the output with `tsc` when `bun install` was run |
-| CLI | `go test ./cmd/mygo` | config, Info.plist, icons, universal binaries, template, dev launch/ready/stop (the test binary plays the app), watcher and `go list` inputs, the console's output (replayed as a terminal shows it), resources (platform directories, universal pairs, staging, conflicts, dev placement; builds for every OS), frontend embedding (compiles an app with the overlay), `.DS_Store` against a dmgbuild golden file, a real DMG (`hdiutil`); builds and tools are skipped with `-short` |
+| CLI | `go test ./cmd/mygo` | config, Info.plist, icons, universal binaries, template, dev launch/ready/stop (the test binary plays the app), watcher and `go list` inputs, the console's output (replayed as a terminal shows it), resources (platform directories, universal pairs, exclusions, staging, conflicts, dev placement; builds for every OS), frontend embedding (compiles an app with the overlay), `.DS_Store` against a dmgbuild golden file, a real DMG (`hdiutil`); builds and tools are skipped with `-short` |
 | runtime | `bun run test` | the injected runtime, `mygo-runtime` and the plugins' packages (against a fake Go side on the real runtime, `plugins/fake-go.ts`) |
-| plugins | `go test ./plugins/...` | the fetch plugin against `httptest` servers, the WebSocket client against a test server (ordering, fragments, pings, closing handshakes); the terminal's binding of libghostty-vt (layouts, rendering, encoders, selections), its pseudo-terminals, and its view through `Tester` with real shells: typing, keys as programs ask, input methods, mouse reports, selecting and copying, pasting, scrollback, exits (the library is downloaded, or named by `MYGO_GHOSTTY_VT`; `-short` skips them); the automation plugin's protocol (requests, errors, elements as JSON, input events) against a fake app, and its socket (mode, stale and taken paths) |
+| plugins | `go test ./plugins/...` | the fetch plugin against `httptest` servers, the WebSocket client against a test server (ordering, fragments, pings, closing handshakes); the terminal's binding of libghostty-vt (layouts, rendering, encoders, selections), its pseudo-terminals, and its view through `Tester` with real shells: typing, keys as programs ask, input methods, mouse reports, selecting and copying, pasting, scrollback, exits (the library is downloaded, or named by `MYGO_GHOSTTY_VT`; `-short` skips them); the automation plugin's protocol (requests, errors, elements as JSON, input events) against a fake app, and its socket (mode, stale and taken paths); `mygo-automation` (`go test ./internal/automationcli ./plugins/automation/cmd/...`): lines, refs and their staleness, diffs, sessions, and its commands against a fake socket; `skills` printing `SKILL.md` as it is |
 | native UI | `go test ./ui ./internal/text ./internal/scene ./internal/raster ./internal/svg ./internal/gpu/...` | the GPU renderers against the CPU renderer (Direct3D on Windows, Metal on macOS, OpenGL on Linux); views through `Tester`: input, focus, editing, lists, overlays, frames that fill the glyph atlas; text layout and caret geometry; atlas zones and repacking; the CPU renderer against its formulas; SVG parsing and drawing, with `FuzzParse`; `go test -run '^$' -bench . ./ui` times a frame |
-| GUI | `MYGO_E2E=1 go test ./internal/e2e` | the real backend: an app driven from another process through `plugins/automation`, IPC, channels, protocol, Eval, geometry, capture, menus, window.open, native UI (frames, clicks, input methods replacing typed text, file drops, assistive technology reading and acting; on macOS typing, skipped while an input method is selected, and composing; on Linux with `MYGO_GPU=1`, what OpenGL drew in the GtkGLArea, from the first frame and once a window drawing in memory asks for the GPU); on Windows too (a GitHub Actions `windows-latest` runner has WebView2) |
+| GUI | `MYGO_E2E=1 go test ./internal/e2e` | the real backend: an app driven from another process through `plugins/automation`, and with `mygo-automation`'s commands, IPC, channels, protocol, Eval, geometry, capture, menus, window.open, native UI (frames, clicks, input methods replacing typed text, file drops, assistive technology reading and acting; on macOS typing, skipped while an input method is selected, and composing; on Linux with `MYGO_GPU=1`, what OpenGL drew in the GtkGLArea, from the first frame and once a window drawing in memory asks for the GPU); on Windows too (a GitHub Actions `windows-latest` runner has WebView2) |
 
 Browsers run the `js` tests of the renderer, the text engine and package
 ui: `GOOS=js GOARCH=wasm go test -c` builds a test binary, which a page
@@ -4493,11 +5558,22 @@ a longer timeout only makes that rarer. So:
   fail) may wait a short while: a slow machine can only make them miss
   a bug, never fail right code.
 
+### What tests leave behind
+
+The GUI tests of a package share a process, and on Linux an X server,
+which can outlive the process when one is reused between runs. A test
+that leaves something in them can fail another much later, or in every
+other run as a lock key flips, which looks like a race in a test that did
+nothing wrong. `newWindow` checks after each test that used it (`watchLeftBehind`), and fails
+that test by name if it left a window open or, on an X server, a key held
+or Caps Lock or Num Lock changed, then puts them back so that the tests
+after it are not affected. A test that changes them undoes it in a cleanup.
+
 ### Benchmarks
 
 `.github/workflows/bench.yml` measures every push to main on GitHub's
 macOS, Linux and Windows runners, and the website shows the results at
-[/benchmarks](https://mygo.egoist.dev/benchmarks). `scripts/bench.ts`
+[/measures](https://mygo.egoist.dev/measures). `scripts/bench.ts`
 runs them:
 
 ```sh
@@ -4544,7 +5620,7 @@ push that races another run's merges again onto it. Started by hand with a
 in history.
 
 The page finds the commits that moved each series (`findSteps` in
-`website/src/lib/benchmarks.ts`): a commit whose value, and the median of
+`website/src/lib/measures.ts`): a commit whose value, and the median of
 the five from it, differ from the median of the five before by more than
 the series' noise, five median absolute deviations of the twenty before
 (their range while fewer than fifteen; at least 5% for time, 1% for
@@ -4644,13 +5720,26 @@ What was measured and left as it is:
   states from run to run, with no gain that held, and with two drawables
   frames waited for them.
 
-On Windows, one frame waits ahead of the screen, which a swap chain's
-frame latency object tells room for (Direct3D 11 above): the frame drawn
-while one waits presents once the screen took that one, and the next,
-built when input asks for one after, reads input from that refresh, as
-it did when `Present` blocked. Linux's frames follow GTK's frame clock.
-Neither is measured: GitHub's runners and the containers have no display
-that refreshes.
+On Windows, frames that make the refresh without building ahead present
+with sync interval 0 right after the window manager composed the last,
+and heavier ones wait ahead of the screen (Direct3D 11 above). Pointer
+moves posted to a window of 900×640 pixels with 300 boxes moving show in
+25 ms on average (a Radeon 780M at 60 Hz, from the post to the desktop
+image's `LastPresentTime`), and took 43 ms when every frame was built ahead: half a refresh waits for the next frame on average, half
+a millisecond builds it, and a refresh or so goes from its present to
+the screen. Linux's frames follow GTK's frame clock, which is not measured:
+the containers have no display that refreshes.
+
+### Comparison with other frameworks
+
+`benchmarks/` holds the same small apps written with MyGo's native UI, GPUI,
+GPUI Fast and egui, and `go run ./benchmarks/run`, which measures them from outside the
+process: see `benchmarks/README.md`. It runs by hand on a real Mac, and
+`benchmarks/results.json`, which it writes, is what the website's
+[/benchmarks](https://mygo.egoist.dev/benchmarks) page shows.
+`.github/workflows/comparison.yml` only checks that the apps build and run.
+An app of a scene does what the others do, each the usual way of its
+framework: a scene changes in all of them, or in none.
 
 ### Binary size
 
@@ -4792,24 +5881,32 @@ which npm allows only for packages that exist: the first release uses an
 | watching files | FSEvents, one stream per tree, no descriptor per file | inotify, per directory | `ReadDirectoryChangesW`, one for a recursive tree, and the parent to see the directory renamed |
 | menu bar | application menu bar, default menu installed | per-window GTK menu bar, none by default | per-window Win32 menu bar, none by default |
 | menu item icons | `NSMenuItem` image, 16 pt, template images tinted | a `GtkBox` of a `GtkImage` (a cairo surface at the widget's scale) and the label; none on the bar's own items; tray menus' items get `icon-data` over DBusMenu (`dbusmenu_gtk_parse_get_cached_item`) | Windows 11: drawn by MyGo in a column after the checks' (premultiplied BGRA, `internal/menuicon`); Windows 10: `hbmpItem`, a 32-bit premultiplied DIB section freed with its menu; none on the bar's own items |
+| menu item subtitles | `NSMenuItem` `subtitle` from macOS 14; before, after the title (`Label — Subtitle`) | after the label | after the label, with its ampersands escaped |
 | auto-hide menu bar | ignored | the bar widget hides; `can-activate-accel` keeps its shortcuts; Alt alone or F10 show it and open its first menu until it deactivates | the menu is attached only for the `SC_KEYMENU` menu loop that Alt alone or F10 start; shortcuts come from the webview |
 | tray | NSStatusItem, click events (a Control-click a right-click) | AppIndicator: a menu, and activation (a double click) for an icon with an `OnClick` listener | notification area icon, click events |
 | global shortcuts | Carbon hot keys | X11: `XGrabKey` on the root window (with Caps/Num Lock variants), key presses from a GDK filter. Wayland: the XDG `GlobalShortcuts` portal (see [Linux](#linux-internallinux)) | `RegisterHotKey` |
-| notifications | UserNotifications, packaged apps only; `Group` is the `threadIdentifier`; optional `Sender` uses communication notifications with the signed capability; the delegate is attached at launch, for the click that launched the app | org.freedesktop.Notifications over D-Bus; ignores `Group` and `Sender` | notification-area balloons (toasts); ignores `Group` and `Sender` |
+| notifications | UserNotifications, packaged apps only; `Group` is the `threadIdentifier`; `Image` a `UNNotificationAttachment` of a temporary file named for its format, which the system moves into its store; optional `Sender` uses communication notifications with the signed capability; the delegate is attached at launch, for the click that launched the app | org.freedesktop.Notifications over D-Bus; `Image` is the `image-data` hint, decoded by GdkPixbuf and fit to 256 pixels; ignores `Group` and `Sender` | notification-area balloons (toasts); `Image` is the balloon's large icon (`hBalloonIcon`, `NIIF_LARGE_ICON`), decoded by WIC, twice `SM_CXICON`; ignores `Group` and `Sender` |
 | notification removal | `removeDeliveredNotificationsWithIdentifiers:`; `ClearNotifications` removes all, earlier runs' too | `CloseNotification` on the bus, for those of this run | hides the balloon, which goes away by itself anyway |
+| a web view scaled and rounded with native UI (`WebViewPlacement`) | the pane's bounds scale it, its layer's corners cut it | WebKitGTK zooms the page to its view's size, which `resize`s it at the same width; `draw` clipped to the corners on whole pixels | the visual's transform scales it, a rectangle clip cuts it |
 | WebViewAvailable (any goroutine, before `Run` too) | `WKWebView` is there, which macOS always has | WebKitGTK 4.1 (or 4.0), JavaScriptCore and libsoup load, as `webKit` loads them for a window showing a page | `internal/webview2` finds a runtime, or a `WebView2Loader.dll` next to the executable exports what `createEnvironment` calls; once an environment was made, whether that worked. A runtime whose files are there but whose browser is not passes, and fails later, making the web view |
 | secrets | Security.framework generic passwords in the login keychain (`SecItem*`), service and account as keytar | libsecret's `org.freedesktop.Secret.Generic` schema (attributes `service`, `account`), loaded on first use, libsecret 0.19 or later; no libsecret, no session bus (`g_bus_get_sync`) or no Secret Service on it (`G_DBUS_ERROR_SERVICE_UNKNOWN`, `NAME_HAS_NO_OWNER`, `NO_SERVER`) is `ErrUnsupported` | Credential Manager generic credentials (`CredWriteW`), target `service/account` |
-| vibrancy | all materials, behind pages and native UI; Liquid Glass (`NSGlassEffectView`) from macOS 26, the popover and HUD materials before; frameless windows cut to `CornerRadius`; `SetActiveAppearance` through AppKit's private `_setForceMainAppearance:` | ignored | Windows 11 22H2 Mica, Acrylic, Tabbed, behind pages and native UI, in windows created with a material, which have no menu bar; Liquid Glass as Acrylic; frameless windows given a `CornerRadius` rounded by DWM |
-| accent color and accessibility preferences | `NSColor.controlAccentColor` (10.14+), `accessibilityDisplayShouldReduceMotion` (10.12+), `accessibilityDisplayShouldReduceTransparency` and `accessibilityDisplayShouldIncreaseContrast` (10.10+), with `NSSystemColorsDidChangeNotification` and `NSWorkspaceAccessibilityDisplayOptionsDidChangeNotification`; no text scale | GTK's `gtk-enable-animations` and theme name, and the settings portal's accent, contrast and GNOME's `text-scaling-factor` (`ReadAll`, `SettingChanged`); no reduced transparency | DWM's `AccentColor`, `SPI_GETCLIENTAREAANIMATION`, Personalize's `EnableTransparency`, `SPI_GETHIGHCONTRAST` and Accessibility's `TextScaleFactor`, with `WM_SETTINGCHANGE` |
+| vibrancy | all materials, behind pages and native UI; Liquid Glass (`NSGlassEffectView`) from macOS 26, the popover and HUD materials before, with a `tintColor` and the native UI's `Glass{Native}` placed over web views; frameless windows cut to `CornerRadius`; `SetActiveAppearance` through AppKit's private `_setForceMainAppearance:` | ignored | Windows 11 22H2 Mica, Acrylic, Tabbed, behind pages and native UI, in windows created with a material, which have no menu bar; Liquid Glass as Acrylic; frameless windows given a `CornerRadius` rounded by DWM |
+| active windows | the core's state, from key windows; materials follow AppKit's (`NSVisualEffectStateFollowsWindowActiveState`), but panels', flyouts' and kept ones' (`NSVisualEffectStateActive`) | the core's state, from GDK's focus; GTK's own title bar goes `:backdrop` as a focusable flyout takes the keyboard | the core's state, from `WM_ACTIVATE`; DWM's Mica and Acrylic follow the frame, kept active while the window's focusable flyout is (`WM_NCACTIVATE`) |
+| accent color and accessibility preferences | `NSColor.controlAccentColor` (10.14+), `accessibilityDisplayShouldReduceMotion` (10.12+), `accessibilityDisplayShouldReduceTransparency` and `accessibilityDisplayShouldIncreaseContrast` (10.10+), with `NSSystemColorsDidChangeNotification` and `NSWorkspaceAccessibilityDisplayOptionsDidChangeNotification`; no text scale | GTK's `gtk-enable-animations` and theme name, and the settings portal's accent, contrast and GNOME's `text-scaling-factor` (`ReadAll`, `SettingChanged`); no reduced transparency; the pointing devices from the default seat's, as they come and go | DWM's `AccentColor`, `SPI_GETCLIENTAREAANIMATION`, Personalize's `EnableTransparency`, `SPI_GETHIGHCONTRAST` and Accessibility's `TextScaleFactor`, with `WM_SETTINGCHANGE`; the pointing devices from `SM_MOUSEPRESENT`, `SM_DIGITIZER` and tablet mode, not followed as they are plugged in |
 | preferred languages | the global `AppleLanguages` (`CFPreferencesCopyValue`), not the app's | `LANGUAGE`, then `LC_ALL`, `LC_MESSAGES`, `LANG`; read when asked, no changes reported | `GetUserPreferredUILanguages`, `WM_SETTINGCHANGE` "intl" |
 | regional formats | `autoupdatingCurrentLocale`, its calendar's first weekday, the hour of the skeleton "j"; `NSCurrentLocaleDidChangeNotification` and System Settings' distributed notifications | glibc's `nl_langinfo_l` of `LC_TIME` (`_NL_TIME_FIRST_WEEKDAY`, `T_FMT`), else by region | `GetLocaleInfoEx` of the user's default: `LOCALE_IFIRSTDAYOFWEEK`, `LOCALE_STIMEFORMAT` |
 | the app's language kept | `AppleLanguages` of the app's defaults | the file `locale` in PathUserData | the file `locale` in PathUserData, and the process's preferred UI languages |
 | web views' language | from the app's `AppleLanguages`, next launch | `webkit_web_context_set_preferred_languages`, live | the environment's `Language`, as it is created |
-| `Theme.SetSource` | `NSApp`'s appearance (Aqua, DarkAqua, or none) | `gtk-application-prefer-dark-theme`; light also puts a theme named for its dark variant (Yaru-dark) in place of its light one (Yaru), which GTK and WebKitGTK otherwise take for dark, and the other sources reset the theme | the title bars, menus and native UI, and pages through the DevTools protocol's emulated `prefers-color-scheme` |
+| `Theme.SetSource` | `NSApp`'s appearance (Aqua, DarkAqua, or none) | `gtk-application-prefer-dark-theme`; light also puts a theme named for its dark variant (Yaru-dark) in place of its light one (Yaru), which GTK and WebKitGTK otherwise take for dark, and the other sources reset the theme. Without a source, or with system, the setting follows the settings portal's `color-scheme` (GNOME's and KDE's dark style, which GTK 3 does not read) from `Init` on: dark where the portal prefers dark, else the desktop's own GTK settings | the title bars, menus and native UI, and pages through the DevTools protocol's emulated `prefers-color-scheme` |
+| `Theme.SetGTKCSS` | nothing | a `GtkCssProvider` for the default screen at `GTK_STYLE_PROVIDER_PRIORITY_USER`, replaced by the next sheet that parses | nothing |
+| a press the system cancels in native UI (`InputEvent.Canceled`, `PressCanceled`) | a context menu shown while a button is down, whose loop takes the release | `GDK_GRAB_BROKEN` of the pointer, as a menu or another window takes the grab; a touch's `GDK_TOUCH_CANCEL` taps nothing | `WM_CAPTURECHANGED` (and so `WM_CANCELMODE`) while a button is down; `WM_POINTERUP` with `POINTER_MESSAGE_FLAG_CANCELED` |
+| pointer device and pressure of native UI (`InputEvent.Pointer`, `Pressure`) | a mouse event's `subtype`: a tablet's pen (`NSEventSubtypeTabletPoint`, with `pressure`, or `TabletProximity`) or a touch; `tabletPoint:` events, a pen pressing harder or softer between moves, are moves where the pointer is | the event's source device (`gdk_event_get_source_device`): a pen or eraser, or a touchscreen, its pressure axis (`gdk_event_get_axis`); the area's own touches are fingers | `WM_POINTER` messages, left to `DefWindowProc` to make mouse messages of, give the pressure (`GetPointerPenInfo`, `GetPointerTouchInfo`); the mouse messages' `GetMessageExtraInfo` (`MI_WP_SIGNATURE`) tells a pen's or a finger's |
+| cursors of native UI without a system cursor | `CursorWait`, `CursorHelp`, `CursorZoomIn`, `CursorZoomOut`, `CursorAllScroll` and `CursorCell` from AppKit's private class methods (`_waitCursor`, `_helpCursor`, …, looked up with `respondsToSelector:`), `CursorProgress` its `busyButClickableCursor`, else the nearest public cursor or the arrow | the CSS names from the cursor theme, then GDK's X cursors, then the nearest (`cursorFallbacks`) | `CursorZoomIn`, `CursorZoomOut` and `CursorCell` drawn (`CreateCursor`, `cursorMasks`), the others `IDC_APPSTARTING`, `IDC_WAIT`, `IDC_HELP`, `IDC_SIZEALL`, `IDC_NO` |
 | traffic lights, Dock | yes | ignored | ignored |
 | hidden title bar | AppKit's traffic lights over a full-size content view | GTK's title buttons in header bars over the page, per `gtk-decoration-layout`; none where the Wayland compositor decorates windows | caption buttons drawn in a layered child window, through DirectComposition over a material, light or dark per window (`SetWindowButtonsTheme`); snap layouts; a top edge that resizes |
 | progress bar | Dock tile content view (NSBoxes: NSProgressIndicator does not draw there), app-wide | Unity launcher API over D-Bus (`com.canonical.Unity.LauncherEntry`), app-wide | `ITaskbarList3`, per window |
 | file icons | `NSWorkspace iconForFile:` drawn into an sRGB `NSBitmapImageRep` at the size | GIO's `standard::icon`, or a desktop entry's `GAppInfo` icon, through `gtk_icon_theme_lookup_by_gicon` | `IShellItemImageFactory::GetImage` (`SIIGBF_ICONONLY`), a DIB with straight alpha |
+| icons of file types (`TypeIcon`) | `UTType typeWithFilenameExtension:` → `NSWorkspace iconForContentType:` (`iconForFileType:` before macOS 11), drawn as file icons | `g_content_type_guess` of a name with the extension → `g_content_type_get_icon`, through the icon theme | the image factory of a simple ID list (`SHSimpleIDListFromPath`), which needs no file, as file icons |
 | installed apps | `.app` bundles of the Applications folders, `NSFileManager displayNameAtPath:` and `NSBundle`, off the main thread; launched with `openURL:` | `g_app_info_get_all` filtered by `g_app_info_should_show`; launched with `g_app_info_launch` and GDK's launch context | `FOLDERID_AppsFolder` enumerated in an STA of its own; launched with `ShellExecute` of `shell:AppsFolder\<ID>` |
 | badge count | Dock tile label | Unity launcher API count | not shown |
 | skip taskbar | ignored | skip-taskbar hint | `ITaskbarList::DeleteTab` (the window style is untouched) |
@@ -4818,17 +5915,18 @@ which npm allows only for packages that exist: the first release uses an
 | window icon | ignored | `gtk_window_set_icon` | `WM_SETICON` at the window's DPI |
 | URL schemes | Info.plist (`urlSchemes`); `RegisterURLScheme` makes the app the default handler | desktop entry + `mimeapps.list` | `HKCU\Software\Classes` |
 | downloads | `shouldPerformDownload`, non-displayable or attachment responses → `WKDownload` delegate | `download-started` / `decide-destination` on the web context; response policy for attachments | `DownloadStarting` (`ICoreWebView2_4`), replacing WebView2's download UI |
-| Cookies | the session's `WKWebsiteDataStore`'s `WKHTTPCookieStore`, URLs matched in Go (`platform.CookieMatchesURL`), `Set` through `NSHTTPCookie`'s parser with a stand-in name and value; `Clear` with `removeDataOfTypes:` | the session's web context's `WebKitCookieManager` (2.42+; `get_cookies` for a URL), kept in `cookies.sqlite` of the user data directory, or of a persistent session's directory (`set_persistent_storage`, as WebKitGTK keeps them in memory otherwise); libsoup 3 or 2.4 to match WebKitGTK 4.1 or 4.0; `Clear` with `webkit_website_data_manager_clear` | `ICoreWebView2CookieManager` (`ICoreWebView2_2`) of a window's web view of the session's profile, or before one shows a page of a hidden web view of the profile in the app window, closed once one does, or once an ephemeral session's store closes; a window's first navigation waits for the calls under way; `ClearBrowsingData` goes the same way; changes are polled with `GetCookies` until they show, failing after 2 s; `GetCookies(uri)`, `DeleteAllCookies`; `put_Expires` called with `comCallFloat` |
+| Cookies | the session's `WKWebsiteDataStore`'s `WKHTTPCookieStore`, URLs matched in Go (`platform.CookieMatchesURL`), `Set` through `NSHTTPCookie`'s parser with a stand-in name and value; `Clear` with `removeDataOfTypes:` | the session's web context's `WebKitCookieManager` (2.42+; `get_cookies` for a URL), kept in `cookies.sqlite` of the user data directory, or of a persistent session's directory (`set_persistent_storage`, as WebKitGTK keeps them in memory otherwise); libsoup 3 or 2.4 to match WebKitGTK 4.1 or 4.0; `Clear` with `webkit_website_data_manager_clear` | `ICoreWebView2CookieManager` (`ICoreWebView2_2`) of a web view of the session's profile showing a page, a window's or one in native UI, or while there is none of a hidden web view of the profile in the app window, closed once one shows a page, once an ephemeral session's store closes, or once no call needed it for 5 s and closing it loses no cookie (a `GetCookies` finds no session cookie, nor any of an InPrivate profile, which go with WebView2's processes); a window's first navigation waits for the calls under way; `ClearBrowsingData` goes the same way; changes are polled with `GetCookies` until they show, failing after 2 s; `GetCookies(uri)`, `DeleteAllCookies`; `put_Expires` called with `comCallFloat` |
 | content rules | the default `WKContentRuleListStore`, which keeps compiled lists under an identifier of the id and a hash of the rules (looked up first, the id's others removed), on each window's `WKUserContentController`; the store's reason for a failure is in `NSHelpAnchorErrorKey` | a `WebKitUserContentFilterStore` in `content-rules` of the user data directory (2.24+), on each window's `WebKitUserContentManager` | matched in Go (`internal/contentrules`, indexed by the domains of `url-filter`s and four bytes of their literals) from `WebResourceRequested` with a `*` filter, blocked pages answered with an empty 403 and other blocked requests with a redirect to `data:`, which Chromium fails as a network error; WebSocket handshakes never reach it; `css-display-none` rules as a style sheet a document-creation script adopts, kept when the page sets `adoptedStyleSheets`; parsed on a goroutine, nothing kept |
-| `FitContent` | the bridge, as elsewhere; WebKit's private `_setSizeToContentAutoSizeMaximumSize:` is not used | the bridge | the bridge |
+| `FitContent` | the bridge, as elsewhere; WebKit's private `_setSizeToContentAutoSizeMaximumSize:` is not used; native UI measures itself (`ui/fit.go`) | the bridge; native UI measures itself | the bridge; native UI measures itself |
 | `Page.ThemeColor` | the bridge, as elsewhere; WKWebView's `themeColor` (macOS 12+) is not used | the bridge | the bridge |
 | `Page.ProcessID` | the web content process, `-[WKWebView _webProcessIdentifier]` (private, looked up with `respondsToSelector:`) | 0: WebKitGTK has no API for it | the browser process the app's web views share, `ICoreWebView2::get_BrowserProcessId` |
+| `Page.GPUProcessID` | WebKit's GPU process, which plays the page's sound, `-[WKWebView _gpuProcessIdentifier]` (private, looked up with `respondsToSelector:`); 0 until WebKit starts it | 0: WebKitGTK has no API for it | the GPU process of the environment, the `COREWEBVIEW2_PROCESS_KIND_GPU` entry of `ICoreWebView2Environment8`'s `GetProcessInfos`, queried for each call; 0 on runtimes without it |
 | a page's sound (`IsAudible`, `SetAudioMuted`) | private `-[WKWebView _isPlayingAudio]`, key-value observed, and `_mediaMutedState` / `_setPageMuted:` with the `_WKMediaAudioMuted` bit, the capture bits kept; looked up with `respondsToSelector:`, not audible and not muted where WebKit doesn't answer | `webkit_web_view_is_playing_audio` and `notify::is-playing-audio`; `webkit_web_view_set_is_muted` / `get_is_muted` (2.30+, bound when present) | `ICoreWebView2_8`'s `IsDocumentPlayingAudio`, `IsDocumentPlayingAudioChanged` and `IsMuted`, queried for each call; a mute set before the web view is made is put in `setUp`, before its first navigation |
 | `BackgroundThrottling: ThrottlingOff` | `inactiveSchedulingPolicy` `WKInactiveSchedulingPolicyNone` (macOS 14+) and the private `_hiddenPageDOMTimerThrottlingEnabled`, `_hiddenPageCSSAnimationSuspensionEnabled`, `_pageVisibilityBasedProcessSuppressionEnabled` off, on a copy of the preferences when `window.open()` handed over the opener's; the private `-[WKWebView _setWindowOcclusionDetectionEnabled:NO]`; all looked up with `respondsToSelector:` | the web view's settings' `HiddenPageDOMTimerThrottling` and `HiddenPageCSSAnimationSuspension` features off (`webkit_settings_set_feature_enabled`, 2.42+, bound on first use); hidden and minimized pages still stop drawing | `--disable-background-timer-throttling --disable-renderer-backgrounding --disable-backgrounding-occluded-windows` in the environment options' `AdditionalBrowserArguments` when the page that starts the environment asks (later ones are logged); an embedded web view's controller still goes invisible with its host, which takes its page off the desktop |
 | a page's capture (`CaptureState`, `SetCaptureState`) | `WKWebView`'s `cameraCaptureState` and `microphoneCaptureState` (macOS 12+) and private `_displayCaptureState` (macOS 13+), key-value observed, and their setters `set…CaptureState:completionHandler:` (nil handler), looked up with `respondsToSelector:`; `SetAudioMuted`'s `_setPageMuted:` has one bit for the camera and the microphone, so with only one of them muted the other is unmuted again after it | `webkit_web_view_get_camera_capture_state` and its microphone and display siblings with their `notify::` signals and setters (2.34+, bound when present); `webkit_web_view_set_is_muted` drops the capture mutes, which `SetAudioMuted` sets again | none: `CaptureNone`, setting does nothing |
 | `Autoplay: AutoplayAllow` | `WKWebViewConfiguration`'s `mediaTypesRequiringUserActionForPlayback` `WKAudiovisualMediaTypeNone`; a `window.open()` window that doesn't ask gets the default of a new configuration back on the opener's copy | `webkit_policy_decision_use_with_policies` on every main-frame navigation, with `webkit_website_policies_new_with_policies` `autoplay` `WEBKIT_AUTOPLAY_ALLOW` (2.30+, bound when present; its variadic name/value pairs bound for one pair, as `g_object_set`): WebKitGTK decides autoplay from the navigation's policies, `WEBKIT_AUTOPLAY_ALLOW_WITHOUT_SOUND` by default, which `media-playback-requires-user-gesture` (off by default) does not lift | `--autoplay-policy=no-user-gesture-required` in the environment options' `AdditionalBrowserArguments` when the page that starts the environment asks (later ones are logged); then every page plays without a gesture |
 | picture in picture (`PageOptions.PictureInPicture`) | private `-[WKPreferences _setAllowsPictureInPictureMediaPlayback:]`; `-[WKWebView _canTogglePictureInPicture]`, `_togglePictureInPicture` and `_isPictureInPictureActive`, looked up with `respondsToSelector:`; a main-frame navigation leaving with a video out turns `_setUsesPageCache:` off until one leaves without, as WebKit restores such a page believing its video still out | none: `TogglePictureInPicture` does nothing, `IsPictureInPictureActive` is false | Chromium's, on whatever the option; `TogglePictureInPicture` runs `requestPictureInPicture()` (or `exitPictureInPicture()`) through the DevTools protocol's `Runtime.evaluate` with `userGesture`, `IsPictureInPictureActive` evaluates `document.pictureInPictureElement` |
-| a page's session state (`SessionState`) | `WKWebView`'s `interactionState` (macOS 12+, looked up with `respondsToSelector:`), NSData of WebKit's `_sessionStateData`; restored when the back/forward list then has a current item | `webkit_web_view_get_session_state` / `_session_state_serialize`, `_session_state_new` / `restore_session_state`, then `go_to_back_forward_list_item` of the current item (2.12+, bound on first use) | none: the core keeps the URL alone and loads it |
+| a page's session state (`SessionState`) | `WKWebView`'s `interactionState` (macOS 12+, looked up with `respondsToSelector:`), NSData of WebKit's `_sessionStateData`; restored when the back/forward list then has a current item; WebKit puts a page that scrolled before its window first showed on screen back at the top as the window does, so a page restored before then gets a script in the default client world, as it loads, that puts it back at the private `_scrollPosition` of the current item when it next scrolls to the top before any input | `webkit_web_view_get_session_state` / `_session_state_serialize`, `_session_state_new` / `restore_session_state`, then `go_to_back_forward_list_item` of the current item (2.12+, bound on first use) | none: the core keeps the URL alone and loads it |
 | ClearBrowsingData, `Session.ClearData` | the session's `WKWebsiteDataStore`, `allWebsiteDataTypes` or the `WKWebsiteDataType`s of the kinds the system's WebKit exports | the session's web context's website data manager, `WEBKIT_WEBSITE_DATA_ALL` or the kinds' types | the WebView2 profile's `ClearBrowsingDataAll`, or `ClearBrowsingData` of the kinds' `COREWEBVIEW2_BROWSING_DATA_KINDS` (`ICoreWebView2Profile2`, through the web view cookie calls use) |
 | sessions (`PageOptions.Session`) | a `WKWebsiteDataStore` set on each web view's configuration: `dataStoreForIdentifier:` of a UUID made of the name (macOS 14+; before, `nonPersistentDataStore` kept until the app quits), `nonPersistentDataStore` for an ephemeral one, released when its last page closes; `window.open` hands the opener's configuration over | a `WebKitWebContext` per session, made with `webkit_web_context_new_with_website_data_manager` of a manager with base data and cache directories in `Sessions/<UUID>` of the user data and cache directories, or `webkit_website_data_manager_new_ephemeral`; web views made with `g_object_new` and `web-context`, which keeps a reference to it; custom schemes, languages and downloads set up on each context; unreferenced when an ephemeral one's last page closes | a WebView2 profile per session (`ICoreWebView2Environment10`'s controller options: `put_ProfileName` `mygo-<UUID>`, or `mygo-private-<n>` with `put_IsInPrivateModeEnabled` for an ephemeral one, a new name for each of its stores); windows, web views in native UI and the cookie calls' hidden web views made with those options |
 | HTTP sign-in (`SetAuthHandler`) | `webView:didReceiveAuthenticationChallenge:completionHandler:`, `NSURLCredential` for the session; none: no prompt, the 401 page; empty answer: `RejectProtectionSpace` | `WebKitWebView::authenticate`, `webkit_credential_new` for the session; none: WebKitGTK's dialog; empty answer: authenticates without credentials | `ICoreWebView2_10`'s `BasicAuthenticationRequested`, scheme and realm parsed from its challenge, no proxy flag; none: WebView2's dialog; empty answer: `Cancel` |
@@ -4858,6 +5956,7 @@ which npm allows only for packages that exist: the first release uses an
 | custom scheme origin | `<scheme>://<host>` | `<scheme>://<host>` | `http://<scheme>.localhost`, or `http://<host>.<scheme>.localhost` for another host (the page's `location`) |
 | `LoadHTML` documents | a reload loads the base URL (`about:blank` without one), so the core cancels it (`Navigation.Reload`) and loads the HTML again; not in the history | as macOS | as macOS, but in the history: going back to one with a base URL loads that URL |
 | window.open | keeps the opener | independent window | keeps the opener: the new window's web view, set up, becomes the popup (`put_NewWindow`, under a deferral) |
+| keys held (`Context.KeyDown`) | `keyDown:` and `keyUp:`; a local monitor of key ups hands the surface those let go of while Command is held, which `sendEvent:` keeps from the key window; resigning first responder or key window lets go of all | key presses and releases, and a release the input method filters (`HeldKeys.Lift`): IBus and Fcitx hand back those they leave, which `HeldKeys` keeps from the content | `WM_KEYUP` and `WM_SYSKEYUP`; a `VK_PROCESSKEY` release lets go of the key at its scancode; `WM_ENTERMENULOOP` lets go of all (`HeldKeys.LiftAll`), whose releases the menu's loop takes; `WM_KILLFOCUS` all |
 | native UI surface | layer-backed NSView, frames from `CADisplayLink` (a timer at the display's rate before macOS 14), input methods through NSTextInputClient | GtkGLArea (GtkDrawingArea without a GPU), GtkIMMulticontext | `MyGoSurface` child window, IMM32 |
 | native UI data drags | NSDraggingSession, NSPasteboardItemDataProvider, NSDraggingDestination | GTK drag contexts, MIME selections, text/uri-list | OLE IDataObject, IDropSource, IDropTarget, Shell drag images |
 | native UI accessibility | `NSAccessibilityElement` subclasses | ATK objects (GObject types registered through purego), bridged to AT-SPI by GTK | UI Automation fragments (COM objects; assembly thunks for the methods taking doubles) |

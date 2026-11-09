@@ -11,7 +11,7 @@ import (
 // The stress scenes: windows of 900×640 DIPs at twice the density whose
 // every frame changes what they show, as an animation, a live dashboard
 // or a list scrolling do. BenchmarkStressFrame times their frames built,
-// laid out and painted, and BenchmarkStressFrameGPU (on macOS) the GPU
+// laid out and painted, and BenchmarkStressFrameGPU (on macOS and Windows) the GPU
 // drawing them.
 var stressScenes = []struct {
 	name string

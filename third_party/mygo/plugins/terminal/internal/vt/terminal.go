@@ -474,6 +474,36 @@ func (t *Terminal) RowText(y int) (text []rune, cols []int) {
 	return text, cols
 }
 
+// RowPrompt is how a row belongs to a shell's prompt, which the shell
+// marks with OSC 133 (shell integration).
+type RowPrompt int32
+
+const (
+	NoPrompt RowPrompt = iota
+	// PromptStart is the row a prompt starts on (OSC 133;A).
+	PromptStart
+	// PromptContinuation is a row the prompt or its input goes on over:
+	// one a long command wraps onto, or a prompt's next line.
+	PromptContinuation
+)
+
+// Row returns how row y of the viewport belongs to a shell's prompt, and
+// whether it soft-wraps into the next.
+func (t *Terminal) Row(y int) (prompt RowPrompt, wrap bool) {
+	ref, found := t.CellAt(0, y)
+	if !found {
+		return NoPrompt, false
+	}
+	var row uint64
+	if !ok(call(fnGridRefRow, uintptr(unsafe.Pointer(&ref)), uintptr(unsafe.Pointer(&row)))) {
+		return NoPrompt, false
+	}
+	if !ok(call(fnRowData, uintptr(row), rowDataSemanticPrompt, uintptr(unsafe.Pointer(&prompt)))) {
+		prompt = NoPrompt
+	}
+	return prompt, ok(call(fnRowData, uintptr(row), rowDataWrap, uintptr(unsafe.Pointer(&wrap)))) && wrap
+}
+
 // Hyperlink returns the URI of the hyperlink (OSC 8) of a cell, or "".
 func (t *Terminal) Hyperlink(ref GridRef) string {
 	var buf [512]byte

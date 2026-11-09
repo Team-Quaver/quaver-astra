@@ -35,6 +35,10 @@ ui.TextArea(c, &app.notes).Height(160)
 - `ReadOnly(true)` shows the text without letting the user change it: it
   still takes the focus, without a caret, and its text can be selected and
   copied.
+- `MaxLength(n)` keeps the user from making the text longer than n, counted
+  as HTML's `maxlength` counts it, in UTF-16 code units: what is typed,
+  pasted or committed by an input method is cut to what fits. A value the app
+  sets is not cut, and n <= 0 means no limit.
 - `Disabled(true)` grays it out.
 - `OnPaste(fn)` sees a paste (Cmd+V or Ctrl+V, the Edit menu's or the
   context menu's Paste) before it is inserted, with the clipboard's text,
@@ -146,6 +150,39 @@ in the string.
 
 The input keeps the text being edited, its selection and its undo history
 from frame to frame; setting the string from elsewhere replaces the text.
+It preserves the last undo step, so an app can reformat what the user
+typed without losing that step. Setting the string to `""` does not discard
+the history: Undo can restore text from before the clear.
+
+To start a new editing session, clear the string and change the input's
+[key](views.md#keys). The new identity gets a new editor, without the old
+selection, composition or undo history:
+
+```go
+// Keep secret and secretSession in app state.
+ui.TextInput(c.Key(app.secretSession), &app.secret).Password().Label("Secret")
+
+if ui.Button(c, "Cancel").Clicked() {
+	app.secret = ""
+	app.secretSession++ // the next build creates a fresh editor
+}
+```
+
+For indexed storage, `ui.TextInputBuffer` and `ui.TextAreaBuffer` edit a
+`*ui.TextBuffer`. Replacing its contents externally with `buffer.Set("")`
+discards the control's undo and redo history and composition when it next
+synchronizes with the buffer; its selection is clamped to the new text.
+Neither changing a key nor replacing a buffer guarantees that old text is
+erased from memory; existing `TextSnapshot` values retain their contents.
+
+A single-line input replaces line breaks in pasted text with spaces. Use
+`OnPaste` to reject a multiline value before it is changed or inserted:
+
+```go
+ui.TextInput(c, &app.secret).Password().OnPaste(func(text string) bool {
+	return strings.ContainsAny(text, "\r\n") // import "strings"
+})
+```
 
 ## The caret
 

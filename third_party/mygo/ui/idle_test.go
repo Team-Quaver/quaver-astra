@@ -44,6 +44,8 @@ func TestSettledWindowSleeps(t *testing.T) {
 		}},
 		{"left with the caret in a text input", func() { tt.SetFocused(false) }},
 		{"focused again", func() { tt.SetFocused(true) }},
+		{"drawn inactive", func() { tt.SetWindowActive(false) }},
+		{"drawn active again", func() { tt.SetWindowActive(true) }},
 		{"switched to dark", func() { tt.SetDark(true) }},
 		{"resized", func() { tt.SetSize(400, 320) }},
 	}

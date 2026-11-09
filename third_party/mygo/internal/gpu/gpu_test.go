@@ -3,11 +3,13 @@ package gpu
 import (
 	"bytes"
 	"fmt"
+	"image"
 	"math"
 	"slices"
 	"testing"
 
 	"github.com/egoist/mygo/internal/gpu/gputest"
+	"github.com/egoist/mygo/internal/raster"
 	"github.com/egoist/mygo/internal/scene"
 )
 
@@ -64,8 +66,8 @@ func TestAffineClipMaskCacheFollowsClipInsteadOfContent(t *testing.T) {
 	}
 	s.Ops[0].Rect.W = 60
 	build()
-	if mask.ID() != id || mask.W != 60 {
-		t.Fatal("resizing clip accumulated a new cached image")
+	if mask.ID() != id || mask.W != 70 || b.Instances[0].Clip != [4]float32{10, 10, 70, 50} {
+		t.Fatal("a clip that shrank did not keep its mask's size")
 	}
 	clipped := s.Ops
 	s.Ops = s.Ops[1:2]
@@ -78,6 +80,53 @@ func TestAffineClipMaskCacheFollowsClipInsteadOfContent(t *testing.T) {
 	build()
 	if mask.ID() != id || mask.Version() != version {
 		t.Fatal("a clip coming back rasterized its mask again")
+	}
+}
+
+func TestGrowingClipKeepsItsMask(t *testing.T) {
+	// egoist/mygo-music#55: a rounded card holding scaled covers grows
+	// out of a 48 px cover to fill the window. Its mask, of a new size on
+	// every frame, was allocated and uploaded as a new texture on each:
+	// 190 MB in 40 frames. It grows in steps now, and still holds the
+	// card's coverage where the shaders read it.
+	const frames, fw, fh = 40, 2400, 1500
+	var b Builder
+	defer b.Release()
+	var mask *scene.Image
+	sizes := map[[2]int]bool{}
+	for i := range frames {
+		k := 1 - float32(i)/frames // how near the cover the card is
+		r := 12 * k
+		card := scene.Rect{X: 100 * k, Y: (fh - 100) * k, W: 48 + (fw-48)*(1-k), H: 48 + (fh-48)*(1-k)}
+		s := &scene.Scene{Width: fw, Height: fh, Ops: []scene.Op{
+			{Kind: scene.OpPushClip, Rect: card, Radii: [4]float32{r, r, r, r}},
+			{Kind: scene.OpFill, Rect: scene.Rect{W: 600, H: 600}, Color: scene.Color{A: 255}, Transform: scene.Scaling(1+k, 1+k)},
+			{Kind: scene.OpPopClip},
+		}}
+		b.Build(s, func(m *scene.Image) uintptr { mask = m; return 1 })
+		if len(b.Instances) != 1 || b.Instances[0].Transform1[3] != 1 {
+			t.Fatalf("frame %d: the card's scaled content was not masked", i)
+		}
+		sizes[[2]int{mask.W, mask.H}] = true
+		// The texels the shaders read, from the instance's mapping of
+		// frame pixels, hold the coverage of a mask of the scissor alone.
+		sc := b.Batches[0].Scissor
+		area := image.Rect(int(sc.Left), int(sc.Top), int(sc.Right), int(sc.Bottom))
+		want := raster.ClipMask(nil, b.maskSlots[0].shapes, area)
+		at := b.Instances[0].Clip
+		ox, oy := area.Min.X-int(at[0]), area.Min.Y-int(at[1])
+		if int(at[2]) != mask.W || int(at[3]) != mask.H || ox < 0 || oy < 0 || ox+area.Dx() > mask.W || oy+area.Dy() > mask.H {
+			t.Fatalf("frame %d: scissor %v outside the mask's %v at %v", i, area, [2]int{mask.W, mask.H}, at)
+		}
+		for y := range area.Dy() {
+			got := mask.Pix[4*((oy+y)*mask.W+ox):][:4*area.Dx()]
+			if !bytes.Equal(got, want.Pix[4*y*area.Dx():][:4*area.Dx()]) {
+				t.Fatalf("frame %d: row %d of the mask differs from the clip's coverage", i, y)
+			}
+		}
+	}
+	if len(sizes) > 12 {
+		t.Fatalf("the mask took %d sizes in %d frames, want at most 12", len(sizes), frames)
 	}
 }
 
@@ -140,14 +189,72 @@ func TestIdleMasksStayWithinBudget(t *testing.T) {
 	}
 }
 
+func TestTurningCardMasksKeepWithinBudget(t *testing.T) {
+	// #1407: a card turning in a sidebar, its masks switching between
+	// the card's size and the sidebar's (or the window's, behind the
+	// viewer), a clock redrawing between turns. The masks once kept
+	// 47 MB after 15 turns, counted as 10 MB: slots kept the memory of
+	// the largest mask they held.
+	rail := scene.Op{Kind: scene.OpPushClip, Rect: scene.Rect{W: 436, H: 1484}}
+	card := scene.Rect{X: 48, Y: 1224, W: 152, H: 152}
+	pop := scene.Op{Kind: scene.OpPopClip}
+	frame := func(m scene.Affine) *scene.Scene {
+		return &scene.Scene{Width: 2560, Height: 1576, Ops: []scene.Op{
+			rail,
+			{Kind: scene.OpPushClip, Rect: card, Radii: [4]float32{16, 16, 16, 16}, Transform: m},
+			{Kind: scene.OpPushClip, Rect: card, Radii: [4]float32{16, 16, 16, 16}, Transform: m},
+			{Kind: scene.OpFill, Rect: card, Color: scene.Color{R: 200, A: 255}, Transform: m},
+			pop, pop, pop,
+		}}
+	}
+	turn := func(i, n int) scene.Affine {
+		f := float32(i) / float32(n)
+		sy := 1 - 2*min(f, 1-f)
+		cy := card.Y + card.H/2
+		if sy < 0.4 {
+			return scene.Projective(1, 0, 0, sy, 0, cy*(1-sy), 0, -0.001)
+		}
+		return scene.Projective(1, 0, 0, sy, 0, cy*(1-sy), 0, 0.0001*float32(i))
+	}
+	var b Builder
+	defer b.Release()
+	build := func(s *scene.Scene) { b.Build(s, func(*scene.Image) uintptr { return 1 }) }
+	rest := frame(scene.Affine{})
+	for range 15 {
+		for i := 1; i < 58; i++ {
+			build(frame(turn(i, 58)))
+		}
+		for range 6 {
+			build(rest)
+		}
+	}
+	var length, capacity, idle int
+	for _, m := range b.maskSlots {
+		length += len(m.image.Pix)
+		capacity += cap(m.image.Pix)
+		if m.frame != b.frame {
+			idle += cap(m.image.Pix)
+		}
+	}
+	t.Logf("%d masks, %.1f MB of pixels, %.1f MB kept; budget %d MB",
+		len(b.maskSlots), float64(length)/(1<<20), float64(capacity)/(1<<20), idleMaskBytes>>20)
+	if idle > idleMaskBytes {
+		t.Errorf("idle masks keep %.1f MB, beyond the budget of %d MB", float64(idle)/(1<<20), idleMaskBytes>>20)
+	}
+	if capacity > 2*length {
+		t.Errorf("masks keep %.1f MB for %.1f MB of pixels", float64(capacity)/(1<<20), float64(length)/(1<<20))
+	}
+}
+
 func TestTransformOutsideAClipLeavesItUnmasked(t *testing.T) {
-	// A scaled badge beside a rounded card of clipped rows: nothing in the
-	// card is transformed, so its clips stay in the shader.
+	// A scaled badge beside a rounded card of clipped rows, away from its
+	// corners: nothing in the card is transformed, so its clips stay in
+	// the shader.
 	s := &scene.Scene{Width: 400, Height: 300, Ops: []scene.Op{
 		{Kind: scene.OpFill, Rect: scene.Rect{W: 40, H: 40}, Color: scene.Color{B: 255, A: 255}, Transform: scene.Scaling(1.2, 1.2)},
 		{Kind: scene.OpPushClip, Rect: scene.Rect{Y: 50, W: 400, H: 250}, Radii: [4]float32{11, 11, 11, 11}},
-		{Kind: scene.OpPushClip, Rect: scene.Rect{Y: 50, W: 200, H: 32}},
-		{Kind: scene.OpFill, Rect: scene.Rect{Y: 50, W: 300, H: 32}, Color: scene.Color{A: 255}},
+		{Kind: scene.OpPushClip, Rect: scene.Rect{X: 16, Y: 66, W: 200, H: 32}},
+		{Kind: scene.OpFill, Rect: scene.Rect{X: 16, Y: 66, W: 300, H: 32}, Color: scene.Color{A: 255}},
 		{Kind: scene.OpPopClip},
 		{Kind: scene.OpPopClip},
 	}}
@@ -158,7 +265,7 @@ func TestTransformOutsideAClipLeavesItUnmasked(t *testing.T) {
 	if masks != 0 || len(b.maskSlots) != 0 {
 		t.Fatalf("rasterized %d clip masks for clips with no transform inside", masks)
 	}
-	if in := b.Instances[1]; in.Transform1[3] != 0 || in.Clip != [4]float32{0, 50, 200, 32} {
+	if in := b.Instances[1]; in.Transform1[3] != 0 || in.Clip != [4]float32{16, 66, 200, 32} {
 		t.Fatalf("row clip %v, mask mode %v", in.Clip, in.Transform1[3])
 	}
 }
@@ -171,8 +278,8 @@ func TestRoundedClipMasksOnlyTheBranchWithATransform(t *testing.T) {
 		{Kind: scene.OpPushClip, Rect: scene.Rect{W: 200, H: 300}},
 		{Kind: scene.OpFill, Rect: scene.Rect{W: 200, H: 300}, Color: scene.Color{A: 255}, Transform: scene.Scaling(1.5, 1.5)},
 		{Kind: scene.OpPopClip},
-		{Kind: scene.OpPushClip, Rect: scene.Rect{X: 200, W: 200, H: 32}},
-		{Kind: scene.OpFill, Rect: scene.Rect{X: 200, W: 200, H: 32}, Color: scene.Color{A: 255}},
+		{Kind: scene.OpPushClip, Rect: scene.Rect{X: 200, Y: 16, W: 184, H: 32}},
+		{Kind: scene.OpFill, Rect: scene.Rect{X: 200, Y: 16, W: 184, H: 32}, Color: scene.Color{A: 255}},
 		{Kind: scene.OpPopClip},
 		{Kind: scene.OpPopClip},
 	}}
@@ -184,6 +291,149 @@ func TestRoundedClipMasksOnlyTheBranchWithATransform(t *testing.T) {
 	}
 	if b.Instances[1].Transform1[3] != 0 || b.Batches[len(b.Batches)-1].ClipMask != 0 {
 		t.Fatal("untransformed row was masked")
+	}
+}
+
+func TestTranslatedContentLeavesRoundedClipsUnmasked(t *testing.T) {
+	// #1002: labels moved by a fraction of a pixel, which glyphs are not
+	// folded by, in the clipped panes of a rounded frame, under its
+	// toolbar and above its status bar, away from its corners (see
+	// TestClipReachingRoundedCornersIsMasked). Moved, they sit
+	// elsewhere in the clips, which the shader cuts in the frame's
+	// coordinates as for labels that are not; turned, they keep the
+	// frame's corners, with masks.
+	scene.FoldTranslations() // as package ui does
+	atlas := scene.NewAtlas(1, 16, 16)
+	build := func(m scene.Affine) (*Builder, int) {
+		s := &scene.Scene{Width: 1280, Height: 800, MaskAtlas: atlas, Ops: []scene.Op{
+			{Kind: scene.OpPushClip, Rect: scene.Rect{X: 18, Y: 18, W: 1244, H: 764}, Radii: scene.Uniform(14)},
+		}}
+		for i, x := range []float32{18, 458, 982} {
+			start := int32(len(s.Glyphs))
+			s.Glyphs = append(s.Glyphs, scene.Glyph{X: x + 16, Y: 64, W: 8, H: 12, UW: 8, VH: 12, Color: scene.Color{A: 255}},
+				scene.Glyph{X: x + 24.5, Y: 64, W: 8, H: 12, UW: 8, VH: 12, Color: scene.Color{A: 255}})
+			s.Ops = append(s.Ops,
+				scene.Op{Kind: scene.OpPushClip, Rect: scene.Rect{X: x, Y: 52, W: []float32{440, 524, 280}[i], H: 700}},
+				scene.Op{Kind: scene.OpGlyphs, Start: start, End: int32(len(s.Glyphs)), Transform: m},
+				scene.Op{Kind: scene.OpPopClip})
+		}
+		s.Ops = append(s.Ops, scene.Op{Kind: scene.OpPopClip})
+		b := &Builder{}
+		masks := 0
+		b.Build(s, func(*scene.Image) uintptr { masks++; return 1 })
+		return b, masks
+	}
+	for _, m := range []scene.Affine{scene.Translation(0, -2.54), scene.Translation(0.5, 0.25)} {
+		b, masks := build(m)
+		if masks != 0 || len(b.maskSlots) != 0 {
+			t.Errorf("translation %v: rasterized %d clip masks", m, masks)
+		}
+		for i, in := range b.Instances {
+			if in.Transform1[3] != 0 || in.Transform0[3] != 1 || in.Transform1[2] != m.Y {
+				t.Errorf("translation %v: glyph %d clip mode %v, transform %v %v", m, i, in.Transform1[3], in.Transform0, in.Transform1)
+			}
+		}
+		b.Release()
+	}
+	b, masks := build(scene.Rotation(3))
+	defer b.Release()
+	if masks == 0 || len(b.Instances) == 0 || b.Instances[0].Transform1[3] != 1 {
+		t.Fatalf("turned glyphs lost their rounded ancestor's mask: %d masks", masks)
+	}
+}
+
+func TestClipReachingRoundedCornersIsMasked(t *testing.T) {
+	// #1418: a column that clips, filling the bottom of a rounded card
+	// that clips, as package ui draws it. The shader cuts the column, the
+	// innermost clip, so the card's corners cut it with the card's mask;
+	// so they do a pane, a clip nested in it and a rounded clip in the
+	// corners of another card, but not a clip in its middle.
+	s := gputest.CornerClipScene()
+	var b Builder
+	defer b.Release()
+	var masks []*scene.Image
+	b.Build(s, func(m *scene.Image) uintptr { masks = append(masks, m); return uintptr(len(masks)) })
+	mode := func(op int) float32 {
+		t.Helper()
+		ins := b.Instances[b.OpStart[op]:b.OpStart[op+1]]
+		if len(ins) == 0 {
+			t.Fatalf("op %d drew nothing", op)
+		}
+		for _, in := range ins[1:] {
+			if in.Transform1[3] != ins[0].Transform1[3] {
+				t.Fatalf("op %d: instances with clip modes %v and %v", op, ins[0].Transform1[3], in.Transform1[3])
+			}
+		}
+		return ins[0].Transform1[3]
+	}
+	for op, want := range map[int]float32{3: 2, 10: 2, 12: 2, 16: 1, 19: 0, 0: 0} {
+		if got := mode(op); got != want {
+			t.Errorf("op %d: clip mode %v, want %v", op, got, want)
+		}
+	}
+	// The column's fill: its rectangle in the shader, the card's mask
+	// over the card's scissor rectangle, transparent in its corners.
+	in := b.Instances[b.OpStart[3]]
+	if in.Clip != [4]float32{12, 102, 296, 156} || in.ClipRadii != [4]float32{12, 22, 296, 236} {
+		t.Fatalf("column's clip %v, mask's area %v", in.Clip, in.ClipRadii)
+	}
+	var batch *Batch
+	for i := range b.Batches {
+		if bt := &b.Batches[i]; bt.Start <= int(b.OpStart[3]) && int(b.OpStart[3]) < bt.Start+bt.Count {
+			batch = bt
+		}
+	}
+	if batch == nil || batch.ClipMask == 0 || int(batch.ClipMask) > len(masks) {
+		t.Fatal("the column's fill has no clip mask")
+	}
+	m := masks[batch.ClipMask-1]
+	alpha := func(x, y int) byte { return m.Pix[4*((y-22)*m.W+x-12)+3] }
+	if m.W != 296 || m.H != 236 || alpha(12, 257) != 0 || alpha(307, 257) != 0 || alpha(160, 250) != 255 {
+		t.Errorf("the card's mask (%dx%d) leaves its corners: %d %d, middle %d", m.W, m.H, alpha(12, 257), alpha(307, 257), alpha(160, 250))
+	}
+}
+
+func TestPanesReachingRoundedCornersShareTheirMask(t *testing.T) {
+	// Panes as tall as the rounded frame they are in (#1002's), with
+	// labels moved by a fraction of a pixel: those at its sides, in its
+	// corners, cut with the frame's mask, which is all that is
+	// rasterized, and their own rectangles in the shader.
+	scene.FoldTranslations() // as package ui does
+	atlas := scene.NewAtlas(1, 16, 16)
+	s := &scene.Scene{Width: 1280, Height: 800, MaskAtlas: atlas, Ops: []scene.Op{
+		{Kind: scene.OpPushClip, Rect: scene.Rect{X: 18, Y: 18, W: 1244, H: 764}, Radii: scene.Uniform(14)},
+	}}
+	for i, x := range []float32{18, 458, 982} {
+		start := int32(len(s.Glyphs))
+		s.Glyphs = append(s.Glyphs, scene.Glyph{X: x + 16, Y: 34, W: 8, H: 12, UW: 8, VH: 12, Color: scene.Color{A: 255}})
+		s.Ops = append(s.Ops,
+			scene.Op{Kind: scene.OpPushClip, Rect: scene.Rect{X: x, Y: 18, W: []float32{440, 524, 280}[i], H: 764}},
+			scene.Op{Kind: scene.OpFill, Rect: scene.Rect{X: x, Y: 18, W: 40, H: 764}, Color: scene.Color{R: 200, A: 255}},
+			scene.Op{Kind: scene.OpGlyphs, Start: start, End: int32(len(s.Glyphs)), Transform: scene.Translation(0.5, 0.25)},
+			scene.Op{Kind: scene.OpPopClip})
+	}
+	s.Ops = append(s.Ops, scene.Op{Kind: scene.OpPopClip})
+	var b Builder
+	defer b.Release()
+	masks := 0
+	b.Build(s, func(*scene.Image) uintptr { masks++; return 1 })
+	if masks != 1 || len(b.maskSlots) != 1 {
+		t.Errorf("rasterized %d clip masks, kept %d, want the frame's", masks, len(b.maskSlots))
+	}
+	if len(b.Instances) != 6 {
+		t.Fatalf("%d instances, want 6", len(b.Instances))
+	}
+	// The middle pane reaches none of the corners: the shader cuts it.
+	for i, in := range b.Instances {
+		if middle := i/2 == 1; middle && in.Transform1[3] != 0 ||
+			!middle && (in.Transform1[3] != 2 || in.ClipRadii != [4]float32{18, 18, 1244, 764}) {
+			t.Errorf("instance %d: clip mode %v, mask's area %v", i, in.Transform1[3], in.ClipRadii)
+		}
+	}
+	// Each label's pane in its own coordinates, which the translation
+	// moved.
+	if in := b.Instances[1]; in.Clip != [4]float32{17.5, 17.75, 440, 764} {
+		t.Errorf("first label's clip %v", in.Clip)
 	}
 }
 

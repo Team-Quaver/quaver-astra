@@ -460,6 +460,7 @@ type Renderer struct {
 	blurTmp  [2]texture
 	stopsTex id
 	frame    uint64
+	swept    uint64 // the frame of the last sweep
 	// Command buffers retain every resource used by their frame slot.
 	inflight    [ringSize]id
 	slot, inUse int
@@ -1713,9 +1714,7 @@ func (r *Renderer) render(s *scene.Scene) error {
 	r.track(cb)
 	r.lastRender = time.Now()
 	r.armTrim()
-	if r.frame%120 == 0 {
-		r.sweep()
-	}
+	r.sweepIfDue()
 	return nil
 }
 
@@ -2019,9 +2018,23 @@ func (r *Renderer) FrameInfo() string {
 	return info
 }
 
+// sweepEvery is how many frames go by between sweeps.
+const sweepEvery = 120
+
+// sweepIfDue sweeps once sweepEvery frames went by since the last sweep.
+// Every frame presented calls it, whether render drew it at once or
+// finishPending once its drawable came: frames of an animation mostly
+// take the second way, and counting only the first, they swept seldom if
+// ever, while each frame's transient canvases piled up on the GPU.
+func (r *Renderer) sweepIfDue() {
+	if r.frame-r.swept >= sweepEvery {
+		r.swept = r.frame
+		r.sweep()
+	}
+}
+
 // sweep frees the textures of images no frame drew for a while, and
-// those of canvases gone, or transient and not drawn this frame: render
-// calls it every 120 frames.
+// those of canvases gone, or transient and not drawn this frame.
 func (r *Renderer) sweep() {
 	for key, t := range r.images {
 		if r.frame-t.lastFrame > 240 {

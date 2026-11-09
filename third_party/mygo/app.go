@@ -27,6 +27,24 @@ const (
 	ActivationPolicyProhibited ActivationPolicy = "prohibited"
 )
 
+// DMABUFRenderer says whether WebKitGTK draws web pages with its DMA-BUF
+// renderer on Linux; see Application.SetDMABUFRenderer.
+type DMABUFRenderer string
+
+// DMA-BUF renderer settings.
+const (
+	// DMABUFRendererOff turns the renderer off, unless the user set
+	// WEBKIT_DISABLE_DMABUF_RENDERER: the default.
+	DMABUFRendererOff DMABUFRenderer = "off"
+	// DMABUFRendererOn leaves the renderer to WebKitGTK, which uses it
+	// wherever it can.
+	DMABUFRendererOn DMABUFRenderer = "on"
+	// DMABUFRendererAuto leaves the renderer on where the host is known to
+	// draw with it: on Wayland, with a GPU of Mesa's, outside containers
+	// and virtual machines. Elsewhere it is off.
+	DMABUFRendererAuto DMABUFRenderer = "auto"
+)
+
 // Application controls the event loop and the lifecycle of the process.
 // Use the App singleton.
 type Application struct {
@@ -34,6 +52,7 @@ type Application struct {
 	name      string
 	version   string
 	policy    ActivationPolicy
+	dmabuf    DMABUFRenderer
 	running   bool
 	ready     bool
 	readyCh   chan struct{}
@@ -107,12 +126,17 @@ func (a *Application) Run() error {
 		Name:             a.Name(),
 		Identifier:       identifier(),
 		ActivationPolicy: string(a.ActivationPolicy()),
+		DMABUFRenderer:   string(a.dmabuf),
 	}); err != nil {
 		return err
 	}
 	a.initialized = true
 	// Settings made before Run, which the backend could not take yet.
 	Theme.apply()
+	if load := pendingGTKCSS; load != nil {
+		pendingGTKCSS = nil
+		load()
+	}
 	a.startLocale()
 	if m := a.Dock.Menu(); m != nil {
 		b.App().SetDockMenu(m.snapshot())
@@ -408,6 +432,21 @@ func (a *Application) SetActivationPolicy(p ActivationPolicy) {
 	if running {
 		onMain(func() { backend().App().SetActivationPolicy(string(p)) })
 	}
+}
+
+// SetDMABUFRenderer sets whether WebKitGTK may draw web pages with its
+// DMA-BUF renderer on Linux, which MyGo turns off by default because it
+// shows blank windows on NVIDIA's driver, in virtual machines and in
+// containers. Where it works, pages scroll at several times the frame
+// rate with less CPU. WEBKIT_DISABLE_DMABUF_RENDERER, set by the user,
+// overrides it. Call it before Run; other systems ignore it.
+func (a *Application) SetDMABUFRenderer(r DMABUFRenderer) {
+	if r == DMABUFRendererAuto {
+		linkDMABUFProbe()
+	}
+	a.mu.Lock()
+	a.dmabuf = r
+	a.mu.Unlock()
 }
 
 // Focus brings the application to the foreground.

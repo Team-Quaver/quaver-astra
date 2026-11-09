@@ -63,3 +63,36 @@ func TestContentWindowHiddenReadyToShow(t *testing.T) {
 		}
 	}
 }
+
+// TestContentViewRunsAfterNewWindow checks that the view of a window of
+// native UI that NewWindow shows first runs once NewWindow returned on the
+// main thread, so that it can use the window kept from NewWindow: systems
+// draw a window's first frame as it shows, as AppKit may in orderFront and
+// Windows in the resize of a window maximized (#1053). The window shows
+// all the same, with its first frame.
+func TestContentViewRunsAfterNewWindow(t *testing.T) {
+	for _, maximized := range []bool{false, true} {
+		var w *mygo.Window
+		var frames, early atomic.Int32
+		mygo.RunOnMain(func() {
+			w = newWindow(t, mygo.WindowOptions{Title: "After NewWindow", Width: 320, Height: 240, Maximized: maximized, Content: ui.View(func(c *ui.Context) {
+				frames.Add(1)
+				if w == nil {
+					early.Add(1)
+					return
+				}
+				ui.Text(c, w.Title())
+			})})
+			if n := frames.Load(); n != 0 {
+				t.Errorf("maximized %v: %d frames built in NewWindow", maximized, n)
+			}
+		})
+		eventually(t, "the window shown with its first frame", func() bool {
+			return frames.Load() > 0 && w.IsVisible() && firstFrameRevealed(w)
+		})
+		if n := early.Load(); n != 0 {
+			t.Errorf("maximized %v: the view ran %d times before NewWindow returned", maximized, n)
+		}
+		w.Destroy()
+	}
+}

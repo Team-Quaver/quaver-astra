@@ -911,5 +911,9 @@
   "desktopShortcut": "Create a desktop shortcut",
   "@desktopShortcut": {
     "description": "Labels the check box on the finish page of an app's Windows installer, which puts a shortcut to the app on the desktop."
+  },
+  "selected": "selected",
+  "@selected": {
+    "description": "What VoiceOver reads after the name of a cell of a grid that is chosen, as a calendar's day picked, where it reads no chosen state of cells itself."
   }
 }

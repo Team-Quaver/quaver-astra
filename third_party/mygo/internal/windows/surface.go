@@ -128,6 +128,8 @@ type surface struct {
 	now      bool
 	tracking bool
 	buttons  int
+	// pressure is the last WM_POINTER message's (mouseDevice).
+	pressure float64
 	clicks   platform.ClickCounter
 	cursor   platform.Cursor
 	high     uint16 // a high surrogate of WM_CHAR waiting for its pair
@@ -135,12 +137,23 @@ type surface struct {
 	caret    platform.RectF
 	input    platform.TextInputState
 
+	// pointerAt is where on the screen the last WM_POINTER message's
+	// pointer was, in pixels (pointerMessage).
+	pointerAt point
+	// canceledUp tells that the system took the press of the pen or the
+	// finger (cancelPress): the mouse button's release that follows is
+	// its, and goes nowhere.
+	canceledUp bool
+
 	// keyTaken tells that the content took the key down, whose
 	// WM_SYSCHAR then opens no menu.
 	keyTaken bool
 	// menuRan tells that the key down ran a menu item (menuShortcut): its
 	// character goes nowhere.
 	menuRan bool
+	// held are the keys the content got pressed and not yet released,
+	// whose releases a menu's loop or an input method may take (liftKeys).
+	held platform.HeldKeys
 
 	reconvert  *[2]int // the runes a reconversion replaces
 	dropTarget uintptr // IDropTarget
@@ -362,6 +375,11 @@ func (s *surface) drawNow() {
 	s.now = now
 }
 
+// Occluded reports whether nothing of the window shows on screen: while it
+// is minimized. Windows covered by others, or on another virtual desktop,
+// show.
+func (s *surface) Occluded() bool { return s.w.state == sizeMinimized }
+
 // RefreshRate returns the refresh rate of the monitor showing the window,
 // in its current display mode.
 func (s *surface) RefreshRate() float64 {
@@ -530,10 +548,16 @@ func cursorHandle(c platform.Cursor) uintptr {
 		platform.CursorResizeN: 32645, platform.CursorResizeS: 32645, platform.CursorResizeE: 32644,
 		platform.CursorResizeW: 32644, platform.CursorResizeColumn: 32644, platform.CursorResizeRow: 32645,
 		platform.CursorVerticalText: 32513,
+		platform.CursorProgress:     32650, platform.CursorWait: 32514, platform.CursorHelp: 32651, // IDC_APPSTARTING, IDC_WAIT, IDC_HELP
+		platform.CursorAllScroll: 32646, platform.CursorNoDrop: 32648, // IDC_SIZEALL, IDC_NO
 	}
 	if c == platform.CursorNone {
 		surfaceCursors[c] = 0 // SetCursor(NULL) hides it
 		return 0
+	}
+	if h := drawnCursor(c); h != 0 {
+		surfaceCursors[c] = h
+		return h
 	}
 	id, ok := ids[c]
 	if !ok {
@@ -597,11 +621,20 @@ func (s *surface) send(ev platform.SurfaceEvent) bool {
 	if ev.Kind == platform.PointerDown || ev.Kind == platform.SurfaceBlur {
 		s.clientComposition.Reset()
 	}
+	if !s.held.Track(ev) {
+		return false
+	}
 	if s.w.closed {
 		return false
 	}
 	return s.w.h.SurfaceEvent(ev)
 }
+
+// liftKeys lets go of the keys held, as a menu's loop takes the keyboard,
+// and their releases with it: Alt and a letter opening a menu of the bar,
+// Alt and Space the window's menu, F10 or Alt the bar. The window keeps
+// the focus meanwhile, so no WM_KILLFOCUS lets go of them.
+func (s *surface) liftKeys() { s.held.LiftAll(mods(), s.send) }
 
 // modifierKey is whether the virtual key vk is Shift, Ctrl, Alt or a Windows key.
 func modifierKey(vk uintptr) bool {
@@ -656,7 +689,8 @@ func (s *surface) pointer(kind platform.SurfaceEventKind, lp uintptr, button int
 		w, h := systemMetric(smCxDoubleClk, s.hwnd), systemMetric(smCyDoubleClk, s.hwnd)
 		clicks = s.clicks.Press(button, float64(x), float64(y), uint32(at), platform.DoubleClick{Time: time.Duration(ms) * time.Millisecond, DX: float64(w) / 2, DY: float64(h) / 2})
 	}
-	s.send(platform.SurfaceEvent{Kind: kind, X: s.toDIP(int32(x)), Y: s.toDIP(int32(y)), Button: button, Clicks: clicks, Mods: mods()})
+	pointer, pressure := s.mouseDevice()
+	s.send(platform.SurfaceEvent{Kind: kind, X: s.toDIP(int32(x)), Y: s.toDIP(int32(y)), Button: button, Clicks: clicks, Mods: mods(), Pointer: pointer, Pressure: pressure})
 }
 
 func (s *surface) message(hwnd uintptr, m uint32, wp, lp uintptr) (uintptr, bool) {
@@ -712,6 +746,19 @@ func (s *surface) message(hwnd uintptr, m uint32, wp, lp uintptr) (uintptr, bool
 		// resized.
 		s.drawNow()
 		return 0, true
+	case wmPointerDown, wmPointerUpdate, wmPointerUp:
+		// A pen or a finger, whose mouse messages DefWindowProc makes.
+		s.pointerMessage(m, wp)
+		if m == wmPointerUp && pointerCanceled(wp) && s.buttons != 0 {
+			// The system took the pen or the finger, as for an edge's
+			// gesture: the press ends with no release, and the button
+			// up DefWindowProc may make of it goes nowhere. The capture
+			// goes after the buttons, so that losing it cancels no more.
+			s.cancelPress()
+			s.canceledUp = true
+			procReleaseCapture.Call()
+		}
+		return 0, false
 	case wmMouseMove:
 		if !s.tracking {
 			tme := trackMouseEvent{Flags: tmeLeaveFlag, Track: hwnd}
@@ -744,6 +791,7 @@ func (s *surface) message(hwnd uintptr, m uint32, wp, lp uintptr) (uintptr, bool
 			procSetCapture.Call(hwnd)
 		}
 		s.buttons |= 1 << button
+		s.canceledUp = false
 		s.pointer(platform.PointerDown, lp, button)
 		return 0, true
 	case wmLButtonUp, wmRButtonUp, wmMButtonUp:
@@ -753,6 +801,12 @@ func (s *surface) message(hwnd uintptr, m uint32, wp, lp uintptr) (uintptr, bool
 			button = 1
 		case wmMButtonUp:
 			button = 2
+		}
+		if s.canceledUp && s.buttons == 0 {
+			// The release of a press the system took (cancelPress),
+			// which opens no context menu either.
+			s.canceledUp = false
+			return 0, true
 		}
 		s.buttons &^= 1 << button
 		if s.buttons == 0 {
@@ -792,6 +846,14 @@ func (s *surface) message(hwnd uintptr, m uint32, wp, lp uintptr) (uintptr, bool
 		s.send(platform.SurfaceEvent{Kind: platform.KeyReleased, Key: k, Mods: mods()})
 		return 1, true
 	case wmCaptureChanged:
+		// Another window took the mouse while a button was down, as a
+		// menu, or WM_CANCELMODE released it: the press ends with no
+		// release. OLE's drag loop takes it too (StartDataDrag), and
+		// the drag's end ends the press. The capture is gone already:
+		// releasing it would take another window's.
+		if s.buttons != 0 && lp != hwnd && s.dragSource == nil {
+			s.cancelPress()
+		}
 		s.buttons = 0
 		if lp != hwnd {
 			s.webCapture = nil
@@ -847,23 +909,38 @@ func (s *surface) message(hwnd uintptr, m uint32, wp, lp uintptr) (uintptr, bool
 		if s.menuShortcut(wp, false) {
 			return 0, true
 		}
-		if k, physical, ok := keyAndPosition(wp, lp, false, modifiers); ok {
-			s.keyTaken = s.send(platform.SurfaceEvent{Kind: platform.KeyPressed, Key: k, PhysicalKey: physical, Mods: modifiers, Repeat: lp&(1<<30) != 0})
+		rawTaken := false
+		k, physical, ok := keyAndPosition(wp, lp, false, modifiers)
+		if ok {
+			s.keyTaken = s.send(platform.SurfaceEvent{Kind: platform.KeyPressed, Key: k, PhysicalKey: physical, Code: keyCode(wp, lp), Mods: modifiers, Repeat: lp&(1<<30) != 0})
+		} else {
+			rawTaken = s.rawKey(platform.RawKeyPressed, wp, lp, physical, modifiers)
+			s.keyTaken = rawTaken
 		}
 		if !s.keyTaken && s.menuShortcut(wp, true) {
 			return 0, true
 		}
-		// Alt+F4, Alt+Space and F10 keep working.
-		return 0, m == wmKeyDown
+		// Alt+F4, Alt+Space and F10 keep working, and Alt the menu bar, unless
+		// the content took it as a key of its own.
+		return 0, m == wmKeyDown || rawTaken
 	case wmKeyUp, wmSysKeyUp:
 		modifiers := mods()
 		if modifierKey(wp) {
 			s.send(platform.SurfaceEvent{Kind: platform.ModifiersChanged, Mods: modifiers})
 		}
-		if k, physical, ok := keyAndPosition(wp, lp, true, modifiers); ok {
-			s.send(platform.SurfaceEvent{Kind: platform.KeyReleased, Key: k, PhysicalKey: physical, Mods: modifiers})
+		rawTaken := false
+		k, physical, ok := keyAndPosition(wp, lp, true, modifiers)
+		if ok {
+			s.send(platform.SurfaceEvent{Kind: platform.KeyReleased, Key: k, PhysicalKey: physical, Code: keyCode(wp, lp), Mods: modifiers})
+		} else if wp == vkProcessKey && lp&(1<<24) == 0 {
+			// The input method took the release of a key the content got
+			// pressed, as it began composing while the key was held: the
+			// key goes up all the same, by its position.
+			s.held.Lift(platform.KeyUnknown, platform.KeyForScancode(uint16(lp>>16&0xFF)), modifiers, s.send)
+		} else {
+			rawTaken = s.rawKey(platform.RawKeyReleased, wp, lp, physical, modifiers)
 		}
-		return 0, m == wmKeyUp
+		return 0, m == wmKeyUp || rawTaken
 	case wmSysChar:
 		if s.menuRan {
 			return 0, true
@@ -920,6 +997,16 @@ func (s *surface) message(hwnd uintptr, m uint32, wp, lp uintptr) (uintptr, bool
 			caret := len(utf16.Decode(units[:min(int(pos), len(units))]))
 			s.composed(platform.SurfaceEvent{Kind: platform.TextComposition, Text: text, Caret: caret})
 		}
+		if lp&(gcsResultStr|gcsCompStr) == 0 && imeString(himc, gcsCompStr) == "" {
+			// Microsoft's Japanese IME gives the composition up (Esc) with
+			// neither, rather than with an empty GCS_COMPSTR, before
+			// WM_IME_ENDCOMPOSITION, which would keep the marked text.
+			if c := s.input.Client; c != nil {
+				s.clientComposition.Cancel(c)
+			} else {
+				s.send(platform.SurfaceEvent{Kind: platform.TextComposition})
+			}
+		}
 		procImmReleaseContext.Call(hwnd, himc)
 		s.placeIME()
 		return 0, true
@@ -971,6 +1058,28 @@ func wheelLines() int {
 		}
 	}
 	return surfaceWheelLines
+}
+
+// keyCode returns the key by position of a WM_KEYDOWN or WM_KEYUP, from its
+// scancode: CodeUnknown for what an input method (VK_PROCESSKEY) or injected
+// Unicode text (VK_PACKET) keeps from the application, and for a key the
+// system made with no scancode.
+func keyCode(vk, lp uintptr) platform.KeyCode {
+	if vk == vkProcessKey || vk == vkPacket {
+		return platform.CodeUnknown
+	}
+	return platform.KeyCodeForXT(uint8(lp>>16&0xFF), lp&(1<<24) != 0)
+}
+
+// rawKey sends a key shortcuts have no name for, which keyAndPosition leaves
+// out, by its position, and reports whether the content took it. kind is
+// RawKeyPressed or RawKeyReleased.
+func (s *surface) rawKey(kind platform.SurfaceEventKind, wp, lp uintptr, physical platform.Key, modifiers platform.Modifiers) bool {
+	code := keyCode(wp, lp)
+	if code == platform.CodeUnknown {
+		return false
+	}
+	return s.send(platform.SurfaceEvent{Kind: kind, PhysicalKey: physical, Code: code, Mods: modifiers, Repeat: kind == platform.RawKeyPressed && lp&(1<<30) != 0})
 }
 
 // keyAndPosition returns the key of a WM_KEYDOWN or WM_KEYUP by virtual

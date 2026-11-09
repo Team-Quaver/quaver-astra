@@ -126,3 +126,24 @@ func TestContentWidthOfRowByBasis(t *testing.T) {
 	wantSize(t, "the row of an item that cannot shrink", fixed, 47, 0)
 	wantSize(t, "the row of an item that cannot grow", capped, 117, 0)
 }
+
+// A text of a no-break space between words keeps its advance, as
+// `&nbsp;` does on the web; a space alone in its text is removed, as a
+// collapsible space starting a line is in CSS.
+func TestNoBreakSpaceText(t *testing.T) {
+	var a, nbsp, b, space *node
+	layoutIn(t, func(c *context) {
+		coreRow(c).Children(func() {
+			a = coreText(c, "a")
+			nbsp = coreText(c, "\u00a0")
+			b = coreText(c, "b")
+			space = coreText(c, " ")
+		})
+	})
+	if nbsp.w <= 0 || math.Abs(float64(b.x-a.w-nbsp.w)) > 0.05 {
+		t.Errorf("the no-break space is %v wide, b at %v after a %v wide", nbsp.w, b.x, a.w)
+	}
+	if space.w != 0 {
+		t.Errorf("the space is %v wide", space.w)
+	}
+}

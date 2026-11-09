@@ -1,6 +1,10 @@
 package ui
 
 import (
+	"bytes"
+	"image"
+	"image/color"
+	"image/png"
 	"maps"
 	"runtime"
 	"slices"
@@ -485,5 +489,124 @@ func TestEditMenuEnabledSelectable(t *testing.T) {
 	tt.Frame()
 	if enabled() {
 		t.Error("the focused paragraph disabled: Select All enabled, want disabled as it takes no command")
+	}
+}
+
+// testMenuIcon is what mygo.NewMenuIcon makes, which this package cannot
+// import.
+type testMenuIcon struct{ p *platform.MenuIcon }
+
+func (i testMenuIcon) PlatformMenuIcon() *platform.MenuIcon { return i.p }
+
+// menuIconPNG returns a PNG image of 32 by 32 pixels in one color.
+func menuIconPNG(t *testing.T, c color.NRGBA) []byte {
+	t.Helper()
+	img := image.NewNRGBA(image.Rect(0, 0, 32, 32))
+	for i := 0; i < len(img.Pix); i += 4 {
+		img.Pix[i], img.Pix[i+1], img.Pix[i+2], img.Pix[i+3] = c.R, c.G, c.B, c.A
+	}
+	var b bytes.Buffer
+	if err := png.Encode(&b, img); err != nil {
+		t.Fatal(err)
+	}
+	return b.Bytes()
+}
+
+// TestContextMenuIcon gives the system's menu the icons of its items, in
+// submenus too, and leaves the choice to Chosen as for other items.
+func TestContextMenuIcon(t *testing.T) {
+	flag, inner := &platform.MenuIcon{}, &platform.MenuIcon{}
+	var chosen string
+	view := func(c *context) {
+		coreColumn(c).Fill().Children(func() {
+			coreText(c, "Row").ContextMenu(func(m *Menu) {
+				if m.Item("Flag").Icon(testMenuIcon{flag}).Chosen() {
+					chosen = "Flag"
+				}
+				m.Item("Plain").Icon(nil)
+				m.Submenu("More", func(m *Menu) { m.Item("Inner").Icon(testMenuIcon{inner}) })
+			})
+		})
+	}
+	tt := coreNewTester(view, 200, 200)
+	if err := tt.RightClick("Row"); err != nil {
+		t.Fatal(err)
+	}
+	items := tt.h.menu.Items
+	if items[0].Icon != flag || items[1].Icon != nil || items[2].Submenu.Items[0].Icon != inner {
+		t.Errorf("the icons of the items are %p, %p and %p, want %p, nil and %p",
+			items[0].Icon, items[1].Icon, items[2].Submenu.Items[0].Icon, flag, inner)
+	}
+	if err := tt.ChooseMenuItem("Flag"); err != nil {
+		t.Fatal(err)
+	}
+	tt.Frame()
+	if chosen != "Flag" {
+		t.Errorf("chosen = %q, want Flag", chosen)
+	}
+}
+
+// TestPopoverMenuIcon draws the icon of an item before its label, and
+// lines up the label of the item without one.
+func TestPopoverMenuIcon(t *testing.T) {
+	red := &platform.MenuIcon{PNG: menuIconPNG(t, color.NRGBA{R: 255, A: 255})}
+	view := func(c *context) {
+		coreColumn(c).Fill().Children(func() {
+			coreText(c, "Row").PopoverMenu(func(m *Menu) {
+				m.Item("Flag").Icon(testMenuIcon{red})
+				m.Item("Plain")
+				m.Separator()
+				m.Submenu("More", func(m *Menu) { m.Item("Inner") })
+			})
+		})
+	}
+	tt := coreNewTester(view, 400, 300)
+	if err := tt.RightClick("Row"); err != nil {
+		t.Fatal(err)
+	}
+	// Find gives the item's row, and text the text inside it.
+	text := func(s string) Rect {
+		var r Rect
+		for _, n := range tt.rt.labels {
+			if n.text == s {
+				r = n.r
+			}
+		}
+		return r
+	}
+	if f, p := text("Flag"), text("Plain"); f.X != p.X {
+		t.Errorf("the labels start at %v and %v", f.X, p.X)
+	}
+	// at returns the color at the middle of the box of an item's icon.
+	at := func(s string) (uint32, uint32, uint32) {
+		r := text(s)
+		x := int(r.X) - 8 - platform.MenuIconSize/2
+		cr, cg, cb, _ := tt.Image().At(x, int(r.Y+r.H/2)).RGBA()
+		return cr >> 8, cg >> 8, cb >> 8
+	}
+	if r, g, b := at("Flag"); r < 200 || g > 50 || b > 50 {
+		t.Errorf("the icon is (%d, %d, %d), want red", r, g, b)
+	}
+	if r, g, b := at("Plain"); r > 200 && g < 50 && b < 50 {
+		t.Errorf("the item without an icon shows red: (%d, %d, %d)", r, g, b)
+	}
+	d := tt.rt.menu.drawn
+	tt.Frame()
+	if len(d.icons) != 1 {
+		t.Errorf("%d bitmaps of one icon over two frames", len(d.icons))
+	}
+}
+
+// TestMenuIconBitmapTemplate colors a template image with the text's color
+// and keeps its alpha.
+func TestMenuIconBitmapTemplate(t *testing.T) {
+	ic := &platform.MenuIcon{PNG: menuIconPNG(t, color.NRGBA{A: 128}), Template: true}
+	b := menuIconBitmap(ic, Color{R: 255, A: 255})
+	pix := b.img.Pixels()
+	if pix[0] != 128 || pix[1] != 0 || pix[2] != 0 || pix[3] != 128 {
+		t.Errorf("premultiplied pixel = %v, want [128 0 0 128]", pix[:4])
+	}
+	if menuIconBitmap(&platform.MenuIcon{PNG: []byte("not a png")}, Color{}) != nil {
+		t.Error("a bitmap of what is not an image")
 	}
 }

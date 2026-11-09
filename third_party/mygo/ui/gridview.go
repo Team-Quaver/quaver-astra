@@ -154,8 +154,6 @@ type itemDrag struct {
 	items []int
 }
 
-func (d *itemDrag) dragCount() int { return len(d.items) }
-
 // dragged returns the items a drag from item i moves: those chosen when it
 // is one of them, else item i.
 func (s *GridState) dragged(i, n int) []int {
@@ -268,7 +266,10 @@ func (s *GridState) cell(c *context, grid *node, i, n int, height float32, item 
 	}
 	s.built[cell.id], s.rt = i, c.rt
 	if s.Reorder != nil {
-		cell.dragFrom(func() any { return &itemDrag{s: s, items: s.dragged(i, n)} })
+		cell.dragFrom(func() any {
+			items := s.dragged(i, n)
+			return countedDrag{&itemDrag{s: s, items: items}, len(items)}
+		})
 		if cell.Dragging() {
 			cell.Opacity(0.4)
 		}
@@ -303,7 +304,7 @@ func (s *GridState) cell(c *context, grid *node, i, n int, height float32, item 
 			// Where the keys moved without choosing.
 			cell.DrawOver(func(p *Painter, r Rect) {
 				if grid.FocusVisible() {
-					p.FocusRing(Rect{r.X + 3, r.Y + 3, r.W - 6, r.H - 6}, cell.radius)
+					p.focusRingOf(grid, Rect{r.X + 3, r.Y + 3, r.W - 6, r.H - 6}, cell.radius)
 				}
 			})
 		}

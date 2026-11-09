@@ -40,6 +40,10 @@ var pathological = []struct {
 	{"quoted lines", Default, repeat("> a\n")},
 	{"openers then links", Default, func(n int) string { return strings.Repeat("[", n) + strings.Repeat("[a](b)", n) }},
 	{"escaped pipes", Default, func(n int) string { return "| a |\n|---|\n| " + strings.Repeat(`\| *a* `, n) + "|" }},
+	{"mentions", Default, repeat("@a ")},
+	{"repository references", Default, repeat("aaaaaaaa/bbbbbbbb#")},
+	{"words before references", Default, repeat("a#")},
+	{"alerts", Default, repeat("> [!NOTE]\n")},
 }
 
 func repeat(unit string) func(int) string {

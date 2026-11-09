@@ -32,6 +32,9 @@ func (w *htmlWriter) cr() {
 
 func (w *htmlWriter) blocks(parent int) {
 	for i := range w.d.Children(parent) {
+		if b := w.d.Block(i); b.Kind == Paragraph && b.segB == b.segA {
+			continue // an alert's marker
+		}
 		w.block(i)
 	}
 }
@@ -92,6 +95,16 @@ func (w *htmlWriter) block(i int) {
 		w.b.WriteString("</div>\n")
 	case Quote:
 		w.cr()
+		if a := b.Alert; a != NoAlert {
+			// As GitHub writes alerts, without its icons.
+			name := strings.ToLower(a.String())
+			w.b.WriteString(`<div class="markdown-alert markdown-alert-` + name + `">` + "\n")
+			w.b.WriteString(`<p class="markdown-alert-title">` + a.String() + "</p>\n")
+			w.blocks(i)
+			w.cr()
+			w.b.WriteString("</div>\n")
+			break
+		}
 		w.b.WriteString("<blockquote>\n")
 		w.blocks(i)
 		w.cr()
@@ -216,7 +229,9 @@ func (w *htmlWriter) inline(in []Inline, from, to int) {
 	for k := from; k < to; k = in[k].Next {
 		n := &in[k]
 		switch n.Kind {
-		case Text:
+		case Text, Mention, Reference:
+			// Mentions and references are links only where a host
+			// resolves them.
 			escapeHTML(&w.b, n.Text)
 		case SoftBreak:
 			w.b.WriteString("\n")
@@ -316,7 +331,7 @@ func PlainText(in []Inline) string {
 	var b strings.Builder
 	for k := range in {
 		switch n := &in[k]; n.Kind {
-		case Text, Code, HTML, Math:
+		case Text, Code, HTML, Math, Mention, Reference:
 			b.WriteString(n.Text)
 		case SoftBreak, LineBreak:
 			b.WriteByte(' ')

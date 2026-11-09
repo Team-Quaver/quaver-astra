@@ -95,8 +95,17 @@ type Backend struct {
 	menuFonts   map[int]menuFonts
 	menuExtra   map[int]int32
 	menuBrushes map[uint32]uintptr
-	// menuHook hooks the main thread while menus show.
-	menuHook uintptr
+	// menuHook hooks the main thread while menus show, and menuGlass is
+	// whether they show the material behind them. menuWindows are the
+	// windows of menus it subclassed, and popups counts the popup menus
+	// MyGo is showing: TrackPopupMenuEx runs the menu loop that creates
+	// their windows, and their submenus', unlike the loops of a menu bar's
+	// dropdowns and of Windows' window menu, which are not MyGo's
+	// (menuProc).
+	menuHook    uintptr
+	menuGlass   bool
+	menuWindows map[uintptr]*menuWindow
+	popups      int
 	// comp shows the controls of windows with a material behind them
 	// (compositor.go). compRetry is when to try making it again after
 	// compFails failures in a row, and composeAt when timerCompose draws
@@ -452,6 +461,10 @@ func (b *Backend) appMessage(m uint32, wp, lp uintptr) (uintptr, bool) {
 	case wmTimer:
 		if wp == timerCompose {
 			b.recompose()
+			return 0, true
+		}
+		if wp == timerCookieView && checkCookieViews != nil {
+			checkCookieViews(b)
 			return 0, true
 		}
 	case wmAppDeviceRemoved:

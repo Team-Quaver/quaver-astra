@@ -1,6 +1,6 @@
 import * as React from "react"
 
-import { commitUrl, formatChange, formatDate, formatValue, isTiming, median, shortCPU, type Commit, type Runner, type Step } from "@/lib/benchmarks"
+import { commitUrl, formatChange, formatDate, formatValue, isTiming, median, shortCPU, type Commit, type Runner, type Step } from "@/lib/measures"
 import { cn } from "@/lib/utils"
 
 const height = 112

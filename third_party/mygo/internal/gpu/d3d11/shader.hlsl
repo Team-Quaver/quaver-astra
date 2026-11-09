@@ -29,7 +29,7 @@ struct Inst {
 	float4 clipRadii : CLIPR;
 	float4 transform0 : TRANSFORM0;
 	float4 transform1 : TRANSFORM1;
-	float4 transform2 : TRANSFORM2; // the projective row's g and h
+	float4 transform2 : TRANSFORM2; // the projective row's g and h, and 1 where its constant is -1
 	float4 params : PARAMS; // kind, dashed or grayscale, sigma or paint, opacity
 };
 
@@ -55,7 +55,7 @@ struct VSOut {
 // frameH returns the frame point of local p, in homogeneous coordinates.
 float3 frameH(Inst i, float2 p) {
 	return float3(dot(i.transform0.xyz, float3(p, 1)), dot(i.transform1.xyz, float3(p, 1)),
-				  dot(float3(i.transform2.xy, 1), float3(p, 1)));
+				  dot(float3(i.transform2.xy, 1 - 2 * i.transform2.z), float3(p, 1)));
 }
 
 VSOut vs(uint vid : SV_VertexID, Inst i) {
@@ -150,7 +150,7 @@ Frame frameOf(VSOut v) {
 	// local one, which the affine map moves linearly: Direct3D 10's shaders
 	// pass on 16 values at most.
 	f.s = f.persp ? v.pos.xy : float2(dot(v.transform0.xyz, float3(v.pt.xy, 1)), dot(v.transform1.xyz, float3(v.pt.xy, 1)));
-	float3 r0 = v.transform0.xyz, r1 = v.transform1.xyz, r2 = float3(v.transform2.xy, 1);
+	float3 r0 = v.transform0.xyz, r1 = v.transform1.xyz, r2 = float3(v.transform2.xy, 1 - 2 * v.transform2.z);
 	f.c0 = cross(r1, r2);
 	f.c1 = cross(r2, r0);
 	f.c2 = cross(r0, r1);

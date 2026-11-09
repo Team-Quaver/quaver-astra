@@ -2,9 +2,12 @@ package ui
 
 import (
 	"errors"
+	"image"
+	"runtime"
 	"slices"
 	"testing"
 	"time"
+	"weak"
 
 	"github.com/egoist/mygo/internal/platform"
 	"github.com/egoist/mygo/internal/scene"
@@ -550,4 +553,65 @@ func TestWindowBackground(t *testing.T) {
 	step("dark", dark, []platform.Color{platform.Color(light), platform.Color(dark)})
 	transparent = true
 	step("transparent", scene.Color{}, []platform.Color{platform.Color(light), platform.Color(dark), {}})
+}
+
+// sceneGPU is a GPU renderer that keeps the last scene it drew, as
+// renderers that draw only what changed keep it to compare with the next.
+type sceneGPU struct {
+	testGPU
+	last *scene.Scene
+}
+
+func (g *sceneGPU) Render(s *scene.Scene) error {
+	g.last = s
+	return g.testGPU.Render(s)
+}
+
+// TestClosedWindowKeepsNoFrame checks issue #1281: a closed window's host
+// lets go of its view, the elements and the scene of its last frame, and
+// the bitmaps they drew, in case something still holds the host (a
+// plugin, a renderer, the platform's objects of the window): only the
+// app's references keep them.
+func TestClosedWindowKeepsNoFrame(t *testing.T) {
+	var gpu *sceneGPU
+	h, _, frame := gpuHost(t, func() (gpuRenderer, error) {
+		gpu = &sceneGPU{}
+		return gpu, nil
+	})
+	src := image.NewRGBA(image.Rect(0, 0, 256, 256))
+	pix := weak.Make(&src.Pix[0]) // the bitmap's own, as NewBitmap takes them
+	bm := NewBitmap(src)
+	bitmap := weak.Make(bm)
+	h.rt.view = bitmapView(bm)
+	src, bm = nil, nil // the view alone holds it
+	frame()
+	if gpu == nil || gpu.frames != 1 {
+		t.Fatal("no frame drawn on the GPU")
+	}
+	h.detach()
+	if gpu.released != 1 {
+		t.Errorf("the renderer was released %d times", gpu.released)
+	}
+	for range 3 {
+		runtime.GC()
+	}
+	if bitmap.Value() != nil || pix.Value() != nil {
+		t.Errorf("the closed window's host keeps the bitmap %v, its pixels %v", bitmap.Value() != nil, pix.Value() != nil)
+	}
+	// A frame the surface asks for after it closed draws nothing.
+	frame()
+	if gpu.frames != 1 || h.last != nil {
+		t.Errorf("a closed window drew %d frames", gpu.frames)
+	}
+	runtime.KeepAlive(h)
+}
+
+// bitmapView returns a view that shows bm as an image and draws it.
+func bitmapView(bm *Bitmap) func(c *context) {
+	return func(c *context) {
+		coreImage(c, bm).Size(100, 100)
+		coreBox(c).Size(100, 100).Draw(func(p *Painter, r Rect) {
+			p.ImageRegion(bm, Rect{}, r, ImageOptions{})
+		})
+	}
 }

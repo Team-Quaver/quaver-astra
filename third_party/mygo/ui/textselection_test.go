@@ -489,6 +489,37 @@ func TestSelectableTextContextMenu(t *testing.T) {
 	}
 }
 
+// A link's ContextMenu in selectable text opens on that text: EditItems adds its Copy and Select
+// All, and Copy copies the selection, which the right click on the link keeps.
+func TestLinkContextMenuEditItems(t *testing.T) {
+	tt := coreNewTester(func(c *context) {
+		coreColumn(c).Padding(20).Selectable().ContextMenu(func(m *Menu) { m.Item("Quote") }).Children(func() {
+			coreText(c, "Read the ").Children(func() {
+				coreLink(c, "guide", "").ContextMenu(func(m *Menu) {
+					m.Item("Copy Link")
+					m.Separator()
+					m.EditItems()
+				})
+				coreText(c, " first.")
+			})
+		})
+	}, 300, 100)
+	selectBetween(t, tt, "Read the guide first.", 0, "Read the guide first.", 4)
+	if err := tt.RightClick("guide"); err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"Copy Link", "-", "Copy", "-", "Select All"}; !slices.Equal(tt.Menu(), want) {
+		t.Fatalf("menu %q, want %q", tt.Menu(), want)
+	}
+	if err := tt.ChooseMenuItem("Copy"); err != nil {
+		t.Fatal(err)
+	}
+	tt.Frame()
+	if got := tt.Clipboard(); got != "Read" {
+		t.Errorf("Copy copied %q", got)
+	}
+}
+
 // EditItems in a text input's ContextMenu adds its editing items, which edit it.
 func TestTextInputContextMenuEditItems(t *testing.T) {
 	value := "hello"

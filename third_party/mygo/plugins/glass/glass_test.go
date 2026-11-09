@@ -70,6 +70,60 @@ func TestInteractiveGlassGrowsWhilePressed(t *testing.T) {
 	}
 }
 
+func TestInteractiveGlassLightsOnHover(t *testing.T) {
+	view := func(c *ui.Context) {
+		ui.Box(c).Fill().Background(ui.RGB(0, 0, 0)).Children(func() {
+			ui.Box(c).Absolute().Left(40).Top(30).Size(240, 100).Radius(20).Material(Glass{Interactive: true})
+		})
+	}
+	tt := ui.NewTester(view, 320, 160)
+	tt.SetScale(2)
+	tt.SetPreferences(ui.Preferences{ReduceMotion: true})
+	tt.Frame()
+	rim := func() int { return pixelAt(tt.Image(), 320, 62)[0] }
+	before := rim()
+	// The pointer enters the glass: its top rim lights.
+	tt.Move(160, 80)
+	tt.Frame()
+	if hovered := rim(); hovered <= before {
+		t.Errorf("the rim is %v while hovered, not lighter than %v", hovered, before)
+	}
+	// Leaving it restores the rim.
+	tt.Move(10, 10)
+	tt.Frame()
+	if after := rim(); after != before {
+		t.Errorf("the rim is %v after the pointer left, not %v", after, before)
+	}
+}
+
+// Panes close together merge into one surface; far apart, they do not.
+func TestGroupMergesNearPanes(t *testing.T) {
+	gap := float32(8)
+	view := func(c *ui.Context) {
+		ui.Box(c).Fill().Background(ui.RGB(0, 0, 0)).Children(func() {
+			g := NewGroup(c)
+			g.Radius = 22
+			g.Gap(gap).Children(func() {
+				g.Pane(ui.Box(c).Size(80, 44))
+				g.Pane(ui.Box(c).Size(80, 44))
+			})
+		})
+	}
+	tt := ui.NewTester(view, 320, 100)
+	tt.SetScale(2)
+	// The first pane ends at 80, the second starts at 88: their gap's
+	// middle is 84, which the glass bridges.
+	if p := pixelAt(tt.Image(), 168, 44); p[0] < 30 {
+		t.Errorf("the gap between close panes is %v, not glass", p)
+	}
+	// Far apart, nothing bridges the gap.
+	gap = 40
+	tt.Frame()
+	if p := pixelAt(tt.Image(), 200, 44); p[0] > 10 {
+		t.Errorf("the gap between far panes is %v, not the background", p)
+	}
+}
+
 func TestPaintInDrawing(t *testing.T) {
 	view := func(c *ui.Context) {
 		ui.Box(c).Fill().Background(ui.RGB(0, 0, 0)).Draw(func(p *ui.Painter, r ui.Rect) {
@@ -86,6 +140,72 @@ func TestPaintInDrawing(t *testing.T) {
 func TestString(t *testing.T) {
 	if s := (Glass{Style: Clear, Tint: ui.RGB(1, 2, 3), Interactive: true}).String(); s != "glass clear tint(#010203ff) interactive" {
 		t.Errorf("String: %q", s)
+	}
+}
+
+// With Reduce Transparency, a glass pane, a blur and a scroll edge are
+// opaque: the theme's surfaces, not what is behind them.
+func TestReduceTransparency(t *testing.T) {
+	view := func(c *ui.Context) {
+		ui.Box(c).Fill().Background(ui.RGB(20, 120, 220)).Children(func() {
+			ui.Box(c).Absolute().Left(50).Top(20).Size(200, 60).Radius(12).Material(Glass{})
+			ui.Box(c).Absolute().Left(50).Top(100).Size(200, 40).Radius(8).Material(ScrollEdge{Hard: true})
+			ui.Box(c).Absolute().Left(50).Top(160).Size(200, 40).Radius(8).Material(Blur{Radius: 8})
+		})
+	}
+	tt := ui.NewTester(view, 320, 220)
+	tt.SetScale(2)
+	glassAt := func() [3]int { return pixelAt(tt.Image(), 300, 100) }
+	before := glassAt()
+	if before[0] > 200 && before[1] > 200 {
+		t.Fatalf("glass before Reduce Transparency is already the surface: %v", before)
+	}
+	tt.SetPreferences(ui.Preferences{ReduceTransparency: true})
+	tt.Frame()
+	theme := ui.LightTheme()
+	surface := [3]int{int(theme.Surface.R), int(theme.Surface.G), int(theme.Surface.B)}
+	background := [3]int{int(theme.Background.R), int(theme.Background.G), int(theme.Background.B)}
+	near := func(got, want [3]int) bool {
+		for i := range got {
+			if got[i] < want[i]-2 || got[i] > want[i]+2 {
+				return false
+			}
+		}
+		return true
+	}
+	if got := glassAt(); !near(got, surface) {
+		t.Errorf("glass is %v, not the opaque surface %v", got, surface)
+	}
+	if got := pixelAt(tt.Image(), 300, 240); !near(got, background) {
+		t.Errorf("scroll edge is %v, not the background %v", got, background)
+	}
+	if got := pixelAt(tt.Image(), 300, 360); !near(got, background) {
+		t.Errorf("blur is %v, not the background %v", got, background)
+	}
+	// The desktop's setting back off restores the backdrop.
+	tt.SetPreferences(ui.Preferences{})
+	tt.Frame()
+	if after := glassAt(); near(after, surface) {
+		t.Errorf("glass stayed opaque after Reduce Transparency: %v", after)
+	}
+}
+
+// High Contrast lights the glass's rim more.
+func TestHighContrastGlass(t *testing.T) {
+	view := func(c *ui.Context) {
+		ui.Box(c).Fill().Background(ui.RGB(0, 0, 0)).Children(func() {
+			ui.Box(c).Absolute().Left(40).Top(30).Size(240, 100).Radius(20).Material(Glass{})
+		})
+	}
+	tt := ui.NewTester(view, 320, 160)
+	tt.SetScale(2)
+	tt.Frame()
+	normal := pixelAt(tt.Image(), 320, 62)
+	tt.SetPreferences(ui.Preferences{HighContrast: true})
+	tt.Frame()
+	contrast := pixelAt(tt.Image(), 320, 62)
+	if contrast[0] <= normal[0] {
+		t.Errorf("the rim is %v with high contrast, not lighter than %v", contrast, normal)
 	}
 }
 

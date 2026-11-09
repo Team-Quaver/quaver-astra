@@ -183,6 +183,86 @@ func TestComboboxAccessibility(t *testing.T) {
 	}
 }
 
+// TestComboboxBaseNoMatches checks that a popup without options shows
+// what else it holds, as a row saying that nothing matches, which
+// assistive technology reads out, and that the keys have nothing to
+// choose; one holding nothing else stays hidden.
+func TestComboboxBaseNoMatches(t *testing.T) {
+	text, chosen, empty := "", "", true
+	tt := coreNewTester(func(c *context) {
+		p := coreComboboxBase(c, &text)
+		p.Input.Label("Font").Width(200)
+		panel := p.Popup(func(panel *node) {
+			panel.Label("popup")
+			matches := matching(fonts, text)
+			for _, f := range matches {
+				p.Item(f).Children(func() { coreText(c, f) })
+			}
+			if len(matches) == 0 && empty {
+				coreText(c, "No matches found")
+			}
+		})
+		if p.Open() && panel == nil && empty {
+			t.Error("Popup returns nil for a popup that shows")
+		}
+		if v, ok := p.Chosen(); ok {
+			chosen = v
+		}
+	}, 400, 400)
+	tt.send(platform.SurfaceEvent{Kind: platform.AccessibilityOn})
+	tt.Click("Font")
+	tt.Type("zz")
+	if !tt.HasText("No matches found") {
+		t.Fatalf("no matches shows %q", tt.Texts())
+	}
+	if got := tt.Announcements(); !slices.Equal(got, []string{"No matches found"}) {
+		t.Errorf("assistive technology was told %q", got)
+	}
+	tt.Type("z")
+	if got := tt.Announcements(); len(got) != 0 {
+		t.Errorf("typing on with no matches tells %q again", got)
+	}
+	// The keys have no option to move to or choose; the focus stays in
+	// the input, which says the popup shows.
+	tt.Key(0, KeyDown)
+	tt.Key(0, KeyUp)
+	tt.Key(0, KeyEnter)
+	if chosen != "" || text != "zzz" {
+		t.Errorf("the keys chose %q, text %q", chosen, text)
+	}
+	tree := tt.h.access
+	cb := accessNode(t, tree, platform.RoleComboBox, "Font")
+	if cb.States&platform.AccessExpanded == 0 || tree.Focus != cb.ID {
+		t.Errorf("the combobox %+v, the focus on %d", cb, tree.Focus)
+	}
+	accessNode(t, tree, platform.RoleList, "popup")
+	accessNode(t, tree, platform.RoleText, "No matches found")
+	// Matching again, the options come back, and the arrows move among them.
+	tt.Key(Cmd, KeyA)
+	tt.Type("ti")
+	if tt.HasText("No matches found") || !tt.HasText("Times") {
+		t.Fatalf("ti shows %q", tt.Texts())
+	}
+	tt.Key(0, KeyEnter)
+	if chosen != "Times" {
+		t.Errorf("Enter chose %q, not Times", chosen)
+	}
+	// A popup holding nothing but options hides without them, and the
+	// input does not say it shows.
+	empty = false
+	tt.Key(Cmd, KeyA)
+	tt.Type("zz")
+	if _, ok := tt.Find("popup"); ok {
+		t.Error("a popup with nothing to show shows")
+	}
+	if cb := accessNode(t, tt.h.access, platform.RoleComboBox, "Font"); cb.States&platform.AccessExpanded != 0 {
+		t.Errorf("the combobox of a hidden popup: %+v", cb)
+	}
+	if got := tt.Announcements(); len(got) != 0 {
+		t.Errorf("a hidden popup tells %q", got)
+	}
+}
+
 func TestAutocomplete(t *testing.T) {
 	city, submitted := "", 0
 	cities := []string{"Paris", "Parma", "Lyon", "Comparis"}

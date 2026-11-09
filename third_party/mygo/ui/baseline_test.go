@@ -132,3 +132,29 @@ func TestBaselineColumn(t *testing.T) {
 	wantBox(t, "the first", a, Rect{190, 0, 50, 10})
 	wantBox(t, "the second", b, Rect{190, 10, 100, 10})
 }
+
+// An invisible child keeps its room and gives its box a baseline, as
+// CSS's visibility: hidden does, while a hidden one, as display: none,
+// gives none.
+func TestBaselineInvisible(t *testing.T) {
+	var price, sizer, shown *node
+	coreNewTester(func(c *context) {
+		coreRow(c).AlignItems(Baseline).Gap(4).Children(func() {
+			price = coreText(c, "$42").FontSize(40)
+			coreBox(c).Children(func() {
+				sizer = coreText(c, "88:88").FontSize(13).Invisible()
+				coreText(c, "12:34").FontSize(13).Absolute()
+			})
+			coreBox(c).Children(func() {
+				coreText(c, "gone").FontSize(30).Hidden(true)
+				shown = coreText(c, "here").FontSize(11)
+			})
+		})
+	}, 400, 300)
+	want := price.y + price.contentY() + price.tl.Lines[0].Baseline
+	for name, e := range map[string]*node{"invisible": sizer, "shown": shown} {
+		if b := e.y + e.contentY() + e.tl.Lines[0].Baseline; math.Abs(float64(b-want)) > 0.01 {
+			t.Errorf("the %s text's baseline is at %v, want %v", name, b, want)
+		}
+	}
+}

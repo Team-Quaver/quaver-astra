@@ -93,8 +93,8 @@ func TestPopoverMenuOpensAtThePointer(t *testing.T) {
 	if !menuShows(tt) {
 		t.Fatalf("no menu after a right-click: texts %q", tt.Texts())
 	}
-	if tt.Menu() != nil {
-		t.Errorf("the system shows a menu too: %q", tt.Menu())
+	if tt.h.menu != nil {
+		t.Errorf("the system shows a menu too: %v", tt.h.menu.Items)
 	}
 	open, _ := tt.Find("Open")
 	if open.X < x || open.Y < y || open.X > x+20 || open.Y > y+20 {
@@ -413,7 +413,7 @@ func TestPopoverMenuAccessibility(t *testing.T) {
 		t.Errorf("focus on %q, not the menu, which the pointer opened", f.Label)
 	}
 	open := accessNode(t, tree, platform.RoleMenuItem, "Open")
-	if open.Label != "Open" || open.Description == "" || open.PosInSet != 1 || open.SetSize != 5 {
+	if open.Label != "Open" || open.KeyShortcuts == "" || open.PosInSet != 1 || open.SetSize != 5 {
 		t.Errorf("Open: %+v", open)
 	}
 	if n := tree.Nodes[open.Parent]; n.ID != menu.ID {
@@ -622,8 +622,8 @@ func TestPopoverMenuButtonOpensBelow(t *testing.T) {
 	if !menuShows(tt) {
 		t.Fatalf("no menu as the button goes down: texts %q", tt.Texts())
 	}
-	if tt.Menu() != nil {
-		t.Errorf("the system shows a menu too: %q", tt.Menu())
+	if tt.h.menu != nil {
+		t.Errorf("the system shows a menu too: %v", tt.h.menu.Items)
 	}
 	open, _ := tt.Find("Open")
 	if open.Y < b.Y+b.H || open.Y > b.Y+b.H+20 || open.X < b.X || open.X > b.X+20 {
@@ -876,8 +876,8 @@ func TestPopoverMenuButtonAccessibility(t *testing.T) {
 	}
 	// Pressing it opens the menu, on its first item.
 	tt.send(platform.SurfaceEvent{Kind: platform.AccessAction, ID: n.ID, Action: platform.AccessPress})
-	if !menuShows(tt) || tt.Menu() != nil {
-		t.Fatalf("pressing it: drawn menu %v, system's %q", menuShows(tt), tt.Menu())
+	if !menuShows(tt) || tt.h.menu != nil {
+		t.Fatalf("pressing it: drawn menu %v, system's %v", menuShows(tt), tt.h.menu != nil)
 	}
 	wantFocus(t, tt, "Open")
 	tree := tt.h.access

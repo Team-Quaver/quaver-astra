@@ -501,7 +501,7 @@ func (e *Event[T]) Emit(w *Window, payload T) error {
 	if w.IsDestroyed() {
 		return errDestroyed
 	}
-	if w.content != nil {
+	if w.content {
 		windows.Lock()
 		views := append([]*Window(nil), w.webViews...)
 		windows.Unlock()

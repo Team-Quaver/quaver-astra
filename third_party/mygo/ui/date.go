@@ -178,6 +178,13 @@ func calendarGrid(c *context, grid *node, date, cursor *time.Time, moveChooses b
 		}
 		c.rt.consumed = true
 	}
+	moveMonth := func(delta int) {
+		// AddDate normalizes February 31 into March. Keep the cursor in
+		// the requested month, on its last day when it has fewer days.
+		last := time.Date(cur.Year(), cur.Month()+time.Month(delta)+1, 0, 0, 0, 0, 0, time.UTC)
+		move(time.Date(last.Year(), last.Month(), min(cur.Day(), last.Day()),
+			cur.Hour(), cur.Minute(), cur.Second(), cur.Nanosecond(), cur.Location()))
+	}
 	grid.afterInput(func() {
 		// The days of a week go from the right right to left.
 		back, forth := grid.arrows()
@@ -191,9 +198,9 @@ func calendarGrid(c *context, grid *node, date, cursor *time.Time, moveChooses b
 		case grid.Shortcut(0, KeyDown):
 			move(cur.AddDate(0, 0, 7))
 		case grid.Shortcut(0, KeyPageUp):
-			move(cur.AddDate(0, -1, 0))
+			moveMonth(-1)
 		case grid.Shortcut(0, KeyPageDown):
-			move(cur.AddDate(0, 1, 0))
+			moveMonth(1)
 		case grid.Shortcut(0, KeyHome):
 			move(time.Date(cur.Year(), cur.Month(), 1, 0, 0, 0, 0, cur.Location()))
 		case grid.Shortcut(0, KeyEnd):
@@ -209,7 +216,7 @@ func calendarGrid(c *context, grid *node, date, cursor *time.Time, moveChooses b
 			prev.flags |= flagClickable
 			prev.afterInput(func() {
 				if prev.Clicked() {
-					move(cur.AddDate(0, -1, 0))
+					moveMonth(-1)
 				}
 			})
 			coreText(c, title).Bold().Grow(1).TextAlign(Center)
@@ -218,7 +225,7 @@ func calendarGrid(c *context, grid *node, date, cursor *time.Time, moveChooses b
 			next.flags |= flagClickable
 			next.afterInput(func() {
 				if next.Clicked() {
-					move(cur.AddDate(0, 1, 0))
+					moveMonth(1)
 				}
 			})
 		})
@@ -257,7 +264,7 @@ func calendarGrid(c *context, grid *node, date, cursor *time.Time, moveChooses b
 					}
 					switch {
 					case chosen:
-						cell.Background(t.Accent)
+						cell.Background(c.accent(t))
 						fg = t.AccentText
 					case atCursor:
 						cell.Background(t.SurfaceHover)
@@ -284,7 +291,7 @@ func calendarGrid(c *context, grid *node, date, cursor *time.Time, moveChooses b
 	})
 	grid.DrawOver(func(p *Painter, r Rect) {
 		if grid.FocusVisible() {
-			p.FocusRing(r, [4]float32{t.Radius, t.Radius, t.Radius, t.Radius})
+			p.focusRingOf(grid, r, [4]float32{t.Radius, t.Radius, t.Radius, t.Radius})
 		}
 	})
 	return grid

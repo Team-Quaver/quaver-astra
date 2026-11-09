@@ -112,6 +112,19 @@ func (e *node) ReadOnly(on bool) *node {
 	return e
 }
 
+// MaxLength keeps the user from making a text input's value longer than n,
+// counted as HTML's maxlength counts it, in UTF-16 code units, a newline
+// as one: text typed, pasted or committed by an input method is cut to
+// what fits at the caret, and replacing a selection takes what fits in its
+// place. A value the app sets is not cut. n <= 0 means no limit.
+// Like ReadOnly, it holds for the input that comes until the next frame.
+func (e *node) MaxLength(n int) *node {
+	if ed := e.st.editor; ed != nil && e.flags&flagEditable != 0 {
+		ed.maxLength = n
+	}
+	return e
+}
+
 // OnPaste has fn see a paste into a text input, by Cmd+V, Ctrl+V or a
 // Paste menu item, before it is inserted, on the main thread as the paste
 // comes: text is the clipboard's text, empty when it holds none, as with
@@ -281,6 +294,24 @@ func (e *node) Composing() bool {
 func (e *node) Password() *node {
 	if ed := e.st.editor; ed != nil && !ed.multiline {
 		ed.password = true
+	}
+	return e
+}
+
+// Search makes a text input one for searching, in the frames that call
+// it, as ARIA's searchbox and HTML's <input type=search>: assistive
+// technology reads it as a search field, as it reads a SearchField's
+// input, while the view draws it as it likes, with an icon and a clear
+// button of its own, and handles its keys. Name it with Label.
+//
+//	ui.TextInput(c, &app.query).Placeholder("Search").Label("Search mail").Search()
+func (e *node) Search() *node {
+	in := e
+	if in.flags&flagEditable == 0 && in.focusTo != nil {
+		in = in.focusTo // the input of the field around it
+	}
+	if in.flags&flagEditable != 0 {
+		in.search = true
 	}
 	return e
 }

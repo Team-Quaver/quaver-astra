@@ -12,7 +12,25 @@ type Decoration uint8
 const (
 	Underline Decoration = iota
 	Strikethrough
+	// SolidUnderline is an Underline drawn through descenders, as links
+	// mark hover, instead of skipping the ink of glyphs as Core Text does.
+	SolidUnderline
 )
+
+// LineStyle is how a decoration's line is drawn where the font leaves it
+// otherwise.
+type LineStyle struct {
+	// Thick, if positive, is the line's thickness in DIPs, around its
+	// middle, rounded to whole pixels (at least one) and on whole pixels,
+	// so that it is as sharp as browsers draw text-decoration-thickness.
+	Thick float32
+	// Offset, if HasOffset, puts the top of an underline Offset DIPs below
+	// the baseline, or above it if negative, rounded to whole pixels, as
+	// CSS's text-underline-offset does: an underline skipping ink skips
+	// the glyphs where it is then. Strikethroughs stay where they are.
+	Offset    float32
+	HasOffset bool
+}
 
 // A Stroke is a stretch of a decoration's line, in device pixels: from X0
 // to X1 and from Top to Bottom, which renderers antialias where they fall
@@ -32,18 +50,26 @@ type decoRange struct {
 	shift float32
 	scale float32
 	d     Decoration
+	// solid keeps an underline whole, through the ink of glyphs.
+	solid bool
+	// offset, if hasOffset, is how far below the baseline the top of an
+	// underline is, in DIPs (LineStyle.Offset).
+	offset    float32
+	hasOffset bool
 }
 
 // Decorate returns the strokes the system's text stack draws for
 // decoration d of glyphs [i, j) of line li of l, runes of one style, with
 // the layout's origin at (x, y) DIPs, at scale pixels per DIP: placed as
 // AppKit, Direct2D or GTK place underlines and strikethroughs, with their
-// thickness, or, if thick is positive, thick DIPs around their middle,
-// rounded to whole pixels (at least one) and on whole pixels, so that
-// they are as sharp as browsers draw text-decoration-thickness.
-func (s *System) Decorate(l *Layout, li, i, j int, x, y, scale float32, d Decoration, thick float32) []Stroke {
+// thickness, but for what ls sets.
+func (s *System) Decorate(l *Layout, li, i, j int, x, y, scale float32, d Decoration, ls LineStyle) []Stroke {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	solid := d == SolidUnderline
+	if solid {
+		d = Underline
+	}
 	if l == nil || li < 0 || li >= len(l.Lines) {
 		return nil
 	}
@@ -67,13 +93,23 @@ func (s *System) Decorate(l *Layout, li, i, j int, x, y, scale float32, d Decora
 	if f == nil {
 		return nil
 	}
-	strokes := s.engine().decorate(decoRange{l: l, line: line, i: i, j: j, font: f, x: x, y: y, shift: shift, scale: scale, d: d})
-	if thick > 0 {
-		h := max(float32(math.Round(float64(thick*scale))), 1)
+	r := decoRange{l: l, line: line, i: i, j: j, font: f, x: x, y: y, shift: shift, scale: scale, d: d, solid: solid,
+		offset: ls.Offset, hasOffset: ls.HasOffset && d == Underline}
+	strokes := s.engine().decorate(r)
+	if ls.Thick > 0 {
+		h := max(float32(math.Round(float64(ls.Thick*scale))), 1)
 		for k := range strokes {
 			st := &strokes[k]
 			st.Top = float32(math.Round(float64(st.Top+st.Bottom-h) / 2))
 			st.Bottom = st.Top + h
+		}
+	}
+	if r.hasOffset {
+		// From the baseline the engine draws the glyphs on, a whole pixel.
+		top := s.engine().baseline(r.baseline()*scale) + float32(math.Round(float64(ls.Offset*scale)))
+		for k := range strokes {
+			st := &strokes[k]
+			st.Top, st.Bottom = top, top+st.Bottom-st.Top
 		}
 	}
 	return strokes

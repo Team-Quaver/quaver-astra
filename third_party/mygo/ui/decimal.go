@@ -59,7 +59,7 @@ func coreDecimalInput(c *context, value *string, lo, hi, step string) *node {
 		c.rt.consumed = true
 	}
 	row.Children(func() {
-		in := coreTextInput(c, &d.text).Width(t.Space(20))
+		in := coreTextInput(c, &d.text).Width(t.Space(20)).Shrink(1).MinWidth(0)
 		in.widget = "DecimalInput"
 		if d.fault != decimalFine {
 			in.fieldError(d.message(c))

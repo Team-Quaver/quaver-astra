@@ -45,7 +45,7 @@ var (
 	fnGestureNew, fnGestureFree, fnGestureReset, fnGestureGet, fnGestureEventNew, fnGestureEventFree,
 	fnGestureEventSet, fnGestureEvent, fnSelectAll uintptr
 
-	fnGridRefHyperlinkURI, fnGridRefGraphemes, fnGridRefCell, fnRowData, fnTypeJSON, fnFormatterFormatAlloc, fnFormatterFree uintptr
+	fnGridRefHyperlinkURI, fnGridRefGraphemes, fnGridRefCell, fnGridRefRow, fnRowData, fnTypeJSON, fnFormatterFormatAlloc, fnFormatterFree uintptr
 
 	fnSearchNew, fnSearchFree, fnSearchSet, fnSearchGet, fnSearchFeed, fnSearchTick, fnPointFromGridRef uintptr
 
@@ -150,6 +150,7 @@ var symbols = []struct {
 	{"ghostty_grid_ref_hyperlink_uri", &fnGridRefHyperlinkURI},
 	{"ghostty_grid_ref_graphemes", &fnGridRefGraphemes},
 	{"ghostty_grid_ref_cell", &fnGridRefCell},
+	{"ghostty_grid_ref_row", &fnGridRefRow},
 	{"ghostty_row_get", &fnRowData},
 	{"ghostty_type_json", &fnTypeJSON},
 	{"ghostty_formatter_terminal_new", &fnFormatterTerminalNew},
@@ -334,6 +335,8 @@ var enums = []struct {
 	{"GhosttyTerminalData", "MOUSE_TRACKING", dataMouseTracking},
 	{"GhosttyTerminalData", "MOUSE_SHAPE", dataMouseShape},
 	{"GhosttyRowData", "WRAP", rowDataWrap},
+	{"GhosttyRowData", "SEMANTIC_PROMPT", rowDataSemanticPrompt},
+	{"GhosttyRowSemanticPrompt", "PROMPT_CONTINUATION", int64(PromptContinuation)},
 	{"GhosttyRenderStateRowData", "RAW", rowDataRaw},
 	{"GhosttyKittyGraphicsPlacementData", "Z", placementZ},
 	{"GhosttyKittyGraphicsImageData", "GENERATION", imageGeneration},

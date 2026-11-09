@@ -17,6 +17,8 @@ import (
 type piece struct {
 	link  int
 	spans []ui.Span
+	// dest is where a mention or a reference goes (Options.Resolve).
+	dest string
 }
 
 // runMark notes that the text of a paragraph from rune comes from the
@@ -29,7 +31,7 @@ type runMark struct {
 
 // mathObject is math within a paragraph that Options.InlineMath made an
 // object of: its rune, the source of the math, delimiters included, and
-// how it draws.
+// how it draws. A link's icon (Options.LinkIcon) is one with no source.
 type mathObject struct {
 	rune, src, end int
 	draw           func(p *ui.Painter, r ui.Rect)
@@ -44,6 +46,12 @@ type para struct {
 	objects []mathObject
 	runes   int
 	fading  bool // its spans fade in: build them anew next frame
+	// refs are the inlines of its mentions and references, and resolved
+	// where each went, "" for those left text, as Options.Resolve, when
+	// withResolve, answered: it builds anew when it answers otherwise.
+	refs        []int
+	resolved    []string
+	withResolve bool
 	// width is the width of its text on one line, once measured.
 	width    float32
 	measured bool
@@ -80,11 +88,15 @@ type spanBuilder struct {
 	linkIndex int
 	// math makes math within text objects (Options.InlineMath).
 	math func(tex string, size float32) (InlineObject, bool)
+	// linkIcon makes the objects at the start of links (Options.LinkIcon).
+	linkIcon func(dest string, size float32) (InlineObject, bool)
+	// resolve makes mentions and references links (Options.Resolve).
+	resolve func(in parser.Inline) (string, bool)
 }
 
 // build makes the paragraph of block i, of base style s.
 func (sb *spanBuilder) build(p *para, base spanStyle) {
-	*p = para{pieces: p.pieces[:0], marks: p.marks[:0]}
+	*p = para{pieces: p.pieces[:0], marks: p.marks[:0], refs: p.refs[:0], resolved: p.resolved[:0], withResolve: sb.resolve != nil}
 	sb.p = p
 	sb.in = sb.d.Inlines(sb.block)
 	sb.html = sb.html[:0]
@@ -246,6 +258,16 @@ func (sb *spanBuilder) addSpan(text string, src, end int, exact bool, s spanStyl
 	sb.p.runes += utf8.RuneCountInString(text)
 }
 
+// addText adds the text of inline n, exact when it is its source's
+// bytes, else aligned with them, as an escape or an entity is.
+func (sb *spanBuilder) addText(n *parser.Inline, exact bool, s spanStyle, link int) {
+	if exact {
+		sb.add(n.Text, n.Start, n.End, true, s, link)
+	} else {
+		sb.addAligned(n.Text, n.Start, n.End, s, link)
+	}
+}
+
 func (sb *spanBuilder) inlines(from, to int, s spanStyle) {
 	in := sb.in
 	link := -1
@@ -256,15 +278,35 @@ func (sb *spanBuilder) inlines(from, to int, s spanStyle) {
 		n := &in[k]
 		switch n.Kind {
 		case parser.Text:
-			if n.End-n.Start == len(n.Text) && sb.d.Source()[n.Start:n.End] == n.Text {
-				sb.add(n.Text, n.Start, n.End, true, sb.htmlStyle(s), link)
-			} else {
-				sb.addAligned(n.Text, n.Start, n.End, sb.htmlStyle(s), link)
-			}
+			exact := n.End-n.Start == len(n.Text) && sb.d.Source()[n.Start:n.End] == n.Text
+			sb.addText(n, exact, sb.htmlStyle(s), link)
 		case parser.SoftBreak:
 			sb.add(" ", n.Start, n.End, false, s, link)
 		case parser.LineBreak:
 			sb.add("\n", n.Start, n.End, false, s, link)
+		case parser.Mention, parser.Reference:
+			exact := n.End-n.Start == len(n.Text) && sb.d.Source()[n.Start:n.End] == n.Text
+			dest, ok := "", false
+			if sb.resolve != nil {
+				dest, ok = sb.resolve(*n)
+				if !ok {
+					dest = ""
+				}
+			}
+			sb.p.refs = append(sb.p.refs, k)
+			sb.p.resolved = append(sb.p.resolved, dest)
+			if dest == "" || s.inLink {
+				sb.addText(n, exact, sb.htmlStyle(s), link)
+				continue
+			}
+			cs := sb.htmlStyle(s)
+			cs.inLink, cs.color = true, Color{}
+			if n.Kind == parser.Mention {
+				// As GitHub shows them.
+				cs.weight = sb.th.StrongWeight
+			}
+			sb.addText(n, exact, cs, k)
+			sb.cur.dest = dest
 		case parser.Code:
 			cs := sb.htmlStyle(s)
 			cs.code = true
@@ -300,6 +342,7 @@ func (sb *spanBuilder) inlines(from, to int, s spanStyle) {
 			cs.color = Color{} // the link's
 			save := sb.linkIndex
 			sb.linkIndex = k
+			sb.addLinkIcon(n, cs, k)
 			sb.inlines(k+1, n.Next, cs)
 			sb.linkIndex = save
 		case parser.Image:
@@ -342,6 +385,42 @@ func (sb *spanBuilder) inlines(from, to int, s spanStyle) {
 			sb.add("["+label+"]", n.Start, n.End, false, cs, -2-k)
 		}
 	}
+}
+
+// linkIconJoiner, a word joiner, keeps a link's icon on the line of its
+// first word: lines break around an object. It copies as nothing, as the
+// icon does.
+const linkIconJoiner = '\u2060'
+
+// addLinkIcon adds the object Options.LinkIcon makes for link n, the
+// inline k of its block, in style s. It comes from no source, so that it
+// copies as nothing.
+func (sb *spanBuilder) addLinkIcon(n *parser.Inline, s spanStyle, k int) {
+	if sb.linkIcon == nil || n.Pending {
+		return
+	}
+	size := sb.th.FontSize
+	if s.size != 0 {
+		size = s.size
+	}
+	if s.sub {
+		size *= 0.75
+	}
+	o, ok := sb.linkIcon(n.Dest, size)
+	if !ok || !(o.Width > 0) {
+		return
+	}
+	p := sb.p
+	p.objects = append(p.objects, mathObject{rune: p.runes, src: n.Start, end: n.Start, draw: o.Draw})
+	sp := ui.Span{Text: "\uFFFC", Size: size, ObjectWidth: o.Width, ObjectHeight: max(o.Height, 0), ObjectDescent: max(o.Depth, 0)}
+	if sb.fade != nil {
+		p.fading = p.fading || sb.fade(n.Start) < 1
+	}
+	pc := sb.piece(k)
+	pc.spans = append(pc.spans, sp)
+	p.marks = append(p.marks, runMark{rune: p.runes, src: n.Start, end: n.Start})
+	p.runes++
+	sb.addSpan(string(linkIconJoiner), n.Start, n.Start, false, s, k, 1)
 }
 
 // mathObject adds math n, within text of style s, as the object

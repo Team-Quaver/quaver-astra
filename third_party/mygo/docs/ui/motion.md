@@ -64,6 +64,17 @@ hue:
 row.Background(row.AnimateColor("bg", bg, ui.Animation{Duration: 120 * time.Millisecond}))
 ```
 
+Colors mix in sRGB, unless the `Animation` has `Oklab`: then in Oklab, as a
+gradient's `Oklab` mixes, whose way between two saturated colors keeps
+their lightness and saturation rather than going through a dull, darker
+middle (yellow to blue through blues, not gray). It mixes the colors of
+a [transition](transitions.md#what-moves) with it too, and those of a
+`ContentTransition`'s morph, and `Color.MixOklab` mixes two colors so:
+
+```go
+badge.Background(badge.AnimateColor("bg", level, ui.Animation{Spring: ui.SpringOptions{Duration: 300 * time.Millisecond}, Oklab: true}))
+```
+
 ## Poses that only paint
 
 The values above are read by the view, so every frame that moves runs it.
@@ -81,10 +92,36 @@ if card.Hovered() {
 card.AnimatePose(lift, ui.Snappy)
 ```
 
-A `Pose` moves by `X` and `Y`, scales by `Scale` (0 keeps the size),
-turns by `Rotate` degrees, and fades by `Fade`, from 0, opaque, to 1, gone.
+A `Pose` moves by `X` and `Y`, and by `XPercent` and `YPercent` percent of
+the element's own width and height (as [`TranslatePercent`](transforms.md)
+moves it, following its size as it changes), scales by `Scale` (0 keeps
+the size), turns by `Rotate` degrees, and fades by `Fade`, from 0, opaque,
+to 1, gone.
 The pointer, carets and overlays follow the element as it moves, and
 `Transitioning()` reports whether its pose was moving.
+
+A pose starts where the element is first posed: an element that the
+frame before did not pose, as one built for the first time, shows at its
+pose at once, and moves only when a later frame poses it elsewhere. To
+come in from a pose, as a flyout's panel rising and fading in as it
+shows, pose the element there in one build, ask for another frame with
+`c.Invalidate()`, and pose it at its place in the next:
+
+```go
+panel := ui.Column(c)
+entered := ui.Local(panel, "entered", func() bool { return false })
+p := ui.Pose{}
+if !*entered {
+	p, *entered = ui.Pose{Y: 8, Fade: 1}, true
+	c.Invalidate()
+}
+panel.AnimatePose(p, ui.Snappy)
+```
+
+Without the second build, the element stays where its first pose put
+it. An element appearing in a parent that the frame before showed comes
+in with the `Enter` of its [transition](transitions.md#coming-and-going)
+too, as a row added to a list.
 
 Poses nest: each acts after those of the elements around it, so an
 element inside another adds its own motion, along its own curve. In the
@@ -227,6 +264,10 @@ if dx, _, ok := dial.Dragged(); ok {
 }
 dial.Transform(ui.Rotation(turn))
 ```
+
+The last moves of a drag come while `Dragged` still reports the press, and
+`DragEnded` in the build after: the dial turns as far as the pointer went
+before it springs to a notch.
 
 `DragVelocity` is the pointer's velocity while it presses, in DIPs per
 second along the element's axes, zero once it rests a moment. `Velocity(key)`
@@ -392,9 +433,11 @@ element. An element asks for each of its timelines once per build, and the
 While the desktop asks for less motion, a timeline that would play is at
 once where it would come to rest, every tween at its `To`, or at its `From`
 when it plays back to its start, as values, poses and `Keyframes` are, and
-it asks for no frame. What the view does with the playhead itself still
-works, as a drag still moves a `Draggable` element: `Seek` and `Progress`
-put it where a scrubber asks, and `Paused` holds it there.
+it asks for no frame, unless its `NonMotion` says it only fades (see
+[Less motion](#less-motion-and-frames)). What the view does with the
+playhead itself still works, as a drag still moves a `Draggable` element:
+`Seek` and `Progress` put it where a scrubber asks, and `Paused` holds it
+there.
 `DisableAnimations` does not change a timeline, which plays on its own as
 `Keyframes` do; `Seek` jumps it. A timeline draws frames only while it
 plays, timed by `c.Now()`.
@@ -417,8 +460,45 @@ card.Opacity(card.AnimateTo("shown", shown, ui.Smooth))
 header.Opacity(1 - min(app.scroll.Y/80, 1)) // fades as the page scrolls
 ```
 
-`ScrollState.ScrollTo(x, y, animation)` scrolls a container smoothly (see
-[Scrolling](scroll.md)).
+`InViewMargin(margin...)` grows the window and the scroll containers around
+the element by `margin` DIPs before it looks, as IntersectionObserver's
+`rootMargin` and `scrollMargin` do (Motion's `margin`): CSS style as
+`Padding`, all sides, vertical and horizontal, or top, right, bottom and
+left. A thumbnail starts loading 300 DIPs before it scrolls in, so that it
+never shows blank:
+
+```go
+thumb := ui.Image(c, placeholder).Key(it.ID).Size(160, 120)
+if thumb.InViewMargin(300) {
+	app.load(it.ID) // once; the next frames show the picture
+}
+```
+
+A negative margin shrinks them instead, to count an element in view only
+once it is that far inside. Other clips around it (`Clip`, `ClipInset`)
+clip it as they do, without the margin. `InViewMargin()`, with no margin,
+is `InView()`. A `List` or `GridView` builds only the rows near its edges,
+two beyond each, so in one the margin reaches no further than the rows it
+builds.
+
+`InViewAmount(amount, margin...)` waits for that share of the element's
+area, from 0 to 1, to show, as IntersectionObserver's `threshold` and
+Motion's `amount` do: an impression counts once half of a card shows,
+not as it peeks in at the bottom of a list, and an animation starts at a
+fifth of it. `1` waits for all of it, `0` is `InViewMargin`; the margin
+grows the window and the scroll containers as `InViewMargin`'s does. Its
+area is that of its box as transforms move it:
+
+```go
+card := ui.Column(c).Key(ad.ID)
+if card.InViewAmount(0.5) {
+	app.counted(ad.ID)
+}
+```
+
+`ScrollState.ScrollTo(x, y, animation)` scrolls a container smoothly, and
+`ScrollIntoView` with an `Animation` in its options the containers around
+an element (see [Scrolling](scroll.md)).
 
 ## Content that changes
 
@@ -433,6 +513,18 @@ down, as SwiftUI's numericText:
 ui.Text(c, strconv.Itoa(app.count)).FontSize(32).Bold().
 	ContentTransition(ui.ContentTransition{Numeric: true, Down: app.decreased})
 ui.Icon(c, playOrPause).ContentTransition(ui.ContentTransition{})
+```
+
+`Morph` moves the characters the old and the new text share from where
+they were to where they are, those of the old text alone fading out and
+those of the new fading in, as Keynote's Magic Move by characters: words
+reflowing, a title rewritten, letters rearranged. Rich text morphs too,
+its characters going to the colors of their spans. A text flying with a
+[`Match`](transitions.md#text-that-morphs) morphs from the text of the
+element of its `Match`.
+
+```go
+ui.Text(c, app.title).ContentTransition(ui.ContentTransition{Morph: true})
 ```
 
 Content transitions run in frames that only paint. While the desktop asks
@@ -453,6 +545,20 @@ last value. What changes without moving still changes smoothly: colors
 (`AnimateColor`), a pose's `Fade`, content fading across, and
 [transitions](transitions.md)' colors and fades. `Loop` goes on, as the
 system's spinners do.
+
+What a value moves is the view's to say. One that moves nothing, as an
+opacity, a blur or a crossfade the view drives itself, says so with
+`NonMotion` on its `Animation`, `KeyframeOptions` or `TimelineOptions`,
+and then animates with less motion too, as an element's own fades do:
+
+```go
+op := e.AnimateTo("fade", target, ui.Animation{Duration: 200 * time.Millisecond, NonMotion: true})
+ui.Image(c, first).Opacity(1 - op)
+ui.Image(c, second).Opacity(op)
+```
+
+Leave it off for a position, a size, a scale or a scroll, and give what
+moves a timeline of its own beside its fades', which goes to rest at once.
 
 Animations draw frames only while something moves, at the display's rate,
 and none while the window is out of sight (below). Frames moving values

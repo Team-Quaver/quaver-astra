@@ -220,3 +220,21 @@ func TestCameraSnaps(t *testing.T) {
 		t.Errorf("%d red pixels", reds)
 	}
 }
+
+// A modifier on its own is no key of a game's, and is left to the window, as
+// Alt to the menu bar.
+func TestModifierKeyAlone(t *testing.T) {
+	l := &loop{in: newInput()}
+	for _, ev := range []ui.InputEvent{
+		{Kind: ui.InputKeyDown, Code: ui.CodeShiftLeft, Mods: ui.Shift},
+		{Kind: ui.InputKeyUp, Code: ui.CodeShiftLeft},
+		{Kind: ui.InputKeyUp, Code: ui.CodeAltLeft},
+	} {
+		if l.input(ev) {
+			t.Errorf("took %+v", ev)
+		}
+	}
+	if l.in.Down(ui.KeyUnknown) || l.in.Pressed(ui.KeyUnknown) || l.in.Released(ui.KeyUnknown) {
+		t.Error("a key of no name is held")
+	}
+}

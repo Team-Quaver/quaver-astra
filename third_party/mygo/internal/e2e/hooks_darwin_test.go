@@ -100,9 +100,16 @@ func drag(w *mygo.Window, points [][2]float64) bool {
 	return true
 }
 
+// wheel turns the wheel at (x, y) of a window's content, through the
+// window's own hit testing.
 // The wheel over a web view is covered by internal/darwin's
 // TestEmbeddedWebViewScrollReachesSurface, with AppKit's events.
 func wheel(*mygo.Window, float64, float64) bool { return false }
+
+func hitView(w *mygo.Window, x, y float64) (class string) {
+	mygo.RunOnMain(func() { class = darwin.TestHitView(w.NativeHandle(), x, y) })
+	return class
+}
 
 func webViewAttached(w *mygo.Window) (attached bool, supported bool) {
 	mygo.RunOnMain(func() { attached = darwin.TestWebViewAttached(w.NativeHandle()) })
@@ -129,9 +136,22 @@ func material(w *mygo.Window) (class string, style int, radius float64, active b
 	return class, style, radius, active, true
 }
 
+// materialState returns the NSVisualEffectState of the window's material.
+func materialState(w *mygo.Window) (state int, supported bool) {
+	mygo.RunOnMain(func() { state = darwin.TestMaterialState(w.NativeHandle()) })
+	return state, true
+}
+
 func roundedBacking(w *mygo.Window) (opaque bool, alpha, red float64, supported bool) {
 	mygo.RunOnMain(func() { opaque, alpha, red = darwin.TestRoundedBacking(w.NativeHandle()) })
 	return opaque, alpha, red, true
+}
+
+// windowBacking reports whether the window is opaque, and the alpha of its
+// background color.
+func windowBacking(w *mygo.Window) (opaque bool, alpha float64, supported bool) {
+	mygo.RunOnMain(func() { opaque, alpha = darwin.TestWindowBacking(w.NativeHandle()) })
+	return opaque, alpha, true
 }
 
 func dockDevTools(w *mygo.Window) (ok bool) {
@@ -239,6 +259,14 @@ func pressTab(w *mygo.Window, back bool) (ok bool) {
 	return ok
 }
 
+// pressKeyComposing presses a key in a window of native UI with the test
+// standing in for the input method: it commits commit, unless empty, then
+// passes the key on as command (doCommandBySelector:), unless empty.
+func pressKeyComposing(w *mygo.Window, code uint16, chars, commit, command string) (ok bool) {
+	mygo.RunOnMain(func() { ok = darwin.TestKeyComposing(w.NativeHandle(), code, chars, commit, command) })
+	return ok
+}
+
 func compose(w *mygo.Window, text string, caret int, commit bool) (ok bool) {
 	mygo.RunOnMain(func() { ok = darwin.TestCompose(w.NativeHandle(), text, caret, commit) })
 	return ok
@@ -247,6 +275,11 @@ func compose(w *mygo.Window, text string, caret int, commit bool) (ok bool) {
 func controlClick(w *mygo.Window, x, y float64) bool {
 	mygo.RunOnMain(func() { darwin.TestControlClick(w.NativeHandle(), x, y) })
 	return true
+}
+
+func secondaryClickAsPrimary(w *mygo.Window, x, y float64) (ok bool) {
+	mygo.RunOnMain(func() { ok = darwin.TestSecondaryClickAsPrimary(w.NativeHandle(), x, y) })
+	return ok
 }
 
 func composeOver(w *mygo.Window, text string, caret int, commit bool, from, length int) (ok bool) {
@@ -398,3 +431,48 @@ func dismissPageMenu() { mygo.RunOnMain(darwin.TestDismissPageMenu) }
 
 // Only Windows' tests start a process that takes the foreground.
 func takeForeground(*mygo.Window) {}
+
+// pressLetter presses the key of an uppercase letter, with Command held
+// when cmd is set, as the keyboard does in a window of native UI: in the
+// content, or in the page of a web view that has the keyboard.
+func pressLetter(w *mygo.Window, letter byte, cmd bool) (ok bool) {
+	code, known := map[byte]uint16{'J': 0x26, 'K': 0x28, 'L': 0x25}[letter]
+	if !known {
+		return false
+	}
+	chars := string(rune(letter - 'A' + 'a'))
+	mygo.RunOnMain(func() {
+		if cmd {
+			ok = darwin.TestKeyCmd(w.NativeHandle(), code, chars)
+		} else {
+			ok = darwin.TestKey(w.NativeHandle(), code, chars)
+		}
+	})
+	return ok
+}
+
+func glassTint(w *mygo.Window) (red, green, blue, alpha float64, ok bool) {
+	mygo.RunOnMain(func() { red, green, blue, alpha = darwin.TestGlassTint(w.NativeHandle()) })
+	return red, green, blue, alpha, true
+}
+
+func nativeGlassSupported() (ok bool) {
+	mygo.RunOnMain(func() { ok = darwin.TestNativeGlassSupported() })
+	return ok
+}
+
+func nativeGlass(w *mygo.Window) (class string, frame [4]float64, style int, ok bool) {
+	mygo.RunOnMain(func() { class, frame, style, ok = darwin.TestNativeGlass(w.NativeHandle()) })
+	return class, frame, style, ok
+}
+
+func nativeGlassTint(w *mygo.Window) (red, green, blue, alpha float64) {
+	mygo.RunOnMain(func() { red, green, blue, alpha = darwin.TestNativeGlassTint(w.NativeHandle()) })
+	return red, green, blue, alpha
+}
+
+func activateApp() { mygo.RunOnMain(darwin.TestActivate) }
+
+// Only X servers keep a keyboard's state for the tests after a test: see
+// left_behind_linux_test.go.
+func keyboardState() (state string, restore func()) { return "", func() {} }

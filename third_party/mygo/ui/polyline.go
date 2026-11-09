@@ -13,7 +13,9 @@ import (
 // GPU, an opaque line draws each segment as a rounded rectangle instead of
 // rasterizing a mask of the whole line, so that its edges can look a
 // little bolder where segments overlap. Translucent lines draw as
-// StrokePath's, which keeps overlaps from showing darker.
+// StrokePath's, which keeps overlaps from showing darker, unless they are
+// one segment, which has nothing to overlap: many lines of one, as a
+// hatching, each stroked alone, cost no masks.
 func (p *Painter) StrokePolyline(points [][2]float32, width float32, c Color) {
 	finite := func(v float32) bool { return !math.IsNaN(float64(v)) && !math.IsInf(float64(v), 0) }
 	if width <= 0 || !finite(width) || c.A == 0 {
@@ -45,7 +47,7 @@ func (p *Painter) StrokePolyline(points [][2]float32, width float32, c Color) {
 		return
 	}
 	h, ok := p.rt.host.(*windowHost)
-	if !ok || !h.onGPU || h.degraded || c.A != 255 || p.opacity != 1 {
+	if !ok || !h.onGPU || h.degraded || (c.A != 255 || p.opacity != 1) && len(f.pts) != 2 {
 		p.drawPath(f, w, c, nil)
 		return
 	}

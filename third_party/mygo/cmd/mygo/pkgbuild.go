@@ -135,11 +135,16 @@ func packageJSONString(root, key string) string {
 }
 
 // archLicense returns the license of the app for its PKGBUILD: the SPDX
-// expression of package.json, which Arch Linux takes too, else
-// LicenseRef-custom, which says that the license is the app's own, as
-// for UNLICENSED, npm's mark of a package that may not be used freely.
+// expression of mygo.json, else of package.json, which Arch Linux takes
+// too, else LicenseRef-custom, which says that the license is the app's
+// own, as for UNLICENSED, npm's mark of a package that may not be used
+// freely.
 func archLicense(c *Config) string {
-	license := strings.TrimSuffix(strings.TrimPrefix(packageJSONString(c.root, "license"), "("), ")")
+	license := c.License
+	if license == "" {
+		license = packageJSONString(c.root, "license")
+	}
+	license = strings.TrimSuffix(strings.TrimPrefix(license, "("), ")")
 	if license == "" || license == "UNLICENSED" || strings.HasPrefix(license, "SEE LICENSE IN") {
 		return "LicenseRef-custom"
 	}

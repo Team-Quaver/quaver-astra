@@ -35,9 +35,19 @@ type Style struct {
 	// Lang is the language of the text, a BCP 47 tag as "ja" or
 	// "zh-Hant": the system's text stack picks the glyphs of that
 	// language, as the Han characters Chinese and Japanese write apart,
-	// and falls back to fonts for it. "" is the language of the System
+	// and falls back to fonts for it. Korean text breaks its lines
+	// between words (keepWordsWhole). "" is the language of the System
 	// (SetLanguage).
 	Lang string
+	// TabSize puts tab stops every TabSize spaces of the style's font,
+	// letter spacing included, from the start of each line, as CSS's
+	// tab-size, once System.UseTabSize was called; 0 leaves them where
+	// the system's text stack puts them.
+	TabSize float32
+
+	// tabStop is the distance between tab stops in DIPs that TabSize
+	// makes, which the System sets for engines as it shapes.
+	tabStop float32
 }
 
 func (s Style) weight() int {
@@ -108,6 +118,20 @@ type Params struct {
 	// justify text, once System.UseJustify was called. Align places the
 	// last line of each paragraph, and a line with nothing to widen.
 	Justify bool
+	// Balance wraps each paragraph that Width wraps in lines of about the
+	// same length, as CSS's text-wrap: balance does: in as many lines as
+	// it takes, wrapped at the narrowest width that keeps them as many,
+	// rather than full lines and a short last one. The lines are aligned
+	// within Width all the same. A paragraph that MaxLines cuts wraps as
+	// it would without it.
+	Balance bool
+	// Pretty keeps the last line of each paragraph that Width wraps from
+	// holding a single word, as CSS's text-wrap: pretty does at least: the
+	// line before gives it a word, wrapped as wide as that leaves them,
+	// the lines before as they are. A paragraph that Balance balances or
+	// MaxLines cuts wraps as it would without it. It takes effect once
+	// System.UsePretty was called.
+	Pretty bool
 	// Spans styles runs of the text apart from Style, as EncodeSpans
 	// writes them.
 	Spans string
@@ -123,7 +147,10 @@ type Span struct {
 	Weight        int
 	Italic        bool
 	LetterSpacing float32
-	Features      string
+	// SpacingSet makes LetterSpacing the span's when zero too, rather
+	// than the text's, as CSS's letter-spacing: 0 on an inline box.
+	SpacingSet bool
+	Features   string
 	// Lang is the language of the runes, as Style.Lang; "" keeps the
 	// text's.
 	Lang string
@@ -138,6 +165,11 @@ type Span struct {
 	// above the baseline, or lowers them when negative, as superscripts
 	// and subscripts are; the line makes room for them.
 	BaselineShift float32
+	// PaddingX widens the span that many DIPs at both ends of each line's
+	// piece of it, as the horizontal padding of CSS's inline boxes with
+	// box-decoration-break: clone: the glyphs move in, and the line, which
+	// breaks to fit it, is that much wider.
+	PaddingX float32
 }
 
 // style returns the style of the span's runes in a text of style base.
@@ -155,7 +187,7 @@ func (sp Span) style(base Style) Style {
 	if sp.Italic {
 		s.Italic = true
 	}
-	if sp.LetterSpacing != 0 {
+	if sp.LetterSpacing != 0 || sp.SpacingSet {
 		s.LetterSpacing = sp.LetterSpacing
 	}
 	if sp.Features != "" {
@@ -180,8 +212,8 @@ func EncodeSpans(spans []Span) string {
 		str(sp.Family)
 		b = binary.LittleEndian.AppendUint32(b, math.Float32bits(sp.Size))
 		b = binary.AppendUvarint(b, uint64(max(sp.Weight, 0)))
-		// Italics, and whether a baseline shift follows: other spans'
-		// keys stay short.
+		// Italics, a letter spacing set, and whether a baseline shift and
+		// a padding follow: other spans' keys stay short.
 		var flags byte
 		if sp.Italic {
 			flags |= 1
@@ -189,9 +221,18 @@ func EncodeSpans(spans []Span) string {
 		if sp.BaselineShift != 0 {
 			flags |= 2
 		}
+		if sp.SpacingSet {
+			flags |= 4
+		}
+		if sp.PaddingX != 0 {
+			flags |= 8
+		}
 		b = append(b, flags)
 		if sp.BaselineShift != 0 {
 			b = binary.LittleEndian.AppendUint32(b, math.Float32bits(sp.BaselineShift))
+		}
+		if sp.PaddingX != 0 {
+			b = binary.LittleEndian.AppendUint32(b, math.Float32bits(sp.PaddingX))
 		}
 		b = binary.LittleEndian.AppendUint32(b, math.Float32bits(sp.LetterSpacing))
 		str(sp.Features)
@@ -250,8 +291,12 @@ func DecodeSpans(s string) []Span {
 			b = b[1:]
 		}
 		sp.Italic = flags&1 != 0
+		sp.SpacingSet = flags&4 != 0
 		if flags&2 != 0 {
 			sp.BaselineShift = f32()
+		}
+		if flags&8 != 0 {
+			sp.PaddingX = f32()
 		}
 		sp.LetterSpacing = f32()
 		sp.Features = str()
@@ -314,12 +359,19 @@ type Line struct {
 	// included.
 	Start, End int
 	// RTL reports a right-to-left paragraph.
-	RTL    bool
+	RTL bool
+	// Glyphs are in visual order, from the left, on every engine: X
+	// ascends but for shaping offsets, and Cluster descends through a
+	// right-to-left run (Glyph.RTL). The glyphs of a cluster are next to
+	// each other.
 	Glyphs []Glyph
 
 	carets   []float32
 	stops    []caretStop
 	upstream []float32
+	// padding is the room the padding of spans' pieces takes in the line
+	// (Span.PaddingX).
+	padding float32
 }
 
 // Glyph is a positioned glyph.
@@ -335,7 +387,9 @@ type Glyph struct {
 	// Cluster is the first rune of the glyph's cluster, Runes how many
 	// runes the cluster holds; glyphs of the ellipsis have Runes 0.
 	Cluster, Runes int
-	RTL            bool
+	// RTL marks a glyph of a right-to-left run, whose cluster's first
+	// rune is on its right.
+	RTL bool
 	// Object marks the box of an inline object (Span.ObjectWidth), which
 	// draws no glyph: what shows there is the caller's.
 	Object bool
@@ -393,6 +447,12 @@ type System struct {
 	// padding: area alone does not tell whether a long, thin mask fits.
 	wantSize [2]image.Point
 	failed   int
+	// outGlyphs, outRuns and outMasks are what the atlases left out since they
+	// last could have room: a glyph a frame draws a thousand times counts
+	// once in want, which sizes the atlas, and is rasterized once.
+	outGlyphs map[glyphKey]struct{}
+	outRuns   map[runKey]struct{}
+	outMasks  map[uint64]struct{}
 	// subpixel tells that the system's settings ask for subpixel
 	// antialiasing (TextParams).
 	subpixel bool
@@ -408,12 +468,20 @@ type System struct {
 	// justify is justifyLine once UseJustify was called, so that apps
 	// that never justify text do not link it.
 	justify func(line *Line, runes []rune, width float32) (left float32, ok bool)
+	// pretty is prettyLines once UsePretty was called, so that apps that
+	// never ask for it do not link it.
+	pretty func(s *System, text []rune, p Params, spans []Span, width, indent float32, rtl bool, hy *hyphens, shaped []shapedLine) []shapedLine
+	// tabs is tabStop once UseTabSize was called, so that apps that never
+	// set a tab size do not link it.
+	tabs func(s *System, style Style) float32
 }
 
 type markKey struct {
 	style Style
 	mark  string // Params.Ellipsis
 	rtl   bool
+	// space keys the advance of a space of the style instead (tabStop).
+	space bool
 }
 
 // cached is a layout, with room for one line, as most layouts have, and
@@ -469,10 +537,22 @@ func (s *System) engine() engine {
 const maxFonts = 512
 
 // fontForgetter is an engine whose Fonts the System lets go of when they
-// are many.
+// are many. forgetFonts forgets the Fonts made so far without releasing
+// their native fonts, which layouts kept elsewhere may still draw with;
+// releaseFonts releases those of the Fonts nothing refers to anymore
+// (nativeFonts).
 type fontForgetter interface {
 	fontCount() int
 	forgetFonts()
+	releaseFonts()
+}
+
+// shapingKeeper is an engine that keeps what shaping a text took across
+// frames: endFrame runs after each frame, and releaseShaping as windows go
+// idle.
+type shapingKeeper interface {
+	endFrame()
+	releaseShaping()
 }
 
 // uiFamilySetter is an engine that takes the family of the desktop's
@@ -562,6 +642,23 @@ func (s *System) UseJustify() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.justify = justifyLine
+}
+
+// UsePretty lets layouts keep the last line of a paragraph from holding
+// a single word (Params.Pretty), which package ui calls as the first
+// element or TextShape asks for it.
+func (s *System) UsePretty() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.pretty = (*System).prettyLines
+}
+
+// UseTabSize lets layouts set their tab stops (Style.TabSize), which
+// package ui calls as the first element sets a tab size.
+func (s *System) UseTabSize() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.tabs = (*System).tabStop
 }
 
 // RegisterFont adds a TrueType or OpenType font (or collection) to the
@@ -665,11 +762,19 @@ func (s *System) EndFrame() {
 		}
 	}
 	s.frame++
-	if f, ok := s.eng.(fontForgetter); ok && f.fontCount() > maxFonts {
+	if k, ok := s.eng.(shapingKeeper); ok {
+		k.endFrame()
+	}
+	f, ok := s.eng.(fontForgetter)
+	if ok {
+		f.releaseFonts()
+	}
+	if ok && f.fontCount() > maxFonts {
 		// Fonts pile up with sizes, as with animated ones: let them all go,
 		// with what refers to them. The atlas takes back the room of their
 		// glyphs as it makes room; the next frame lays out and draws its
-		// text anew.
+		// text anew. Layouts kept elsewhere keep their Fonts, which still
+		// draw, and go once nothing refers to them.
 		s.gen++
 		s.clearLayouts()
 		clear(s.marks)
@@ -688,25 +793,58 @@ func (s *System) EndFrame() {
 	}
 }
 
+// ReleaseShaping lets go of what the engine keeps of text shaped lately, for
+// when a window goes idle: the next frames shape it again.
+func (s *System) ReleaseShaping() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if k, ok := s.eng.(shapingKeeper); ok {
+		k.releaseShaping()
+	}
+}
+
 // Layout shapes and wraps p.Text. The result is shared and must not be
 // modified.
-func (s *System) Layout(p Params) *Layout {
+func (s *System) Layout(p Params) *Layout { return s.LayoutFrom(nil, p) }
+
+// LayoutFrom lays out p as Layout does, from l, if not nil, a layout of the
+// same text at another width, as a box growing or shrinking lays its text
+// out at each width: where l wraps none of its lines and fits p's width, p
+// lays out alike, its lines aligned anew, rather than shaped again; at the
+// left of their box, it shares them. So does the text's layout without a
+// width, once made.
+func (s *System) LayoutFrom(l *Layout, p Params) *Layout {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if c, ok := s.layouts[p]; ok {
 		s.useLayout(c)
 		return &c.layout
 	}
-	// A short label may be a slice of a large document. Cache owned strings
-	// so the memory estimate reflects what those parameters keep alive.
-	p.Text = strings.Clone(p.Text)
-	p.Spans = strings.Clone(p.Spans)
-	p.Ellipsis = strings.Clone(p.Ellipsis)
-	p.Style.Family = strings.Clone(p.Style.Family)
-	p.Style.Features = strings.Clone(p.Style.Features)
-	p.Style.Lang = strings.Clone(p.Style.Lang)
-	c := s.layout(p)
-	c.bytes = layoutBytes(c)
+	if l == nil || !alike(l, p) {
+		l = nil
+		if u, ok := s.layouts[unwrappedParams(p)]; ok && p.Width > 0 && alike(&u.layout, p) {
+			s.useLayout(u)
+			l = &u.layout
+		}
+	}
+	var c *cached
+	if l != nil {
+		c = &cached{layout: *l, bytes: int(unsafe.Sizeof(cached{}))}
+		c.layout.Params.Width, c.layout.Params.Justify, c.layout.Params.Balance, c.layout.Params.Pretty = p.Width, p.Justify, p.Balance, p.Pretty
+		c.bytes += realign(&c.layout, l)
+	} else {
+		// A short label may be a slice of a large document. Cache owned
+		// strings so the memory estimate reflects what those parameters
+		// keep alive.
+		p.Text = strings.Clone(p.Text)
+		p.Spans = strings.Clone(p.Spans)
+		p.Ellipsis = strings.Clone(p.Ellipsis)
+		p.Style.Family = strings.Clone(p.Style.Family)
+		p.Style.Features = strings.Clone(p.Style.Features)
+		p.Style.Lang = strings.Clone(p.Style.Lang)
+		c = s.layout(p)
+		c.bytes = layoutBytes(c)
+	}
 	// A large paragraph is kept only where it fits next to the layouts
 	// recent frames used: evicting those for it would have the ordinary
 	// labels and lines of other windows laid out again. Otherwise it still
@@ -715,11 +853,100 @@ func (s *System) Layout(p Params) *Layout {
 		for s.oldest != nil && (s.overLayoutBudget(c.bytes) || len(s.layouts) >= maxLayouts) {
 			s.removeLayout(s.oldest)
 		}
-		s.layouts[p] = c
+		s.layouts[c.layout.Params] = c
 		s.layoutBytes += c.bytes
 		s.useLayout(c)
 	}
 	return &c.layout
+}
+
+// alike reports whether p lays out as l, of the same text, but for where
+// its alignment puts its lines (realign): l wraps none of them, MaxLines
+// cuts none, and they fit p's width, or p does not wrap them.
+func alike(l *Layout, p Params) bool {
+	q := l.Params
+	if q.MaxLines > 0 || unwrappedParams(q) != unwrappedParams(p) || !p.NoWrap && p.Width > 0 && l.Width > p.Width {
+		return false
+	}
+	for _, line := range l.Lines {
+		if line.End < len(l.Runes) && l.Runes[line.End] != '\n' {
+			return false // wrapped
+		}
+	}
+	return true
+}
+
+// realign moves the lines of n, a copy of l laid out at another width, as
+// their alignment puts them in their box at that width, copying those it
+// moves, and returns how many bytes it copied.
+func realign(n, l *Layout) int {
+	box := func(p Params) float32 {
+		if p.Width > 0 {
+			return p.Width
+		}
+		return l.Width
+	}
+	from, to := box(l.Params), box(n.Params)
+	if from == to {
+		return 0
+	}
+	bytes := 0
+	for i := range l.Lines {
+		d := alignedAt(l, i, n.Params, to) - alignedAt(l, i, l.Params, from)
+		if d == 0 {
+			continue
+		}
+		if bytes == 0 {
+			n.Lines = slices.Clone(l.Lines)
+			bytes = len(n.Lines) * int(unsafe.Sizeof(Line{}))
+		}
+		line := &n.Lines[i]
+		line.X += d
+		line.Glyphs = slices.Clone(line.Glyphs)
+		for j := range line.Glyphs {
+			line.Glyphs[j].X += d
+		}
+		// Its carets and stops, laid out where it was, are found anew.
+		line.carets, line.stops, line.upstream = nil, nil, nil
+		bytes += len(line.Glyphs) * int(unsafe.Sizeof(Glyph{}))
+	}
+	return bytes
+}
+
+// alignedAt returns how far right of its box's left line i of l is, laid
+// out with p in a box as wide as box, as layout aligns it.
+func alignedAt(l *Layout, i int, p Params, box float32) float32 {
+	line := &l.Lines[i]
+	lo, hi := float32(0), box
+	if indent := max(p.Indent, 0); i == 0 {
+		if line.RTL {
+			hi -= indent
+		} else {
+			lo += indent
+		}
+	}
+	align := p.Align
+	if line.RTL {
+		switch align {
+		case Start:
+			align = End
+		case End:
+			align = Start
+		}
+	}
+	switch align {
+	case Center:
+		return lo + (hi-lo-line.Width)/2
+	case End, Right:
+		return hi - line.Width
+	}
+	return lo
+}
+
+// unwrappedParams returns p without a width.
+func unwrappedParams(p Params) Params {
+	p.Width, p.Justify, p.Balance, p.Pretty = 0, false, false, false
+	return p
 }
 
 // The memory estimate includes text, shaped glyphs and room for lazy caret
@@ -831,8 +1058,8 @@ func (s *System) LayoutsMade() uint64 {
 
 // Generation returns a number that changes whenever the system forgets
 // its layouts, as it lets go of its fonts (EndFrame) or takes other ones:
-// the layouts it returned before are then to be made anew, and those of
-// fonts it let go of must not be drawn.
+// the layouts it returned before are then to be made anew. Until then they
+// still draw, with the fonts they were made with.
 func (s *System) Generation() uint64 {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -901,6 +1128,9 @@ func (s *System) layout(p Params) *cached {
 	// the system's language where they name none.
 	if p.Style.Lang == "" {
 		p.Style.Lang = s.lang
+	}
+	if p.Style.TabSize > 0 && s.tabs != nil && strings.ContainsRune(p.Text, '\t') {
+		p.Style.tabStop = s.tabs(s, p.Style)
 	}
 	l.Lines = c.line[:0]
 	y := float32(0)
@@ -993,6 +1223,28 @@ func (s *System) layout(p Params) *cached {
 	return c
 }
 
+// tabStop returns the distance between the tab stops of a style, TabSize
+// spaces of its font.
+func (s *System) tabStop(style Style) float32 {
+	n := style.TabSize
+	style.TabSize, style.tabStop = 0, 0
+	key := markKey{style: style, space: true}
+	space, ok := s.marks[key]
+	if !ok {
+		for _, l := range s.engine().shape([]rune{' '}, style, nil, 0, false, false) {
+			space += advance(l)
+		}
+		if len(s.marks) >= 256 {
+			clear(s.marks)
+		}
+		s.marks[key] = space
+	}
+	if space <= 0 {
+		space = style.FontSize() / 4
+	}
+	return space * n
+}
+
 // paragraph lays out runes[start:end], a paragraph without newlines, in at
 // most maxLines lines (0 is unlimited) from *y down, appends them to out,
 // and moves *y past it. It reports whether it cut the text, which
@@ -1020,6 +1272,11 @@ func (s *System) paragraph(out []Line, p Params, spans []Span, runes []rune, sta
 			width = 0
 		}
 		shaped = s.breakLines(text, p.Style, spans, width, indent, rtl, p.NoBreakWords, hy)
+		if p.Balance && width > 0 && len(shaped) > 1 && !(maxLines > 0 && len(shaped) > maxLines) {
+			shaped = s.balance(text, p, spans, width, indent, rtl, hy, shaped)
+		} else if p.Pretty && s.pretty != nil && width > 0 && len(shaped) > 1 && !(maxLines > 0 && len(shaped) > maxLines) {
+			shaped = s.pretty(s, text, p, spans, width, indent, rtl, hy, shaped)
+		}
 	}
 	if len(shaped) == 0 {
 		shaped = []shapedLine{{end: len(text)}}
@@ -1051,9 +1308,13 @@ func (s *System) paragraph(out []Line, p Params, spans []Span, runes []rune, sta
 		room = make([]Glyph, n)
 	}
 	first := len(out)
+	pads := padded(spans)
 	for _, sl := range shaped {
 		k := glyphCount(sl)
 		out = append(out, line(p, text, sl, start, rtl, m, y, room[:0:k], &s.starts, spans))
+		if pads {
+			padLine(&out[len(out)-1], spans, start)
+		}
 		room = room[k:]
 	}
 	lines := out[first:]
@@ -1067,6 +1328,104 @@ func (s *System) paragraph(out []Line, p Params, spans []Span, runes []rune, sta
 	}
 	return out, truncated
 }
+
+// balanceStep is how close to the narrowest width keeping a paragraph's
+// lines as many balance finds it, in DIPs.
+const balanceStep = 0.25
+
+// balance returns the lines of text, which shaped holds wrapped at width,
+// wrapped at the narrowest width that keeps them as many, found by
+// bisection: about ten layouts of the paragraph, once, as its layout is
+// kept (Params.Balance).
+func (s *System) balance(text []rune, p Params, spans []Span, width, indent float32, rtl bool, hy *hyphens, shaped []shapedLine) []shapedLine {
+	n := len(shaped)
+	// The lines hold all the glyphs, whose advances, but for those of
+	// the whitespace ending lines, take no more room than n lines do.
+	total := float32(0)
+	for _, sl := range shaped {
+		for _, run := range sl.runs {
+			for _, g := range run.glyphs {
+				total += g.Advance
+			}
+		}
+	}
+	lo, hi := min(total/float32(n)/2, width), width
+	for hi-lo > balanceStep {
+		mid := (lo + hi) / 2
+		lines := s.breakLines(text, p.Style, spans, mid, indent, rtl, p.NoBreakWords, hy)
+		if len(lines) <= n {
+			hi, shaped = mid, lines
+		} else {
+			lo = mid
+		}
+	}
+	return shaped
+}
+
+// prettyLines returns the lines of text, which shaped holds wrapped at width,
+// with the last holding more than one word where the line before can give
+// it one: those two lines wrapped again at the widest width at which the
+// last holds more, found by bisection, as for balance, as long as they
+// stay two; the lines before them stay as they are (Params.Pretty).
+func (s *System) prettyLines(text []rune, p Params, spans []Span, width, indent float32, rtl bool, hy *hyphens, shaped []shapedLine) []shapedLine {
+	n := len(shaped)
+	if lineWords(text, shaped[n-1]) > 1 {
+		return shaped
+	}
+	from := shaped[n-2].start
+	if n > 2 {
+		indent = 0 // only the first line is indented
+	}
+	rest, restSpans := text[from:], spansIn(spans, from, len(text))
+	var restHy *hyphens
+	if hy != nil {
+		restHy = &hyphens{e: hy.e, style: hy.style, spans: restSpans}
+	}
+	// Narrower, the line before gives the last its words, until the two
+	// take three lines: the widest width at which either happened.
+	var best []shapedLine
+	lo, hi := float32(1), width
+	for hi-lo > balanceStep {
+		mid := (lo + hi) / 2
+		lines := s.breakLines(rest, p.Style, restSpans, mid, indent, rtl, p.NoBreakWords, restHy)
+		if len(lines) == 0 {
+			break
+		}
+		if len(lines) > 2 || lineWords(rest, lines[len(lines)-1]) > 1 {
+			lo, best = mid, lines
+		} else {
+			hi = mid
+		}
+	}
+	if len(best) != 2 || best[1].start == 0 || !hangs(rest[best[1].start-1]) {
+		// The line before has no word to spare, only a part of one.
+		return shaped
+	}
+	offsetLines(best, from)
+	return append(shaped[:n-2:n-2], best...)
+}
+
+// lineWords returns how many words the line sl of text holds, up to two: its
+// runs of runes between whitespace, the whitespace ending it left out.
+func lineWords(text []rune, sl shapedLine) int {
+	n, in := 0, false
+	for _, r := range text[sl.start:min(sl.end, len(text))] {
+		switch {
+		case hangs(r):
+			in = false
+		case !in:
+			in, n = true, n+1
+			if n > 1 {
+				return n
+			}
+		}
+	}
+	return n
+}
+
+// hangs reports whether r, ending a line, takes no room in it: any
+// whitespace but a no-break space, which CSS neither collapses nor hangs.
+func hangs(r rune) bool { return unicode.IsSpace(r) && r != '\u00a0' }
 
 // glyphCount returns how many glyphs a shaped line has.
 func glyphCount(sl shapedLine) int {
@@ -1088,7 +1447,7 @@ func line(p Params, text []rune, sl shapedLine, offset int, rtl bool, m lineMetr
 	// Whitespace ending a line takes no room, unless kept.
 	trim := sl.end
 	if !p.KeepSpaces {
-		for trim > sl.start && unicode.IsSpace(text[trim-1]) {
+		for trim > sl.start && hangs(text[trim-1]) {
 			trim--
 		}
 	}
@@ -1104,16 +1463,20 @@ func line(p Params, text []rune, sl shapedLine, offset int, rtl bool, m lineMetr
 				runSize = f.Size // a span of another size
 			}
 		}
-		// A cluster holds the runes up to the next one of its run.
-		starts = starts[:0]
-		for _, g := range run.glyphs {
-			if g.Cluster >= 0 {
-				starts = append(starts, g.Cluster)
+		// A cluster holds the runes up to the next one of its run: the next
+		// glyph's, as for most text, whose clusters ascend one to a glyph.
+		ascending := clustersAscend(run.glyphs)
+		if !ascending {
+			starts = starts[:0]
+			for _, g := range run.glyphs {
+				if g.Cluster >= 0 {
+					starts = append(starts, g.Cluster)
+				}
 			}
+			slices.Sort(starts)
+			starts = slices.Compact(starts)
 		}
-		slices.Sort(starts)
-		starts = slices.Compact(starts)
-		for _, g := range run.glyphs {
+		for k, g := range run.glyphs {
 			if g.Cluster < 0 { // the ellipsis
 				g.Cluster = line.End
 			} else {
@@ -1121,7 +1484,11 @@ func line(p Params, text []rune, sl shapedLine, offset int, rtl bool, m lineMetr
 					continue
 				}
 				next := run.end
-				if i, _ := slices.BinarySearch(starts, g.Cluster); i+1 < len(starts) {
+				if ascending {
+					if k+1 < len(run.glyphs) {
+						next = run.glyphs[k+1].Cluster
+					}
+				} else if i, _ := slices.BinarySearch(starts, g.Cluster); i+1 < len(starts) {
 					next = starts[i+1]
 				}
 				g.Runes = max(next-g.Cluster, 1)
@@ -1169,9 +1536,25 @@ func line(p Params, text []rune, sl shapedLine, offset int, rtl bool, m lineMetr
 	return line
 }
 
+// clustersAscend reports whether glyphs have a cluster each, ascending.
+func clustersAscend(glyphs []Glyph) bool {
+	last := -1
+	for i := range glyphs {
+		c := glyphs[i].Cluster
+		if c <= last {
+			return false
+		}
+		last = c
+	}
+	return true
+}
+
 // spanAt returns the span of rune i if it makes it an inline object or
 // shifts it off the baseline, else nil.
 func spanAt(spans []Span, i int) *Span {
+	if len(spans) == 0 {
+		return nil
+	}
 	k := spanIndex(spans, i)
 	if k < len(spans) && (spans[k].ObjectWidth > 0 || spans[k].BaselineShift != 0) {
 		return &spans[k]
@@ -1207,7 +1590,7 @@ func (s *System) ellipsize(text []rune, spans []Span, start int, p Params, width
 	}
 	cut := len(rest)
 	if width > 0 {
-		key := markKey{p.Style, p.Ellipsis, rtl}
+		key := markKey{style: p.Style, mark: p.Ellipsis, rtl: rtl}
 		ellipsis, ok := s.marks[key]
 		if !ok {
 			for _, l := range e.shape(mark, p.Style, nil, 0, rtl, false) {
@@ -1235,16 +1618,26 @@ func (s *System) ellipsize(text []rune, spans []Span, start int, p Params, width
 		b.Reset(rest)
 		w := float32(0)
 		cut = 0
+		// The padding of the spans' pieces before the cut, and the span of
+		// the last, which the ellipsis ends.
+		pads, k := padded(restSpans), -1
 		for cut < len(rest) {
 			next := b.NextGrapheme(cut)
 			gw := float32(0)
 			for _, a := range advances[cut:next] {
 				gw += a
 			}
-			if w+gw+ellipsis > width {
+			j := k
+			if pads {
+				if j = spanIndex(restSpans, cut); j != k {
+					gw += padOf(restSpans, k) + padOf(restSpans, j)
+				}
+			}
+			if w+gw+padOf(restSpans, j)+ellipsis > width {
 				break
 			}
 			w += gw
+			k = j
 			cut = next
 		}
 	}

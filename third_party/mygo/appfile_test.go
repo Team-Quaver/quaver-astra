@@ -51,7 +51,9 @@ func TestAppFileInUse(t *testing.T) {
 		default:
 		}
 		if _, err := readAppFile(path); err != nil {
-			t.Fatalf("read while replaced: %v", err)
+			t.Errorf("read while replaced: %v", err)
+			<-done
+			return
 		}
 	}
 }

@@ -49,6 +49,12 @@ type Buffer struct {
 	lastEdit time.Time
 	crlf     bool // the text's line endings are \r\n
 	syntax   *syntaxState
+	// restarts are the lines that start in state 0 in the default
+	// highlighter, the first lines of a patch's hunks (setRestarts),
+	// which each version moves (record); restartsText is the text they
+	// are of.
+	restarts     []int
+	restartsText rope.Text
 	// wake are the windows showing the buffer, which a highlighter
 	// working in the background has draw again.
 	wake []ui.Services
@@ -469,6 +475,10 @@ func (b *Buffer) setSelectionsAfter(owner, sel any) {
 func (b *Buffer) record(changes []change) {
 	b.version++
 	b.log = append(b.log, logEntry{version: b.version, text: b.text, changes: changes})
+	if len(b.restarts) > 0 {
+		b.restarts = moveRestarts(b.restarts, Snapshot{t: b.restartsText}, Snapshot{t: b.text}, publicChanges(changes))
+		b.restartsText = b.text
+	}
 	if len(b.log) > logMax {
 		b.log = slices.Delete(b.log, 0, len(b.log)-logMax/2)
 	}

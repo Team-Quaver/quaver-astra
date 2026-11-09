@@ -20,7 +20,8 @@ const scrollbarWidth = 10
 func (ed *editor) input(ev ui.InputEvent) bool {
 	// The key after the first of a chord is the chord's, as VS Code's
 	// keybindings resolve chords before an extension's type command.
-	chord := ed.chord != nil && ev.Kind == ui.InputKeyDown
+	// A key of no name, as the modifier the second key is held with, is not it.
+	chord := ed.chord != nil && ev.Kind == ui.InputKeyDown && ev.Key != ui.KeyUnknown
 	if !chord && ed.offer(ev) {
 		return true
 	}
@@ -55,7 +56,7 @@ func (ed *editor) dispatch(ev ui.InputEvent) bool {
 	ed.frameNow = ev.Time
 	switch ev.Kind {
 	case ui.InputKeyDown:
-		return ed.key(ev)
+		return ev.Key != ui.KeyUnknown && ed.key(ev)
 	case ui.InputCommand:
 		cmd := map[string]Command{"copy": Copy, "cut": Cut, "paste": Paste, "pasteAndMatchStyle": Paste, "selectAll": SelectAll,
 			"undo": Undo, "redo": Redo, "delete": Backspace}[ev.Text]
@@ -384,7 +385,7 @@ func (ed *editor) pointerMove(ev ui.InputEvent) bool {
 			changed = true
 		}
 	}
-	if off >= 0 && (ed.o.onHover != nil || len(ed.diags) > 0) && off != h.restOff {
+	if off >= 0 && !ed.o.noPointerHover && (ed.o.onHover != nil || len(ed.diags) > 0) && off != h.restOff {
 		h.restOff, h.restAt, h.pending = off, ed.frameNow, true
 		changed = true
 	}
@@ -415,12 +416,12 @@ func (ed *editor) wheel(ev ui.InputEvent) bool {
 }
 
 // trackWidth is the room the scroll bar's track takes at the right edge:
-// none when the editor fits its content, as it then never scrolls. The
-// old side of a split diff, which draws no scroll bar of its own
-// (noScrollbar), keeps the room all the same, so that both sides wrap
-// their lines at the same width.
+// none when the editor fits its content, as it then never scrolls, or
+// hides its scroll bars (NoScrollbars). The old side of a split diff,
+// which draws no scroll bar of its own (noScrollbar), keeps the room all
+// the same, so that both sides wrap their lines at the same width.
 func (ed *editor) trackWidth() float32 {
-	if ed.o.fitContent {
+	if ed.o.fitContent || ed.o.hideScrollbars {
 		return 0
 	}
 	return scrollbarWidth
@@ -430,8 +431,11 @@ func (ed *editor) trackWidth() float32 {
 // presses on: the vertical one while it scrolls, as it does past the end
 // of a short text, and never for an editor as high as its content or the
 // old side of a split diff; the horizontal one while a line runs under
-// the vertical one's track or beyond.
+// the vertical one's track or beyond; neither with NoScrollbars.
 func (ed *editor) scrollbars() (vertical, horizontal bool) {
+	if ed.o.hideScrollbars {
+		return false, false
+	}
 	vertical = !ed.o.noScrollbar && !ed.o.fitContent && ed.scrollMax() > 0
 	return vertical, !ed.view.wrap && ed.view.maxLine > ed.hTrack()
 }

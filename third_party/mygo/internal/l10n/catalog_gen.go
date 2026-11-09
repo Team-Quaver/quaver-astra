@@ -2771,3 +2771,21 @@ func DesktopShortcut() string { return In(i18n.Locale()).DesktopShortcut() }
 func (msgs Messages) DesktopShortcut() string {
 	return Catalog.Format(msgs.locale, "desktopShortcut", nil)
 }
+
+// Selected says "selected"
+// in the language the app shows.
+//
+// What VoiceOver reads after the name of a cell of a grid that is chosen,
+// as a calendar's day picked, where it reads no chosen state of cells
+// itself.
+func Selected() string { return In(i18n.Locale()).Selected() }
+
+// Selected says "selected"
+// in the language of msgs.
+//
+// What VoiceOver reads after the name of a cell of a grid that is chosen,
+// as a calendar's day picked, where it reads no chosen state of cells
+// itself.
+func (msgs Messages) Selected() string {
+	return Catalog.Format(msgs.locale, "selected", nil)
+}

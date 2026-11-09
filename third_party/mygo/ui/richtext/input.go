@@ -625,7 +625,8 @@ func (v *view) release(ev ui.InputEvent) bool {
 	v.dragging = false
 	link := v.pressLink
 	v.pressLink = ""
-	if link != "" && v.caret == v.selAnchor {
+	// A press the system took opens no link.
+	if link != "" && v.caret == v.selAnchor && !ev.Canceled {
 		if v.opts.OnLink != nil {
 			v.opts.OnLink(link)
 		} else if ui.SafeToOpen(link) {

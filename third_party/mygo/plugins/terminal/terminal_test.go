@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"fmt"
 	"image/png"
+	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -1312,6 +1313,11 @@ func TestFont(t *testing.T) {
 	if w2, h2, _ := render(Font{LineHeight: 1.5}); w2 != w || h2 < h*3/2-1 || h2 > h*3/2+1 {
 		t.Errorf("rows 1.5 times as high are %dx%d, from %dx%d", w2, h2, w, h)
 	}
+	if w2, h2, spaced := render(Font{CellWidth: 1.5}); w2 < w*3/2-1 || w2 > w*3/2+1 || h2 != h {
+		t.Errorf("columns 1.5 times as wide are %dx%d, from %dx%d", w2, h2, w, h)
+	} else if spaced < ink*95/100 || spaced > ink*105/100 {
+		t.Errorf("spacing changed glyph ink from %d to %d", ink, spaced)
+	}
 	if _, _, bold := render(Font{Weight: 700}); bold < ink*11/10 {
 		t.Errorf("weight 700 has ink %d, 400 %d", bold, ink)
 	}
@@ -1325,11 +1331,75 @@ func TestFont(t *testing.T) {
 		t.Errorf("features are %q", got)
 	}
 	k := (&Font{Weight: 300, Features: []string{"-calt"}}).key(1)
-	if f := k.variant(1); f.Weight != 700 || f.Features != "calt=0" {
+	features := "calt=0"
+	if runtime.GOOS == "darwin" {
+		features = "kern=0,calt=0"
+	}
+	if f := k.variant(1); f.Weight != 700 || f.Features != features {
 		t.Errorf("the bold of weight 300 is %+v", f)
+	}
+	// Kerning is off unless the features name it, on macOS.
+	for in, want := range map[string]string{"": "kern=0", "calt=0": "kern=0,calt=0", "kern": "kern", "kern=1": "kern=1", " kern =0": " kern =0"} {
+		if got := unkerned(in); got != want {
+			t.Errorf("unkerned(%q) = %q, want %q", in, got, want)
+		}
 	}
 	if f := (&Font{Weight: 800}).key(1).variant(3); f.Weight != 900 || !f.Italic {
 		t.Errorf("the bold italic of weight 800 is %+v", f)
+	}
+}
+
+// TestCJKPunctuationKeepsItsPlace checks that a wide character sits at
+// the same place in its cells wherever it is in a run. Core Text shrank
+// the CJK punctuation of the system's monospaced font that ends a run, as
+// a 。 being typed does, to half its width, and the first of two in a
+// row: centered in its two cells, it jumped when text followed. Each
+// character is checked against itself, so that it holds whatever fonts
+// the system falls back to.
+func TestCJKPunctuationKeepsItsPlace(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("Core Text's kerning")
+	}
+	loadLib(t)
+	type place struct{ off, adv float32 }
+	for _, size := range []float32{12, 13} {
+		seen := map[rune]place{}
+		for _, in := range []string{"清理。", "清理。地方", "清理。\x1b[31m地方", "清理。。地", "日本語。", "日本語。地"} {
+			term, err := New(Options{Conn: newPipe(), Font: Font{Size: size}, NoBlink: true})
+			if err != nil {
+				t.Fatal(err)
+			}
+			tt := ui.NewTester(func(c *ui.Context) { View(c, term).Fill() }, 400, 120)
+			term.Feed([]byte(in))
+			tt.Frame()
+			term.mu.Lock()
+			v := term.v
+			cw := float32(v.cellW) / v.scale
+			var got []place
+			line := v.lines[0]
+			for _, r := range line.runs {
+				for i, g := range r.glyphs {
+					if slices.Contains(line.wide, r.cols[i]) {
+						got = append(got, place{g.X - float32(r.cols[i])*cw, g.Advance})
+					}
+				}
+			}
+			term.mu.Unlock()
+			term.Close()
+			chars := []rune(strings.ReplaceAll(in, "\x1b[31m", ""))
+			if len(got) != len(chars) {
+				t.Errorf("size %v, %q: %d wide glyphs, want %d", size, in, len(got), len(chars))
+				continue
+			}
+			for i, r := range chars {
+				p, ok := seen[r]
+				if !ok {
+					seen[r] = got[i]
+				} else if math.Abs(float64(got[i].off-p.off)) > 0.01 || math.Abs(float64(got[i].adv-p.adv)) > 0.01 {
+					t.Errorf("size %v, %q: %c %d at offset %v, advance %v, elsewhere %v, %v", size, in, r, i, got[i].off, got[i].adv, p.off, p.adv)
+				}
+			}
+		}
 	}
 }
 
@@ -1407,6 +1477,125 @@ func TestKeyWithoutText(t *testing.T) {
 	tt.Key(0, ui.KeyB)
 	if got := conn.take(term); got != "b" {
 		t.Errorf("sent %q", got)
+	}
+}
+
+// TestOptionAsAltDropsText: with Options.OptionAsAlt on macOS, Option
+// and a letter go as Alt (Esc and the letter), and what macOS still types
+// for the key, or composes for a dead key as ´ for Option-E, is dropped
+// (#1000). The composition is refused, which has macOS give it up rather
+// than compose the next key with it. The key's release goes as any key's.
+func TestOptionAsAltDropsText(t *testing.T) {
+	loadLib(t)
+	defer func(was string) { goos = was }(goos)
+	goos = "darwin"
+	conn := newPipe()
+	term, err := New(Options{Conn: conn, OptionAsAlt: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer term.Close()
+	tt := ui.NewTester(func(c *ui.Context) { View(c, term).Fill().AutoFocus() }, 400, 200)
+	tt.Frame()
+	v := term.v
+	// press presses key with mods as macOS does, its text coming from
+	// interpretKeyEvents: typed as text, or composed for a dead key until
+	// the next key, which macOS then composes with it unless the
+	// composition was refused.
+	composing := false
+	press := func(mods ui.Modifiers, key ui.Key, text string, dead bool) {
+		t.Helper()
+		if composing {
+			// Composed with the dead key: no key, the composition's end,
+			// then both characters.
+			composing = false
+			v.input(ui.InputEvent{Kind: ui.InputCompose})
+			v.input(ui.InputEvent{Kind: ui.InputText, Text: "´" + text})
+		} else {
+			v.input(ui.InputEvent{Kind: ui.InputKeyDown, Mods: mods, Key: key})
+			if dead {
+				composing = v.input(ui.InputEvent{Kind: ui.InputCompose, Text: text, Caret: 1})
+			} else {
+				v.input(ui.InputEvent{Kind: ui.InputText, Text: text})
+			}
+		}
+		v.input(ui.InputEvent{Kind: ui.InputKeyUp, Mods: mods, Key: key})
+	}
+	press(ui.Alt, ui.KeyE, "´", true)
+	press(0, ui.KeyX, "x", false)
+	if got, want := conn.take(term), "\x1bex"; got != want {
+		t.Errorf("Option-E and x sent %q, want %q", got, want)
+	}
+	// Option-X types ≈ on a US layout, as text.
+	press(ui.Alt, ui.KeyX, "≈", false)
+	if got, want := conn.take(term), "\x1bx"; got != want {
+		t.Errorf("Option-X sent %q, want %q", got, want)
+	}
+	// Programs that ask for the Kitty keyboard protocol's releases get
+	// them.
+	term.Feed([]byte("\x1b[>11u"))
+	press(ui.Alt, ui.KeyE, "´", true)
+	if got, want := conn.take(term), "\x1b[101;3u\x1b[101;3:3u"; got != want {
+		t.Errorf("Option-E with the Kitty keyboard protocol sent %q, want %q", got, want)
+	}
+}
+
+// TestAltGrTypesText: on Windows, where AltGr is Control and Alt, the
+// characters AltGr types on a German layout go as text, not as Control
+// sequences of them (#1203). Control, Alt and a key that types nothing
+// still go as the key with both.
+func TestAltGrTypesText(t *testing.T) {
+	loadLib(t)
+	defer func(was string) { goos = was }(goos)
+	goos = "windows"
+	conn := newPipe()
+	term, err := New(Options{Conn: conn})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer term.Close()
+	tt := ui.NewTester(func(c *ui.Context) { View(c, term).Fill().AutoFocus() }, 400, 200)
+	tt.Frame()
+	v := term.v
+	// press presses key with mods as Windows does, the text it types, if
+	// any, coming as WM_CHAR between the key's press and its release.
+	press := func(mods ui.Modifiers, key ui.Key, text string) {
+		t.Helper()
+		v.input(ui.InputEvent{Kind: ui.InputKeyDown, Mods: mods, Key: key})
+		if text != "" {
+			v.input(ui.InputEvent{Kind: ui.InputText, Text: text})
+		}
+		v.input(ui.InputEvent{Kind: ui.InputKeyUp, Mods: mods, Key: key})
+	}
+	altGr := ui.Ctrl | ui.Alt
+	for _, c := range []struct {
+		name string
+		key  ui.Key
+		text string
+	}{
+		{"AltGr+Q", ui.KeyQ, "@"},
+		{"AltGr+E", ui.KeyE, "€"},
+		{"AltGr+7", ui.Key7, "{"},
+		{"AltGr+ß", ui.KeyMinus, `\`},
+	} {
+		press(altGr, c.key, c.text)
+		if got := conn.take(term); got != c.text {
+			t.Errorf("%s sent %q, want %q", c.name, got, c.text)
+		}
+	}
+	press(altGr, ui.KeyA, "")
+	if got, want := conn.take(term), "\x1b\x01"; got != want {
+		t.Errorf("Control, Alt and A sent %q, want %q", got, want)
+	}
+	// The Kitty keyboard protocol's disambiguation.
+	term.Feed([]byte("\x1b[>1u"))
+	press(altGr, ui.KeyQ, "@")
+	if got, want := conn.take(term), "@"; got != want {
+		t.Errorf("AltGr+Q with the Kitty keyboard protocol sent %q, want %q", got, want)
+	}
+	press(altGr, ui.KeyA, "")
+	if got, want := conn.take(term), "\x1b[97;7u"; got != want {
+		t.Errorf("Control, Alt and A with the Kitty keyboard protocol sent %q, want %q", got, want)
 	}
 }
 
@@ -1599,6 +1788,33 @@ func TestOnPasteTakesAPaste(t *testing.T) {
 // TestOnKeyTakesAKey: Options.OnKey sees a key press before the terminal
 // encodes it, in order with the keys after it; a true result sends
 // nothing, not even the text the key types.
+// A modifier on its own is no key to the terminal: nothing goes to the shell
+// or to OnKey, and Alt is left to the menu bar.
+func TestModifierKeyAlone(t *testing.T) {
+	loadLib(t)
+	conn := newPipe()
+	var seen []ui.Key
+	term, err := New(Options{Conn: conn, OnKey: func(mods ui.Modifiers, key ui.Key) bool {
+		seen = append(seen, key)
+		return true
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer term.Close()
+	tt := ui.NewTester(func(c *ui.Context) { View(c, term).Fill().AutoFocus() }, 400, 200)
+	tt.Frame()
+	tt.CodeDown(ui.Shift, ui.CodeShiftLeft)
+	tt.CodeUp(0, ui.CodeShiftLeft)
+	tt.Frame()
+	if len(seen) != 0 {
+		t.Errorf("OnKey saw %v", seen)
+	}
+	if got := conn.take(term); got != "" {
+		t.Errorf("the shell got %q", got)
+	}
+}
+
 func TestOnKeyTakesAKey(t *testing.T) {
 	loadLib(t)
 	conn := newPipe()

@@ -66,6 +66,55 @@ func TestDragSelectRows(t *testing.T) {
 	}
 }
 
+// A drag whose moves and release all come between two frames, as when
+// frames are slow, chooses the rows up to where the pointer let go, though
+// it moved on since, before the keys that came after it and unless a press
+// came after it; so does a drag over a table's cells.
+func TestDragSelectBetweenFrames(t *testing.T) {
+	tt, _, sel := dragSelectList(t, 20)
+	x, y := rowCenter(t, tt, "Row 1")
+	_, y7 := rowCenter(t, tt, "Row 7")
+	_, y9 := rowCenter(t, tt, "Row 9")
+	event := func(kind platform.SurfaceEventKind, y float32) {
+		tt.rt.event(platform.SurfaceEvent{Kind: kind, X: float64(x), Y: float64(y)})
+	}
+	drag := func() {
+		event(platform.PointerDown, y)
+		event(platform.PointerMove, y7)
+		event(platform.PointerUp, y7)
+	}
+	drag()
+	event(platform.PointerMove, y9)
+	tt.Frame()
+	if got := chosenRows(sel); !slices.Equal(got, []int{1, 2, 3, 4, 5, 6, 7}) {
+		t.Fatalf("dragged Row 1 to Row 7 and released within a frame: chose %v", got)
+	}
+	drag()
+	tt.rt.event(platform.SurfaceEvent{Kind: platform.KeyPressed, Key: platform.Key(KeyDown)})
+	tt.Frame()
+	if got := chosenRows(sel); !slices.Equal(got, []int{8}) {
+		t.Fatalf("then dragged Row 1 to Row 7 and pressed Down within a frame: chose %v", got)
+	}
+	drag()
+	event(platform.PointerDown, y9)
+	event(platform.PointerUp, y9)
+	tt.Frame()
+	if got := chosenRows(sel); !slices.Equal(got, []int{9}) {
+		t.Fatalf("then dragged Row 1 to Row 7 and clicked Row 9 within a frame: chose %v", got)
+	}
+
+	tt2, s, sel2 := cellTable(t, 8, 3, 0)
+	cx, cy := rowCenter(t, tt2, "r1c1")
+	cx2, cy2 := rowCenter(t, tt2, "r4c2")
+	cx3, _ := rowCenter(t, tt2, "r4c3")
+	tt2.rt.event(platform.SurfaceEvent{Kind: platform.PointerDown, X: float64(cx), Y: float64(cy)})
+	tt2.rt.event(platform.SurfaceEvent{Kind: platform.PointerMove, X: float64(cx2), Y: float64(cy2)})
+	tt2.rt.event(platform.SurfaceEvent{Kind: platform.PointerUp, X: float64(cx2), Y: float64(cy2)})
+	tt2.rt.event(platform.SurfaceEvent{Kind: platform.PointerMove, X: float64(cx3), Y: float64(cy2)})
+	tt2.Frame()
+	wantBlock(t, s, sel2, "dragged r1c1 to r4c2 and released within a frame", []int{1, 2, 3, 4}, ColumnRange{Cursor: "B", Anchor: "A"}, []string{"A", "B"})
+}
+
 // A drag adding to the choice (Cmd) chooses the rows from the one pressed
 // to the one under the pointer besides those chosen before, on every
 // platform: going back takes out the rows it leaves.

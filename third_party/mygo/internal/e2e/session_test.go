@@ -3,9 +3,12 @@
 package e2e
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"os/exec"
 	"strings"
 	"sync"
 	"testing"
@@ -206,5 +209,54 @@ func TestEphemeralSession(t *testing.T) {
 	w3 := sessionWindow(t, private, url+"/", "Private again")
 	if got := mustEval(t, w3, fmt.Sprintf(`document.cookie.includes("%s=") || localStorage.getItem("who")`, name)); got != false && got != nil {
 		t.Fatalf("the private session kept its data after its last window closed: %v", got)
+	}
+}
+
+// TestWebViewAvailableOffMain asks WebViewAvailable on another goroutine
+// before any window shows a page, then opens one of an ephemeral session.
+// On Linux the call loaded WebKitGTK there and made its first call into
+// it, so that WebKitGTK took that thread for its UI thread and aborted as
+// the main thread made the session (#1383). The calls run in a helper
+// process, which has loaded no web view before.
+func TestWebViewAvailableOffMain(t *testing.T) {
+	ctx, cancel := context.WithTimeout(t.Context(), wait.Guard)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^$")
+	cmd.Env = append(os.Environ(), "MYGO_E2E_WEBVIEW_OFF_MAIN=1")
+	out, err := cmd.CombinedOutput()
+	if err != nil || !strings.Contains(string(out), "webview off main: the page loaded\n") {
+		t.Errorf("exit: %v, output %q", err, out)
+	}
+}
+
+// webViewOffMain is the helper process of TestWebViewAvailableOffMain.
+func webViewOffMain() {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, "<!doctype html><title>opened</title>")
+	}))
+	defer server.Close()
+	mygo.App.WhenReady(func() {
+		go func() {
+			defer mygo.App.Quit()
+			if !mygo.WebViewAvailable() {
+				fmt.Println("webview off main: no webview")
+				return
+			}
+			private := mygo.NewEphemeralSession()
+			w := mygo.NewWindow(mygo.WindowOptions{Title: "WebView off main", Width: 200, Height: 100, URL: server.URL, Page: mygo.PageOptions{Session: private}})
+			defer w.Destroy()
+			// Until the page loads: the test's guard ends a hang.
+			for {
+				if loaded, err := mygo.EvalAs[bool](w.Page(), "document.title === 'opened'"); err == nil && loaded {
+					fmt.Println("webview off main: the page loaded")
+					return
+				}
+				time.Sleep(50 * time.Millisecond)
+			}
+		}()
+	})
+	if err := mygo.App.Run(); err != nil {
+		fmt.Println(err)
+		os.Exit(1)
 	}
 }

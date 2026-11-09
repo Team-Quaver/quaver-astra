@@ -79,6 +79,46 @@ func TestStrokePolylineCapsules(t *testing.T) {
 	}
 }
 
+// A translucent line of one segment has nothing to overlap, so on a GPU it
+// takes no mask, and looks as the mask would. With more, it keeps to the
+// mask.
+func TestStrokePolylineOneSegment(t *testing.T) {
+	nan := float32(math.NaN())
+	translucent := RGBA(20, 60, 230, .4)
+	for _, tc := range []struct {
+		name   string
+		points [][2]float32
+		color  Color
+		mask   bool
+	}{
+		{"opaque", [][2]float32{{10, 90}, {90, 10}}, RGB(20, 60, 230), false},
+		{"translucent", [][2]float32{{10, 90}, {90, 10}}, translucent, false},
+		{"beside points alone", [][2]float32{{50, 50}, {nan, nan}, {10, 90}, {90, 10}, {nan, nan}, {20, 20}}, translucent, false},
+		{"two segments", [][2]float32{{10, 90}, {50, 10}, {90, 90}}, translucent, true},
+		{"two lines", [][2]float32{{10, 90}, {90, 10}, {nan, nan}, {10, 10}, {90, 90}}, translucent, true},
+	} {
+		for _, scale := range []float32{1, 2} {
+			tt := polylineTester(tc.points, true, tc.color, scale)
+			img := tt.Image()
+			if mask := len(tt.rt.scene.Glyphs) > 0; mask != tc.mask {
+				t.Errorf("%s at scale %v: drew a mask: %v, want %v", tc.name, scale, mask, tc.mask)
+			}
+			want := polylineTester(tc.points, false, tc.color, scale).Image()
+			blank := polylineTester(nil, false, tc.color, scale).Image()
+			// Against what the line itself draws, as most of the picture
+			// is the same without it.
+			diff, ink := 0, 0
+			for i, v := range want.Pix {
+				diff += int(math.Abs(float64(int(v) - int(img.Pix[i]))))
+				ink += int(math.Abs(float64(int(v) - int(blank.Pix[i]))))
+			}
+			if ink == 0 || diff*10 > ink {
+				t.Errorf("%s at scale %v: differs from the mask by %d, of the %d it draws", tc.name, scale, diff, ink)
+			}
+		}
+	}
+}
+
 func TestStrokePolylineInvalid(t *testing.T) {
 	for _, points := range [][][2]float32{nil, {{20, 20}}, {{float32(math.NaN()), 0}}, {{10, 10}, {float32(math.Inf(1)), 20}, {30, 30}}} {
 		if n := countBlue(polylineTester(points, true, RGB(20, 60, 230), 1).Image()); n != 0 {

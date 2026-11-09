@@ -266,6 +266,7 @@ await currentWindow.toggleMaximize();
 | `onFileDrop(listener)` | files dropped on the window, with their paths |
 | `preferences()` | the accent color and the accessibility settings of the desktop; throws outside MyGo |
 | `onPreferences(listener)` | the changes of `preferences()` |
+| `windowActive()`, `onWindowActive(listener)` | whether the page's window is drawn as active, the one the user's input goes to, and its changes, see [inactive windows](#inactive-windows) |
 | `locale()`, `direction()`, `onLocaleChange(listener)` | the language the app shows (`App.Locale`), such as `"zh-Hans"`, its direction, `"ltr"` or `"rtl"`, and its changes; the page has them from document start, as `mygo.locale` and `mygo.dir` |
 
 `mygo-runtime/i18n` formats messages of ICU MessageFormat, as package
@@ -349,7 +350,8 @@ the window:
   outer pixels of the page resize the window, as a frameless one's. The
   window's menu bar hides, as with `AutoHideMenuBar`: Alt and F10 show it
   above the page while its menus are open, and its shortcuts work all
-  along.
+  along. `Theme.SetGTKCSS` restyles the buttons, as GTK 4's round ones,
+  for example ([GTK's style](windows.md#gtks-style-on-linux)).
 
 ```go
 mygo.NewWindow(mygo.WindowOptions{
@@ -480,6 +482,36 @@ A page that navigates starts with the values of the moment: the script
 that tells them at document start is replaced when they change.
 `mygo.Theme.Preferences()` reads them on the Go side, see
 [native](native.md#accent-color-and-accessibility).
+
+## Inactive windows
+
+Native apps draw the window the user's input goes to apart from the
+others: macOS fades an inactive window's sidebar and the accent of its
+selections to gray, Windows draws its Mica as a solid fill, GTK styles it
+`:backdrop`. A page knows which its window is from `<html>`, which has
+the `data-mygo-window-inactive` attribute while the window is not active:
+
+```css
+.sidebar .selected {
+  background: var(--accent);
+  color: white;
+}
+:root[data-mygo-window-inactive] .sidebar .selected {
+  background: #0000001a;
+  color: inherit;
+}
+```
+
+A window is active while it, or one of its flyouts, has the keyboard: a
+flyout of the window leaves it active, where DOM focus would leave the
+page. Panels, flyouts without a
+parent and windows `SetActiveAppearance` keeps active always are. A page
+starts active and is told otherwise as its DOM is ready; `windowActive()`
+of `mygo-runtime` reads the state and `onWindowActive` tells its changes.
+The material behind a transparent page follows on its own (macOS's in
+windows other than panels and flyouts, Windows's Mica). See
+[native UI](ui/windows.md#active-and-inactive-windows) for windows that
+show it.
 
 ## Pages that size their window
 

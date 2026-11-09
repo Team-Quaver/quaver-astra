@@ -89,9 +89,24 @@ func TestPackagingArgs(t *testing.T) {
 	if got := codesignArgs("A.app", "Apple Development: X", "", false); slices.Contains(got, "--timestamp") {
 		t.Errorf("development builds need no timestamp: %q", got)
 	}
-	args := hdiutilCreateArgs("My App", "src", "rw.dmg")
-	if slices.Contains(args, "-size") || slices.Contains(args, "-quiet") {
-		t.Errorf("hdiutil create: %q", args)
+	for _, fs := range []string{"HFS+", "APFS"} {
+		args := hdiutilCreateArgs(fs, "My App", "src", "rw.dmg")
+		if slices.Contains(args, "-size") || slices.Contains(args, "-quiet") {
+			t.Errorf("hdiutil create on %s: %q", fs, args)
+		}
+	}
+	if got, want := hdiutilCreateArgs("HFS+", "My App", "src", "rw.dmg"), []string{
+		"create", "-ov", "-volname", "My App", "-srcfolder", "src",
+		"-fs", "HFS+", "-fsargs", "-c c=64,a=16,e=16", "-format", "UDRW", "rw.dmg",
+	}; !slices.Equal(got, want) {
+		t.Errorf("hdiutil create on HFS+: %q", got)
+	}
+	// newfs_apfs takes none of HFS+'s -fsargs.
+	if got, want := hdiutilCreateArgs("APFS", "My App", "src", "rw.dmg"), []string{
+		"create", "-ov", "-volname", "My App", "-srcfolder", "src",
+		"-fs", "APFS", "-format", "UDRW", "rw.dmg",
+	}; !slices.Equal(got, want) {
+		t.Errorf("hdiutil create on APFS: %q", got)
 	}
 	if !hdiutilBusy(errors.New("hdiutil create -ov ...: exit status 1\nhdiutil: create failed - Resource busy")) {
 		t.Error(`"Resource busy" is retried`)
@@ -105,6 +120,42 @@ func TestPackagingArgs(t *testing.T) {
 	}
 	if _, err := attachedDisk(""); err == nil {
 		t.Error("attachedDisk of no device")
+	}
+}
+
+// TestCreateDMGFallsBackToAPFS creates an image with an hdiutil that fails
+// on HFS+, as it does on macOS 26.7.1 (#1352), then on both filesystems.
+func TestCreateDMGFallsBackToAPFS(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("runs a shell script as hdiutil")
+	}
+	bin := t.TempDir()
+	log := filepath.Join(bin, "log")
+	script := "#!/bin/sh\necho \"$*\" >> '" + log + "'\n" +
+		"case \"$* $FAIL\" in *HFS+*|*APFS*APFS) echo 'hdiutil: create failed - no mountable file systems'; exit 1;; esac\n"
+	if err := os.WriteFile(filepath.Join(bin, "hdiutil"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	if err := createDMG("My App", "src", "rw.dmg"); err != nil {
+		t.Fatal(err)
+	}
+	data, _ := os.ReadFile(log)
+	calls := strings.Split(strings.TrimSpace(string(data)), "\n")
+	if len(calls) != 2 || !strings.Contains(calls[0], "-fs HFS+ -fsargs") || !strings.Contains(calls[1], "-fs APFS -format") {
+		t.Errorf("hdiutil ran %q, want HFS+ then APFS", calls)
+	}
+
+	t.Setenv("FAIL", "APFS")
+	err := createDMG("My App", "src", "rw.dmg")
+	if err == nil {
+		t.Fatal("created an image although hdiutil failed on both filesystems")
+	}
+	for _, want := range []string{"on HFS+: hdiutil create", "on APFS: hdiutil create", "no mountable file systems"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the error lacks %q: %v", want, err)
+		}
 	}
 }
 
@@ -162,6 +213,29 @@ func TestBuildDMG(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	checkDMG(t, dmg, icns)
+}
+
+// TestBuildDMGOnAPFS builds the disk image on APFS, where HFS+ fails, as
+// on macOS 26.7.1 (#1352).
+func TestBuildDMGOnAPFS(t *testing.T) {
+	c, app, icns := dmgTestApp(t)
+	defer func(fs []string) { dmgFilesystems = fs }(dmgFilesystems)
+	dmgFilesystems = []string{"APFS"}
+	dmg, err := buildDMG(c, app, filepath.Dir(app), runtime.GOARCH, buildOptions{sign: "-"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	mnt := checkDMG(t, dmg, icns)
+	if out, err := exec.Command("diskutil", "info", mnt).Output(); err != nil || !strings.Contains(string(out), "APFS") {
+		t.Errorf("the volume is not APFS: %v\n%s", err, out)
+	}
+}
+
+// checkDMG mounts a disk image that buildDMG built of dmgTestApp's app,
+// checks what it shows and returns where it is mounted.
+func checkDMG(t *testing.T, dmg string, icns []byte) string {
+	t.Helper()
 	if filepath.Base(dmg) != "dmg-test-1.2.3-"+runtime.GOARCH+".dmg" {
 		t.Errorf("dmg = %s", dmg)
 	}
@@ -200,6 +274,7 @@ func TestBuildDMG(t *testing.T) {
 	if !strings.Contains(string(info), "lzma") {
 		t.Error("image is not LZMA compressed")
 	}
+	return mnt
 }
 
 // TestBuildDMGSize builds a disk image of an app whose files take more room

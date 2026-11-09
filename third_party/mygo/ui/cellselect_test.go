@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"image/color"
 	"slices"
 	"testing"
 
@@ -477,5 +478,199 @@ func TestOutlineTableCellSelectKeys(t *testing.T) {
 	tt.Key(0, KeyLeft)
 	if s.Open.Has("src") || s.List.Cells != want {
 		t.Fatalf("Left: open %v, cells %+v", s.Open.Has("src"), s.List.Cells)
+	}
+}
+
+// CellsStyle paints the block's cells, the rest of the rows chosen, and
+// every other row in colors of its own: the spreadsheet's two levels and
+// stripes.
+func TestCellsStyleTwoLevelAndStripes(t *testing.T) {
+	s := &ListState{CellSelect: true}
+	sel := &Selection[int]{}
+	s.Selection = sel
+	var theme *Theme
+	var style CellsStyle
+	rowNode := map[int]*node{}
+	cellNode := map[[2]int]*node{}
+	cols := []TableColumn{{Title: "#", RowHeader: true, Width: 40, Fixed: true}, {Title: "A"}, {Title: "B"}}
+	tt := NewTester(func(c *Context) {
+		theme = c.Theme()
+		style = CellsStyle{
+			Cell:     theme.Accent,
+			CellText: theme.AccentText,
+			Row:      theme.Text.Alpha(0.12),
+			Stripe:   theme.Text.Alpha(0.04),
+		}
+		s.CellsStyle = style
+		Table(c, s, cols, 4, func(row, col int) {
+			cell := Textf(c, "r%dc%d", row, col).node().parent
+			cellNode[[2]int{row, col}] = cell
+			rowNode[row] = cell.parent.parent // the list's row, under the table's
+		}).Grow(1)
+	}, 400, 300)
+	tt.Frame()
+	tt.Click("r1c1")
+	tt.Frame()
+	wantBlock(t, s, sel, "click r1c1", []int{1}, ColumnRange{Cursor: "A", Anchor: "A"}, []string{"A"})
+	if cell := cellNode[[2]int{1, 1}]; cell.bg != style.Cell || cell.ts.color != style.CellText {
+		t.Fatalf("chosen cell: bg %v text %v", cell.bg, cell.ts.color)
+	}
+	if other := cellNode[[2]int{1, 2}]; other.bg != Transparent {
+		t.Fatalf("an unchosen cell of the row is painted over the row: %v", other.bg)
+	}
+	if row := rowNode[1]; row.bg != style.Row {
+		t.Fatalf("chosen row: %v want %v", row.bg, style.Row)
+	}
+	if row := rowNode[0]; row.bg != Transparent {
+		t.Fatalf("even row painted: %v", row.bg)
+	}
+	if row := rowNode[3]; row.bg != style.Stripe {
+		t.Fatalf("striped row: %v want %v", row.bg, style.Stripe)
+	}
+}
+
+// cellNodeTable shows a table choosing cells (CellSelect) whose block is
+// painted with style, of 4 rows: a column of row headers, "#", then A
+// and B. It returns the Tester, the state, the theme, the cells by row
+// and column, column 0 being the row headers, and the list's rows.
+func cellNodeTable(t *testing.T, style CellsStyle) (*Tester, *ListState, *Theme, map[[2]int]*node, map[int]*node) {
+	t.Helper()
+	s := &ListState{CellSelect: true, CellsStyle: style}
+	s.Selection = &Selection[int]{}
+	cols := []TableColumn{{Title: "#", RowHeader: true, Width: 40, Fixed: true}, {Title: "A"}, {Title: "B"}}
+	cells := map[[2]int]*node{}
+	rows := map[int]*node{}
+	var theme *Theme
+	tt := NewTester(func(c *Context) {
+		theme = c.Theme()
+		Table(c, s, cols, 4, func(row, col int) {
+			cell := Textf(c, "r%dc%d", row, col).node().parent
+			cells[[2]int{row, col}] = cell
+			rows[row] = cell.parent.parent // the list's row, under the table's
+		}).Grow(1)
+	}, 400, 300)
+	tt.Frame()
+	return tt, s, theme, cells, rows
+}
+
+// borderIs reports whether the top edge of n holds a pixel of color c:
+// what DrawOver(cursorBorder) paints along it.
+func borderIs(tt *Tester, n *node, c Color) bool {
+	want := color.RGBA{c.R, c.G, c.B, c.A}
+	st, img := n.st, tt.Image()
+	y := int(st.y)
+	for x := int(st.x) + 2; x < int(st.x+st.w)-2; x++ {
+		for _, py := range []int{y, y + 1} {
+			if py >= 0 && py < img.Rect.Dy() && x >= 0 && x < img.Rect.Dx() && img.RGBAAt(x, py) == want {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// The zero CellsStyle draws the block as the table does without one: the
+// accent under its text, the cursor's border in that text in the block
+// and in the accent alone out of it, and no row painted.
+func TestCellsStyleZeroDrawsAsTheAccent(t *testing.T) {
+	tt, s, theme, cells, rows := cellNodeTable(t, CellsStyle{})
+	tt.Click("r1c2")
+	tt.Key(Shift, KeyLeft)
+	if got, want := s.Cells, (ColumnRange{Cursor: "A", Anchor: "B"}); got != want {
+		t.Fatalf("cells %+v, want %+v", got, want)
+	}
+	for _, col := range []int{1, 2} {
+		if cell := cells[[2]int{1, col}]; cell.bg != theme.Accent || cell.ts.color != theme.AccentText {
+			t.Fatalf("cell r1c%d: bg %v text %v; want the accent and its text", col, cell.bg, cell.ts.color)
+		}
+	}
+	if !borderIs(tt, cells[[2]int{1, 1}], theme.AccentText) {
+		t.Error("the cursor's border in the block is not the accent's text color")
+	}
+	for _, row := range []int{0, 1, 3} {
+		if r := rows[row]; r.bg != Transparent {
+			t.Errorf("row %d is painted %v without a CellsStyle", row, r.bg)
+		}
+	}
+	// The cursor out of the block, in a row a Cmd-click took out of the
+	// choice: its border is the accent alone.
+	tt.ClickWith(Cmd, "r1c1")
+	if s.CellSelected(1, 1) {
+		t.Fatal("Cmd-clicking the cursor's cell kept its row chosen")
+	}
+	if !borderIs(tt, cells[[2]int{1, 1}], theme.Accent) {
+		t.Error("the cursor's border out of the block is not the accent")
+	}
+}
+
+// A CellsStyle's cursor border takes the block's text color in the block
+// and the block's own out of it, or the accent and its text when they are
+// zero.
+func TestCellsStyleCursorBorder(t *testing.T) {
+	green, red := RGB(0, 160, 0), RGB(200, 0, 0)
+	cases := []struct {
+		name  string
+		style CellsStyle
+	}{
+		{"zero", CellsStyle{}},
+		{"Cell", CellsStyle{Cell: green}},
+		{"CellText", CellsStyle{CellText: red}},
+		{"Cell and CellText", CellsStyle{Cell: green, CellText: red}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			tt, _, theme, cells, _ := cellNodeTable(t, tc.style)
+			or := func(def, c Color) Color {
+				if c == Transparent {
+					return def
+				}
+				return c
+			}
+			bg, text := or(theme.Accent, tc.style.Cell), or(theme.AccentText, tc.style.CellText)
+			tt.Click("r1c2")
+			tt.Key(Shift, KeyLeft)
+			n := cells[[2]int{1, 1}]
+			if n.bg != bg || n.ts.color != text {
+				t.Fatalf("the cursor's cell in the block: bg %v text %v; want %v, %v", n.bg, n.ts.color, bg, text)
+			}
+			if !borderIs(tt, n, text) {
+				t.Errorf("the cursor's border in the block is not the text color %v", text)
+			}
+			tt.ClickWith(Cmd, "r1c1")
+			if !borderIs(tt, n, or(theme.Accent, tc.style.Cell)) {
+				t.Errorf("the cursor's border out of the block is not %v", or(theme.Accent, tc.style.Cell))
+			}
+		})
+	}
+}
+
+// A CellsStyle paints only what its colors name: Row the chosen rows,
+// Stripe every other, and Cell the block, which shows in the accent when
+// Cell is zero.
+func TestCellsStylePartial(t *testing.T) {
+	green, blue := RGB(0, 160, 0), RGB(0, 0, 200)
+
+	tt, _, theme, cells, rows := cellNodeTable(t, CellsStyle{Row: green})
+	tt.Click("r1c1")
+	if n := cells[[2]int{1, 1}]; n.bg != theme.Accent || n.ts.color != theme.AccentText {
+		t.Errorf("Row alone: the block's cell bg %v text %v; want the accent and its text", n.bg, n.ts.color)
+	}
+	if rows[1].bg != green || rows[0].bg != Transparent || rows[3].bg != Transparent {
+		t.Errorf("Row alone: rows 1, 0 and 3 are %v, %v, %v; want %v, none, none", rows[1].bg, rows[0].bg, rows[3].bg, green)
+	}
+
+	tt, _, _, _, rows = cellNodeTable(t, CellsStyle{Stripe: blue})
+	tt.Click("r1c1")
+	if rows[1].bg != Transparent || rows[3].bg != blue || rows[0].bg != Transparent {
+		t.Errorf("Stripe alone: rows 1, 3 and 0 are %v, %v, %v; want none, %v, none", rows[1].bg, rows[3].bg, rows[0].bg, blue)
+	}
+
+	tt, _, theme, cells, rows = cellNodeTable(t, CellsStyle{Cell: green})
+	tt.Click("r1c1")
+	if n := cells[[2]int{1, 1}]; n.bg != green || n.ts.color != theme.AccentText {
+		t.Errorf("Cell alone: the block's cell bg %v text %v; want %v and the accent's text", n.bg, n.ts.color, green)
+	}
+	if rows[1].bg != Transparent || rows[3].bg != Transparent {
+		t.Errorf("Cell alone: rows 1 and 3 are %v and %v; want none", rows[1].bg, rows[3].bg)
 	}
 }

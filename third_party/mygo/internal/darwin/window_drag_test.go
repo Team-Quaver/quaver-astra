@@ -82,7 +82,8 @@ func TestWindowDragNativeWillMove(t *testing.T) {
 }
 
 // The window server did not begin: the press's drags still reach the app
-// and the window stays. Past the slop, MyGo moves the window itself.
+// and the window stays. Past the slop, once the window server has had a few
+// drags to say it begins, MyGo moves the window itself.
 func TestWindowDragNativeDidNotBegin(t *testing.T) {
 	var d windowDrag
 	origin := NSPoint{10, 500}
@@ -92,6 +93,9 @@ func TestWindowDragNativeDidNotBegin(t *testing.T) {
 	}
 	if eat, move := d.dragged(NSPoint{101, 51}, origin); !eat || move {
 		t.Errorf("dragged within the slop = eat %v, move %v; want eaten, no move", eat, move)
+	}
+	if eat, move := d.dragged(NSPoint{104, 50}, origin); !eat || move {
+		t.Errorf("dragged past the slop at once = eat %v, move %v; want eaten, no move", eat, move)
 	}
 	if eat, move := d.dragged(NSPoint{108, 50}, origin); !eat || !move {
 		t.Errorf("dragged past the slop = eat %v, move %v; want eaten and moved", eat, move)
@@ -104,6 +108,58 @@ func TestWindowDragNativeDidNotBegin(t *testing.T) {
 	}
 }
 
+// A quick hand is past the slop with the first drag after the ask, before
+// the window server says it begins: MyGo took the window too, and the
+// window shook as both moved it. MyGo waits, and the window server's
+// windowWillMove: leaves the press to it.
+func TestWindowDragNativeQuickBeforeWillMove(t *testing.T) {
+	var d windowDrag
+	origin := NSPoint{10, 500}
+	d.down(1, NSPoint{100, 50})
+	d.start(1, origin)
+	if eat, move := d.dragged(NSPoint{112, 54}, origin); !eat || move {
+		t.Errorf("first drag past the slop = eat %v, move %v; want eaten, no move", eat, move)
+	}
+	d.willMove(1)
+	for _, p := range []NSPoint{{124, 58}, {136, 62}, {148, 66}} {
+		if eat, move := d.dragged(p, origin); !eat || move {
+			t.Errorf("dragged %v after the window server began = eat %v, move %v; want eaten, no move", p, eat, move)
+		}
+	}
+}
+
+// The window server says it begins after MyGo took over, and the drag goes
+// on slowly: the window was where MyGo put it within the rounding at every
+// drag, so MyGo kept moving it beside the window server, which shook it.
+// windowWillMove: leaves the press to the window server.
+func TestWindowDragManualWillMove(t *testing.T) {
+	var d windowDrag
+	origin := NSPoint{10, 500}
+	d.down(1, NSPoint{100, 50})
+	d.start(1, origin)
+	for _, p := range []NSPoint{{102, 50}, {104, 50}, {106, 50}} {
+		d.dragged(p, origin)
+	}
+	if d.phase != dragManual {
+		t.Fatalf("phase = %v, want manual", d.phase)
+	}
+	d.placed(d.target())
+	d.willMove(2)
+	if d.phase != dragManual {
+		t.Fatalf("phase after another window's move = %v, want manual", d.phase)
+	}
+	d.willMove(1)
+	// A point a drag: the window server's frame is never 2 points from MyGo's.
+	for i, p := range []NSPoint{{107, 50}, {108, 50}, {109, 50}} {
+		if eat, move := d.dragged(p, NSPoint{16 + float64(i), 500}); !eat || move {
+			t.Errorf("dragged %v after the window server began = eat %v, move %v; want eaten, no move", p, eat, move)
+		}
+	}
+	if d.phase != dragServer {
+		t.Errorf("phase = %v, want the window server's", d.phase)
+	}
+}
+
 // The window server begins after MyGo took over: both would move the
 // window, which shakes. Once the window is not where MyGo put it, MyGo
 // leaves it to the window server.
@@ -112,6 +168,8 @@ func TestWindowDragNativeBeganLate(t *testing.T) {
 	origin := NSPoint{10, 500}
 	d.down(1, NSPoint{100, 50})
 	d.start(1, origin)
+	d.dragged(NSPoint{102, 50}, origin)
+	d.dragged(NSPoint{104, 50}, origin)
 	if _, move := d.dragged(NSPoint{108, 50}, origin); !move {
 		t.Fatal("dragged past the slop did not move the window")
 	}

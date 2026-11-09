@@ -147,7 +147,7 @@ func objectRuns(layout uintptr, lines []shapedLine, ends []uint32, spans []Span,
 				var hit dwHitTestMetrics
 				call(layout, layoutHitTestTextPosition, uintptr(pos), 0, uintptr(unsafe.Pointer(&x)), uintptr(unsafe.Pointer(&y)), uintptr(unsafe.Pointer(&hit)))
 				g := Glyph{X: hit.left, Advance: sp.ObjectWidth, Cluster: index[pos], RTL: hit.bidiLevel&1 != 0}
-				// Runs are in visual order, as DirectWrite draws them.
+				// Runs are in visual order, their glyphs too (shape).
 				runs := lines[li].runs
 				at := 0
 				for at < len(runs) && (len(runs[at].glyphs) == 0 || runs[at].glyphs[0].X < g.X) {

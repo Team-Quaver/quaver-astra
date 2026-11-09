@@ -34,7 +34,7 @@ import (
 //   - Windows: the URL alone: WebView2 has no API for the back/forward
 //     list.
 func (p *Page) SessionState() ([]byte, error) {
-	if p.w.content != nil {
+	if p.w.content {
 		return nil, errNoPage
 	}
 	var state []byte

@@ -62,6 +62,8 @@ func TestTokenizers(t *testing.T) {
 			`var(x)op(=)str(f')esc({)var(a)esc(})str(')op(+)str(F')esc({)var(a)esc(}{)var(b)esc(})str(')op(+)str(rf')esc({)var(c)esc(})str(')op(+)str(Fr""")esc({)var(d)esc(})str(""")`},
 		{"json", []string{`{"a": [1, true, "b"]}`},
 			`punct({)prop("a")op(:)punct([)num(1)punct(,)const(true)punct(,)str("b")punct(]})`},
+		{"json", []string{`{"a\nb" : "c\nd", "e":{"f":1}}`},
+			`punct({)prop("a\nb")op(:)str("c)esc(\n)str(d")punct(,)prop("e")op(:)punct({)prop("f")op(:)num(1)punct(}})`},
 		{"rust", []string{"/* a /* b */ c */ fn x() {}"},
 			"comment(/* a /* b */ c */)kw(fn)fn(x)punct(())punct({})"},
 		{"c", []string{"#include <stdio.h>", "int x = 0x1fu;"},
@@ -102,6 +104,20 @@ func TestTokenizers(t *testing.T) {
 		if got := lexLines(l.Tokenizer, c.lines...); got != c.want {
 			t.Errorf("%s %q:\n got %s\nwant %s", c.lang, c.lines, got, c.want)
 		}
+	}
+}
+
+// A minified JSON file's one line, of many keys, lexes in time linear in
+// its length.
+func TestJSONLongLine(t *testing.T) {
+	line := "{" + strings.Repeat(`"key":[1.5,"v"],`, 100_000) + `"end":0}`
+	start := time.Now()
+	toks, _ := LanguageNamed("json").Tokenizer.Tokenize(line, 0, nil)
+	if d := time.Since(start); d > 2*time.Second {
+		t.Errorf("a line of %d keys took %v to lex", 100_000, d)
+	}
+	if n := len(toks); n < 700_000 {
+		t.Errorf("%d tokens, want each key's, number's and string's", n)
 	}
 }
 

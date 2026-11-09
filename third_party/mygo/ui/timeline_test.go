@@ -552,6 +552,33 @@ func TestTimelineLessMotion(t *testing.T) {
 	resting(t, tt)
 }
 
+func TestTimelineNonMotionPlaysWithLessMotion(t *testing.T) {
+	// A timeline of fades plays with less motion; one that moves is at
+	// once where it rests.
+	var fade, x float32
+	var done bool
+	tt, now := timelineTester(func(c *context) {
+		e := coreBox(c)
+		tl := e.Timeline("fade", TimelineOptions{NonMotion: true})
+		fade = tl.Tween(Tween{From: 0, To: 1, Duration: 400 * time.Millisecond, Ease: Linear})
+		done = tl.Settled()
+		x = e.Timeline("move", TimelineOptions{}).Tween(Tween{From: 0, To: 100, Duration: 400 * time.Millisecond, Ease: Linear})
+	})
+	tt.SetPreferences(Preferences{ReduceMotion: true})
+	closeFloat(t, x, 100)
+	step(tt, now, 200*time.Millisecond)
+	closeFloat(t, fade, 0.5)
+	if done {
+		t.Fatal("a timeline of fades is done halfway")
+	}
+	step(tt, now, 200*time.Millisecond)
+	closeFloat(t, fade, 1)
+	if !done {
+		t.Fatal("a timeline of fades did not finish")
+	}
+	resting(t, tt)
+}
+
 func TestTimelineLessMotionKeepsDirectManipulation(t *testing.T) {
 	// A scrubber and a pause still move and hold the playhead with less
 	// motion: only the timeline playing on its own goes to rest at once.

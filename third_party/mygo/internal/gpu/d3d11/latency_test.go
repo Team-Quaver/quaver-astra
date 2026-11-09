@@ -118,8 +118,8 @@ func TestUnchangedFrameWaitsForRefresh(t *testing.T) {
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
 	refresh := make(chan struct{})
-	defer func(f func()) { awaitRefresh = f }(awaitRefresh)
-	awaitRefresh = func() { <-refresh }
+	defer func(f func(_, _ time.Duration)) { awaitRefresh = f }(awaitRefresh)
+	awaitRefresh = func(_, _ time.Duration) { <-refresh }
 
 	s := gputest.NewChanging(1).Scene()
 	r, err := New(hiddenWindow(t, s.Width, s.Height))
@@ -132,6 +132,7 @@ func TestUnchangedFrameWaitsForRefresh(t *testing.T) {
 	}
 	posted := make(chan func(), 4)
 	r.SetPost(func(f func()) { posted <- f })
+	r.cost.estimate = time.Hour // frames that go through the frame latency object
 	if err := r.Render(s); err != nil {
 		t.Fatal(err)
 	}

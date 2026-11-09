@@ -61,6 +61,9 @@ func TestMain(m *testing.M) {
 	if os.Getenv("MYGO_TEST_STUCK_QUIT") == "1" {
 		stuckQuit()
 	}
+	if os.Getenv("MYGO_TEST_EVAL_AFTER_QUIT") == "1" {
+		evalAfterQuit()
+	}
 	// A quit that a test lets through must not end the tests.
 	stopGrace = 0
 	if os.Getenv("MYGO_TEST_BEFORE_RUN") == "1" {
@@ -1128,6 +1131,112 @@ func TestEvalLateReply(t *testing.T) {
 	}
 }
 
+// TestEvalWindowCloses: a page whose window closes never answers, and Eval,
+// which may have no context to end it, must not wait for it.
+func TestEvalWindowCloses(t *testing.T) {
+	w, fw := testWindow(t, WindowOptions{})
+	asked := make(chan struct{})
+	fw.AsyncFunction = func(string) (string, error) {
+		close(asked)
+		return "", fake.ErrNoReply
+	}
+	done := make(chan error, 1)
+	go func() {
+		_, err := w.Page().Eval("1")
+		done <- err
+	}()
+	<-asked
+	w.Destroy()
+	select {
+	case err := <-done:
+		if !errors.Is(err, errDestroyed) {
+			t.Errorf("Eval = %v", err)
+		}
+	case <-time.After(wait.Guard):
+		t.Fatal("Eval still waits for the page of a closed window")
+	}
+}
+
+// TestEvalWebViewDestroyed is TestEvalWindowCloses for a web view's page.
+func TestEvalWebViewDestroyed(t *testing.T) {
+	show := true
+	_, v, _, fv := webViewWindow(t, &show)
+	asked := make(chan struct{})
+	fv.Window.AsyncFunction = func(string) (string, error) {
+		close(asked)
+		return "", fake.ErrNoReply
+	}
+	done := make(chan error, 1)
+	go func() {
+		_, err := v.Page().Eval("1")
+		done <- err
+	}()
+	<-asked
+	v.Destroy()
+	select {
+	case err := <-done:
+		if !errors.Is(err, errDestroyed) {
+			t.Errorf("Eval = %v", err)
+		}
+	case <-time.After(wait.Guard):
+		t.Fatal("Eval still waits for the page of a destroyed web view")
+	}
+}
+
+// TestEvalAfterQuit: a window created once the app has quit has a page, as
+// the documentation of Page says, on which Eval fails.
+func TestEvalAfterQuit(t *testing.T) {
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(exe, "-test.run=^$")
+	cmd.Env = append(os.Environ(), "MYGO_TEST_EVAL_AFTER_QUIT=1")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("%v\n%s", err, out)
+	}
+	for _, want := range []string{"while stopping: " + errLoopStopped.Error() + "\n", "stopped: " + errDestroyed.Error() + "\n"} {
+		if !strings.Contains(string(out), want) {
+			t.Errorf("no %q in:\n%s", want, out)
+		}
+	}
+}
+
+// evalAfterQuit is a helper process for TestEvalAfterQuit: Eval with the quit
+// under way, in a window no one will close and on a loop that will soon stop,
+// and then with the loop stopped.
+func evalAfterQuit() {
+	App.OnWindowAllClosed(func() {})
+	eval := func(when string) {
+		w := NewWindow(WindowOptions{})
+		if wins := fb.Windows(); !w.IsDestroyed() {
+			wins[len(wins)-1].AsyncFunction = func(string) (string, error) { return "", fake.ErrNoReply }
+		}
+		_, err := w.Page().Eval("1")
+		fmt.Printf("%s: %v\n", when, err)
+	}
+	fb.IgnoresQuit = true
+	stopGrace = 0
+	App.WhenReady(func() {
+		App.Quit()
+		go func() {
+			onMain(func() {})
+			eval("while stopping")
+			fb.IgnoresQuit = false
+			App.Quit()
+		}()
+	})
+	App.Run()
+	done := make(chan struct{})
+	go func() {
+		eval("stopped")
+		close(done)
+	}()
+	<-done
+	os.Exit(0)
+}
+
 // Custom protocols.
 
 type recorder struct {
@@ -1786,6 +1895,58 @@ func TestThemePreferences(t *testing.T) {
 
 // TestThemePreferencesJSON checks the JSON of the preferences, which is
 // mygo-runtime's ThemePreferences: the accent a CSS color or null.
+// Theme.SetGTKCSS gives the backend the sheet, from any goroutine, each
+// in place of the one before, and returns why one did not load (#1121).
+func TestThemeGTKCSS(t *testing.T) {
+	defer onMain(func() { fb.StyleSheet, fb.StyleSheetError = "", nil })
+	sheet := func() (s string) {
+		onMain(func() { s = fb.StyleSheet })
+		return s
+	}
+	for _, css := range []string{"headerbar { min-height: 46px; }", "button.titlebutton { min-width: 24px; }"} {
+		if err := Theme.SetGTKCSS(css); err != nil {
+			t.Fatal(err)
+		}
+		if got := sheet(); got != css {
+			t.Errorf("sheet = %q, want %q", got, css)
+		}
+	}
+
+	parse := errors.New("<data>:1:29: not a number")
+	onMain(func() { fb.StyleSheetError = parse })
+	err := Theme.SetGTKCSS("button.titlebutton { min-width: nonsense; }")
+	if !errors.Is(err, parse) || err.Error() != "mygo: Theme.SetGTKCSS: <data>:1:29: not a number" {
+		t.Errorf("SetGTKCSS of a sheet that does not load = %v, want the backend's error", err)
+	}
+	if got := sheet(); got != "button.titlebutton { min-width: 24px; }" {
+		t.Errorf("sheet after one that does not load = %q, want the one before", got)
+	}
+}
+
+// Theme.WindowButtons reports the desktop's layout, which is empty under a
+// tiling window manager.
+func TestThemeWindowButtons(t *testing.T) {
+	defer onMain(func() { fb.StartButtons, fb.EndButtons = nil, nil })
+	onMain(func() { fb.StartButtons, fb.EndButtons = []string{"close"}, []string{"minimize", "maximize"} })
+	b := Theme.WindowButtons()
+	if !slices.Equal(b.Start, []string{"close"}) || !slices.Equal(b.End, []string{"minimize", "maximize"}) {
+		t.Errorf("WindowButtons = %+v, want the backend's layout", b)
+	}
+	if b.Empty() || !b.Has("close") || !b.Has("maximize") {
+		t.Errorf("Empty, Has of %+v", b)
+	}
+	onMain(func() { fb.StartButtons, fb.EndButtons = nil, nil })
+	if b := Theme.WindowButtons(); !b.Empty() || b.Has("close") {
+		t.Errorf("WindowButtons with none = %+v, want empty", b)
+	}
+	if b := defaultWindowButtons("windows"); !slices.Equal(b.End, []string{"minimize", "maximize", "close"}) || len(b.Start) != 0 {
+		t.Errorf("defaultWindowButtons(windows) = %+v", b)
+	}
+	if b := defaultWindowButtons("darwin"); !slices.Equal(b.Start, []string{"close", "minimize", "maximize"}) {
+		t.Errorf("defaultWindowButtons(darwin) = %+v", b)
+	}
+}
+
 func TestThemePreferencesJSON(t *testing.T) {
 	for _, tt := range []struct {
 		p    ThemePreferences
@@ -1985,6 +2146,7 @@ var needsAppCalls = []struct {
 	{"Shell.TrashItem", func() { Shell.TrashItem("/nonexistent") }},
 	{"Shell.Beep", func() { Shell.Beep() }},
 	{"Shell.FileIcon", func() { Shell.FileIcon("/", 16) }},
+	{"Shell.TypeIcon", func() { Shell.TypeIcon("pdf", 16) }},
 	{"Shell.InstalledApps", func() { Shell.InstalledApps() }},
 	{"Shell.LaunchApp", func() { Shell.LaunchApp(InstalledApp{Path: "/"}) }},
 	{"Clipboard.ReadText", func() { Clipboard.ReadText() }},
@@ -2069,6 +2231,7 @@ func beforeRun() {
 	NewEvent[int]("test:before-run")
 	// Settings, which Run applies.
 	Theme.SetSource(ThemeDark)
+	_ = Theme.SetGTKCSS("headerbar {}")
 	App.Dock.SetMenu(NewMenu([]*MenuItem{{Label: "New Window"}}))
 	// Calls that work without the running app.
 	App.Locale()
@@ -2086,6 +2249,7 @@ func beforeRun() {
 	}
 	App.WhenReady(func() {
 		fmt.Println("dark:", Theme.IsDark())
+		fmt.Println("gtk css:", fb.StyleSheet == "headerbar {}")
 		fmt.Println("dock menu:", fb.DockMenu != nil && fb.DockMenu.Items[0].Label == "New Window")
 		App.Quit()
 	})
@@ -2115,7 +2279,7 @@ func TestBeforeRun(t *testing.T) {
 		return string(out)
 	}
 	out := run()
-	wants := []string{"dark: true\n", "dock menu: true\n"}
+	wants := []string{"dark: true\n", "gtk css: true\n", "dock menu: true\n"}
 	for _, c := range needsAppCalls {
 		wants = append(wants, c.name+": mygo: "+c.name+" called before ")
 	}

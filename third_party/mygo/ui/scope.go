@@ -38,7 +38,10 @@ func (rt *engine) enterScope(e *node) focusScope {
 	if e.focusGroup != 0 && rt.commitScope.group == 0 {
 		// The outermost group: those inside it are part of it.
 		rt.commitScope.group = e.id
-		rt.groups[e.id] = groupInfo{orient: e.focusGroup, selects: e.groupSelects, rtl: e.rtl()}
+		rt.groups[e.id] = groupInfo{
+			orient: e.focusGroup, selects: e.groupSelects, rtl: e.rtl(),
+			chooses: e.role == RoleRadioGroup || e.role == RoleTabList,
+		}
 	}
 	e.st.scope = rt.commitScope.modal
 	return saved
@@ -118,7 +121,7 @@ func (rt *engine) overlayShortcut(e *node, mods Modifiers, key Key) bool {
 	for i, d := range rt.delivered {
 		if d.id == id && d.mods == mods && d.key == key {
 			rt.delivered = append(rt.delivered[:i], rt.delivered[i+1:]...)
-			rt.consumed = true
+			rt.consumed, rt.shortcutRepeat = true, d.repeat
 			return true
 		}
 	}
@@ -219,6 +222,18 @@ func (e *node) PressedOutside() bool {
 	}
 	rt.consumed = true
 	return true
+}
+
+// PressedInside reports whether the pointer went down since the last
+// frame on the element, inside it, or in a popover attached to it, as
+// PressedOutside reports one outside. Unlike Pressed and Clicked, the
+// element does not take the pointer.
+func (e *node) PressedInside() bool {
+	if !e.hasState() || len(e.c.rt.downs) == 0 {
+		return false
+	}
+	rt := e.c.rt
+	return rt.pressedWithin(rt.downs[len(rt.downs)-1], e)
 }
 
 // pressedWithin reports whether element id of the last frame is e, inside it,

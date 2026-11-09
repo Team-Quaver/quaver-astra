@@ -25,23 +25,35 @@ copy halved as many times as that keeps it no smaller, made once, so that
 it shows every pixel's part rather than shimmering.
 
 A bitmap keeps its pixels on the CPU as well as on the GPU, which
-applications full of photos notice. Once a bitmap `DecodeBitmap` made has
-shown, `ReleasePixels` drops its CPU copies, of the picture and of the
-halved ones: it draws as before from the GPU, and the pixels are decoded
-again from the data `DecodeBitmap` took, which the bitmap keeps and which
-must stay as it was, when something needs them again, as a GPU that lost
-its textures or let one go after frames without it, the CPU renderer, or a
-halved copy for drawing it smaller, and a GPU's upload drops them again.
-The data costs a fraction of the pixels. A bitmap `NewBitmap` made, a
-canvas's, or one `Update` changed has nothing else to make its pixels
-from, and keeps them. Call `ReleasePixels` on the main thread, as drawing
-does:
+applications full of photos notice. Once a bitmap has shown,
+`ReleasePixels` drops its CPU copies, of the picture and of the halved
+ones: it draws as before from the GPU, and the pixels are made again when
+something needs them, as a GPU that lost its textures or let one go after
+frames without it, the CPU renderer, or a halved copy for drawing it
+smaller, and a GPU's upload drops them again. A bitmap `DecodeBitmap` made
+decodes them again from the data it took, which costs a fraction of the
+pixels. One `NewBitmap` made converts again the `image.Image` it was made
+of, which it keeps from `ReleasePixels` on, without a copy: for an image
+the app keeps anyway, as a screenshot it works on at full size, the
+pixels are then in memory once rather than twice. Either must stay as it
+was. A bitmap `NewBitmap` made of an image the app no longer keeps (or of
+an image type other than package `image`'s), a canvas's, or one `Update`
+changed has nothing else to make its pixels from, and keeps them. Call
+`ReleasePixels` on the main thread, as drawing does:
 
 ```go
 cover, _ := ui.DecodeBitmap(fileData)
 // … once the cover has shown:
 cover.ReleasePixels()
+
+shot := ui.NewBitmap(capture) // the app keeps capture
+// … once the shot has shown:
+shot.ReleasePixels()
 ```
+
+A window that closes lets go of what it showed: its view, the elements and
+the scene of its last frame, and the bitmaps they drew. A bitmap then stays
+only as long as the app keeps it.
 
 `Update` shows another picture in a bitmap, for one that changes as video
 does. Of the same size, it keeps the bitmap's texture on the GPU, which
@@ -91,6 +103,17 @@ gray, as for what is disabled. `Radius` rounds its corners, and
 
 ```go
 ui.Image(c, photo).AspectRatio(16.0 / 9).Fit(ui.Cover).Radius(8)
+```
+
+`ObjectPosition(x, y)` places the picture where `Fit` crops it or leaves
+room around it, as CSS's `object-position`: fractions of that room across
+and down, 0 by the left or top edge, 1 by the right or bottom one, and
+0.5, the default, in the middle. Its edge keywords are 0 and 1: `left
+top` is `ObjectPosition(0, 0)`. An avatar whose face, near the top of the
+photo, stays in view, as `object-position: 50% 15%`:
+
+```go
+ui.Image(c, photo).Size(40, 40).Radius(20).Fit(ui.Cover).ObjectPosition(0.5, 0.15)
 ```
 
 ## SVGs

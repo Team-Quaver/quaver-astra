@@ -100,6 +100,14 @@ export interface Runtime {
   readonly locale: string;
   /** The direction `locale` is written in, for `<html dir>`. */
   readonly dir: Direction;
+  /**
+   * Whether the window is drawn as active: the window the user's input
+   * goes to, while it or one of its flyouts has the keyboard, as native
+   * apps tell which of their windows has it. The `mygo:window-active`
+   * event tells its changes, and `<html data-mygo-window-inactive>` marks
+   * a page whose window is not, for CSS.
+   */
+  readonly windowActive: boolean;
   /** The window hosting this page. */
   readonly window: WindowControls;
 }

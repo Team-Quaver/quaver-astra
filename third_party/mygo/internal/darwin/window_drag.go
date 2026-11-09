@@ -20,20 +20,23 @@ import (
 // it was, which a quick press and drag hits now and then (issue #528). So
 // MyGo watches the press. When the pointer has not moved yet, it asks the
 // window server; when it has, or when the press's drags still reach the app
-// past a few points and the window server has not begun, MyGo moves the
-// window itself, keeping the point pressed under the pointer, as the window
-// server would. Either way the press's drags are the window's, not the
-// content's.
+// past a few points, a few drags after the ask, and the window server has
+// not begun, MyGo moves the window itself, keeping the point pressed under
+// the pointer, as the window server would. Either way the press's drags are
+// the window's, not the content's.
 //
 // The window server tells the window as it begins (windowWillMove:), within
-// a drag or two of being asked. The window's frame says so late: AppKit
-// learns where the window is about every tenth of a second while the
-// window server moves it. Should MyGo take a frame that has not moved for a
-// window server that did not begin, both would move the window, the window
-// server to where the pointer is and MyGo to where it was an event before,
-// and the window shakes. For a window server that still begins once MyGo
-// has taken over, the window not being where MyGo put it tells MyGo to
-// leave it alone.
+// a drag or two of being asked; MyGo's own moves (setFrameOrigin:) never
+// do. The window's frame says so late: AppKit learns where the window is
+// about every tenth of a second while the window server moves it. Should
+// MyGo take a frame that has not moved for a window server that did not
+// begin, both would move the window, the window server to where the pointer
+// is and MyGo to where it was an event before, and the window shakes. So
+// MyGo waits for a few drags before taking over, however far the first
+// goes, and leaves the window alone as soon as the window server says it
+// begins, even once MyGo has taken over: the window not being where MyGo put
+// it tells MyGo only late, and not at all for a slow drag, whose every move
+// puts the frame back where MyGo wants it.
 
 // dragPhase is where a press stands in moving its window.
 type dragPhase uint8
@@ -59,6 +62,10 @@ const (
 	// still reaching the app and the window not moving, before MyGo
 	// moves the window itself: the window server did not begin.
 	dragSlop = 3
+	// dragWait is how many drags the window server is given after the
+	// ask to say it begins, before MyGo moves the window itself: a
+	// quick hand is past dragSlop with the first.
+	dragWait = 3
 	// dragAway is how far, in points, the window may be from where MyGo
 	// put it, which AppKit rounds, before MyGo takes it that the window
 	// server moves it.
@@ -78,6 +85,8 @@ type windowDrag struct {
 	origin NSPoint
 	// put is the origin MyGo last moved the window to, while manual.
 	put NSPoint
+	// drags counts the drags since the window server was asked.
+	drags int
 }
 
 // down notes a press of the left button in win at the point at.
@@ -85,9 +94,10 @@ func (d *windowDrag) down(win id, at NSPoint) {
 	*d = windowDrag{phase: dragPressed, win: win, press: at, at: at}
 }
 
-// willMove notes that the window server begins to move win.
+// willMove notes that the window server begins to move win, which it
+// does only when asked, though it may be after MyGo took over.
 func (d *windowDrag) willMove(win id) {
-	if d.phase == dragNative && d.win == win {
+	if (d.phase == dragNative || d.phase == dragManual) && d.win == win {
 		d.phase = dragServer
 	}
 }
@@ -133,8 +143,10 @@ func (d *windowDrag) dragged(at, origin NSPoint) (eat, move bool) {
 			d.phase = dragServer
 			return true, false
 		}
-		if distance(at, d.press) < dragSlop {
-			// The pointer has hardly moved yet.
+		d.drags++
+		if distance(at, d.press) < dragSlop || d.drags < dragWait {
+			// The pointer has hardly moved yet, or the window
+			// server may still say it begins.
 			return true, false
 		}
 		d.phase = dragManual

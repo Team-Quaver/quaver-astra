@@ -214,6 +214,34 @@ func TestRangeSlider(t *testing.T) {
 	if low != 70 {
 		t.Errorf("End stops the low knob at the high one: %v", low)
 	}
+	// The high knob, dragged and let go before a frame, stays where the
+	// pointer let go, though it moved on.
+	tt.Press(float32(r.X)+10+200*float32(high/100), float32(r.Y+10))
+	tt.rt.event(platform.SurfaceEvent{Kind: platform.PointerUp, X: r.X + 10 + 200*0.9, Y: r.Y + 10})
+	tt.rt.event(platform.SurfaceEvent{Kind: platform.PointerMove, X: r.X + 10 + 200*0.3, Y: r.Y + 10})
+	tt.settle()
+	if high != 90 {
+		t.Errorf("let go at 90%% before a frame: %v", high)
+	}
+}
+
+// A slider let go before a frame takes the value where the pointer let
+// go, not where it went after.
+func TestSliderReleaseBeforeFrame(t *testing.T) {
+	v := 0.0
+	tt := coreNewTester(func(c *context) {
+		coreSlider(c, &v, 0, 100).Width(220).Label("Volume")
+	}, 300, 100)
+	tt.send(platform.SurfaceEvent{Kind: platform.AccessibilityOn})
+	r := accessNode(t, tt.h.access, platform.RoleSlider, "Volume").Bounds
+	// 10 DIPs of padding on each side, 200 of track.
+	tt.Press(float32(r.X)+20, float32(r.Y+10))
+	tt.rt.event(platform.SurfaceEvent{Kind: platform.PointerUp, X: r.X + 110, Y: r.Y + 10})
+	tt.rt.event(platform.SurfaceEvent{Kind: platform.PointerMove, X: r.X + 180, Y: r.Y + 10})
+	tt.settle()
+	if v != 50 {
+		t.Errorf("let go at 50%% before a frame, then moved on: %v", v)
+	}
 }
 
 func TestAvatar(t *testing.T) {

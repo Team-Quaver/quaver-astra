@@ -50,7 +50,8 @@ func (st *viewState) copyText(parts []ui.SelectedText) string {
 }
 
 // writeText writes the text of a selected part, with the source of the
-// math drawn as objects, as $x_i$, in place of their characters.
+// math drawn as objects, as $x_i$, in place of their characters, and
+// without links' icons, which have no source, or their joiners.
 func (st *viewState) writeText(b *strings.Builder, inf elemInfo, p ui.SelectedText) {
 	text := runeSlice(p.Text, p.Start, p.End)
 	if inf.line != -1 || inf.block >= len(st.paras) || !st.paras[inf.block].ok || len(st.paras[inf.block].p.objects) == 0 {
@@ -61,6 +62,12 @@ func (st *viewState) writeText(b *strings.Builder, inf elemInfo, p ui.SelectedTe
 	src := st.doc.Source()
 	r := p.Start
 	for _, c := range text {
+		if c == linkIconJoiner {
+			if k, found := slices.BinarySearchFunc(objects, r-1, func(o mathObject, r int) int { return o.rune - r }); found && objects[k].src == objects[k].end {
+				r++
+				continue
+			}
+		}
 		k, found := slices.BinarySearchFunc(objects, r, func(o mathObject, r int) int { return o.rune - r })
 		if found && c == '\uFFFC' && objects[k].end <= len(src) {
 			b.WriteString(src[objects[k].src:objects[k].end])

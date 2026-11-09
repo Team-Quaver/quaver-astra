@@ -43,6 +43,31 @@ func PerspectiveScene() *scene.Scene {
 	return s
 }
 
+// BehindOriginScene is a card far from its drawing's origin, turned over
+// in perspective around its center, which the frame shows at (160, 370):
+// the origin is behind the viewer, past the turned plane's horizon
+// (scene.Affine.Behind), the card in front (#1406). A rounded clip, its
+// shadow, a border and a gradient turn with it; red shows at the frame's
+// center.
+func BehindOriginScene() *scene.Scene {
+	s := &scene.Scene{Width: 320, Height: 740, Clear: scene.Color{R: 246, G: 247, B: 249, A: 255}}
+	sin, cos := math.Sincos(-60 * math.Pi / 180)
+	turn := scene.Projective(1, 0, 0, float32(cos), 0, 0, 0, float32(-sin)/600)
+	m := scene.Translation(160, 370).Mul(turn).Mul(scene.Translation(-1050, -1050))
+	r4 := func(v float32) [4]float32 { return [4]float32{v, v, v, v} }
+	red, blue := scene.Color{R: 220, G: 40, B: 40, A: 255}, scene.Color{R: 40, G: 60, B: 220, A: 255}
+	s.Ops = []scene.Op{
+		{Kind: scene.OpShadow, Rect: scene.Rect{X: 1000, Y: 1004, W: 100, H: 100}, Radii: r4(12), Blur: 6, Color: scene.Color{A: 120}, Transform: m},
+		{Kind: scene.OpPushClip, Rect: scene.Rect{X: 1000, Y: 1000, W: 100, H: 100}, Radii: r4(12), Transform: m},
+		{Kind: scene.OpFill, Rect: scene.Rect{X: 990, Y: 990, W: 120, H: 120}, Color: blue, Color2: red, Paint: scene.PaintLinear,
+			Gradient: [4]float32{1000, 1000, 1100, 1000}, Transform: m},
+		{Kind: scene.OpFill, Rect: scene.Rect{X: 1030, Y: 1030, W: 40, H: 40}, Radii: r4(8), Color: red,
+			Border: scene.Uniform(3), BorderColor: scene.Color{R: 250, G: 250, B: 250, A: 255}, Transform: m},
+		{Kind: scene.OpPopClip, Transform: m},
+	}
+	return s
+}
+
 // AxisClipScene is content under a hard clip that a pose scales and moves
 // (a scroll view in a panel that is entering): the clip edges fall in the middle
 // of pixels (the CPU renderer samples a pixel on a 4x4 grid, so its

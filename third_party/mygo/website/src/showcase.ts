@@ -169,4 +169,129 @@ export const showcase: ShowcaseApp[] = [
     mode: "native",
     image: "/showcase/lumilo.jpg",
   },
+  {
+    name: "Tomoru",
+    description:
+      "Live bilingual subtitles for anything you watch on macOS and Windows. It listens to what your computer plays, from raw anime and VTuber streams to games and meetings, and shows each line with its translation over any app.",
+    url: "https://tomoru.acane.dev",
+    author: "ACAne0320",
+    mode: "native",
+    image: "/showcase/tomoru.jpg",
+  },
+  {
+    name: "Quaver Astra",
+    description:
+      "A lightweight, native-feeling QQ Music client. Team Quaver rebuilt their Electron app, Quaver Music, on MyGo, keeping its Go backend and playback engine.",
+    url: "https://quaver.0w0.red",
+    author: "Ne0W0r1d x Team Quaver",
+    mode: "native",
+    image: "/showcase/quaver-astra.webp",
+  },
+  {
+    name: "Meiro",
+    description:
+      "YouTube Music, without the bloat. A native Material 3 Expressive player that takes about 100 MB, with no ads, synced lyrics, Last.fm scrobbling and colours that match each song.",
+    url: "https://meiro.elianiva.com",
+    author: "elianiva",
+    mode: "native",
+    image: "/showcase/meiro.jpg",
+  },
+  {
+    name: "Repo Hopper",
+    description:
+      "Spotlight for your Git repositories. A global shortcut opens a search over every local repo, most recently changed first, and opens the chosen one in your editor, terminal or Finder.",
+    url: "https://github.com/pteich/repo-hopper",
+    author: "pteich",
+    mode: "native",
+    image: "/showcase/repo-hopper.jpg",
+  },
+  {
+    name: "Universal S3 UI",
+    description:
+      "A lightweight storage browser for S3-compatible services, SFTP and FTP/FTPS. One connection manager with credentials in the system keychain, drag-and-drop uploads, temporary share links, and sync between any two connections.",
+    url: "https://github.com/pteich/us3ui",
+    author: "pteich",
+    mode: "native",
+    image: "/showcase/us3ui.jpg",
+  },
+  {
+    name: "RcloneDrive",
+    description:
+      "An open-source tool that mounts cloud storage as local disks, a RaiDrive alternative. A single Go binary with pure native UI and no frontend toolchain, an embedded rclone engine with 70+ backends, mounted on Windows through WinFsp that installs silently, plus a system tray, launch at login and automatic updates from GitHub Releases.",
+    url: "https://github.com/younland/RcloneDrive",
+    author: "younland",
+    mode: "native",
+    image: "/showcase/rclonedrive.jpg",
+  },
+  {
+    name: "ApiGo",
+    description:
+      "An API debugging tool in the shape of Hoppscotch, written in Go with MyGo native UI. Collections organize requests, REST and WebSocket traffic both send and render responses by type, and OpenAPI / Swagger documents import directly.",
+    url: "https://github.com/younland/apigo",
+    author: "younland",
+    mode: "native",
+    image: "/showcase/apigo.jpg",
+  },
+  {
+    name: "Silverwing",
+    description:
+      "A task-oriented desktop workspace that keeps multiple repositories, branches, reference materials and review context together for each development task. Create tasks from Meegle requirements and prepare workspaces and task branches with Git worktrees, organize several repos in one task with built-in Git review, and carry AGENTS.md context into Codex, Cursor or an IDE. Windows x64 and macOS Apple silicon.",
+    url: "https://github.com/javatoai/silverwing",
+    author: "javatoai",
+    mode: "native",
+  },
+  {
+    name: "Nodra",
+    description:
+      "A responsive state management library for Go desktop apps, built around a concurrency-safe, versioned Store[T]: serialized concurrent updates that roll back on error, undo/redo with nested groups, codecs and storage layered for persistence and encryption, latest-wins async actions, and a read-only DevTools — with MyGo integration that redraws a window only when a subscribed value changes.",
+    url: "https://nodra.yldm.ai",
+    author: "houko",
+    mode: "native",
+    image: "/showcase/nodra.jpg",
+  },
+  {
+    name: "NanoDoll",
+    description:
+      "A minimal desktop container built for web AI. Turn web AIs into standalone desktop apps: multi-pane tiling, browser login import, prompt library, and nearby file manager.",
+    url: "https://moonvy.com/apps/nano-doll/",
+    author: "yArna",
+    mode: "native",
+    image: "/showcase/nanodoll-cover.png",
+  },
+  {
+    name: "Teebots",
+    description:
+      "A free desktop app for a small team of AI bots on your own Mac, Windows or Linux machine. Each bot uses your API key and model; chats, memory and files stay on the device.",
+    url: "https://teebots.ai",
+    author: "希嘉嘉",
+    mode: "native",
+    image: "/showcase/teebots.png",
+  },
+  {
+    name: "映刻 Screenpin",
+    description:
+      "A Windows screenshot and screen recording utility that stays in the system tray. Global shortcuts capture a region, pin images above other windows, stitch scrolling screenshots, or record a region and trim the result before exporting.",
+    url: "https://github.com/wiptgdxv/screenpin",
+    author: "wiptgdxv",
+    mode: "native",
+    image: "/showcase/screenpin.png",
+  },
+  {
+    name: "Sotto",
+    description:
+      "A lightweight, unobtrusive desktop translator built for Windows users and developers.",
+    url: "https://github.com/doyuli/sotto",
+    author: "doyuli",
+    mode: "web",
+    image: "/showcase/sotto.png",
+  },
+  {
+    name: "TanGit",
+    description:
+      "An open-source Git desktop client built on Lazygit. Stage individual diff lines, browse history and branch graphs, resolve conflicts, and work across repositories on macOS, Windows and Linux with keyboard-driven native UI.",
+    url: "https://github.com/FleetingEcho/TanGit",
+    author: "FleetingEcho",
+    mode: "native",
+    image: "/showcase/tangit.jpg",
+  },
 ]

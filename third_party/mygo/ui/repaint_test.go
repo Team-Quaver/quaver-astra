@@ -605,3 +605,34 @@ func TestRepaintPartsAfterTransientMasks(t *testing.T) {
 		t.Error("the window was never painted in parts once its masks lasted")
 	}
 }
+
+// TestRepaintPartsContentTransition checks that a frame paints the window
+// whole while a text's content changes beside a Draw callback that moves:
+// the content transition asks from the element's painting, not a Draw
+// callback, and painted in parts it would stay as the last whole frame
+// left it, half faded.
+func TestRepaintPartsContentTransition(t *testing.T) {
+	label := "Connect"
+	view := func(c *context) {
+		coreColumn(c).Background(RGB(250, 250, 250)).Children(func() {
+			coreText(c, label).FontSize(20).ContentTransition(ContentTransition{Animation: &Animation{Duration: 100 * time.Millisecond, Ease: Linear}})
+			coreBox(c).Size(120, 20).Draw(func(p *Painter, r Rect) {
+				p.AnimationFrame()
+				p.Fill(Rect{r.X + float32(p.Now().UnixMilli()%50), r.Y, 6, r.H}, RGB(0, 0, 255), 0)
+			})
+		})
+	}
+	parts := newRepaintTester(view)
+	whole := newRepaintTester(view)
+	whole.rt.noParts = true
+	label = "Disconnect"
+	parts.Frame()
+	whole.Frame()
+	for i := range 10 {
+		parts.frame(16 * time.Millisecond)
+		whole.frame(16 * time.Millisecond)
+		if !bytes.Equal(parts.Image().Pix, whole.Image().Pix) {
+			t.Fatalf("frame %d, %v into the transition: painted in parts differs from painted whole", i, time.Duration(i+1)*16*time.Millisecond)
+		}
+	}
+}

@@ -83,7 +83,9 @@ Keys are by position: `KeyW` is the key in W's place on any layout, as
 WASD wants. The view takes the keyboard focus as it appears and when
 clicked, leaves keys with ⌘, Ctrl or Alt to the menus' shortcuts, and lets
 go of everything held when the window loses the keyboard, whose releases
-never come.
+never come. Outside the view, as for a cheat sheet of the game's keys,
+[`c.KeyDown`](../ui/input.md#keys-held) tells the keys held in the window
+whichever element has the focus.
 
 ### Testing
 

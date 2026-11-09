@@ -162,7 +162,7 @@ func coreRating(c *context, value *int, max int) *node {
 		// Around the stars, which a row stretched leaves at its start.
 		if first, last := e.first, e.last; e.FocusVisible() && first != nil {
 			stars := union(Rect{first.x, first.y, first.w, first.h}, Rect{last.x, last.y, last.w, last.h})
-			p.FocusRing(stars, [4]float32{t.Radius, t.Radius, t.Radius, t.Radius})
+			p.focusRingOf(e, stars, [4]float32{t.Radius, t.Radius, t.Radius, t.Radius})
 		}
 	})
 	e.flags |= flagOwnRing
@@ -283,7 +283,7 @@ func coreStepper(c *context, value *float64, lo, hi, step float64) *node {
 	})
 	e.DrawOver(func(p *Painter, r Rect) {
 		if e.FocusVisible() {
-			p.FocusRing(r, e.radius)
+			p.focusRingOf(e, r, e.radius)
 		}
 	})
 	return e
@@ -325,15 +325,16 @@ func coreRangeSlider(c *context, low, high *float64, lo, hi, step float64) *node
 	st := e.st
 	// Right to left, lo is at the right, as a Slider's.
 	rtl := e.rtl()
-	at := func() float64 {
-		x, _ := st.local(c.rt.pointerX, c.rt.pointerY)
+	// at is the value under the pointer pressing p: the slider or a knob.
+	at := func(p *state) float64 {
+		x, _ := st.local(p.pointer(c.rt))
 		f := (x + st.x - st.cx) / max(st.cw, 1)
 		if rtl {
 			f = 1 - f
 		}
 		return lo + float64(max(0, min(1, f)))*(hi-lo)
 	}
-	if !st.pressed {
+	if !st.pressedPrimary() {
 		*dragging = -1
 	}
 	var knobs [2]*node
@@ -364,15 +365,21 @@ func coreRangeSlider(c *context, low, high *float64, lo, hi, step float64) *node
 				}
 
 			})
-			if knob.st.pressed {
+			if knob.st.pressedPrimary() {
 				*dragging = k
 			}
 			knobs[k] = knob
 		}
 	})
 	e.afterInput(func() {
-		if (st.pressed || knobs[0].st.pressed || knobs[1].st.pressed) && !e.disabled() {
-			x := at()
+		p := st
+		for _, knob := range knobs {
+			if knob.st.pressedPrimary() {
+				p = knob.st
+			}
+		}
+		if p.pressedPrimary() && !e.disabled() {
+			x := at(p)
 			if *dragging < 0 {
 				// The nearest knob, the high one when they meet past it.
 				*dragging = 0

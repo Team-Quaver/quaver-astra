@@ -24,6 +24,7 @@ func TestShapeRegion(t *testing.T) {
 		{&cairoRegionSubtractRectangle, "cairo_region_subtract_rectangle"},
 		{&cairoRegionUnion, "cairo_region_union"},
 		{&cairoRegionDestroy, "cairo_region_destroy"},
+		{&cairoRegionUnionRectangle, "cairo_region_union_rectangle"},
 		{&contains, "cairo_region_contains_point"},
 	} {
 		if !bind(lib, b.fn, b.name) {
@@ -64,6 +65,35 @@ func TestShapeRegion(t *testing.T) {
 	} {
 		if got := contains(r, c.x, c.y); got != c.want {
 			t.Errorf("region contains %d, %d = %v, want %v", c.x, c.y, got, c.want)
+		}
+	}
+
+	// A page 120 by 80 shown at half its size, its corners rounded by 20
+	// of its DIPs but the bottom-left one: the area keeps what they cut
+	// off.
+	placed = []platform.WebViewPlacement{{
+		Frame: platform.RectF{X: 10, Y: 20, W: 60, H: 40}, Clip: platform.RectF{X: 10, Y: 20, W: 60, H: 40},
+		Width: 120, Height: 80, Radii: [4]float64{20, 20, 20, 0},
+	}}
+	rounded := shapeRegion(100, 80, placed)
+	defer cairoRegionDestroy(rounded)
+	for _, c := range []struct {
+		x, y int32
+		want bool
+	}{
+		{10, 20, true},  // cut off by the top-left corner
+		{12, 22, true},  // still outside its curve, 10 wide
+		{14, 24, false}, // inside it
+		{19, 20, true},  // the corner's last pixel on the top edge, in part
+		{20, 20, false}, // past the corner, on the top edge
+		{10, 30, false}, // past the corner, on the left edge
+		{69, 20, true},  // cut off by the top-right corner
+		{69, 59, true},  // the bottom-right
+		{10, 59, false}, // the bottom-left is square
+		{40, 40, false}, // the page
+	} {
+		if got := contains(rounded, c.x, c.y); got != c.want {
+			t.Errorf("rounded: region contains %d, %d = %v, want %v", c.x, c.y, got, c.want)
 		}
 	}
 }

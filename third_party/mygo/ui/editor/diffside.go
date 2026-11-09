@@ -140,9 +140,12 @@ func (s *diffSide) paintBlock(p *ui.Painter, ed *editor, b *block, r ui.Rect, to
 // corner is at corner, from a at v's bottom to b at its top, v being what
 // shows of it: lines at -45°, up to the right, every 8 DIPs along its
 // bottom from the corner. They are those that cross v alone, and their
-// pieces from v's bottom to its top, all of a size so that they share
-// their masks: a filler across a whole file added is millions of DIPs
-// high.
+// pieces from v's bottom to its top, all of a size so that they share a
+// mask without a GPU: a filler across a whole file added is millions of
+// DIPs high. Stroke each alone: on a GPU, a translucent line of one
+// segment takes no mask. That one would be as wide and as high as v is
+// high, rasterized again as its height changes, and drawn that large for
+// each stripe.
 func fillerStripes(v ui.Rect, corner [2]float64, fn func(a, b [2]float32)) {
 	if v.W <= 0 || v.H <= 0 {
 		return
@@ -219,6 +222,11 @@ func (s *diffSide) paintDeleted(p *ui.Painter, ed *editor, b *block, r ui.Rect) 
 			for ri := range l.rows {
 				row := &l.rows[ri]
 				ry := pl.y + float32(ri)*lh
+				// Only the rows in view: a long line wraps into
+				// thousands, each shaped and painted otherwise.
+				if ry > p.Visible().Y+p.Visible().H || ry+lh < p.Visible().Y {
+					continue
+				}
 				if d.Inline != DiffInlineNone {
 					for _, w := range words.oldWords[pl.line] {
 						rects = mergeRects(ov.rangeRects(l, row, l.toDisp(w.start, false), l.toDisp(w.end, false), rects[:0]))
@@ -295,10 +303,7 @@ func (s *diffSide) buildBlocks(c *ui.Context, ed *editor) {
 	if ed.r.W <= 0 {
 		return
 	}
-	y0, y1 := ed.scrollY, ed.scrollY+float64(ed.viewH)
-	if ed.o.fitContent {
-		y0, y1 = 0, h.total()
-	}
+	y0, y1 := ed.buildRange()
 	first, last := h.lineAt(y0), h.lineAt(y1)
 	side := DiffNew
 	if s.old {

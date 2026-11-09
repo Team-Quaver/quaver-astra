@@ -33,6 +33,12 @@ func takeLoginArg(args []string) ([]string, bool) {
 // Settings > General > Login Items), which needs an app bundle; on macOS 12
 // a launch agent starts it. On Linux it gets an XDG autostart entry, on
 // Windows a Run entry of the user, which Task Manager can disable.
+//
+// On Windows the Run entry starts the app with the user's normal
+// (unelevated) token, even when the user is an administrator. An app that
+// needs administrator rights, as a VPN client, registers a logon task in
+// Task Scheduler with the run level HighestAvailable instead, which starts
+// it elevated, and does not call SetOpenAtLogin.
 func (a *Application) SetOpenAtLogin(open bool) error {
 	id, name := appID(), a.Name()
 	return onMainValue(func() error { return backend().App().SetOpenAtLogin(open, id, name, loginArg) })

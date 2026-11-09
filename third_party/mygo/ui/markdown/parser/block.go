@@ -46,6 +46,10 @@ type blockState struct {
 	// $$, and mathDone one that ended.
 	mathBracket bool
 	mathDone    bool
+	// alert is a quote's alert whose marker is all its first paragraph
+	// holds: the quote is an alert if a block follows it (see
+	// alertQuote).
+	alert Alert
 }
 
 func (s *blockState) mathClose() string {
@@ -652,6 +656,9 @@ func (p *blockParser) finalize(i int) int {
 			p.removeLast(i)
 			return parent
 		}
+		if p.ext&ExtAlerts != 0 {
+			p.alertMarker(i)
+		}
 	case CodeBlock:
 		if !b.Fenced {
 			// Blank lines at the end are not the code's.
@@ -683,12 +690,67 @@ func (p *blockParser) finalize(i int) int {
 		if b.parse.lastChild < 0 {
 			b.End = b.Start + 1
 		}
+	case Quote:
+		if b.parse.alert != NoAlert {
+			p.alertQuote(i)
+		}
 	}
 	if parent >= 0 {
 		pb := &d.blocks[parent]
 		pb.End = max(pb.End, b.End)
 	}
 	return parent
+}
+
+// alertMarker reads the first line of paragraph i, the first block of a
+// top-level quote, as GitHub does an alert's marker: [!NOTE] alone on
+// it makes the quote an alert, its text the lines after. A marker alone
+// in its paragraph waits for the quote to end (see alertQuote), as a
+// quote of the marker alone is no alert.
+func (p *blockParser) alertMarker(i int) {
+	d := p.d
+	b := &d.blocks[i]
+	q := b.Parent
+	if q <= 0 || d.blocks[q].Kind != Quote || d.blocks[q].Parent != 0 || b.parse.prev >= 0 || b.segB == b.segA {
+		return
+	}
+	s := d.segs[b.segA]
+	a := alertOf(d.src[s.start:s.end])
+	if a == NoAlert {
+		return
+	}
+	if b.segB-b.segA == 1 {
+		d.blocks[q].parse.alert = a
+		return
+	}
+	b.segA++
+	b.text, b.textS = "", -1
+	b.Start = int(d.segs[b.segA].start)
+	d.blocks[q].Alert = a
+}
+
+// alertQuote makes quote i, whose first paragraph is an alert's marker
+// alone, the alert if a block other than a footnote's definition follows
+// the marker, or, while streaming, if the quote is still being written.
+// The marker's paragraph stays, without lines, which shows nothing.
+func (p *blockParser) alertQuote(i int) {
+	d := p.d
+	q := &d.blocks[i]
+	m := i + 1
+	if m >= q.Next || d.blocks[m].Kind != Paragraph || d.blocks[m].segB-d.blocks[m].segA != 1 {
+		return
+	}
+	follows := d.streaming && q.Open
+	for j := d.blocks[m].Next; j < q.Next && !follows; j = d.blocks[j].Next {
+		follows = d.blocks[j].Kind != FootnoteDefinition
+	}
+	if !follows {
+		return
+	}
+	q.Alert = q.parse.alert
+	mb := &d.blocks[m]
+	mb.segB = mb.segA
+	mb.text, mb.textS = "", -1
 }
 
 func (p *blockParser) firstChild(i int) int {

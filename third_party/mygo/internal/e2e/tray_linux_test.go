@@ -3,6 +3,8 @@
 package e2e
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -48,5 +50,24 @@ func TestTrayActivation(t *testing.T) {
 	mygo.RunOnMain(func() { activated = linux.TestActivateTray() })
 	if activated {
 		t.Fatal("an icon whose last click listener left answered activation")
+	}
+}
+
+// TestTrayIconPath checks that the tray gives the panel its icon by the
+// PNG's absolute path: a name, looked up in the panel's icon theme first,
+// showed a theme's icon on KDE (#1207).
+func TestTrayIconPath(t *testing.T) {
+	tray, err := mygo.NewTray(mygo.TrayOptions{Icon: squarePNG(), ToolTip: "icon path"})
+	if err != nil {
+		t.Skip("no tray: ", err)
+	}
+	defer tray.Destroy()
+	var icon string
+	mygo.RunOnMain(func() { icon = linux.TestTrayIcon() })
+	if !filepath.IsAbs(icon) {
+		t.Fatalf("the icon is %q, want an absolute path", icon)
+	}
+	if b, err := os.ReadFile(icon); err != nil || len(b) == 0 {
+		t.Fatalf("reading the icon %q: %v", icon, err)
 	}
 }

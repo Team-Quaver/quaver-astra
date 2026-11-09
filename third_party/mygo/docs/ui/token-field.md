@@ -21,4 +21,5 @@ without one.
 ## Accessibility
 
 Assistive technology sees the field named by its `Label`, its input as a
-text field, and each chip's button, named "Remove" and its token.
+combo box whose suggestions complete what was typed
+(`aria-autocomplete="list"`), or a text field when it has none, and each chip's button, named "Remove" and its token.

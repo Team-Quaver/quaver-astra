@@ -49,6 +49,7 @@ the fields of [the frontend](#development-and-the-frontend).
 | `version` | `0.1.0` | the version of the app, which `App.Version()` returns and updates compare |
 | `copyright` | | the copyright notice of the app, in its `Info.plist` (macOS) and file properties (Windows) |
 | `publisher` | the copyright notice without its "©" and years, e.g. `Example Inc.` of `© 2026 Example Inc.` | who makes the app: the publisher that Settings > Apps lists for the installed app on Windows, and its company in the file properties |
+| `license` | `license` in package.json | the SPDX license expression of the app, such as `MIT` or `Apache-2.0 WITH LLVM-exception`, which the PKGBUILD of Arch Linux records |
 | `icon` | `resources/icon.png` when it exists | a square PNG, ideally 1024×1024; its name with `-dev`, as `icon-dev.png`, beside it is the development app's, when it exists |
 | `main` | `.` | the Go package of the app, relative to the project |
 
@@ -71,6 +72,7 @@ New projects set `out` to `build`, apart from Vite's `dist`.
 | Field | |
 |---|---|
 | `resources` | files and directories copied into the app of every platform, next to the contents of the `resources` directory, under their base names; see [resources](distribution.md#resources), and [platform resources](distribution.md#platform-resources) for the files of one platform |
+| `resourcesExclude` | files of the `resources` directory left out of the apps: patterns of their paths there, such as `["**/*.psd", "design"]`, where `**` matches any number of directories; Go source files are always left out. See [leaving files out](distribution.md#leaving-files-out) |
 | `urlSchemes` | the URL schemes the app opens, such as `myapp` for `myapp://…`, which reach `App.OnOpenURL`; see [deep links](app.md#deep-links) |
 | `fileAssociations` | the file types the app opens, which reach `App.OnOpenFile`; see [file associations](app.md#file-associations) |
 

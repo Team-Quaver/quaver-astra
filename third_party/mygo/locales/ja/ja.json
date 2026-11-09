@@ -188,5 +188,6 @@
   "decimalPlaces": "{n, plural, other {小数点以下は # 桁までにしてください}}",
   "decimalAtLeast": "{min} 以上の値を入力してください",
   "decimalAtMost": "{max} 以下の値を入力してください",
-  "desktopShortcut": "デスクトップにショートカットを作成"
+  "desktopShortcut": "デスクトップにショートカットを作成",
+  "selected": "選択済み"
 }

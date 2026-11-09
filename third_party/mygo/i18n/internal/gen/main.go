@@ -4,7 +4,8 @@
 // compiled to Go and the parent locales; testdata/plural_samples.txt, the
 // samples CLDR gives of each plural category, which the tests check the
 // compiled rules against; and format_tables.go, what formatting numbers
-// and dates needs of the locales of CLDR's modern coverage (format.go).
+// and dates needs of the locales of CLDR's modern coverage (format.go),
+// and relative_tables.go, the patterns of relative times (relative.go).
 //
 // The data comes from the npm packages of cldr-json (cldr-core,
 // cldr-dates-full, cldr-numbers-full and cldr-localenames-full), each

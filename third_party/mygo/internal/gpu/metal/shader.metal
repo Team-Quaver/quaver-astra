@@ -52,7 +52,7 @@ struct Inst {
 	float4 clipRadii;
 	float4 params;				   // kind, dashed or grayscale, sigma or paint, opacity
 	float4 transform0, transform1; // local-to-frame rows, AA and clip-mask flags
-	float4 transform2;             // the projective row's g and h
+	float4 transform2;             // the projective row's g and h, and 1 where its constant is -1
 };
 
 // The color and, for dual-source blending, the source's alpha of each
@@ -75,7 +75,7 @@ struct VSOut {
 // frameH returns the frame point of local p, in homogeneous coordinates.
 float3 frameH(Inst i, float2 p) {
 	return float3(dot(i.transform0.xyz, float3(p, 1.0f)), dot(i.transform1.xyz, float3(p, 1.0f)),
-				  dot(float3(i.transform2.xy, 1.0f), float3(p, 1.0f)));
+				  dot(float3(i.transform2.xy, 1.0f - 2.0f * i.transform2.z), float3(p, 1.0f)));
 }
 
 // globals holds the frame's width and height in pixels, and 1 in z when
@@ -296,7 +296,7 @@ Frame frameOf(VSOut v, Inst i) {
 	f.persp = any(i.transform2.xy != 0.0f);
 	// In perspective, the pixel's center, as interpolating drifts.
 	f.s = f.persp ? v.pos.xy : v.world.xy / v.world.z;
-	float3 r0 = i.transform0.xyz, r1 = i.transform1.xyz, r2 = float3(i.transform2.xy, 1.0f);
+	float3 r0 = i.transform0.xyz, r1 = i.transform1.xyz, r2 = float3(i.transform2.xy, 1.0f - 2.0f * i.transform2.z);
 	f.c0 = cross(r1, r2);
 	f.c1 = cross(r2, r0);
 	f.c2 = cross(r0, r1);

@@ -18,8 +18,8 @@ import (
 // this one shows now. The other terminal, as one whose Conn reads the
 // frames, then shows this one's screen and scrollback cell for cell, with
 // its cursor and the modes that change what it sends (the cursor keys',
-// the keyboard protocols', the mouse's, bracketed paste), and never lays
-// out a program's output itself: it cannot come to show something else,
+// the keyboard protocols', the mouse's, bracketed paste) and the rows of
+// a shell's prompt (OSC 133), and never lays out a program's output itself: it cannot come to show something else,
 // as a terminal fed the program's output from a snapshot can.
 //
 // Frames draw rows where they are, and rows that scroll off pass through
@@ -274,7 +274,7 @@ func (m *Mirror) restart(out *bytes.Buffer, screen []line, alt bool, top int) {
 	m.deleteImages(out, &m.imgs[1])
 	out.WriteString("\x1b[?1049l" + noImages)
 	m.deleteImages(out, &m.imgs[0])
-	out.WriteString("\x1b[0m\x1b[H\x1b[2J\x1b[3J")
+	out.WriteString("\x1b[0m\x1b[H\x1b[2J\x1b[3J" + markOutput)
 	m.modes, m.cursor = "", ""
 	m.imgs = [2]mirroredImages{}
 	m.sent = make([][]byte, len(screen))
@@ -339,6 +339,19 @@ func readLines(term *vt.Terminal, from, to int) []line {
 func (m *Mirror) write(out *bytes.Buffer, lines []line) {
 	rows := len(m.sent)
 	screen := len(lines) - rows
+	// The first lines go over the other screen's rows, the others onto
+	// rows that scroll in, which have no mark.
+	was := func(i int) vt.RowPrompt {
+		if i < rows {
+			return keyPrompt(m.sent[i])
+		}
+		return vt.NoPrompt
+	}
+	for i := 1; i < min(rows, len(lines)); i++ {
+		if lines[i-1].wrap {
+			premark(out, i, lines[i], was(i))
+		}
+	}
 	out.WriteString("\x1b[H")
 	for i, l := range lines {
 		last := i == len(lines)-1
@@ -346,7 +359,7 @@ func (m *Mirror) write(out *bytes.Buffer, lines []line) {
 		if !last {
 			next = &lines[i+1]
 		}
-		k := m.row(out, l, next, i > 0 && lines[i-1].wrap)
+		k := m.row(out, l, next, i > 0 && lines[i-1].wrap, was(i))
 		if i >= screen {
 			m.sent[i-screen] = k
 		}
@@ -372,13 +385,16 @@ func (m *Mirror) redraw(out *bytes.Buffer, screen []line) {
 		for s > 0 && screen[s-1].wrap {
 			s--
 		}
+		for r := s + 1; r < rows && screen[r-1].wrap; r++ {
+			premark(out, r, screen[r], keyPrompt(m.sent[r]))
+		}
 		fmt.Fprintf(out, "\x1b[%dH", s+1)
 		for first := s; s < rows; s++ {
 			var next *line
 			if s+1 < rows && screen[s].wrap {
 				next = &screen[s+1]
 			}
-			m.sent[s] = m.row(out, screen[s], next, s > first)
+			m.sent[s] = m.row(out, screen[s], next, s > first, keyPrompt(m.sent[s]))
 			if next == nil {
 				break
 			}
@@ -392,23 +408,35 @@ func (m *Mirror) redraw(out *bytes.Buffer, screen []line) {
 // other terminal to wrap it too. A row is cleared before it is drawn, but
 // for one a soft wrap continues, cont, which starts with the cursor still
 // at the end of the row before, waiting to wrap, which a clear would clear
-// instead; with nothing on it, a blank wraps there first, and the clear
-// after takes it. It returns what identifies how it drew it.
-func (m *Mirror) row(out *bytes.Buffer, l line, next *line, cont bool) []byte {
+// instead; with nothing on it, or for its mark to change, a blank wraps
+// there first, which the row's text or the clear after takes. was is the
+// mark of a shell's prompt the other row has (see mark). It returns what
+// identifies how it drew it.
+func (m *Mirror) row(out *bytes.Buffer, l line, next *line, cont bool, was vt.RowPrompt) []byte {
 	cols := m.t.size.cols
 	if c, _ := m.t.term.Size(); c > 0 {
 		cols = c
 	}
 	out.WriteString("\x1b[0m")
+	marked, after := false, ""
 	switch {
 	case !cont:
 		// Cleared whole, which also undoes a wrap it had.
 		out.WriteString("\x1b[2K")
-	case len(l.vt) == 0:
-		// The blank wraps the row before into this one, then goes.
+		marked = mark(out, l.prompt, was)
+	case len(l.vt) == 0 || l.prompt != was && !l.startsWide:
+		// The blank wraps the row before into this one, then goes; the
+		// row is marked from its first column.
 		out.WriteString(" \r")
+		marked = mark(out, l.prompt, was)
+	case l.prompt != was && l.prompt != vt.NoPrompt:
+		// A wide character the row before left its last column for
+		// wraps, not a blank: the row is marked after its text, as the
+		// cursor's column takes no mark there (premark clears one).
+		after, marked = markAfter[l.prompt], true
 	}
 	out.Write(l.vt)
+	out.WriteString(after)
 	out.WriteString("\x1b[0m")
 	if l.wrap && next != nil {
 		// Out to the last column, which the next character wraps from;
@@ -424,7 +452,55 @@ func (m *Mirror) row(out *bytes.Buffer, l line, next *line, cont bool) []byte {
 	} else if l.end < cols {
 		out.WriteString("\x1b[K")
 	}
+	if marked {
+		out.WriteString(markEnd)
+	}
 	return l.key()
+}
+
+// The marks of a shell's prompt (OSC 133) that a Mirror writes for the
+// other terminal's rows to be marked as this one's are, for a click there
+// to move the shell's cursor (see clickToMove). The other terminal marks a
+// row a line feed or a soft wrap reaches while in a prompt as the prompt's
+// continuation, and keeps a row's mark as the row is cleared or drawn
+// over: each row a frame draws gets its mark, after which the other
+// terminal is out of the prompt again (markEnd), as it is from the start.
+const (
+	markPrompt       = "\x1b]133;A\a"
+	markContinuation = "\x1b]133;A;k=c\a"
+	markOutput       = "\x1b]133;C\a" // clears the row's mark at its first column
+	markEnd          = "\x1b]133;D\a" // out of the prompt, the row's mark kept
+)
+
+// markAfter are the marks of a row from a column after its first, where
+// markPrompt would start a line of its own.
+var markAfter = [...]string{
+	vt.PromptStart:        "\x1b]133;P\a",
+	vt.PromptContinuation: "\x1b]133;P;k=c\a",
+}
+
+// mark marks the other terminal's row, whose first column the cursor is
+// on, as a prompt's start or continuation, or clears the mark it has, was;
+// it reports whether the other terminal is in a prompt then.
+func mark(out *bytes.Buffer, p, was vt.RowPrompt) bool {
+	switch {
+	case p == vt.PromptStart:
+		out.WriteString(markPrompt)
+	case p == vt.PromptContinuation:
+		out.WriteString(markContinuation)
+	case was != vt.NoPrompt:
+		out.WriteString(markOutput)
+	}
+	return p != vt.NoPrompt
+}
+
+// premark clears the mark of row y of the other screen, was, from its
+// first column, before a soft wrap reaches it with a wide character, which
+// keeps the mark, and a row with none (row marks the others).
+func premark(out *bytes.Buffer, y int, l line, was vt.RowPrompt) {
+	if l.startsWide && len(l.vt) > 0 && l.prompt == vt.NoPrompt && was != vt.NoPrompt {
+		fmt.Fprintf(out, "\x1b[%dH%s", y+1, markOutput)
+	}
 }
 
 // line is a row of a terminal as a Mirror draws it.
@@ -439,22 +515,34 @@ type line struct {
 	// wide character that did not fit at its end went on to the next row;
 	// startsWide that it starts with a wide character.
 	wrap, spacerHead, startsWide bool
+	// prompt is how it belongs to a shell's prompt (OSC 133).
+	prompt vt.RowPrompt
 }
 
-// key identifies how the line shows.
+// key identifies how the line shows: whether it wraps, its prompt's mark,
+// then its cells.
 func (l line) key() []byte {
 	w := byte(0)
 	if l.wrap {
 		w = 1
 	}
-	return append([]byte{w}, l.vt...)
+	return append([]byte{w, byte(l.prompt)}, l.vt...)
+}
+
+// keyPrompt returns the prompt's mark of a line drawn as key, none for a
+// row not drawn.
+func keyPrompt(key []byte) vt.RowPrompt {
+	if len(key) < 2 {
+		return vt.NoPrompt
+	}
+	return vt.RowPrompt(key[1])
 }
 
 // readLine reads the row the render state's row iterator is on, row y of
 // the viewport.
 func readLine(term *vt.Terminal, rs *vt.RenderState, y int) line {
 	cells := rs.RowCells()
-	l := line{wrap: rs.RowWrapped()}
+	l := line{wrap: rs.RowWrapped(), prompt: rs.RowPrompt()}
 	for x, c := range cells {
 		if c.Codepoint != 0 || c.Grapheme || c.HasBackground || c.Style != 0 || c.Wide == vt.SpacerTail {
 			l.end = x + 1

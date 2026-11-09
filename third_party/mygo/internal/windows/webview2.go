@@ -172,11 +172,27 @@ var (
 	iidICoreWebView2_8                           = guid("e9632730-6e1e-43ab-b7b8-7b2c9e62e094")
 	iidICoreWebView2_13                          = guid("f75f09a8-667e-4983-88d6-c8773f315e84")
 	iidICoreWebView2Profile2                     = guid("fa740d4b-5eae-4344-a8ad-74be31925397")
+	iidICoreWebView2Environment8                 = guid("d6eb91dd-c3d2-45e5-bd29-6dc2bc4de9cf")
+)
+
+// ICoreWebView2Environment8's GetProcessInfos follows
+// add_ProcessInfosChanged (16) and remove_ProcessInfosChanged (17); the
+// collection it returns has get_Count and GetValueAtIndex, each
+// ICoreWebView2ProcessInfo get_ProcessId and get_Kind.
+const (
+	env8GetProcessInfos      = 18
+	procInfosGetCount        = 3
+	procInfosGetValueAtIndex = 4
+	procInfoGetProcessId     = 3
+	procInfoGetKind          = 4
+
+	processKindGPU = 4 // COREWEBVIEW2_PROCESS_KIND_GPU
 )
 
 const (
-	hkeyCurrentUser = 0x80000001
-	keyQueryValue   = 0x0001
+	hkeyCurrentUser  = 0x80000001
+	hkeyLocalMachine = 0x80000002
+	keyQueryValue    = 0x0001
 )
 
 // unthrottledArguments are the browser's arguments that keep the pages of

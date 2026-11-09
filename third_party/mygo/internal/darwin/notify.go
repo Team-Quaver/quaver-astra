@@ -166,6 +166,9 @@ func (b *Backend) addNotification(n *platform.Notification, done func(error)) {
 		if n.Group != "" {
 			send(content, "setThreadIdentifier:", uintptr(nsString(n.Group)))
 		}
+		if len(n.Image) > 0 && attachNotificationImage != nil {
+			done = attachNotificationImage(content, n.Image, done)
+		}
 		if n.Sender != nil && prepareCommunication != nil && prepareCommunication(b, n, content, done) {
 			return
 		}

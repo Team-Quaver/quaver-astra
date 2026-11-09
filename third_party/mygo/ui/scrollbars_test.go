@@ -273,3 +273,121 @@ func TestScrollbarsFinalFluentValueKeepsVisibleThumbDrag(t *testing.T) {
 		t.Fatal("finally visible thumb stopped dragging after a rebuild")
 	}
 }
+
+// KeepScrollbars shows a container's bars with the pointer away, looking
+// as they do on hover, only while its content overflows it; Scrollbars(false)
+// hides them still, and leaving it out shows them on hover again.
+func TestKeepScrollbars(t *testing.T) {
+	for _, scale := range []float32{1, 2} {
+		t.Run(fmt.Sprintf("scale%g", scale), func(t *testing.T) {
+			keep, visible, tall := true, true, true
+			var st *state
+			tt := coreNewTester(func(c *context) {
+				theme := *c.theme
+				theme.Scrollbar = RGB(240, 20, 30)
+				c.SetTheme(&theme)
+				scroll := coreScrollBoth(c).Size(100, 100).Scrollbars(visible).KeepScrollbars(keep)
+				st = scroll.st
+				scroll.Children(func() {
+					size := float32(400)
+					if !tall {
+						size = 50
+					}
+					coreBox(c).Size(size, size).Background(RGB(255, 255, 255))
+				})
+			}, 140, 140)
+			defer tt.rt.close()
+			tt.SetScale(scale)
+			tt.Move(120, 120)
+			tt.Frame()
+			if !st.barsShown {
+				t.Fatal("kept bars do not show with the pointer away")
+			}
+			away := tt.Image()
+			tt.Move(50, 50)
+			tt.Frame()
+			hovered := tt.Image()
+			if !st.barsShown {
+				t.Fatal("kept bars do not show with the pointer over the container")
+			}
+			if !away.Rect.Eq(hovered.Rect) {
+				t.Fatal("images differ in size")
+			}
+			for y := range away.Rect.Dy() {
+				for x := range away.Rect.Dx() {
+					if away.RGBAAt(x, y) != hovered.RGBAAt(x, y) {
+						t.Fatalf("a kept bar looks otherwise with the pointer away, at %d,%d: %v, on hover %v", x, y, away.RGBAAt(x, y), hovered.RGBAAt(x, y))
+					}
+				}
+			}
+			// A kept thumb is dragged as a hovered one is.
+			g := scrollBars(Rect{0, 0, 100, 100}, st.barInset, 400, 400, 0, 0, st.flags, tt.rt.c.theme.scrollbarWidth(), false)
+			tt.Move(120, 120)
+			tt.Frame()
+			x, y := g.v.X+g.v.W/2, g.v.Y+g.v.H/2
+			tt.Press(x, y)
+			tt.Move(x, y+20)
+			tt.Release(x, y+20)
+			if st.scrollY <= 0 {
+				t.Fatal("dragging a kept thumb did not scroll")
+			}
+			// Content that fits shows no bar, kept or not.
+			tall = false
+			tt.Move(120, 120)
+			tt.Frame()
+			fits := tt.Image()
+			keep = false
+			tt.Frame()
+			plain := tt.Image()
+			for y := range fits.Rect.Dy() {
+				for x := range fits.Rect.Dx() {
+					if fits.RGBAAt(x, y) != plain.RGBAAt(x, y) {
+						t.Fatalf("a kept bar shows over content that fits, at %d,%d", x, y)
+					}
+				}
+			}
+			// Hidden wins, and the default shows on hover only again.
+			tall, keep, visible = true, true, false
+			tt.Frame()
+			if st.barsShown || st.hideScrollbars != true {
+				t.Fatal("Scrollbars(false) did not hide kept bars")
+			}
+			keep, visible = false, true
+			tt.Frame()
+			if st.barsShown {
+				t.Fatal("omitting KeepScrollbars kept the bars with the pointer away")
+			}
+		})
+	}
+}
+
+// A table's Scrollbars and KeepScrollbars are those of the list of its
+// rows, which scrolls.
+func TestTableScrollbars(t *testing.T) {
+	for _, tc := range []struct {
+		name          string
+		visible, keep bool
+		shown         bool
+	}{
+		{"default", true, false, false},
+		{"kept", true, true, true},
+		{"hidden", false, true, false},
+	} {
+		s := ListState{}
+		tt := coreNewTester(func(c *context) {
+			coreTable(c, &s, []TableColumn{{Title: "Name"}}, 200, func(row, col int) { coreTextf(c, "Cell %d", row) }).
+				Scrollbars(tc.visible).KeepScrollbars(tc.keep).Size(200, 200)
+		}, 240, 240)
+		tt.Move(230, 230)
+		tt.Frame()
+		st := s.frame.e.st
+		if st.flags&flagScrollY == 0 {
+			tt.rt.close()
+			t.Fatalf("%s: the list state is not the table's rows'", tc.name)
+		}
+		if st.barsShown != tc.shown || st.hideScrollbars == tc.visible {
+			t.Errorf("%s: rows' bars shown %v hidden %v, want shown %v hidden %v", tc.name, st.barsShown, st.hideScrollbars, tc.shown, !tc.visible)
+		}
+		tt.rt.close()
+	}
+}

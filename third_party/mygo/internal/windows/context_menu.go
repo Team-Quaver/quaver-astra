@@ -171,7 +171,7 @@ func (w *window) showContextMenu(m *platform.Menu, c *contextNatives, at point, 
 	defer b.menus.drop(owner)
 	menu := b.buildMenu(m, false, owner, nil, monitorDPI(monitorAt(int(pt.X), int(pt.Y))))
 	defer procDestroyMenu.Call(menu)
-	cmd := b.trackPopup(menu, w.top().hwnd, pt, 0)
+	cmd := b.trackPopup(menu, w.top().hwnd, pt, 0, nil)
 	e := b.menus.entries[cmd]
 	if cmd != 0 && e != nil && e.native > 0 && e.native <= len(c.items) {
 		var id int32

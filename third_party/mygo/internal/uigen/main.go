@@ -18,6 +18,7 @@ import (
 var parts = map[string]string{
 	"TabsParts": "tabsParts", "SelectParts": "selectParts", "ComboboxParts": "comboboxParts",
 	"CollapsibleParts": "collapsibleParts", "SegmentedParts": "segmentedParts", "ToastParts": "toastParts",
+	"AccordionParts": "accordionParts", "MenuParts": "menuParts", "TreeParts": "treeParts", "TreeItemParts": "treeItemParts",
 }
 
 func main() {
@@ -498,8 +499,9 @@ func generate(out *bytes.Buffer, fs *token.FileSet, fn *ast.FuncDecl) {
 	call := rawRecv + fn.Name.Name + genericArgs(fs, fn.Type.TypeParams) + "(" + strings.Join(args, ",") + ")"
 	count := fieldsCount(fn.Type.Results)
 	// A part's method that builds an element, as a select's Item or a
-	// tab list's Tab, is a constructor too.
-	if publicPart(r) != "" && count == 1 && mentions(fn.Type.Results, "node") {
+	// tab list's Tab, or parts, as an accordion's Item, is a constructor
+	// too.
+	if publicPart(r) != "" && count == 1 && (mentions(fn.Type.Results, "node") || publicPart(baseName(fn.Type.Results.List[0].Type)) != "") {
 		constructor = true
 	}
 	if count == 1 && mentions(fn.Type.Results, "node") {
@@ -562,7 +564,7 @@ func generatePart(out *bytes.Buffer, fs *token.FileSet, t *ast.TypeSpec) {
 	}
 	fmt.Fprintln(out, "part uint32\n}")
 	ptr := ""
-	if pub == "SelectParts" || pub == "ComboboxParts" {
+	if pub == "SelectParts" || pub == "ComboboxParts" || pub == "MenuParts" {
 		ptr = "*"
 	}
 	fmt.Fprintf(out, "func wrap%s%s(p %s%s%s) %s%s {\n", pub, tp, ptr, t.Name.Name, args, pub, args)

@@ -62,3 +62,30 @@ func TestReviewHealing(t *testing.T) {
 		}
 	}
 }
+
+// Extended autolinks end at punctuation beyond ASCII, such as the CJK
+// comma, and at spaces beyond ASCII, but not at letters beyond ASCII.
+func TestReviewAutolinkUnicodePunct(t *testing.T) {
+	for _, c := range []struct{ src, want string }{
+		{"信中附上链接：https://vishnuai.in/mediakit，并留下电话联系方式。", `<p>信中附上链接：<a href="https://vishnuai.in/mediakit">https://vishnuai.in/mediakit</a>，并留下电话联系方式。</p>` + "\n"},
+		{"见 https://example.com/a。", `<p>见 <a href="https://example.com/a">https://example.com/a</a>。</p>` + "\n"},
+		{"“www.example.com”", `<p>“<a href="http://www.example.com">www.example.com</a>”</p>` + "\n"},
+		{"（www.example.com/路径）", `<p>（<a href="http://www.example.com/%E8%B7%AF%E5%BE%84">www.example.com/路径</a>）</p>` + "\n"},
+		{"https://例子.测试/页面", `<p><a href="https://%E4%BE%8B%E5%AD%90.%E6%B5%8B%E8%AF%95/%E9%A1%B5%E9%9D%A2">https://例子.测试/页面</a></p>` + "\n"},
+		{"https://en.wikipedia.org/wiki/1990–91_season", `<p><a href="https://en.wikipedia.org/wiki/1990%E2%80%9391_season">https://en.wikipedia.org/wiki/1990–91_season</a></p>` + "\n"},
+		{"https://example.com\u3000下一句", `<p><a href="https://example.com">https://example.com</a>` + "\u3000下一句</p>\n"},
+		{"https://example.com\u2028下一句", `<p><a href="https://example.com">https://example.com</a>` + "\u2028下一句</p>\n"},
+		{"https://example.com/a\u2028下一句", `<p><a href="https://example.com/a">https://example.com/a</a>` + "\u2028下一句</p>\n"},
+		{"见\u2029www.example.com", "<p>见\u2029" + `<a href="http://www.example.com">www.example.com</a></p>` + "\n"},
+		{"邮箱：a@example.com，谢谢", `<p>邮箱：<a href="mailto:a@example.com">a@example.com</a>，谢谢</p>` + "\n"},
+		// Written links keep their whole destination and text.
+		{"[文档，下载](https://example.org/文档，下载)", `<p><a href="https://example.org/%E6%96%87%E6%A1%A3%EF%BC%8C%E4%B8%8B%E8%BD%BD">文档，下载</a></p>` + "\n"},
+		{"[https://example.org/文档，下载](https://example.org/文档，下载)", `<p><a href="https://example.org/%E6%96%87%E6%A1%A3%EF%BC%8C%E4%B8%8B%E8%BD%BD">https://example.org/文档，下载</a></p>` + "\n"},
+		{"<https://example.org/x，y>", `<p><a href="https://example.org/x%EF%BC%8Cy">https://example.org/x，y</a></p>` + "\n"},
+		{"[见 https://example.org/a，b](https://c.org)", `<p><a href="https://c.org">见 https://example.org/a，b</a></p>` + "\n"},
+	} {
+		if got := render(c.src, Default); got != c.want {
+			t.Errorf("%q:\ngot  %q\nwant %q", c.src, got, c.want)
+		}
+	}
+}

@@ -188,5 +188,6 @@
   "decimalPlaces": "{n, plural, other {最多保留 # 位小數}}",
   "decimalAtLeast": "請輸入不小於 {min} 的值",
   "decimalAtMost": "請輸入不大於 {max} 的值",
-  "desktopShortcut": "建立桌面捷徑"
+  "desktopShortcut": "建立桌面捷徑",
+  "selected": "已選取"
 }

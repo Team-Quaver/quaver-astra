@@ -155,6 +155,9 @@ func (l *loop) input(ev ui.InputEvent) bool {
 		if k == ui.KeyUnknown {
 			k = ev.Key
 		}
+		if k == ui.KeyUnknown {
+			return false // a modifier on its own, or a key of no name
+		}
 		if ev.Kind == ui.InputKeyDown {
 			if !ev.Repeat && !in.down[k] {
 				in.pressed[k] = true

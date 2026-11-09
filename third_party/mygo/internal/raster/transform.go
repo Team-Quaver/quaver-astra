@@ -146,20 +146,23 @@ func (r *renderer) transformed(op *scene.Op, px scene.EffectPixels, b *scene.Bac
 			}
 			switch op.Kind {
 			case scene.OpFill:
+				var fc [4]float32
 				if pt.visible() {
-					blend(p, pt.at(lx, ly), cov*clip)
+					fc = pt.at(lx, ly)
 				}
-				if hasBorder {
-					ic := float32(0)
-					if !inner.r.Empty() {
-						ic = transformedCoverage(&inner, op.Transform, inv, wx, wy)
-					}
-					bc := max(cov-ic, 0)
-					if op.Dashed {
-						bc *= dash(op.Rect, bw, lx, ly)
-					}
-					blend(p, borderAt(bp, border, op.BorderColor, lx, ly), bc*clip)
+				if !hasBorder {
+					blend(p, fc, cov*clip)
+					continue
 				}
+				ic := float32(0)
+				if !inner.r.Empty() {
+					ic = transformedCoverage(&inner, op.Transform, inv, wx, wy)
+				}
+				bc := max(cov-ic, 0)
+				if op.Dashed {
+					bc *= dash(op.Rect, bw, lx, ly)
+				}
+				blendFilled(p, fc, cov, borderAt(bp, border, op.BorderColor, lx, ly), bc, clip)
 			case scene.OpImage:
 				if image == nil {
 					continue

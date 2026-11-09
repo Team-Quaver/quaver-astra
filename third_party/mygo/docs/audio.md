@@ -61,12 +61,32 @@ player is heard. `Seek` and `Stop` move it at once.
 | `SetVolume(v)` | a gain: 1 as decoded, 0 silent |
 | `SetPan(p)` | from the left speaker (-1) to the right (1): mono keeps its power, stereo both channels, as Web Audio's `StereoPannerNode` |
 | `SetSpeed(s)` | speed and pitch together, as a record's: 2 is twice as fast and an octave higher |
+| `SetPreservesPitch(true)` | keeps the pitch at any speed, as HTML media's `preservesPitch`: speech at 1.5× in the voice it was recorded in |
 | `SetLoop(true)` | starts again at the end, without a gap |
 | `SetLoopRange(start, end)` | loops from `end` back to `start`: a tune's intro plays once, then its loop (`end` 0 is the end) |
 
 The setters return the player, to chain them. Volume changes, pauses and
 resumes ramp over 5 ms, so none clicks. `audio.SetVolume` sets the volume
 of everything.
+
+`SetSpeed` resamples, so the pitch changes with the speed, which games
+rely on for effects that play often. A podcast, lecture or voice-message
+player at 1.25×, 1.5× or 2× wants the voice to stay where it is: with
+`SetPreservesPitch(true)` the player time-stretches instead (WSOLA, in Go),
+playing segments of about 30 ms crossfaded where their waveforms match, so
+whole periods are skipped or repeated and the pitch stays:
+
+```go
+podcast, err := audio.OpenStream(f)
+podcast.SetPreservesPitch(true).SetSpeed(1.5).Play()
+```
+
+It suits speech and other pitched sound from about 0.5× to 4×, where sharp
+attacks such as drums' come out a little smeared, and it costs about 1% of
+a core while a player stretches; players that don't preserve pitch cost
+nothing more. Speed changes, seeks, loops and turning it on or off go on
+without a gap, and `Position` and `OnEnd` keep the source's time as with
+resampling.
 
 ## Media keys and Now Playing
 

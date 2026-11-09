@@ -33,6 +33,17 @@ ui.SplitVerticalPercent(c, &app.editorPercent, func() { app.editor(c) }, func() 
 Keep the size in the app's state, and save it to restore the layout when
 the app starts again. The pointer shows a resize cursor over the divider.
 
+`SplitReset` makes a double click on the divider put the first pane back at
+the size the app chooses, in the split's own unit: DIPs for `Split` and
+`SplitVertical`, a percentage for the percent variants. A split without it
+keeps its size on a double click. The size is kept even when the window is
+too small to show it, so the pane takes it back when there is room again,
+as a press on the divider does.
+
+```go
+ui.Split(c, &app.sidebarWidth, func() { app.files(c) }, func() { app.editor(c) }).SplitReset(220).Fill()
+```
+
 ## Accessibility
 
 Assistive technology sees the divider as a splitter named "Divider",

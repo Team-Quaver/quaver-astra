@@ -3,6 +3,7 @@
 package mygo
 
 import (
+	"context"
 	"encoding/json/v2"
 	"errors"
 	"fmt"
@@ -588,6 +589,53 @@ func TestDocumentFollowsReplacedRename(t *testing.T) {
 	}
 	// Following it records it as recent, in the user data the test removes.
 	waitFor(t, "the document to follow the rename", func() bool {
+		return d.Path() == renamed && slices.Contains(App.RecentDocuments(), renamed)
+	})
+	if d.State().Deleted {
+		t.Error("deleted")
+	}
+}
+
+// TestDocumentWatchStartFollowsRename renames the file before its watch
+// starts, which then can't: the document follows it all the same.
+func TestDocumentWatchStartFollowsRename(t *testing.T) {
+	ds := testDocs(t, DocumentsOptions[string]{Autosave: AutosaveOff})
+	path := writeTemp(t, "start.txt", "one")
+	path, _ = filepath.EvalSymlinks(path)
+	d, _ := ds.Open(path)
+	renamed := filepath.Join(filepath.Dir(path), "started.txt")
+	if err := os.Rename(path, renamed); err != nil {
+		t.Fatal(err)
+	}
+	watchDocumentFile(context.Background(), path)
+	// The recent documents too: the move writes them in the user data
+	// directory after the path, which the test's cleanup removes.
+	waitFor(t, "the document to follow the rename", func() bool {
+		return d.Path() == renamed && slices.Contains(App.RecentDocuments(), renamed)
+	})
+	if d.State().Deleted {
+		t.Error("the document is deleted")
+	}
+}
+
+// TestDocumentLookFollowsRename looks at a document's file after another
+// app renamed it and before the watch did, as a window focused then does:
+// the look follows the file by what the document read rather than taking
+// it for deleted, which the watch would then never follow. It is the order
+// in which TestDocumentFollowsReplacedRename's look when the watch started
+// sometimes ran.
+func TestDocumentLookFollowsRename(t *testing.T) {
+	ds := testDocs(t, DocumentsOptions[string]{Autosave: AutosaveOff})
+	path := writeTemp(t, "look.txt", "one")
+	path, _ = filepath.EvalSymlinks(path)
+	d, _ := ds.Open(path)
+	renamed := filepath.Join(filepath.Dir(path), "looked.txt")
+	if err := os.Rename(path, renamed); err != nil {
+		t.Fatal(err)
+	}
+	// The watch is never told: only a look can follow it.
+	d.checkDisk()
+	waitFor(t, "the look to follow the rename", func() bool {
 		return d.Path() == renamed && slices.Contains(App.RecentDocuments(), renamed)
 	})
 	if d.State().Deleted {

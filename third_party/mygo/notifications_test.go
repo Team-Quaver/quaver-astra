@@ -199,6 +199,26 @@ func TestNotificationSenderSnapshot(t *testing.T) {
 	}
 }
 
+// TestNotificationImage: the image reaches the backend as it was when the
+// notification was made, as the app may reuse its buffer, and a
+// notification without one gives the backend none.
+func TestNotificationImage(t *testing.T) {
+	cover := []byte{0xff, 0xd8, 0xff, 0xe0}
+	n := NewNotification(NotificationOptions{ID: "now-playing", Title: "Spring", Image: cover})
+	t.Cleanup(n.Close)
+	cover[0] = 0
+	if err := n.Show(); err != nil {
+		t.Fatal(err)
+	}
+	if got := fb.Notification("now-playing"); got == nil || !slices.Equal(got.Image, []byte{0xff, 0xd8, 0xff, 0xe0}) {
+		t.Fatalf("image: %+v", got)
+	}
+	plain := showNotification(t, NotificationOptions{Title: "plain"})
+	if got := fb.Notification(plain.ID()); got.Image != nil {
+		t.Errorf("a notification without an image gave the backend %v", got.Image)
+	}
+}
+
 // TestNotificationIDs: a notification has the ID the app gives it, or one
 // of its own that no other has, in this run or another, and showing one
 // with the ID of another replaces it, clicks included.

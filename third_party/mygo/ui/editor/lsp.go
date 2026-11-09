@@ -34,6 +34,9 @@ type Completion struct {
 	Kind   CompletionKind
 	// Insert replaces the word before the caret, Label when empty.
 	Insert string
+	// Snippet inserts a parsed template, overriding Insert and Label.
+	// Kind alone only chooses an icon; it never interprets Insert.
+	Snippet *Snippet
 	// Documentation shows beside the list for the completion chosen.
 	Documentation string
 	// FilterText is matched instead of Label when set.
@@ -276,6 +279,9 @@ func (ed *editor) acceptCompletion() bool {
 	if ins == "" {
 		ins = it.Label
 	}
+	if it.Snippet != nil {
+		ins = it.Snippet.text
+	}
 	p := ed.primary()
 	n := p.head - cc.at
 	typed := ed.slice(cc.at, p.head)
@@ -289,6 +295,9 @@ func (ed *editor) acceptCompletion() bool {
 			a = s.head - n
 		}
 		edits = append(edits, Edit{Start: a, End: s.end(), Text: ins})
+	}
+	if it.Snippet != nil {
+		return ed.insertSnippet(it.Snippet, edits)
 	}
 	sels := slices.Clone(ed.sels)
 	ed.apply(edits, editOther, func(move func(int, bias) int) []sel {
@@ -325,6 +334,10 @@ type hover struct {
 	hideAt  time.Time
 	focused bool
 }
+
+// defaultHoverDelay is how long the pointer rests before a hover is asked
+// for, when State.HoverDelay is not set: a tooltip's.
+const defaultHoverDelay = 600 * time.Millisecond
 
 // hoverHideDelay is how long a hover stays once the pointer has left the
 // text hovered, for the pointer to go into it, as VS Code's

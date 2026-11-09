@@ -148,6 +148,7 @@ func (shell) ShowItemInFolder(string)              {}
 func (shell) TrashItem(string) error               { return errUnsupported }
 func (shell) Beep()                                {}
 func (shell) FileIcon(string, int) ([]byte, error) { return nil, errUnsupported }
+func (shell) TypeIcon(string, int) ([]byte, error) { return nil, errUnsupported }
 func (shell) OpenApplication(string) error         { return errUnsupported }
 
 func (*Backend) Applications() ([]platform.Application, error) { return nil, errUnsupported }

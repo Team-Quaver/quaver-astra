@@ -83,3 +83,43 @@ func TestTraysAppearanceTemporary(t *testing.T) {
 	b.trays[tr.id] = tr
 	b.traysAppearance()
 }
+
+// TestTrayMenuAt opens the menus of icons as Windows 11 opens its own:
+// centered on the icon, away from the taskbar by the gap, on whichever
+// side of the monitor the taskbar is.
+func TestTrayMenuAt(t *testing.T) {
+	const gap = 24
+	for _, c := range []struct {
+		name    string
+		icon    rect
+		bar     rect
+		edge    uint32
+		pt      point
+		flags   uintptr
+		exclude rect
+	}{
+		{"bottom", rect{1800, 2100, 1840, 2140}, rect{0, 2064, 3840, 2160}, 3,
+			point{1820, 2040}, tpmCenterAlign | tpmBottomAlign | tpmVertical, rect{0, 2040, 3840, 2160}},
+		{"top", rect{1800, 20, 1840, 60}, rect{0, 0, 3840, 96}, abeTop,
+			point{1820, 120}, tpmCenterAlign | tpmVertical, rect{0, 0, 3840, 120}},
+		{"left", rect{20, 1800, 60, 1840}, rect{0, 0, 96, 2160}, abeLeft,
+			point{120, 1820}, tpmVCenterAlign, rect{0, 0, 120, 2160}},
+		{"right", rect{3780, 1800, 3820, 1840}, rect{3744, 0, 3840, 2160}, abeRight,
+			point{3720, 1820}, tpmRightAlign | tpmVCenterAlign, rect{3720, 0, 3840, 2160}},
+		// A second monitor, left of the primary, with negative
+		// coordinates.
+		{"bottom, left monitor", rect{-200, 1040, -170, 1070}, rect{-1920, 1032, 0, 1080}, 3,
+			point{-185, 1008}, tpmCenterAlign | tpmBottomAlign | tpmVertical, rect{-1920, 1008, 0, 1080}},
+	} {
+		pt, flags, exclude := trayMenuAt(c.icon, c.bar, c.edge, gap)
+		if pt != c.pt || flags != c.flags || exclude != c.exclude {
+			t.Errorf("%s: at %v, flags %#x, out of %v; want %v, %#x, %v", c.name, pt, flags, exclude, c.pt, c.flags, c.exclude)
+		}
+		if !overlaps(c.icon, c.bar) {
+			t.Errorf("%s: the icon is not on the taskbar", c.name)
+		}
+	}
+	if overlaps(rect{0, 0, 10, 10}, rect{10, 0, 20, 10}) {
+		t.Error("rectangles that touch overlap")
+	}
+}

@@ -15,7 +15,7 @@ func isHostChar(s string) bool {
 	if n == 0 || r == utf8.RuneError && n == 1 {
 		return false
 	}
-	if isUnicodeSpace(r) {
+	if unicode.IsSpace(r) {
 		return false
 	}
 	if r < utf8.RuneSelf {
@@ -106,16 +106,17 @@ func (ip *inlineParser) wwwLink() bool {
 		return false
 	}
 	if pos > 0 && strings.IndexByte("*_~(", s[pos-1]) < 0 && !isUnicodeSpaceByte(s[pos-1]) {
-		return false
+		// Beyond ASCII, after a space or punctuation such as “ or （.
+		if r, _ := utf8.DecodeLastRuneInString(s[:pos]); r < utf8.RuneSelf || !isUnicodeSpace(r) && !endsAutolink(r) {
+			return false
+		}
 	}
 	data := s[pos:]
 	end := checkDomain(data, false)
 	if end == 0 {
 		return false
 	}
-	for end < len(data) && !isUnicodeSpaceByte(data[end]) && data[end] != '<' {
-		end++
-	}
+	end = autolinkEnd(data, end)
 	ip.d.steps += end
 	end = autolinkDelim(data, end)
 	if end == 0 {
@@ -124,6 +125,33 @@ func (ip *inlineParser) wwwLink() bool {
 	ip.addAutolink(pos, pos+end, "http://"+data[:end])
 	ip.pos = pos + end
 	return true
+}
+
+// autolinkEnd returns where a link's text starting at data[:end] runs
+// out: at a space, a <, or punctuation beyond ASCII, such as the CJK ，
+// and 。 or curly quotes, which text written without spaces puts right
+// after a link. Letters beyond ASCII, as in IDN hosts and paths, go on.
+func autolinkEnd(data string, end int) int {
+	for end < len(data) && !isUnicodeSpaceByte(data[end]) && data[end] != '<' {
+		if data[end] < utf8.RuneSelf {
+			end++
+			continue
+		}
+		r, n := utf8.DecodeRuneInString(data[end:])
+		if isUnicodeSpace(r) || endsAutolink(r) {
+			break
+		}
+		end += n
+	}
+	return end
+}
+
+// endsAutolink reports whether r, beyond ASCII, ends an extended
+// autolink: any space, line and paragraph separators included, and
+// punctuation but dashes and connectors, which paths such as Wikipedia's
+// use.
+func endsAutolink(r rune) bool {
+	return unicode.IsSpace(r) || unicode.IsPunct(r) && !unicode.In(r, unicode.Pd, unicode.Pc)
 }
 
 func isUnicodeSpaceByte(c byte) bool {
@@ -166,9 +194,7 @@ func (ip *inlineParser) urlLink() bool {
 		return false
 	}
 	end := 3 + n
-	for end < len(data) && !isUnicodeSpaceByte(data[end]) && data[end] != '<' {
-		end++
-	}
+	end = autolinkEnd(data, end)
 	ip.d.steps += end
 	end = autolinkDelim(data, end)
 	if end == 0 {

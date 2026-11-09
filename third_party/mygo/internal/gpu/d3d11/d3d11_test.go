@@ -76,12 +76,36 @@ func TestDrawsAsTheCPURenderer(t *testing.T) {
 			pix, stride := r.readBack(t)
 			gputest.Compare(t, "d3d11-perspective", pix, stride, s)
 		}
+		s = gputest.BehindOriginScene()
+		for range 2 {
+			if err := r.draw(s); err != nil {
+				t.Fatal(err)
+			}
+			pix, stride := r.readBack(t)
+			gputest.Compare(t, "d3d11-behind-origin", pix, stride, s)
+		}
 		for i, s := range gputest.TranslatedScenes() {
 			if err := r.draw(s); err != nil {
 				t.Fatal(err)
 			}
 			pix, stride := r.readBack(t)
 			gputest.Compare(t, "d3d11-translated"+[]string{"", "-between-pixels"}[i], pix, stride, s)
+		}
+		s = gputest.MaskedClipScene()
+		for range 2 {
+			if err := r.draw(s); err != nil {
+				t.Fatal(err)
+			}
+			pix, stride := r.readBack(t)
+			gputest.Compare(t, "d3d11-masked-clips", pix, stride, s)
+		}
+		s = gputest.CornerClipScene()
+		for range 2 {
+			if err := r.draw(s); err != nil {
+				t.Fatal(err)
+			}
+			pix, stride := r.readBack(t)
+			gputest.Compare(t, "d3d11-corner-clips", pix, stride, s)
 		}
 		r.Release()
 	}
@@ -363,7 +387,7 @@ func TestReleasedImageWithNewRenderer(t *testing.T) {
 // from shader.hlsl as it is, and that the compiler renderers fall back to
 // compiles it.
 func TestShaderBytecode(t *testing.T) {
-	if gpu.SourceSum(shaderSource) != shaderSum {
+	if sourceSum() != shaderSum {
 		t.Fatal("shader.hlsl changed since shaders.go was generated: run go generate ./internal/gpu/d3d11 on Windows")
 	}
 	for _, s := range []struct{ entry, target string }{{"vs", "vs_4_0"}, {"ps", "ps_4_0"}} {

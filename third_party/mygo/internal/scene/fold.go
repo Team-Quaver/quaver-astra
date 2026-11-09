@@ -50,9 +50,6 @@ func FoldTranslations() {
 	}
 }
 
-// folding reports whether renderers fold translations (FoldTranslations).
-func folding() bool { return fold.Load() != nil }
-
 // Fold returns s, or, when any of its ops only translates, a copy of it
 // with those folded: fills and shadows, and images and glyphs moved by
 // whole pixels, glyphs without transforms of their own (renderers round
@@ -108,14 +105,9 @@ func (f *TranslationFolder) fold(s *Scene) *Scene {
 				g.Y = float32(math.Round(float64(g.Y))) + y
 			}
 		}
-		if op.Kind == OpFill || op.Kind == OpGlyphs {
-			// The points of gradients; stripes start from Rect.
-			switch op.Paint {
-			case PaintLinear, PaintOklab, PaintLinearStops, PaintLinearStopsOklab:
-				op.Gradient = [4]float32{op.Gradient[0] + x, op.Gradient[1] + y, op.Gradient[2] + x, op.Gradient[3] + y}
-			case PaintConic, PaintConicOklab, PaintRadial, PaintRadialOklab:
-				op.Gradient[0], op.Gradient[1] = op.Gradient[0]+x, op.Gradient[1]+y
-			}
+		if op.Kind == OpFill || op.Kind == OpGlyphs || op.Kind == OpPushClip {
+			// The points of gradients, a clip's masking it among them.
+			op.moveGradient(x, y)
 		}
 	}
 	return &f.s

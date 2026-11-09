@@ -260,3 +260,6 @@ func easeOut(t float32) float32 {
 
 // fading reports whether text still fades in.
 func (rs *revealState) fading() bool { return len(rs.marks) > 0 }
+
+// revealed reports whether all of the source shows, done fading in.
+func (rs *revealState) revealed() bool { return rs.shown >= len(rs.src) && !rs.fading() }

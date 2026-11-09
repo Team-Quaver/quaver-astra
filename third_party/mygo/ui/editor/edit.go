@@ -27,6 +27,9 @@ func (ed *editor) apply(edits []Edit, kind editKind, after func(move func(int, b
 		ed.stale = true
 		return false
 	}
+	if ed.snippet != nil && !ed.snippet.accepts(edits) {
+		ed.snippet = nil
+	}
 	changes := b.edit(edits, kind, ed, before)
 	made := b.version
 	b.mu.Unlock()
@@ -44,6 +47,9 @@ func (ed *editor) apply(edits []Edit, kind editKind, after func(move func(int, b
 		ed.setSels(mergeSels(sels), revealFit)
 		ed.blinkStart = ed.frameNow
 		return true
+	}
+	if ed.snippet != nil {
+		ed.snippet.local = true
 	}
 	ed.dropSuggestion()
 	move := func(off int, bias bias) int { return mapOffset(off, changes, bias) }
@@ -320,6 +326,7 @@ func (ed *editor) indentUnit() string {
 // undo takes back (or makes again) the buffer's last step, and puts this
 // editor's selections where they were, when it made the step.
 func (ed *editor) undo(redo bool) bool {
+	ed.snippet = nil
 	b := ed.buf()
 	if b == nil || ed.o.readOnly {
 		return false
@@ -442,7 +449,7 @@ func (ed *editor) deleteMove(fn func(sel) int) bool {
 		}
 		edits = append(edits, Edit{Start: s.start(), End: s.end()})
 	}
-	return ed.apply(mergeEdits(edits), editDeleting, nil)
+	return ed.apply(ed.mergeDeletes(edits), editDeleting, nil)
 }
 
 // mergeEdits sorts edits and merges those that overlap.
@@ -495,7 +502,7 @@ func (ed *editor) backspace() bool {
 		}
 		edits = append(edits, Edit{Start: start, End: end})
 	}
-	return ed.apply(mergeEdits(edits), editDeleting, nil)
+	return ed.apply(ed.mergeDeletes(edits), editDeleting, nil)
 }
 
 // newline breaks the line at each caret, indenting the new line as the

@@ -206,6 +206,21 @@ func TestOnInputReplacement(t *testing.T) {
 }
 
 // The key after the first of a chord is the chord's, not OnInput's.
+// The modifier the second key of a chord is held with comes on its own first:
+// the chord waits for the key, and OnInput sees it.
+func TestChordOverModifierKey(t *testing.T) {
+	ct := newEditorTest(t, "", "ab|")
+	ct.st.Bindings = []Binding{{Mods: ui.Cmd, Key: ui.KeyK, ThenMods: ui.Cmd, ThenKey: ui.KeyU, Command: Uppercase}}
+	ct.tt.Frame()
+	ct.st.Select(0, 2)
+	ct.key(ui.Cmd, ui.KeyK)
+	ct.tt.CodeUp(0, ui.CodeControlLeft)
+	ct.tt.CodeDown(ui.Cmd, ui.CodeControlLeft)
+	ct.key(ui.Cmd, ui.KeyU)
+	ct.key(0, ui.KeyRight)
+	ct.want("AB|")
+}
+
 func TestOnInputChord(t *testing.T) {
 	ct := newEditorTest(t, "", "ab|")
 	var keys []ui.Key

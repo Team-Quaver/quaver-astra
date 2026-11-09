@@ -34,7 +34,6 @@ type songListState struct {
 // loadMore(page) 由调用方实现（在 goroutine 里拉数据后回填）。
 func (a *App) songList(c *ui.Context, st *songListState, loadMore func(page int), doubleClick func(i int)) {
 	t := c.Theme()
-	st.list.Label = func(i int) string { return st.songs[i].DisplayName() }
 	lst := ui.List(c, &st.list, len(st.songs), func(i int) {
 		a.songRow(c, st, i, doubleClick)
 	}).Grow(1)
@@ -77,6 +76,7 @@ func (a *App) songRow(c *ui.Context, st *songListState, i int, doubleClick func(
 	loved := a.PL.IsLoved(s.Mid)
 
 	row := ui.Row(c).FillWidth().Height(54).PaddingX(10).Gap(12).AlignItems(ui.Center).Radius(8).
+		Label(s.DisplayName()).
 		Transition(hoverFade)
 	row.Children(func() {
 		// 序号列

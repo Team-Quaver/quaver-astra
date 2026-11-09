@@ -68,3 +68,33 @@ func TestTransientCanvas(t *testing.T) {
 	runtime.KeepAlive(layer)
 	runtime.KeepAlive(kept)
 }
+
+// Frames that present sweep the textures of earlier frames' transient
+// canvases even when every frame between them changes nothing: those
+// count as frames too, and sweeping only at multiples of 120 frames, an
+// animation that drew every other frame presented none of them, and kept
+// a texture for each of its frames' canvases.
+func TestSweepBetweenUnchangedFrames(t *testing.T) {
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+	r, err := New(hiddenWindow(t, 64, 64))
+	if err != nil {
+		t.Skip("no Direct3D 11:", err)
+	}
+	defer r.Release()
+	for range 3 * sweepEvery {
+		c := scene.NewCanvas(16, 16)
+		c.Transient = true
+		s := &scene.Scene{Width: 64, Height: 64, Canvases: []*scene.Image{c}}
+		if err := r.draw(s); err != nil {
+			t.Fatal(err)
+		}
+		if err := r.present(0); err != nil {
+			t.Fatal(err)
+		}
+		r.frame++ // a frame that changes nothing, and presents nothing
+	}
+	if n := len(r.canvases); n > sweepEvery {
+		t.Errorf("%d canvas textures after %d frames drawn, want at most %d", n, 3*sweepEvery, sweepEvery)
+	}
+}

@@ -52,6 +52,10 @@ type Theme struct {
 	// wide (3), and QuoteText their text.
 	QuoteBar, QuoteText Color
 	QuoteBarWidth       float32
+	// Alerts color the bar, icon and title of GitHub's alerts, by kind:
+	// Note, Tip, Important, Warning and Caution, GitHub's colors by
+	// default, in light or dark as the window theme is.
+	Alerts [5]Color
 
 	// Rule colors thematic breaks and the rules of headings.
 	Rule Color
@@ -121,6 +125,7 @@ func DefaultTheme(t *ui.Theme) *Theme {
 		QuoteBar:            t.Border,
 		QuoteText:           t.TextMuted,
 		QuoteBarWidth:       3,
+		Alerts:              alertColors(t.Dark),
 		Rule:                t.Border,
 		CodeBlockBackground: t.Text.Alpha(0.04),
 		CodeBlockBorder:     t.Border,
@@ -202,6 +207,9 @@ func resolve(th *Theme, def *Theme) Theme {
 	c(&out.QuoteBar, def.QuoteBar)
 	c(&out.QuoteText, out.Muted)
 	f(&out.QuoteBarWidth, def.QuoteBarWidth)
+	for k := range out.Alerts {
+		c(&out.Alerts[k], def.Alerts[k])
+	}
 	c(&out.Rule, def.Rule)
 	c(&out.CodeBlockBackground, def.CodeBlockBackground)
 	c(&out.CodeBlockBorder, def.CodeBlockBorder)
@@ -222,3 +230,12 @@ func resolve(th *Theme, def *Theme) Theme {
 
 // em returns v ems in DIPs.
 func (th *Theme) em(v float32) float32 { return v * th.FontSize }
+
+// alertColors are GitHub's colors of alerts (Primer's fg.accent, success,
+// done, attention and danger), in light or dark.
+func alertColors(dark bool) [5]Color {
+	if dark {
+		return [5]Color{ui.Hex("#4493f8"), ui.Hex("#3fb950"), ui.Hex("#ab7df8"), ui.Hex("#d29922"), ui.Hex("#f85149")}
+	}
+	return [5]Color{ui.Hex("#0969da"), ui.Hex("#1a7f37"), ui.Hex("#8250df"), ui.Hex("#9a6700"), ui.Hex("#d1242f")}
+}

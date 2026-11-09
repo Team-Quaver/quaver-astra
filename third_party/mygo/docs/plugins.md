@@ -28,11 +28,17 @@ JavaScript package whose functions call them. The app uses the Go half with
   one standard layout. It is all Go.
 - [Loading](plugins/loading.md): loading.dev's 29 loading indicators for
   native UI, as they look and move in browsers. It is all Go.
+- [SF Symbols](plugins/sfsymbols.md): Apple's SF Symbols for native UI on
+  macOS, drawn by the system. It is all Go.
 - [Automation](plugins/automation.md): a socket through which another
   process, an end-to-end test runner or an agent, drives the running app:
   its windows, the elements of their native UI, input, menus, scripts in
   pages and screenshots. It is all Go, opt-in, and left out of release
-  builds.
+  builds; `mygo-automation` is its command line client for agents.
+- [PermissionFlow](plugins/permissionflow.md): the permissions the system
+  keeps for the user to give, such as Accessibility, Screen Recording and
+  the microphone: checked, asked for, and a guide to System Settings with
+  the app to drag into its list, after PermissionFlow. It is all Go.
 
 ## Using plugins
 

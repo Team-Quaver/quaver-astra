@@ -55,7 +55,8 @@ var lcStyles = [][]func(e *node){
 	{nil, func(e *node) { e.Width(50) }, func(e *node) { e.Width(130) }, func(e *node) { e.WidthPercent(40) }, func(e *node) { e.FillWidth() }},
 	{nil, func(e *node) { e.Height(30) }, func(e *node) { e.Height(90) }, func(e *node) { e.HeightPercent(50) }, func(e *node) { e.FillHeight() }},
 	{nil, func(e *node) { e.MinWidth(60) }, func(e *node) { e.MaxWidth(80) }, func(e *node) { e.MinHeight(20) },
-		func(e *node) { e.MaxHeight(40) }, func(e *node) { e.MaxWidthPercent(50) }, func(e *node) { e.MinHeightPercent(30) }},
+		func(e *node) { e.MaxHeight(40) }, func(e *node) { e.MaxWidthPercent(50) }, func(e *node) { e.MinHeightPercent(30) },
+		func(e *node) { e.MaxWidthPercent(60).MaxWidth(90) }, func(e *node) { e.MinWidth(30).MinWidthPercent(40) }},
 	{nil, func(e *node) { e.Grow(1) }, func(e *node) { e.Grow(2) }},
 	{nil, func(e *node) { e.Shrink(0) }, func(e *node) { e.Shrink(3) }},
 	{nil, func(e *node) { e.Basis(40) }, func(e *node) { e.BasisPercent(30) }},
@@ -71,12 +72,15 @@ var lcStyles = [][]func(e *node){
 		func(e *node) { e.LetterSpacing(1) }, func(e *node) { e.TextAlign(Center) }, func(e *node) { e.FixedLineHeight(24) }, func(e *node) { e.Italic() }},
 	// What does not lay out.
 	{nil, func(e *node) { e.Translate(5, 7) }, func(e *node) { e.Background(RGB(200, 0, 0)) }, func(e *node) { e.TextColor(RGB(0, 0, 200)) },
-		func(e *node) { e.Opacity(0.5) }, func(e *node) { e.Scale(1.2, 1.2) }, func(e *node) { e.Radius(4).Shadow(0, 2, 4, 0, RGBA(0, 0, 0, 0.3)) }, func(e *node) { e.Underline() }},
+		func(e *node) { e.Opacity(0.5) }, func(e *node) { e.Scale(1.2, 1.2) }, func(e *node) { e.Radius(4).Shadow(0, 2, 4, 0, RGBA(0, 0, 0, 0.3)) }, func(e *node) { e.Underline() },
+		func(e *node) { e.ClipInsetPercent(0, 30, 0, 0, 4) }, func(e *node) { e.MaskLinearGradient(LinearGradient{From: RGB(0, 0, 0), Angle: 90}) }},
 	{nil, func(e *node) { e.Direction(RightToLeft) }, func(e *node) { e.Direction(LeftToRight) }},
-	{nil, func(e *node) { e.MaxLines(1) }, func(e *node) { e.NoWrap() }, func(e *node) { e.SingleLine() }, func(e *node) { e.MaxLines(2).Ellipsis("~") }},
+	{nil, func(e *node) { e.MaxLines(1) }, func(e *node) { e.NoWrap() }, func(e *node) { e.SingleLine() }, func(e *node) { e.MaxLines(2).Ellipsis("~") },
+		func(e *node) { e.Balance() }},
 	{nil, func(e *node) { e.ColumnSpan(2) }, func(e *node) { e.ColumnStart(2) }, func(e *node) { e.RowStart(2).RowSpan(2) }},
 	{nil, func(e *node) { e.BorderWidth(3) }, func(e *node) { e.BorderWidth(1, 0, 6, 2) }},
-	{nil, func(e *node) { e.Top(5) }, func(e *node) { e.Left(-3) }, func(e *node) { e.End(4) }},
+	{nil, func(e *node) { e.Top(5) }, func(e *node) { e.Left(-3) }, func(e *node) { e.End(4) },
+		func(e *node) { e.Sticky().Top(5) }, func(e *node) { e.Sticky().Bottom(3).Start(2) }},
 	{nil, func(e *node) { e.Invisible() }, func(e *node) { e.Hidden(true) }},
 	{nil, func(e *node) {
 		e.Transition(ElementTransition{Position: true, Size: true, Duration: 100 * time.Millisecond})
@@ -446,16 +450,18 @@ func TestLayoutInputs(t *testing.T) {
 	// or made volatile by sameLayout, and those it writes.
 	read := "flags ts cols rows spans image svg placeOn list form colFit overflow gridFit leaving ghosts attach popover " +
 		"first last next nchild parent st c measured tl lay laid x y w h contentW contentH frags runes paragraph " +
-		"ownText merged spansKey collapsed rowMinW field hidden"
+		"ownText merged spansKey collapsed rowMinW field hidden placed flips originAttached originX originY originSet edgeMargin edgeMarginSet"
 	// Fields the layout never reads.
-	other := "epoch key valueInput id depth track transform originX originY originSet world content contentSet " +
+	other := "epoch key valueInput id depth track transform translatePct world content contentSet " +
 		"pose poseAnim poseSet poseM poseFade reposed ink noCull backface bg fill grad stripes borderC borderStyle radius " +
-		"shadows material effect effecting cache grads blur opacity opacitySet cursor paintFn objectFn styleFn paintAfterFn " +
-		"inputFn textClient caret takesText noIME copyData webView maximizeButton fit gray dismissed rotate label widget role " +
-		"checked expanded vertical tip highlighted accValue accRange hasRange accFill accStep barInset scrollBase hideScrollbars " +
-		"listRow rowIndex rowsOf focusGroup groupSelects segment activeDescendant nameFrom nameJoin focusTo " +
-		"setPos setSize choosesItems search description invalid followX sort level expandable " +
-		"chooseMany serial ignoreInput themed"
+		"shadows material effect effecting cache grads blur opacity opacitySet undimmed cursor paintFn hitFn objectFn styleFn paintAfterFn " +
+		"inputFn observeFn textClient caret takesText noIME copyData webView maximizeButton fit gray objectPos dismissed rotate label widget role " +
+		"checked expanded busy current autoComplete orient tip highlighted focusHighlights keepOpen accValue accRange hasRange accFill accStep barInset scrollBase hideScrollbars keepScrollbars barsFrom snap snapAlign " +
+		"listRow rowIndex rowsOf focusGroup groupSelects segment activeDescendant nameFrom nameJoin labelledBy focusTo " +
+		"keyShortcuts accGrid accSet " +
+		"setPos setSize choosesItems search description invalid describedBy errorMessage followX sort level expandable " +
+		"chooseMany serial ignoreInput accessHidden accessDisabled themed lift ringOffset ringColor ringSet clipping zIndex zOrder " +
+		"roleDescription controls hasPopup"
 	known := map[string]bool{}
 	for _, f := range strings.Fields(read + " " + other) {
 		known[f] = true
@@ -582,7 +588,8 @@ func TestHeldText(t *testing.T) {
 
 // A grid measures the widths of its items only where its columns read
 // them: those spanning a FitContent column, and those spanning an Fr
-// column where the grid's width is not known, as CSS's minmax(0, 1fr).
+// column where the grid's width is not known, as CSS's minmax(0, 1fr), or
+// a MinContent Fr column.
 func TestGridMeasures(t *testing.T) {
 	var fit bool
 	tt := coreNewTester(func(c *context) {
@@ -614,5 +621,14 @@ func TestGridMeasures(t *testing.T) {
 	tt.Frame()
 	if !measured("first") || measured("second") {
 		t.Errorf("FitContent and Fr columns: measured the first %v, the second %v", measured("first"), measured("second"))
+	}
+	tt = coreNewTester(func(c *context) {
+		coreGrid(c).Width(300).ColumnTracks(Fr(1).Min(40), Fr(1).MinContent()).Children(func() {
+			keep("floor", coreText(c, "floor"))
+			keep("content", coreText(c, "content"))
+		})
+	}, 400, 300)
+	if measured("floor") || !measured("content") {
+		t.Errorf("Fr columns with a minimum and with MinContent: measured the first %v, the second %v", measured("floor"), measured("content"))
 	}
 }

@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"compress/flate"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"go/format"
@@ -88,7 +89,8 @@ type gregorian struct {
 	TimeFormats     map[string]string                       `json:"timeFormats"`
 	DateTimeFormats struct {
 		Full, Long, Medium, Short string
-		AvailableFormats          map[string]string `json:"availableFormats"`
+		AvailableFormats          map[string]string          `json:"availableFormats"`
+		IntervalFormats           map[string]json.RawMessage `json:"intervalFormats"`
 	} `json:"dateTimeFormats"`
 	AtTime struct {
 		Standard map[string]string `json:"standard"`
@@ -102,7 +104,53 @@ type localeRecord struct {
 	tag    string
 	values []string // by slot, "" when the locale has none
 	usesB  bool     // its patterns have flexible day periods
+	// compact and intervals are the values of the slots of the halves of
+	// their own (extraHalf): the patterns of compact numbers, and of
+	// intervals of dates.
+	compact, intervals []string
+	// currency, currencyCompact, currencySymbols and currencyNames are
+	// the slots of the currencies: their patterns, those of compact
+	// amounts, their symbols and their names.
+	currency, currencyCompact, currencySymbols, currencyNames []string
 }
+
+// The patterns of compact numbers: [system][style][magnitude], system the
+// default one then latn, as numbers' slots, style short then long, and
+// magnitudes 10^3 to 10^19. A slot holds the plural forms of its pattern,
+// each its key in CLDR (a category, or an exact number as "1") and its
+// pattern, in compactKeys' order, separated by NUL bytes.
+var (
+	compactStyles = []string{"short", "long"}
+	compactKeys   = []string{"0", "1", "zero", "one", "two", "few", "many", "other"}
+)
+
+const (
+	compactMinMagnitude = 3
+	compactMagnitudes   = 17
+)
+
+// The currencies: [system][key], system as numbers' slots, then the unit
+// patterns of amounts written with the names of their currencies, by
+// plural form, which ICU has of a locale, not of a numbering system. The
+// patterns of compact amounts, currencyFormats' short ones, are
+// [system][magnitude], as compact numbers' slots. The symbols are
+// [code][symbol, narrow symbol], "" for the code and for the symbol, and
+// the names [code][form], by plural form, "" for that of "other" (whose
+// own falls back to displayName).
+var (
+	currencyKeys        = []string{"standard", "accounting", "currencyDecimal", "currencyGroup"}
+	currencyPluralForms = []string{"zero", "one", "two", "few", "many", "other"}
+	currencySystemSlots = len(currencyKeys)
+)
+
+// The patterns of intervals of dates: the fallback, then
+// [skeleton][field], the skeletons of intervalFormats any locale has,
+// sorted, and the fields whose difference each pattern is for.
+var intervalFields = []string{"G", "y", "M", "d", "a", "B", "h", "H", "m"}
+
+// intervalSkeletonRe matches the skeletons of intervalFormats MyGo keeps:
+// those of the fields it formats.
+var intervalSkeletonRe = regexp.MustCompile(`^[GyMLdEBahHKkmv]+$`)
 
 func writeFormatTables(out, cache string, core map[string][]byte) error {
 	var coverage struct {
@@ -131,11 +179,13 @@ func writeFormatTables(out, cache string, core map[string][]byte) error {
 		return wanted[dir] && slices.Contains(files, file)
 	}
 
-	dates, err := readPackage(datesPackage, cache, func(n string) bool { return inMain(n, "ca-gregorian.json", "timeZoneNames.json") })
+	dates, err := readPackage(datesPackage, cache, func(n string) bool { return inMain(n, "ca-gregorian.json", "timeZoneNames.json", "dateFields.json") })
 	if err != nil {
 		return err
 	}
-	numbers, err := readPackage(numbersPackage, cache, func(n string) bool { return inMain(n, "numbers.json") })
+	numbers, err := readPackage(numbersPackage, cache, func(n string) bool {
+		return inMain(n, "numbers.json", "currencies.json") || n == "main/und/currencies.json"
+	})
 	if err != nil {
 		return err
 	}
@@ -163,9 +213,91 @@ func writeFormatTables(out, cache string, core map[string][]byte) error {
 		return err
 	}
 
+	// The currencies: those CLDR names in a locale or the root, or gives
+	// the fraction digits of, sorted.
+	var currencyData struct {
+		Supplemental struct {
+			CurrencyData struct {
+				Fractions map[string]struct {
+					Digits string `json:"_digits"`
+				} `json:"fractions"`
+				Region map[string][]map[string]struct {
+					To     string `json:"_to"`
+					Tender string `json:"_tender"`
+				} `json:"region"`
+			} `json:"currencyData"`
+		} `json:"supplemental"`
+	}
+	if err := supp("currencyData.json", &currencyData); err != nil {
+		return err
+	}
+	readCurrencies := func(tag string) (map[string]map[string]string, error) {
+		var doc struct {
+			Main map[string]struct {
+				Numbers struct {
+					Currencies map[string]map[string]string `json:"currencies"`
+				} `json:"numbers"`
+			} `json:"main"`
+		}
+		data, ok := numbers["main/"+tag+"/currencies.json"]
+		if !ok {
+			return nil, fmt.Errorf("cldr-numbers-full has no currencies of %s", tag)
+		}
+		if err := json.Unmarshal(data, &doc); err != nil {
+			return nil, fmt.Errorf("%s currencies.json: %v", tag, err)
+		}
+		return doc.Main[tag].Numbers.Currencies, nil
+	}
+	rootCurrencies, err := readCurrencies("und")
+	if err != nil {
+		return err
+	}
+	currencies := map[string]map[string]map[string]string{}
+	codeSet := map[string]bool{}
+	for code := range rootCurrencies {
+		codeSet[code] = true
+	}
+	for code := range currencyData.Supplemental.CurrencyData.Fractions {
+		if code != "DEFAULT" {
+			codeSet[code] = true
+		}
+	}
+	for _, tag := range tags {
+		c, err := readCurrencies(tag)
+		if err != nil {
+			return err
+		}
+		currencies[tag] = c
+		for code := range c {
+			codeSet[code] = true
+		}
+	}
+	codes := slices.Sorted(func(yield func(string) bool) {
+		for c := range codeSet {
+			if !yield(c) {
+				return
+			}
+		}
+	})
+	var digits []byte
+	for _, code := range codes {
+		if len(code) != 3 || strings.Trim(code, "ABCDEFGHIJKLMNOPQRSTUVWXYZ") != "" {
+			return fmt.Errorf("the currency code %q is not three letters", code)
+		}
+		d := currencyData.Supplemental.CurrencyData.Fractions["DEFAULT"].Digits
+		if f, ok := currencyData.Supplemental.CurrencyData.Fractions[code]; ok {
+			d = f.Digits
+		}
+		if len(d) != 1 || d[0] < '0' || d[0] > '9' {
+			return fmt.Errorf("currencyData gives %s the fraction digits %q", code, d)
+		}
+		digits = append(digits, d[0])
+	}
+
 	// The skeletons of availableFormats any locale has.
 	grego := map[string]*gregorian{}
 	skelSet := map[string]bool{}
+	intervalSet := map[string]bool{}
 	for _, tag := range tags {
 		var doc struct {
 			Main map[string]struct {
@@ -190,6 +322,11 @@ func writeFormatTables(out, cache string, core map[string][]byte) error {
 				skelSet[k] = true
 			}
 		}
+		for k := range g.DateTimeFormats.IntervalFormats {
+			if intervalSkeletonRe.MatchString(k) {
+				intervalSet[k] = true
+			}
+		}
 	}
 	skeletons := slices.Sorted(func(yield func(string) bool) {
 		for k := range skelSet {
@@ -199,6 +336,13 @@ func writeFormatTables(out, cache string, core map[string][]byte) error {
 		}
 	})
 	sl := newSlots(skeletons)
+	intervalSkeletons := slices.Sorted(func(yield func(string) bool) {
+		for k := range intervalSet {
+			if !yield(k) {
+				return
+			}
+		}
+	})
 
 	var records []*localeRecord
 	for _, tag := range tags {
@@ -255,6 +399,42 @@ func writeFormatTables(out, cache string, core map[string][]byte) error {
 		for w, table := range eraTables {
 			r.values[sl.eras+w*2] = g.Eras[table]["0"]
 			r.values[sl.eras+w*2+1] = g.Eras[table]["1"]
+		}
+
+		// Intervals.
+		r.intervals = make([]string, 1+len(intervalSkeletons)*len(intervalFields))
+		if raw, ok := g.DateTimeFormats.IntervalFormats["intervalFormatFallback"]; ok {
+			if err := json.Unmarshal(raw, &r.intervals[0]); err != nil {
+				return fmt.Errorf("%s intervalFormatFallback: %v", tag, err)
+			}
+		}
+		if !strings.Contains(r.intervals[0], "{0}") || !strings.Contains(r.intervals[0], "{1}") {
+			return fmt.Errorf("%s: the interval fallback %q lacks {0} or {1}", tag, r.intervals[0])
+		}
+		for i, k := range intervalSkeletons {
+			raw, ok := g.DateTimeFormats.IntervalFormats[k]
+			if !ok {
+				continue
+			}
+			var byField map[string]string
+			if err := json.Unmarshal(raw, &byField); err != nil {
+				return fmt.Errorf("%s intervalFormats %s: %v", tag, k, err)
+			}
+			for f, p := range byField {
+				if strings.Contains(f, "-alt-") {
+					continue // ICU formats the standard ones
+				}
+				j := slices.Index(intervalFields, f)
+				if j < 0 {
+					return fmt.Errorf("%s: the interval pattern of %s for %s is for a field MyGo does not know", tag, k, f)
+				}
+				for _, c := range patternFields(p) {
+					if !strings.ContainsRune(patternLetters, c) {
+						return fmt.Errorf("%s: the interval pattern %q has the field %c, which MyGo does not format", tag, p, c)
+					}
+				}
+				r.intervals[1+i*len(intervalFields)+j] = p
+			}
 		}
 
 		// Time zones.
@@ -314,10 +494,17 @@ func writeFormatTables(out, cache string, core map[string][]byte) error {
 				return fmt.Errorf("%s: the numbering system %s has no decimal digits", tag, sys)
 			}
 			var symbols map[string]string
-			var decimal, percent struct {
+			var decimal struct {
+				Standard    string `json:"standard"`
+				Short, Long struct {
+					DecimalFormat map[string]string `json:"decimalFormat"`
+				}
+			}
+			var percent struct {
 				Standard string `json:"standard"`
 			}
-			for key, v := range map[string]any{"symbols": &symbols, "decimalFormats": &decimal, "percentFormats": &percent} {
+			var currencyFormats map[string]json.RawMessage
+			for key, v := range map[string]any{"symbols": &symbols, "decimalFormats": &decimal, "percentFormats": &percent, "currencyFormats": &currencyFormats} {
 				raw, ok := n[key+"-numberSystem-"+sys]
 				if !ok {
 					return fmt.Errorf("%s has no %s of %s", tag, key, sys)
@@ -344,7 +531,24 @@ func writeFormatTables(out, cache string, core map[string][]byte) error {
 				}
 				r.values[base+k] = v
 			}
+			if r.compact == nil {
+				r.compact = make([]string, 2*len(compactStyles)*compactMagnitudes)
+			}
+			for st, forms := range []map[string]string{decimal.Short.DecimalFormat, decimal.Long.DecimalFormat} {
+				slots, err := compactSlots(forms)
+				if err != nil {
+					return fmt.Errorf("%s: %s of %s", tag, err, sys)
+				}
+				copy(r.compact[(i*len(compactStyles)+st)*compactMagnitudes:], slots)
+			}
+			if err := currencySlots(r, i, currencyFormats, symbols); err != nil {
+				return fmt.Errorf("%s: %s of %s", tag, err, sys)
+			}
 		}
+		if r.currency[2*currencySystemSlots+len(currencyPluralForms)-1] == "" {
+			return fmt.Errorf("%s has no unit pattern of amounts of other", tag)
+		}
+		r.currencySymbols, r.currencyNames = currencyNames(codes, currencies[tag], rootCurrencies)
 		records = append(records, r)
 	}
 
@@ -372,32 +576,47 @@ func writeFormatTables(out, cache string, core map[string][]byte) error {
 		}
 	}
 
-	// The synthetic root: of the locales without a parent, the value most
-	// have, in each slot most of them fill.
-	root := make([]string, sl.count)
-	var tops []int
-	for i := range records {
-		if parentOf[i] < 0 {
-			tops = append(tops, i)
-		}
-	}
-	for s := range root {
-		counts := map[string]int{}
-		for _, i := range tops {
-			if v := records[i].values[s]; v != "" {
-				counts[v]++
+	// The formats of currencies of their own, which ICU writes amounts of
+	// them in, and amounts of any currency in a locale whose region's
+	// currency has one (see currencyFormatOf).
+	var formatCodes []string
+	for _, code := range codes {
+		for _, tag := range tags {
+			if e := currencies[tag][code]; e["pattern"] != "" || e["decimal"] != "" || e["group"] != "" {
+				formatCodes = append(formatCodes, code)
+				break
 			}
 		}
-		best, bestN := "", 0
-		for v, n := range counts {
-			if n > bestN || n == bestN && v < best {
-				best, bestN = v, n
-			}
-		}
-		if bestN*2 > len(tops) {
-			root[s] = best
+	}
+	for i, r := range records {
+		for _, code := range formatCodes {
+			r.currency = append(r.currency, currencyFormatOf(records, parentOf, i, sl, currencies, code))
 		}
 	}
+	var regionFormats []string
+	for _, region := range slices.Sorted(func(yield func(string) bool) {
+		for r := range currencyData.Supplemental.CurrencyData.Region {
+			if !yield(r) {
+				return
+			}
+		}
+	}) {
+		for _, cs := range currencyData.Supplemental.CurrencyData.Region[region] {
+			code, current := "", false
+			for c, v := range cs {
+				code, current = c, v.To == "" && v.Tender != "false"
+			}
+			if current {
+				if slices.Contains(formatCodes, code) {
+					regionFormats = append(regionFormats, region+":"+code)
+				}
+				break
+			}
+		}
+	}
+
+	values := func(r *localeRecord) []string { return r.values }
+	root := syntheticRoot(records, parentOf, sl.count, values)
 
 	// The data is split in two halves, each with its own pool of
 	// strings and its own entries: the numbers, which every app that
@@ -530,6 +749,68 @@ func writeFormatTables(out, cache string, core map[string][]byte) error {
 	if err := writePacked(&b, "fmtPackedDates", "the dates of the locales and the names of languages", packed); err != nil {
 		return err
 	}
+	// The patterns of compact numbers and of intervals of dates, each a
+	// blob of its own, which only apps that format them link.
+	compact := func(r *localeRecord) []string { return r.compact }
+	compactHalf, err := extraHalf(records, parentOf, len(records[0].compact), compact)
+	if err != nil {
+		return err
+	}
+	if err := compactHalf.write(&b, "Compact", "compact numbers", "the patterns of compact numbers of the locales"); err != nil {
+		return err
+	}
+	fmt.Fprintf(&b, "// The slots of the compact numbers of a locale (see i18n/internal/gen).\nconst (\n\tcompactMinMagnitude = %d\n\tcompactMagnitudes = %d\n\tcompactSlotCount = %d\n)\n\n", compactMinMagnitude, compactMagnitudes, len(records[0].compact))
+	b.WriteString("// fmtCompactKeys are the keys of the forms of the compact patterns of a\n// slot, in their order, separated by spaces.\nconst fmtCompactKeys = ")
+	writeLongString(&b, strings.Join(compactKeys, " "))
+	b.WriteString("\n\n")
+
+	intervals := func(r *localeRecord) []string { return r.intervals }
+	intervalHalf, err := extraHalf(records, parentOf, len(records[0].intervals), intervals)
+	if err != nil {
+		return err
+	}
+	if err := intervalHalf.write(&b, "Interval", "intervals", "the patterns of intervals of dates of the locales"); err != nil {
+		return err
+	}
+	fmt.Fprintf(&b, "// intervalSlotCount is the number of slots of the intervals of a locale:\n// the fallback, then those of fmtIntervalSkeletons by fmtIntervalFields.\nconst intervalSlotCount = %d\n\n", len(records[0].intervals))
+	b.WriteString("// fmtIntervalSkeletons are the skeletons of intervalFormats, sorted,\n// separated by spaces, and fmtIntervalFields the fields whose\n// difference their patterns are for, in their order.\nconst fmtIntervalSkeletons = ")
+	writeLongString(&b, strings.Join(intervalSkeletons, " "))
+	fmt.Fprintf(&b, "\n\nconst fmtIntervalFields = %q\n\n", strings.Join(intervalFields, ""))
+
+	// The currencies: their patterns, with the symbols, the codes and
+	// their fraction digits, in one blob, which only apps that format
+	// amounts link; the patterns of compact amounts in one of their own,
+	// which only those that also format compact numbers do, and the names
+	// in one of their own, which only apps that name currencies do.
+	currency := func(r *localeRecord) []string { return r.currency }
+	currencyHalf, err := extraHalf(records, parentOf, len(records[0].currency), currency)
+	if err != nil {
+		return err
+	}
+	currencySymbols := func(r *localeRecord) []string { return r.currencySymbols }
+	extra := recordSections(records, parentOf, 2*len(codes), currencySymbols, "CurrencySymbol", "symbols of currencies")
+	extra = append(extra,
+		packedSection{"CurrencyFormatCodes", "the currencies with formats of their own in some locale, in the order of their slots, separated by spaces", strings.Join(formatCodes, " ")},
+		packedSection{"CurrencyRegions", "the regions whose currency has a format of its own in some locale, sorted, and their currency, region:code separated by spaces", strings.Join(regionFormats, " ")},
+		packedSection{"CurrencyCodes", "the codes of the currencies, sorted and separated by spaces", strings.Join(codes, " ")},
+		packedSection{"CurrencyDigits", "the fraction digits of each currency of CLDR's currencyData, a digit each", string(digits)})
+	if err := currencyHalf.write(&b, "Currency", "currencies", "the patterns of amounts of money of the locales, and the symbols of currencies", extra...); err != nil {
+		return err
+	}
+	fmt.Fprintf(&b, "// The slots of the currencies of a locale (see i18n/internal/gen), and\n// the first of the formats of currencies of their own.\nconst (\n\tcurrencySystemSlots = %d\n\tcurrencySlotCount = %d\n\tcurrencyCount = %d\n\tcurrencyFormatsSlot = %d\n)\n\n", currencySystemSlots, len(records[0].currency), len(codes), 2*currencySystemSlots+len(currencyPluralForms))
+	currencyCompact := func(r *localeRecord) []string { return r.currencyCompact }
+	currencyCompactHalf, err := extraHalf(records, parentOf, len(records[0].currencyCompact), currencyCompact)
+	if err != nil {
+		return err
+	}
+	if err := currencyCompactHalf.write(&b, "CurrencyCompact", "compact amounts", "the patterns of compact amounts of money of the locales"); err != nil {
+		return err
+	}
+	currencyNameSlots := func(r *localeRecord) []string { return r.currencyNames }
+	if err := writePacked(&b, "fmtPackedCurrencyNames", "the names of currencies of the locales", recordSections(records, parentOf, len(codes)*len(currencyPluralForms), currencyNameSlots, "CurrencyName", "names of currencies")); err != nil {
+		return err
+	}
+
 	for _, h := range []struct {
 		name string
 		h    *half
@@ -669,7 +950,303 @@ func writeFormatTables(out, cache string, core map[string][]byte) error {
 	if err != nil {
 		return fmt.Errorf("formatting format_tables.go: %v", err)
 	}
-	return os.WriteFile(filepath.Join(out, "format_tables.go"), src, 0o644)
+	if err := os.WriteFile(filepath.Join(out, "format_tables.go"), src, 0o644); err != nil {
+		return err
+	}
+	return writeRelativeTables(out, records, parentOf, dates)
+}
+
+// compactSlots returns the slots of compact patterns of a style, by
+// magnitude: the plural forms of each and their patterns, separated by
+// NULs.
+func compactSlots(forms map[string]string) ([]string, error) {
+	byMag := make([][]string, compactMagnitudes)
+	for key, p := range forms {
+		if strings.Contains(key, "-alt-") {
+			continue // ICU formats the standard ones
+		}
+		num, count, ok := strings.Cut(key, "-count-")
+		m := len(num) - 1
+		if !ok || strings.Trim(num, "0") != "1" || m < compactMinMagnitude || m >= compactMinMagnitude+compactMagnitudes || !slices.Contains(compactKeys, count) {
+			return nil, fmt.Errorf("the compact pattern %s", key)
+		}
+		if byMag[m-compactMinMagnitude] == nil {
+			byMag[m-compactMinMagnitude] = make([]string, len(compactKeys))
+		}
+		byMag[m-compactMinMagnitude][slices.Index(compactKeys, count)] = p
+	}
+	out := make([]string, compactMagnitudes)
+	for m, ps := range byMag {
+		var parts []string
+		for k, p := range ps {
+			if p != "" {
+				parts = append(parts, compactKeys[k], p)
+			}
+		}
+		out[m] = strings.Join(parts, "\x00")
+	}
+	return out, nil
+}
+
+// currencySpacing is the currencySpacing of every locale, which package
+// i18n writes as ICU does: a no-break space between a currency's sign
+// and the number's digit next to it when the sign's character next to
+// them is neither a symbol nor a separator.
+const currencySpacing = `{"beforeCurrency":{"currencyMatch":"[[:^S:]&[:^Z:]]","surroundingMatch":"[:digit:]","insertBetween":"\u00a0"},` +
+	`"afterCurrency":{"currencyMatch":"[[:^S:]&[:^Z:]]","surroundingMatch":"[:digit:]","insertBetween":"\u00a0"}}`
+
+// currencySlots sets the slots of the currencies of numbering system i
+// of a locale, from its currencyFormats and symbols.
+func currencySlots(r *localeRecord, i int, formats map[string]json.RawMessage, symbols map[string]string) error {
+	if r.currency == nil {
+		r.currency = make([]string, 2*currencySystemSlots+len(currencyPluralForms))
+		r.currencyCompact = make([]string, 2*compactMagnitudes)
+	}
+	var spacing, want any
+	json.Unmarshal(formats["currencySpacing"], &spacing)
+	json.Unmarshal([]byte(currencySpacing), &want)
+	if fmt.Sprint(spacing) != fmt.Sprint(want) {
+		return fmt.Errorf("the currencySpacing %s, which package i18n does not write", formats["currencySpacing"])
+	}
+	str := func(key string) string {
+		var v string
+		json.Unmarshal(formats[key], &v)
+		return v
+	}
+	base := i * currencySystemSlots
+	for k, key := range currencyKeys {
+		var v string
+		switch key {
+		case "currencyDecimal", "currencyGroup":
+			v = symbols[key]
+		default:
+			v = str(key)
+			for _, sub := range strings.Split(v, ";") {
+				if strings.Count(sub, "¤") != 1 {
+					return fmt.Errorf("the currency pattern %q", v)
+				}
+			}
+		}
+		r.currency[base+k] = v
+	}
+	if raw, ok := formats["short"]; ok {
+		var short struct {
+			Standard map[string]string `json:"standard"`
+		}
+		if err := json.Unmarshal(raw, &short); err != nil {
+			return err
+		}
+		slots, err := compactSlots(short.Standard)
+		if err != nil {
+			return err
+		}
+		for _, slot := range slots {
+			parts := strings.Split(slot, "\x00")
+			for j := 1; j < len(parts); j += 2 {
+				if parts[j] != "0" && strings.Count(strings.Split(parts[j], ";")[0], "¤") != 1 {
+					return fmt.Errorf("the compact currency pattern %q", parts[j])
+				}
+			}
+		}
+		copy(r.currencyCompact[i*compactMagnitudes:], slots)
+	}
+	// The unit patterns, of any numbering system that has them: they are
+	// the same in each.
+	for f, form := range currencyPluralForms {
+		v := str("unitPattern-count-" + form)
+		slot := 2*currencySystemSlots + f
+		if v == "" {
+			continue
+		}
+		if !strings.Contains(v, "{0}") || !strings.Contains(v, "{1}") {
+			return fmt.Errorf("the unit pattern %q", v)
+		}
+		if r.currency[slot] != "" && r.currency[slot] != v {
+			return fmt.Errorf("the unit patterns of %s differ by numbering system", form)
+		}
+		r.currency[slot] = v
+	}
+	return nil
+}
+
+// currencyFormatOf returns the format of its own of a currency in locale
+// i, as ICU's data has it: its pattern, decimal separator and grouping
+// one, separated by NULs, those CLDR leaves out the standard pattern and
+// separators of the locale that gives the format (the farthest ancestor
+// of the same), or "" for none.
+func currencyFormatOf(records []*localeRecord, parentOf []int, i int, sl slots, currencies map[string]map[string]map[string]string, code string) string {
+	entry := func(j int) [3]string {
+		e := currencies[records[j].tag][code]
+		return [3]string{e["pattern"], e["decimal"], e["group"]}
+	}
+	e := entry(i)
+	if e == [3]string{} {
+		return ""
+	}
+	d := i
+	for parentOf[d] >= 0 && entry(parentOf[d]) == e {
+		d = parentOf[d]
+	}
+	def := records[d]
+	for k, v := range []string{def.currency[0], def.values[sl.numbers+1], def.values[sl.numbers+2]} {
+		if e[k] == "" {
+			e[k] = v
+		}
+	}
+	return strings.Join(e[:], "\x00")
+}
+
+// currencyNames returns the slots of the symbols and names of the
+// currencies of a locale, which ICU looks up in the locale, then in the
+// root: of the symbols, the symbol and the narrow one, "" for the code
+// and for the symbol; of the names, by plural form, that of the form, ""
+// for the name of "other", whose own is its displayName without one, ""
+// for the code.
+func currencyNames(codes []string, own, root map[string]map[string]string) (symbols, names []string) {
+	get := func(code, key string) string {
+		if v := own[code][key]; v != "" {
+			return v
+		}
+		return root[code][key]
+	}
+	for _, code := range codes {
+		symbol := get(code, "symbol")
+		if symbol == code {
+			symbol = ""
+		}
+		narrow := get(code, "symbol-alt-narrow")
+		if narrow == symbol || narrow == code && symbol == "" {
+			narrow = ""
+		}
+		symbols = append(symbols, symbol, narrow)
+		other := get(code, "displayName-count-other")
+		if other == "" {
+			other = get(code, "displayName")
+		}
+		for _, form := range currencyPluralForms {
+			v := get(code, "displayName-count-"+form)
+			switch {
+			case form == "other":
+				v = other
+			case v == other:
+				v = ""
+			}
+			names = append(names, v)
+		}
+	}
+	return symbols, names
+}
+
+// syntheticRoot returns the synthetic root of slots of records, which
+// values gives: of the locales without a parent, the value most have, in
+// each slot most of them fill.
+func syntheticRoot(records []*localeRecord, parentOf []int, count int, values func(*localeRecord) []string) []string {
+	root := make([]string, count)
+	var tops []int
+	for i := range records {
+		if parentOf[i] < 0 {
+			tops = append(tops, i)
+		}
+	}
+	for s := range root {
+		counts := map[string]int{}
+		for _, i := range tops {
+			if v := values(records[i])[s]; v != "" {
+				counts[v]++
+			}
+		}
+		best, bestN := "", 0
+		for v, n := range counts {
+			if n > bestN || n == bestN && v < best {
+				best, bestN = v, n
+			}
+		}
+		if bestN*2 > len(tops) {
+			root[s] = best
+		}
+	}
+	return root
+}
+
+// extraHalf returns the half of slots of their own of records, which
+// values gives, over their parents' as the other halves are.
+func extraHalf(records []*localeRecord, parentOf []int, count int, values func(*localeRecord) []string) (*half, error) {
+	root := syntheticRoot(records, parentOf, count, values)
+	h := newHalf(func(int) bool { return true })
+	h.diff(root, make([]string, count))
+	for i, r := range records {
+		base := root
+		if parentOf[i] >= 0 {
+			base = values(records[parentOf[i]])
+		}
+		h.diff(values(r), base)
+	}
+	if len(h.pool) >= 1<<15 || count >= 1<<9 || len(h.entries) >= 1<<16 {
+		return nil, fmt.Errorf("%d strings or %d slots do not fit the entries", len(h.pool), count)
+	}
+	return h, nil
+}
+
+// write writes the half as a blob of its own, fmtPacked<name>, with the
+// sections extra, and its starts and its number of strings.
+func (h *half) write(b *bytes.Buffer, name, what, doc string, extra ...packedSection) error {
+	sections, err := h.sections(name, what)
+	if err != nil {
+		return err
+	}
+	if err := writePacked(b, "fmtPacked"+name, doc, append(sections, extra...)); err != nil {
+		return err
+	}
+	fmt.Fprintf(b, "// fmt%sStarts are where the entries of each locale start in those of the\n// %s, counted in entries.\nvar fmt%sStarts = [...]uint16{\n", name, what, name)
+	writeInts(b, h.starts)
+	b.WriteString("}\n\n")
+	fmt.Fprintf(b, "// fmt%sStringCount is the number of strings of the pool of the %s.\nconst fmt%sStringCount = %d\n\n", name, what, name, len(h.pool))
+	return nil
+}
+
+// recordSections returns the slots of records, which values gives, as
+// the sections <name>Starts and <name>Records, for slots too many or of
+// strings too many for a half: of each locale, the root's first, the
+// runs of the slots in which it differs from its parent (or the root),
+// each the number of slots skipped since the last run and the number in
+// it, as uvarints, then its strings, each ended by a NUL.
+func recordSections(records []*localeRecord, parentOf []int, count int, values func(*localeRecord) []string, name, what string) []packedSection {
+	root := syntheticRoot(records, parentOf, count, values)
+	var recs []byte
+	starts := []byte{0, 0, 0, 0}
+	add := func(v, base []string) {
+		last := 0
+		for s := 0; s < count; {
+			if v[s] == base[s] {
+				s++
+				continue
+			}
+			end := s
+			for end < count && v[end] != base[end] {
+				end++
+			}
+			recs = binary.AppendUvarint(recs, uint64(s-last))
+			recs = binary.AppendUvarint(recs, uint64(end-s))
+			for ; s < end; s++ {
+				recs = append(recs, v[s]...)
+				recs = append(recs, 0)
+			}
+			last = end
+		}
+		starts = binary.BigEndian.AppendUint32(starts, uint32(len(recs)))
+	}
+	add(root, make([]string, count))
+	for i, r := range records {
+		base := root
+		if parentOf[i] >= 0 {
+			base = values(records[parentOf[i]])
+		}
+		add(values(r), base)
+	}
+	return []packedSection{
+		{name + "Starts", "where the records of the " + what + " of each locale start, the root's first, four bytes each, big-endian, and where the last ends", string(starts)},
+		{name + "Records", "the " + what + " of each locale where it differs from its parent: runs of slots, each the slots skipped since the last and its length as uvarints, then its strings, each ended by a NUL", string(recs)},
+	}
 }
 
 // half is the entries of the slots of one half of the data, over a

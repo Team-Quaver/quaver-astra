@@ -119,7 +119,8 @@ This writes `icon/Assets.car`, for `macos: { icon: "icon/Assets.car" }`.
 
 Files the app reads at run time, such as a database seed, a helper binary
 or the images of a tray icon, ship with it. Everything in the `resources`
-directory of the project is copied into the app, as are the files and
+directory of the project is copied into the app, but Go sources and what
+[`resourcesExclude`](#leaving-files-out) leaves out, as are the files and
 directories listed in `resources` in the configuration, under their base names:
 
 ```ts
@@ -138,7 +139,39 @@ seed := filepath.Join(dir, "seed.db")
 ```
 
 `mygo dev` copies them into the development app too, and rebuilds it when
-they change. Hidden files are left out.
+they change. A dotfile inside a resource directory ships: packages read
+such names, as dsh's provider catalog reads
+`dist/providers/data/.manifest.json`. Hidden directories (`.git`, `.cache`)
+are left out, and so are `.DS_Store`, `Thumbs.db` and `desktop.ini`, and
+the top-level entries of `resources` whose names start with a dot, which
+belong to the repository rather than the app. A dotfile you would rather
+not ship, such as a `.env` beside a resource, is left out with
+[`resourcesExclude`](#leaving-files-out).
+
+### Leaving files out
+
+Go source files in `resources` are left out of the apps: builds read
+them, such as a package that embeds the images beside it with
+`//go:embed`, and apps never do. Other files that only the project needs,
+such as design files, are left out with `resourcesExclude`, patterns of
+their paths in `resources`:
+
+```ts
+export default defineConfig({
+  resourcesExclude: ["**/*.psd", "design"],
+});
+```
+
+Each segment of a pattern, between slashes, matches as in Go's
+`path.Match` (`*`, `?`, `[a-z]`), and `**` matches any number of
+directories, none included: `**/*.psd` leaves out every `.psd` file,
+`*.psd` only those at the top of `resources`. A directory that matches is
+left out with what it holds, so `design` and `design/**` both leave out
+`resources/design`. Paths in [platform directories](#platform-resources)
+start with the directory's name, as in `linux-amd64/bin/server.pdb`, which
+`**/*.pdb` matches too. Builds and `mygo dev` leave out the same files.
+The files and directories listed in `resources` ship whole, Go sources
+included.
 
 ### Platform resources
 
@@ -555,6 +588,11 @@ command, `/usr/bin/my-app` from the package and `~/.local/bin/my-app` from
 which adds a short name; without it, neither adds a command, which leaves
 the name to a command-line tool of the same name, such as the app's own.
 
+The desktop entry names the window class of the app, `StartupWMClass`,
+as the executable of `command`: an X11 session groups the window with the
+entry and shows its icon in the taskbar, where Wayland matches the same
+name as the app id.
+
 Keep the slug of a released app. Its Linux files are named after it, and
 an update replaces the files of the same names: one to a version with
 another slug leaves the old executable in place, which the desktop entry
@@ -587,7 +625,7 @@ the archive holds the original. Its fields come from the configuration:
 | `pkgdesc` | `linux.comment`, else the name |
 | `arch` | `x86_64` of amd64, `aarch64` of arm64 |
 | `url` | `homepage` in package.json, else the repository of `updates.github` |
-| `license` | `license` in package.json, else `LicenseRef-custom` |
+| `license` | `license` in mygo.json, else in package.json, else `LicenseRef-custom` |
 | `depends` | `gtk3` and, unless `linux.webview` is `false`, `webkit2gtk-4.1`, then the Arch Linux packages of `linux.depends` that MyGo knows, as `libnotify` of `libnotify4`; the build warns about a Debian package it knows no Arch Linux package for, and leaves it out |
 
 `-upload` leaves the PKGBUILD out: it packages the archive next to it, and

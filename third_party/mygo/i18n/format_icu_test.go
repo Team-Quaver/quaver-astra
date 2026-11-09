@@ -16,6 +16,7 @@ type icuCase struct {
 	Kind    string         `json:"kind"`
 	Value   string         `json:"value"`
 	Time    string         `json:"time"`
+	End     string         `json:"end"`
 	Zone    string         `json:"zone"`
 	Options map[string]any `json:"options"`
 	Times   []string       `json:"times"`
@@ -31,8 +32,15 @@ func knownDifference(locale string, c icuCase) string {
 		return "ICU 78 writes polytonic Greek as Greek: it has no data of el-polyton"
 	case locale == "sr-Cyrl-ME" && c.Options["timeStyle"] == "full" && c.Zone == "":
 		return "ICU 78's sr-Cyrl-ME names UTC in the Latin script; CLDR's names it in Cyrillic"
-	case locale == "fr-ML" && c.Options["dateStyle"] == "short" && c.Options["timeStyle"] != nil:
-		return "CLDR 48.2 puts fr-ML's short dates and times together with a comma; ICU 78 has CLDR 48.0"
+	case locale == "sr-Cyrl-ME" && c.Options["currencyDisplay"] == "name":
+		return "ICU 78's sr-Cyrl-ME names currencies in the Latin script; CLDR's names them in Cyrillic"
+	case locale == "my" && c.Options["currencyDisplay"] == "name":
+		return "ICU 78's Burmese writes the name of a currency after the amount, as the root's unit pattern does; CLDR's puts it before (\"{1} {0}\")"
+	case locale == "fr-ML" && c.Options["dateStyle"] == "short" && c.Options["timeStyle"] != nil,
+		locale == "fr-ML" && c.Kind == "range" && c.Options["dateStyle"] == nil && c.Time[:10] != c.End[:10] && c.Options["year"] == nil && (c.Options["hour"] != nil || c.Options["timeStyle"] != nil):
+		return "CLDR 48.2 puts fr-ML's short dates and times together with a comma, as ranges of times of different days write them; ICU 78 has CLDR 48.0"
+	case (locale == "ps" || locale == "ps-PK") && c.Options["compactDisplay"] == "long":
+		return "ICU 78's Pashto writes long compact thousands and millions whole, and trillions in billions (G); CLDR 48.2's are the root's"
 	case (locale == "fa" || locale == "fa-AF") && c.Options["timeZoneName"] == "short":
 		return "ICU 78 writes Persian times with a zone in parentheses, \"H:mm (z)\", though CLDR's pattern of the skeleton Hmv, which ICU picks for a generic zone (v), has none"
 	}
@@ -41,7 +49,8 @@ func knownDifference(locale string, c icuCase) string {
 
 func TestKnownDifferencesDiffer(t *testing.T) {
 	// The test below skips the cases knownDifference names, which must
-	// still differ: when ICU or CLDR changes, drop what agrees.
+	// still differ: when ICU or CLDR changes, drop what agrees. Of numbers,
+	// some magnitudes differ, not all.
 	data, err := os.ReadFile("testdata/format_icu.json")
 	if err != nil {
 		t.Fatal(err)
@@ -56,7 +65,11 @@ func TestKnownDifferencesDiffer(t *testing.T) {
 	for l, row := range golden.Locales {
 		for i, want := range row {
 			c := golden.Cases[i]
-			if (c.Kind == "date" || c.Kind == "names") && knownDifference(l, c) != "" && formatCase(l, c) == want {
+			got := formatCase(l, c)
+			if c.Kind == "range" {
+				got, want = rangeSpaces.Replace(got), rangeSpaces.Replace(want)
+			}
+			if c.Kind != "number" && knownDifference(l, c) != "" && got == want {
 				if l != "ht" && l != "el-polyton" {
 					t.Errorf("%s %v agrees with ICU now: %s", l, c, knownDifference(l, c))
 				}
@@ -91,6 +104,24 @@ func numberOptions(o map[string]any) NumberOptions {
 	}
 	if o["useGrouping"] == false {
 		n.NoGrouping = true
+	}
+	if o["style"] == "currency" {
+		n.Currency = CurrencyOf(o["currency"].(string))
+		switch o["currencyDisplay"] {
+		case "narrowSymbol":
+			n.CurrencyDisplay = CurrencyNarrowSymbol
+		case "code":
+			n.CurrencyDisplay = CurrencyCode
+		case "name":
+			n.CurrencyDisplay = CurrencyName
+		}
+		n.Accounting = o["currencySign"] == "accounting"
+	}
+	if o["notation"] == "compact" {
+		n.Notation = CompactShort
+		if o["compactDisplay"] == "long" {
+			n.Notation = CompactLong
+		}
 	}
 	return n
 }
@@ -157,6 +188,16 @@ func formatCase(locale string, c icuCase) string {
 			panic(err)
 		}
 		return FormatDate(locale, t.In(zoneOf(c.Zone)), dateOptions(c.Options))
+	case "range":
+		start, err := time.Parse(time.RFC3339, c.Time)
+		if err != nil {
+			panic(err)
+		}
+		end, err := time.Parse(time.RFC3339, c.End)
+		if err != nil {
+			panic(err)
+		}
+		return FormatDateRange(locale, start, end, dateOptions(c.Options))
 	case "names":
 		f := NewDateFormatter(locale, dateOptions(c.Options))
 		var out []string
@@ -175,6 +216,8 @@ func formatCase(locale string, c icuCase) string {
 	}
 	return "?"
 }
+
+var rangeSpaces = strings.NewReplacer("\u2009", " ", "\u202f", " ")
 
 func TestFormatMatchesICU(t *testing.T) {
 	data, err := os.ReadFile("testdata/format_icu.json")
@@ -201,6 +244,11 @@ func TestFormatMatchesICU(t *testing.T) {
 		for i, want := range golden.Locales[l] {
 			c := golden.Cases[i]
 			got := formatCase(l, c)
+			if c.Kind == "range" {
+				// V8 keeps CLDR's thin and narrow no-break spaces in
+				// ranges, as this does, and JavaScriptCore writes spaces.
+				got, want = rangeSpaces.Replace(got), rangeSpaces.Replace(want)
+			}
 			if got == want {
 				continue
 			}

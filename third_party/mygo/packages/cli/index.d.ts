@@ -74,6 +74,11 @@ export interface Config {
    * the copyright notice without its "©" and years).
    */
   publisher?: string;
+  /**
+   * The SPDX license expression of the app, such as `MIT`, which the PKGBUILD
+   * of Arch Linux records (default: `license` in `package.json`).
+   */
+  license?: string;
   /** A square PNG, ideally 1024×1024 (default: `resources/icon.png` when it exists). */
   icon?: string;
   /** The Go package of the app, relative to the project (default: `.`). */
@@ -109,6 +114,14 @@ export interface Config {
    * `resources/linux-amd64`, hold the files of one platform.
    */
   resources?: string[];
+  /**
+   * Files of the project's resources directory left out of the apps:
+   * patterns of their paths there, with slashes, where `*` matches within a
+   * name and `**` any number of directories, as in `design/**`. A directory
+   * that matches is left out with what it holds. Go source files are always
+   * left out; listed `resources` ship whole.
+   */
+  resourcesExclude?: string[];
   /** The URL schemes the app opens, such as `myapp` for `myapp://…`, which reach `App.OnOpenURL`. */
   urlSchemes?: string[];
   /** The types of files the app opens, which reach `App.OnOpenFile`. */

@@ -186,6 +186,19 @@ func (r *RenderState) RowWrapped() bool {
 	return ok(call(fnRowData, uintptr(raw), rowDataWrap, uintptr(unsafe.Pointer(&v)))) && v
 }
 
+// RowPrompt returns how the row belongs to a shell's prompt.
+func (r *RenderState) RowPrompt() RowPrompt {
+	var raw uint64
+	if !r.rowGet(rowDataRaw, unsafe.Pointer(&raw)) {
+		return NoPrompt
+	}
+	v := NoPrompt
+	if !ok(call(fnRowData, uintptr(raw), rowDataSemanticPrompt, uintptr(unsafe.Pointer(&v)))) {
+		return NoPrompt
+	}
+	return v
+}
+
 // RowID returns the identity of the row, which it keeps as it scrolls.
 func (r *RenderState) RowID() RowID {
 	var id RowID

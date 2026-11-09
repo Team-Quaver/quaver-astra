@@ -243,7 +243,8 @@ type TestAccessNode struct {
 
 var uiaControlTypeNames = map[int32]string{50000: "Button", 50002: "CheckBox", 50003: "ComboBox", 50004: "Edit",
 	50005: "Hyperlink", 50006: "Image", 50008: "List", 50012: "ProgressBar", 50013: "RadioButton", 50015: "Slider",
-	50020: "Text", 50022: "ToolTip", 50026: "Group", 50033: "Pane", 50007: "ListItem", 50029: "DataItem", 50036: "Table"}
+	50020: "Text", 50022: "ToolTip", 50026: "Group", 50033: "Pane", 50007: "ListItem", 50028: "DataGrid", 50029: "DataItem", 50036: "Table",
+	50035: "HeaderItem", 50038: "Separator"}
 
 // uiaPattern returns an element's provider of a pattern, or 0.
 func uiaPattern(simple uintptr, pattern int) uintptr {

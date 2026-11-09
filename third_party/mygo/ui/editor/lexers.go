@@ -47,18 +47,21 @@ func appendTok(toks []Token, end int, k TokenKind) []Token {
 // jsonLexer makes the strings before colons keys.
 type jsonLexer struct{ lexer }
 
+// Tokenize relabels each key's tokens where they are, in one pass over
+// the line: relabeling a key at a time would copy every token after it,
+// and a minified file's one line, of thousands of keys, would take
+// minutes.
 func (j *jsonLexer) Tokenize(line string, state uint64, tokens []Token) ([]Token, uint64) {
 	n0 := len(tokens)
 	tokens, next := j.lexer.Tokenize(line, state, tokens)
 	toks := tokens[n0:]
-	from := 0
+	out := toks[:0] // written behind where it is read
 	for i := 0; i < len(toks); i++ {
 		if toks[i].Kind != TokenString {
-			from = toks[i].End
+			out = appendTok(out, toks[i].End, toks[i].Kind)
 			continue
 		}
 		// A string, with its escapes.
-		start := from
 		k := i
 		for k+1 < len(toks) && (toks[k+1].Kind == TokenString || toks[k+1].Kind == TokenEscape) {
 			k++
@@ -69,16 +72,15 @@ func (j *jsonLexer) Tokenize(line string, state uint64, tokens []Token) ([]Token
 			p++
 		}
 		if p < len(line) && line[p] == ':' {
-			toks = relabel(toks, start, end, TokenProperty)
-			// Find where the relabeled run ends to go on from it.
-			for i = 0; i < len(toks) && toks[i].End < end; i++ {
-			}
+			out = appendTok(out, end, TokenProperty)
 		} else {
-			i = k
+			for ; i <= k; i++ {
+				out = appendTok(out, toks[i].End, toks[i].Kind)
+			}
 		}
-		from = end
+		i = k
 	}
-	return append(tokens[:n0], toks...), next
+	return tokens[:n0+len(out)], next
 }
 
 // tomlLexer makes tables types and keys properties.

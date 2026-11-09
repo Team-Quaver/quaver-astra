@@ -58,6 +58,8 @@ func (a *app) attached(conn *surface.Conn, content surface.Automated) {
 	}
 	if w, ok := conn.Window.(*mygo.Window); ok {
 		a.targets[w] = target{conn, content}
+		// A closed window's content goes, with what it showed (#1281).
+		w.OnClosed(func() { delete(a.targets, w) })
 	}
 }
 

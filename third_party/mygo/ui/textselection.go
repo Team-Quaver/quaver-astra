@@ -313,7 +313,7 @@ func (rt *engine) pressTextSelection(s *state, x, y float32, mods Modifiers, cli
 	s = rt.states[p.id]
 	rt.focused, rt.focusVisible = s.id, false
 	rt.pressed = s
-	s.pressed, s.pressMods = true, mods
+	s.pressed, s.pressButton, s.pressMods = true, 0, mods
 	s.editor.dragging = false
 	return true
 }

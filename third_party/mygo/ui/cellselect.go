@@ -1,5 +1,32 @@
 package ui
 
+// A CellsStyle paints the block of cells a Table chooses (CellSelect),
+// and the rows chosen, in its own colors rather than the accent, as a
+// spreadsheet does: the chosen cell stands out over its row, and the rows
+// alternate.
+//
+//	grid.CellsStyle = ui.CellsStyle{
+//		Cell:     t.Accent,
+//		CellText: t.AccentText,
+//		Row:      t.Accent.Alpha(0.12),
+//		Stripe:   t.Text.Alpha(0.04),
+//	}
+//
+// A zero color paints none, leaving the theme's background, except where
+// Cell is zero: the block then shows as chosen rows do, in the accent.
+type CellsStyle struct {
+	// Cell is the background of the cells of the block, and the border of
+	// the cursor where it is out of the block.
+	Cell Color
+	// CellText is the color of their text and of the cursor's border in
+	// the block, as AccentText is of chosen rows.
+	CellText Color
+	// Row is the background of the rows chosen.
+	Row Color
+	// Stripe is the background of every other row.
+	Stripe Color
+}
+
 // ColumnRange is the columns of the block of cells a Table chooses
 // (ListState.CellSelect), by column ID (TableColumn.ID, or Title).
 type ColumnRange struct {
@@ -282,18 +309,17 @@ func (f *listFrame) revealColumn(k int) {
 }
 
 // dragCells sets the columns of the block a drag over the cells chooses:
-// from the column of the cell pressed to the one under the pointer. Near
-// the table's left or right edge, or past them, it scrolls the table
-// sideways, faster farther out.
-func (f *listFrame) dragCells() {
-	s, rt := f.s, f.c.rt
+// from the column of the cell pressed to the one at the window's point
+// (x, y).
+func (f *listFrame) dragCells(x, y float32) {
+	s := f.s
 	from := s.colIndex(s.dragSel.fromCol)
 	if from < 0 || s.tableCols[from].rowHeader {
 		// None, or a drag from a RowHeader cell, which chooses whole rows
 		// (fromCol is "", which an untitled RowHeader column's ID is too).
 		return
 	}
-	to := f.columnAt(rt.pointerX, rt.pointerY)
+	to := f.columnAt(x, y)
 	if to < 0 {
 		return
 	}

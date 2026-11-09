@@ -357,4 +357,25 @@ func TestFileRoot(t *testing.T) {
 			t.Fatalf("%+v: %+v", req, parts)
 		}
 	}
+
+	// A file grant must not expand to a directory and its children.
+	if err := os.Remove(file); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(file, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(file, "child"), nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+	s.factory = func(context.Context, string, mygo.FileWatchOptions) (watcher, error) {
+		t.Fatal("a file root replaced by a directory reached the watcher")
+		return nil, nil
+	}
+	for _, path := range []string{".", "child"} {
+		parts := collect(s, context.Background(), page, request{Root: "settings", Path: path})
+		if len(parts) != 1 || parts[0].Code != "io" {
+			t.Fatalf("%q: %+v", path, parts)
+		}
+	}
 }

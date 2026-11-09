@@ -84,7 +84,8 @@ var cookiesOnce sync.Once
 // persistCookies keeps the cookies of the default web context in
 // cookies.sqlite of the app's user data directory, as macOS and Windows
 // keep theirs: WebKitGTK keeps them in memory unless told where to store
-// them. It runs once WebKitGTK is loaded, before any web view loads a page.
+// them. It runs on the main thread, the first time webKit is called there
+// with WebKitGTK loaded, before any web view loads a page.
 func persistCookies() {
 	if cookieManager == nil || cookieSetPersistentStorage == nil {
 		return

@@ -33,9 +33,16 @@ const (
 	Math
 	// FootnoteRef refers to the footnote labelled Text.
 	FootnoteRef
+	// Mention mentions a person or a team, written in Text as @octocat or
+	// @github/docs (ExtMentions); Login returns whom.
+	Mention
+	// Reference refers to an issue or a pull request, written in Text as
+	// #123, GH-123 or octocat/hello#123 (ExtReferences); Ref returns
+	// which.
+	Reference
 )
 
-var inlineNames = [...]string{"text", "soft break", "line break", "code", "emphasis", "strong", "strikethrough", "link", "image", "HTML", "math", "footnote reference"}
+var inlineNames = [...]string{"text", "soft break", "line break", "code", "emphasis", "strong", "strikethrough", "link", "image", "HTML", "math", "footnote reference", "mention", "reference"}
 
 func (k InlineKind) String() string {
 	if int(k) < len(inlineNames) {
@@ -48,8 +55,8 @@ func (k InlineKind) String() string {
 // order, an inline's children right after it, up to its Next.
 type Inline struct {
 	Kind InlineKind
-	// Text is the literal of Text, Code, HTML and Math, and the label of
-	// a FootnoteRef.
+	// Text is the literal of Text, Code, HTML and Math, the label of a
+	// FootnoteRef, and a Mention or a Reference as written.
 	Text string
 	// Dest and Title are a link's or an image's.
 	Dest, Title string
@@ -161,6 +168,9 @@ type inlineParser struct {
 	// nothing closes up to the end of the text, or -1.
 	openMath, hide, openDollar int
 	labels                     []string
+	// refBytes are which bytes that may start a mention or a reference
+	// the text holds (referenceBytes).
+	refBytes uint8
 	// leftover are the openers no closer matched, for healing.
 	leftover []delim
 	probe    bool
@@ -218,6 +228,9 @@ func (ip *inlineParser) run(s string) {
 	ip.joinTexts(0)
 	if ip.ext&ExtAutolinks != 0 && strings.IndexByte(s, '@') >= 0 {
 		ip.emailLinks(0, false)
+	}
+	if ip.refBytes = referenceBytes(s, ip.ext); ip.refBytes != 0 {
+		ip.references(0, 0)
 	}
 	ip.d.steps += ip.html.steps
 }
@@ -713,6 +726,14 @@ func (ip *inlineParser) scanDelims(c byte) (n int, canOpen, canClose bool) {
 	beforeSpace, beforePunct := isUnicodeSpace(before), isPunct(before)
 	left := !afterSpace && (!afterPunct || beforeSpace || beforePunct)
 	right := !beforeSpace && (!beforePunct || afterSpace || afterPunct)
+	// Next to CJK text, punctuation such as 。 or “ doesn't stop * or ~~
+	// from opening or closing: Chinese writes **结论。**后文 with no
+	// space, which strict CommonMark would leave as literal asterisks.
+	// A single tilde keeps the rule: it is more often a range, as
+	// 第1章~“附录”, than strikethrough.
+	if (c == '*' || c == '~' && n > 1) && (isCJK(before) || isCJK(after)) {
+		left, right = !afterSpace, !beforeSpace
+	}
 	switch c {
 	case '_':
 		canOpen = left && (!right || beforePunct)
@@ -728,6 +749,17 @@ func (ip *inlineParser) scanDelims(c byte) (n int, canOpen, canClose bool) {
 		canOpen, canClose = left, right
 	}
 	return
+}
+
+// isCJK reports whether r is a Chinese, Japanese or Korean character,
+// or the full-width punctuation written with them.
+func isCJK(r rune) bool {
+	if r < 0x2E80 {
+		return r >= 0x2018 && r <= 0x201F // curly quotes, used in CJK text
+	}
+	return unicode.In(r, unicode.Han, unicode.Hiragana, unicode.Katakana, unicode.Hangul) ||
+		r >= 0x3000 && r <= 0x303F || // CJK symbols and punctuation
+		r >= 0xFF00 && r <= 0xFFEF // full-width forms
 }
 
 func isAlnum(r rune) bool { return unicode.IsLetter(r) || unicode.IsDigit(r) }

@@ -155,7 +155,8 @@ it draws each segment as a rounded rectangle, rather than rasterizing the
 whole line into a mask on the CPU. Where segments overlap, their
 antialiased edges can look a little bolder than `StrokePath`'s.
 Translucent lines, and drawing without a GPU, take `StrokePath`'s way,
-since overlapping segments would show darker there.
+since overlapping segments would show darker there; a translucent line of
+one segment has none to overlap, and stays fast on a GPU.
 
 ```go
 // bx, by and points live in the view's state, reused every frame.

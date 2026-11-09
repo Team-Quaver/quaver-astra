@@ -43,6 +43,21 @@ func TestViewLinks(t *testing.T) {
 	}
 }
 
+// TestViewTableHeaderLinks reaches a link in a table's header, which
+// shows what is inside it as a cell does, still named by its text.
+func TestViewTableHeaderLinks(t *testing.T) {
+	src := "| [Name](https://go.dev) | Size |\n|---|---|\n| a.txt | 1 KB |\n"
+	tt := ui.NewTester(func(c *ui.Context) { View(c, src, nil) }, 600, 400)
+	for _, name := range []string{"Name", "Size"} {
+		if _, ok := tt.AccessByRole(ui.RoleColumnHeader, name); !ok {
+			t.Errorf("no column header named %q", name)
+		}
+	}
+	if _, ok := tt.AccessByRole(ui.RoleLink, "Name"); !ok {
+		t.Error("the header's link is not in the tree")
+	}
+}
+
 func TestViewCopyButton(t *testing.T) {
 	tt := ui.NewTester(func(c *ui.Context) { View(c, sample, nil) }, 600, 800)
 	if err := tt.Click("Copy"); err != nil {

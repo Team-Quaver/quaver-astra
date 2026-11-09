@@ -59,6 +59,13 @@ func TestPage(t *testing.T) {
 	if got := p.ProcessID(); got != 4242 {
 		t.Errorf("ProcessID %d, want 4242", got)
 	}
+	if got := p.GPUProcessID(); got != 0 {
+		t.Errorf("GPUProcessID before the backend knows one: %d", got)
+	}
+	fw.SetGPUProcessID(4343)
+	if got := p.GPUProcessID(); got != 4343 {
+		t.Errorf("GPUProcessID %d, want 4343", got)
+	}
 	if _, err := EvalAs[int]((*Page)(nil), "1"); !errors.Is(err, errNoPage) {
 		t.Errorf("EvalAs of no page: %v", err)
 	}
@@ -67,13 +74,20 @@ func TestPage(t *testing.T) {
 func TestPageProcessIDAfterClose(t *testing.T) {
 	w := NewWindow(WindowOptions{Hidden: true, URL: "https://example.com/"})
 	fb.Windows()[len(fb.Windows())-1].SetProcessID(7)
+	fb.Windows()[len(fb.Windows())-1].SetGPUProcessID(8)
 	p := w.Page()
 	if got := p.ProcessID(); got != 7 {
 		t.Fatalf("ProcessID %d, want 7", got)
 	}
+	if got := p.GPUProcessID(); got != 8 {
+		t.Fatalf("GPUProcessID %d, want 8", got)
+	}
 	w.Destroy()
 	if got := p.ProcessID(); got != 0 {
 		t.Errorf("ProcessID of a closed window's page: %d", got)
+	}
+	if got := p.GPUProcessID(); got != 0 {
+		t.Errorf("GPUProcessID of a closed window's page: %d", got)
 	}
 }
 

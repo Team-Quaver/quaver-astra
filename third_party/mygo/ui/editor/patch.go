@@ -299,7 +299,10 @@ type diffPartial struct {
 // SetPatch shows a file's patch without the files: its hunks' lines,
 // numbered as in the files, each hunk under its header, as Pierre's
 // diffs show partial patches. Old and New become texts of those lines,
-// not editable, and unchanged lines do not collapse.
+// not editable, and unchanged lines do not collapse. Each hunk is
+// highlighted on its own, from the start of its first line, as git diff
+// colors it: a comment or string the hunk before ends in does not go on
+// into it. A Language.Highlighter of the app's sees the texts whole.
 func (d *DiffState) SetPatch(p FilePatch) {
 	var old, nw strings.Builder
 	pt := &diffPartial{}
@@ -355,6 +358,8 @@ func (d *DiffState) SetPatch(p FilePatch) {
 		}
 	}
 	d.Old, d.New = NewBuffer(old.String()), NewBuffer(nw.String())
+	d.Old.setRestarts(pt.oldStarts)
+	d.New.setRestarts(pt.newStarts)
 	name := p.NewName
 	if name == "" {
 		name = p.OldName

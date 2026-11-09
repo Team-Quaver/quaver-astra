@@ -166,6 +166,9 @@ func (b *Backend) buildItem(it *platform.MenuItem, owner int) id {
 }
 
 func applyItemState(item id, it *platform.MenuItem) {
+	if it.Type != platform.MenuItemSeparator {
+		applyItemSubtitle(item, it)
+	}
 	if it.Type != platform.MenuItemSeparator && menuImage != nil {
 		var img id
 		if it.Icon != nil {
@@ -194,6 +197,22 @@ func applyItemState(item id, it *platform.MenuItem) {
 	send(item, "setState:", state)
 	if it.ToolTip != "" {
 		send(item, "setToolTip:", uintptr(nsString(it.ToolTip)))
+	}
+}
+
+// applyItemSubtitle gives the item its subtitle, which NSMenuItem shows from
+// macOS 14, and after the title before.
+func applyItemSubtitle(item id, it *platform.MenuItem) {
+	if !respondsTo(item, "setSubtitle:") {
+		if it.Subtitle != "" {
+			send(item, "setTitle:", uintptr(nsString(it.LabelWithSubtitle())))
+		}
+		return
+	}
+	if it.Subtitle != "" {
+		send(item, "setSubtitle:", uintptr(nsString(it.Subtitle)))
+	} else if send(item, "subtitle") != 0 {
+		send(item, "setSubtitle:", 0)
 	}
 }
 
@@ -258,7 +277,9 @@ func (b *Backend) PopupMenu(m *platform.Menu, pw platform.Window, pos *platform.
 		menu := b.buildMenu(m, "", owner)
 		var view id
 		var loc NSPoint
+		var content *surface
 		if w, ok := pw.(*window); ok && w != nil && !w.closed {
+			content = w.surface
 			view = w.web
 			if w.surface != nil {
 				view = w.surface.view
@@ -287,7 +308,13 @@ func (b *Backend) PopupMenu(m *platform.Menu, pw platform.Window, pos *platform.
 				defer send(view, "setUserInterfaceLayoutDirection:", uintptr(was))
 			}
 		}
+		// A menu shown while a button is down takes its release, in its
+		// own loop: the content's press ends with none.
+		held := content != nil && send(class("NSEvent"), "pressedMouseButtons") != 0
 		msgPopUpMenu(menu, sel("popUpMenuPositioningItem:atLocation:inView:"), 0, loc, view)
+		if held && b.surfaceOf(content.view) == content {
+			content.send(platform.SurfaceEvent{Kind: platform.PointerCancel})
+		}
 	})
 }
 

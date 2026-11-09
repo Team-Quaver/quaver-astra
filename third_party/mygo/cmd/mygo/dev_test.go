@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -44,6 +45,29 @@ func TestMain(m *testing.M) {
 		os.Exit(0)
 	case "exit":
 		os.Exit(3)
+	case "spawn-output-child":
+		child := fakeChild(os.Args[0], "hold-output")
+		switch os.Getenv("MYGO_FAKE_OUTPUT") {
+		case "stdout":
+			child.Stdout = os.Stdout
+		case "stderr":
+			child.Stderr = os.Stderr
+		case "both":
+			child.Stdout, child.Stderr = os.Stdout, os.Stderr
+		}
+		if err := child.Start(); err != nil {
+			os.Exit(2)
+		}
+		os.Exit(0)
+	case "hold-output":
+		conn, err := net.Dial("tcp", os.Getenv("MYGO_FAKE_OUTPUT_ADDRESS"))
+		if err != nil {
+			os.Exit(2)
+		}
+		// Stay alive, holding inherited output open, until the test ends.
+		_, _ = io.Copy(io.Discard, conn)
+		conn.Close()
+		os.Exit(0)
 
 	case "hang":
 		signal.Ignore(syscall.SIGTERM)
@@ -119,6 +143,46 @@ func TestDevLaunch(t *testing.T) {
 	p.stop()
 	if p.err == nil {
 		t.Error("a build killed exited cleanly")
+	}
+}
+
+// A child can outlive the app and keep either or both output pipes open.
+// Waiting for the app must still finish without waiting for that child.
+func TestDevLaunchInheritedOutput(t *testing.T) {
+	for _, output := range []string{"none", "stdout", "stderr", "both"} {
+		t.Run(output, func(t *testing.T) {
+			ln, err := net.Listen("tcp", "127.0.0.1:0")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer ln.Close()
+			t.Setenv("MYGO_FAKE_APP", "spawn-output-child")
+			t.Setenv("MYGO_FAKE_OUTPUT", output)
+			t.Setenv("MYGO_FAKE_OUTPUT_ADDRESS", ln.Addr().String())
+			type accepted struct {
+				conn net.Conn
+				err  error
+			}
+			connected := make(chan accepted, 1)
+			go func() {
+				conn, err := ln.Accept()
+				connected <- accepted{conn, err}
+			}()
+			s := &devSession{root: t.TempDir()}
+			p, err := s.launch(os.Args[0])
+			if err != nil {
+				t.Fatal(err)
+			}
+			child := wait.For(t, "the child to connect", connected)
+			if child.err != nil {
+				t.Fatal(child.err)
+			}
+			defer child.conn.Close()
+			wait.For(t, "the app's exit to be reported while its child holds output open", p.done)
+			if p.err != nil {
+				t.Fatalf("app exit: %v", p.err)
+			}
+		})
 	}
 }
 

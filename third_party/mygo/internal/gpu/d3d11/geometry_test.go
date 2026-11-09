@@ -40,6 +40,8 @@ func TestGeometryOptimizationsPreservePixels(t *testing.T) {
 		fixture{"perspective", gputest.PerspectiveScene()},
 		fixture{"translated", gputest.TranslatedScenes()[0]},
 		fixture{"translated-between-pixels", gputest.TranslatedScenes()[1]},
+		fixture{"masked-clips", gputest.MaskedClipScene()},
+		fixture{"corner-clips", gputest.CornerClipScene()},
 		fixture{"wide-colors", gputest.WideScene()},
 		fixture{"canvases", gputest.CanvasScene()},
 	)

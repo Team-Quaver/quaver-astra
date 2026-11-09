@@ -14,8 +14,10 @@ import {
   onFileDrop,
   onLocaleChange,
   onPreferences,
+  onWindowActive,
   preferences,
   runtime,
+  windowActive,
   type DocumentState,
   type FileDrop,
   type Runtime,
@@ -52,6 +54,7 @@ const fake: Runtime = {
   preferences: { accent: null, reduceMotion: false, reduceTransparency: true, highContrast: false, textScale: 1 },
   locale: "en",
   dir: "ltr",
+  windowActive: false,
   window: {
     minimize: () => fake.call("mygo:window.Minimize"),
     maximize: () => fake.call("mygo:window.Maximize"),
@@ -146,6 +149,17 @@ test("preferences and onPreferences", () => {
   expect(got).toEqual([changed]);
   off();
   expect(listeners.has("mygo:preferences")).toBe(false);
+});
+
+test("windowActive and onWindowActive", () => {
+  (globalThis as { mygo?: Runtime }).mygo = fake;
+  expect(windowActive()).toBe(false);
+  const got: boolean[] = [];
+  const off = onWindowActive((a) => got.push(a));
+  listeners.get("mygo:window-active")?.(true);
+  expect(got).toEqual([true]);
+  off();
+  expect(listeners.has("mygo:window-active")).toBe(false);
 });
 
 test("locale, direction and onLocaleChange", () => {

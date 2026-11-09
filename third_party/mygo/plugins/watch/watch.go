@@ -308,8 +308,8 @@ func (s *service) root(ctx context.Context, name string) (Root, error) {
 			return Root{}, err
 		}
 		// A directory replaced since setup is another one; a file is
-		// replaced whenever an editor saves it.
-		if known := s.identities[name]; known.IsDir() && !os.SameFile(info, known) {
+		// replaced whenever an editor saves it, but must remain a file.
+		if known := s.identities[name]; info.IsDir() != known.IsDir() || known.IsDir() && !os.SameFile(info, known) {
 			return Root{}, errIO
 		}
 		return root, nil

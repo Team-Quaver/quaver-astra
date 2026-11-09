@@ -3,7 +3,45 @@ package ui
 import (
 	"image/color"
 	"testing"
+
+	"github.com/egoist/mygo/internal/scene"
 )
+
+// A card turned over in perspective around its center, near the foot of
+// a tall window, shows, and a clip it draws in turns with it at its own
+// size, not the window's (#1406): the window's origin is then behind the
+// viewer, past the turned plane's horizon.
+func TestPainterTransformTurnsFarFromTheOrigin(t *testing.T) {
+	red := RGB(255, 0, 0)
+	card := Rect{X: 24, Y: 612, W: 76, H: 76}
+	for _, deg := range []float32{-85, -75, 40} {
+		tt := coreNewTester(func(c *context) {
+			coreBox(c).Size(300, 800).Draw(func(p *Painter, r Rect) {
+				p.Transform(RotationX(deg).Then(Perspective(600)), 62, 650, func() {
+					p.Clip(card, 8, func() { p.Fill(Rect{X: 0, Y: 0, W: 300, H: 800}, red, 0) })
+				})
+			})
+		}, 300, 800)
+		if c := tt.Image().RGBAAt(62, 650); c != (color.RGBA{255, 0, 0, 255}) {
+			t.Errorf("%v°: the card's center shows as %v", deg, c)
+		}
+		if c := tt.Image().RGBAAt(62, 600); c == (color.RGBA{255, 0, 0, 255}) {
+			t.Errorf("%v°: the card shows above itself", deg)
+		}
+		clips := 0
+		for _, op := range tt.h.last.Ops {
+			if op.Kind == scene.OpPushClip && op.Transform.Perspective() {
+				clips++
+				if b := op.Transform.Bounds(op.Rect); b.W > 2*card.W || b.H > card.H+1 {
+					t.Errorf("%v°: the clip covers %+v", deg, b)
+				}
+			}
+		}
+		if clips != 1 {
+			t.Errorf("%v°: %d clips turn with the card", deg, clips)
+		}
+	}
+}
 
 func TestPainterTransform(t *testing.T) {
 	red, blue := RGB(220, 20, 30), RGB(30, 60, 220)

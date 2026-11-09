@@ -1,5 +1,5 @@
 // Runs MyGo's benchmarks and keeps their history, which the website's
-// /benchmarks page shows. .github/workflows/bench.yml runs them on every
+// /measures page shows. .github/workflows/bench.yml runs them on every
 // push to main, on macOS, Linux and Windows:
 //
 //   bun scripts/bench.ts run [--e2e] [--count 6] [--benchtime 500ms] [--out file] [packages...]
@@ -371,7 +371,7 @@ const readme = `# MyGo's benchmarks
 
 The results of MyGo's benchmarks, which .github/workflows/bench.yml of the
 main branch measures on every push, written by scripts/bench.ts and shown at
-https://mygo.egoist.dev/benchmarks.
+https://mygo.egoist.dev/measures.
 
 - history/<yyyy-mm-dd>.json: every commit measured that day (UTC), with each OS's runner and results.
 - latest.json: the last ${latestCommits} commits, by series, which the website fetches.

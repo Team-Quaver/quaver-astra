@@ -25,8 +25,8 @@ in `WhenReady`, or from any goroutine after that.
 
 Before `Run`, `main` sets the app up: it binds services, handles protocols,
 adds listeners, and makes settings such as `App.SetName`, `App.SetMenu`,
-`App.Dock.SetMenu` and `Theme.SetSource`, which take effect when the app
-starts. It may also read what needs no running app, such as `App.Path`,
+`App.Dock.SetMenu`, `Theme.SetSource` and `Theme.SetGTKCSS`, which take
+effect when the app starts. It may also read what needs no running app, such as `App.Path`,
 `App.Locale` or `Power.IsOnBattery`, and register the app with the system
 (`App.SetOpenAtLogin`, `App.RegisterURLScheme`). Everything else needs the
 running app: when `main` calls the clipboard, displays, dialogs,
@@ -226,6 +226,18 @@ launch at login apart, to start in the background:
 mygo.NewWindow(mygo.WindowOptions{URL: "/", Hidden: mygo.App.WasOpenedAtLogin()})
 ```
 
+On Windows the Run entry starts the app with the user's normal
+(unelevated) token, even when the user is an administrator: the app
+cannot create network adapters, change the system's proxy or write to
+protected folders. An app that needs administrator rights registers a
+logon task in Task Scheduler with the run level `HighestAvailable`
+instead (`schtasks /Create /SC ONLOGON /RL HIGHEST`, or the Task
+Scheduler API), which starts it elevated without asking, and does not
+call `SetOpenAtLogin`. Creating the task needs administrator rights
+itself, so the app asks for them once, as the user turns the setting on.
+`WasOpenedAtLogin` does not tell such a launch apart: give the task's
+command an argument of the app's own for that.
+
 ## Directories
 
 `App.Path` returns well-known directories:
@@ -326,6 +338,46 @@ tasks removes them. Windows replaces the whole jump list whenever the app
 changes a part of it, so `App.JumpList` keeps the parts and commits them
 together. Its methods do nothing on macOS and Linux.
 
+## Drawing web pages on Linux
+
+WebKitGTK draws pages on the GPU with its DMA-BUF renderer where it can,
+and that renderer shows blank windows with NVIDIA's driver, in virtual
+machines and in containers. So MyGo turns it off by default: before GTK
+starts, `App.Run` sets `WEBKIT_DISABLE_DMABUF_RENDERER=1` unless the
+environment already has the variable. Pages then draw on the CPU, which
+costs frame rate where the renderer would have worked: on a Wayland desktop
+with Intel's GPU, a long page (a chat transcript of 4,600 elements)
+scrolls at 11–19 frames per second with a core busy, against 56 with the
+renderer and half the CPU.
+
+An app that knows where it runs can leave the renderer on, before
+`App.Run`:
+
+```go
+mygo.App.SetDMABUFRenderer(mygo.DMABUFRendererAuto)
+```
+
+| Setting | The renderer |
+|---|---|
+| `DMABUFRendererOff` (the default) | off |
+| `DMABUFRendererAuto` | on where the host is known to draw with it, off elsewhere |
+| `DMABUFRendererOn` | left to WebKitGTK, which uses it wherever it can |
+
+`DMABUFRendererAuto` leaves it on when GTK will open a Wayland display
+(`WAYLAND_DISPLAY` names a socket that exists, and `GDK_BACKEND` does not
+put another backend first) and the system has a GPU with a Mesa driver
+(a render node of a driver with 3D): not NVIDIA's driver
+(`/sys/module/nvidia`, `/proc/driver/nvidia/version`), not software OpenGL
+(`LIBGL_ALWAYS_SOFTWARE`, `GALLIUM_DRIVER=llvmpipe`), not in a container
+(`/.dockerenv`, `/run/.containerenv`), WSL or a virtual machine (the
+firmware's `product_name` or `sys_vendor` names VirtualBox, VMware, QEMU,
+KVM, Hyper-V and others). Use `DMABUFRendererOn` only where you know the
+machines, as in a kiosk.
+
+`WEBKIT_DISABLE_DMABUF_RENDERER`, set by the user, always wins, whatever
+the app chose: `0` turns the renderer on, `1` off. Other systems ignore the
+setting.
+
 ## Browsing data
 
 `App.ClearBrowsingData()` deletes what the app's pages stored: cookies,
@@ -385,11 +437,15 @@ the main thread the app keeps handling events while they wait. Cookies
 may carry the user's credentials: rather than binding the module to the
 pages, bind a backend method that does what the page needs.
 
-On Windows, WebView2 gives cookies only through a web view: before a
-window shows a page, the methods, and `App.ClearBrowsingData`, make a
-hidden one, which also makes the WebView2 browser process start, and a
-window's first page waits for the calls under way when its web view is
-made. WebView2 applies changes after its calls return, so the methods
+On Windows, WebView2 gives cookies only through a web view: while no
+window or web view in native UI shows a page, the methods, and
+`App.ClearBrowsingData`, make a hidden one, which also makes the WebView2
+browser process start, and a window's first page waits for the calls
+under way when its web view is made. The hidden web view closes once a
+page shows, or, in an app showing none, a few seconds after the last
+call, and WebView2's processes exit with it; it stays while the
+session has cookies that WebView2 keeps only while they run: those with
+a zero `Expires`, and any of an ephemeral session. WebView2 applies changes after its calls return, so the methods
 wait until the change shows, and fail when it does not within two
 seconds, as when the engine refuses a cookie. On Linux they need
 WebKitGTK 2.42 or newer, and `Set` libsoup 2.70 or newer; WebKitGTK keeps

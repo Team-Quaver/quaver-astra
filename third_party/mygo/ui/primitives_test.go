@@ -61,6 +61,58 @@ func TestAccessStatesOfYourOwn(t *testing.T) {
 	}
 }
 
+// TestBusyAndCurrent checks aria-busy and aria-current: a region marked
+// busy, seen without a role or a Label of its own, until it is no longer,
+// and the current items of a navigation landmark.
+func TestBusyAndCurrent(t *testing.T) {
+	loading := true
+	tt := coreNewTester(func(c *context) {
+		coreColumn(c).AlignItems(Start).Children(func() {
+			coreColumn(c).Busy(loading).Children(func() {
+				coreText(c, "Inbox")
+			})
+			coreRow(c).Role(RoleNavigation).Label("Steps").Children(func() {
+				coreText(c, "Cart")
+				coreText(c, "Payment").Current(CurrentStep)
+				coreText(c, "Today").Current(CurrentDate)
+			})
+		})
+	}, 400, 300)
+	tt.send(platform.SurfaceEvent{Kind: platform.AccessibilityOn})
+	tree := tt.h.access
+	inbox := accessNode(t, tree, platform.RoleText, "Inbox")
+	if inbox.Parent < 0 || tree.Nodes[inbox.Parent].Role != platform.RoleGroup || tree.Nodes[inbox.Parent].States&platform.AccessBusy == 0 {
+		t.Fatalf("the text is not in a busy group: %+v", inbox)
+	}
+	region := tree.Nodes[inbox.Parent].ID
+	steps := accessNode(t, tree, platform.RoleNavigation, "Steps")
+	for _, c := range []struct {
+		label string
+		want  platform.AccessCurrent
+	}{{"Cart", platform.CurrentNone}, {"Payment", platform.CurrentStep}, {"Today", platform.CurrentDate}} {
+		n := accessNode(t, tree, platform.RoleText, c.label)
+		if n.Current != c.want {
+			t.Errorf("%s: current %v, want %v", c.label, n.Current, c.want)
+		}
+		if n.Parent < 0 || tree.Nodes[n.Parent].ID != steps.ID {
+			t.Errorf("%s is not in the landmark", c.label)
+		}
+	}
+	// Loaded, the region is no longer busy, nor seen: it has nothing of
+	// its own to say.
+	loading = false
+	tt.Frame()
+	tree = tt.h.access
+	for _, n := range tree.Nodes {
+		if n.ID == region || n.States&platform.AccessBusy != 0 {
+			t.Errorf("still busy: %+v", n)
+		}
+	}
+	if inbox := accessNode(t, tree, platform.RoleText, "Inbox"); inbox.Parent >= 0 && tree.Nodes[inbox.Parent].Role == platform.RoleGroup {
+		t.Errorf("the text is still in a group: %+v", tree.Nodes[inbox.Parent])
+	}
+}
+
 func TestReadOnlyInput(t *testing.T) {
 	text, readOnly := "hello", true
 	tt := coreNewTester(func(c *context) {
@@ -259,6 +311,119 @@ func TestAttachTo(t *testing.T) {
 	tt.Frame()
 	if r := find(); r.Y != 66 {
 		t.Errorf("above: %v", r)
+	}
+}
+
+// TestAttachEdgeMargin keeps an attached panel further from the window's
+// edges than the default 4.
+func TestAttachEdgeMargin(t *testing.T) {
+	var edge float32 = -1
+	var tall bool
+	tt := coreNewTester(func(c *context) {
+		b := coreButtonBase(c).Size(40, 20).Label("anchor").Absolute().Left(2).Top(10)
+		coreOverlay(c, func() {
+			p := coreBox(c).Size(288, 30).Label("panel").AttachTo(b, AnchorBottomLeft, AnchorTopLeft)
+			if tall {
+				p.Height(400).flags |= flagScrollY
+			}
+			if edge >= 0 {
+				p.AttachEdgeMargin(edge)
+			}
+		})
+	}, 320, 300)
+	find := func() Rect {
+		t.Helper()
+		r, ok := tt.Find("panel")
+		if !ok {
+			t.Fatal("no panel")
+		}
+		return r
+	}
+	// Its left edge on the anchor's, 2 from the window's, it moves along
+	// the anchor into the window: 4 from the edge by default.
+	if r := find(); r.X != 4 {
+		t.Errorf("default: x %v, want 4", r.X)
+	}
+	edge = 12
+	tt.Frame()
+	if r := find(); r.X != 12 {
+		t.Errorf("edge margin 12: x %v, want 12", r.X)
+	}
+	edge = 0
+	tt.Frame()
+	if r := find(); r.X != 2 {
+		t.Errorf("edge margin 0: x %v, want 2, on the anchor", r.X)
+	}
+	// One that scrolls is no taller than the room below the anchor, which
+	// ends 30 from the top, less the margin.
+	edge, tall = 12, true
+	tt.Frame()
+	if r := find(); r.H != 300-30-12 {
+		t.Errorf("scrolling panel: h %v, want %v", r.H, 300-30-12)
+	}
+}
+
+func TestAttachedAnchors(t *testing.T) {
+	var viewAt, viewSelf, drawAt, drawSelf Anchor
+	var panel *node
+	left, top := float32(100), float32(100)
+	tt := coreNewTester(func(c *context) {
+		b := coreButtonBase(c).Size(40, 20).Label("anchor").Absolute().Left(left).Top(top)
+		coreOverlay(c, func() {
+			p := coreBox(c).Size(60, 30).Label("panel").AttachTo(b, AnchorBottomStart, AnchorTopStart).AttachedOrigin()
+			viewAt, viewSelf = p.AttachedAnchors()
+			p.Draw(func(*Painter, Rect) { drawAt, drawSelf = p.AttachedAnchors() })
+			panel = p
+		})
+	}, 400, 300)
+	check := func(what string, at, self, wantAt, wantSelf Anchor) {
+		t.Helper()
+		if at != wantAt || self != wantSelf {
+			t.Errorf("%s: %v %v, want %v %v", what, at, self, wantAt, wantSelf)
+		}
+	}
+	origin := func(x, y float32) {
+		t.Helper()
+		if panel.originX != x || panel.originY != y {
+			t.Errorf("origin %v %v, want %v %v", panel.originX, panel.originY, x, y)
+		}
+	}
+	check("below, in the view", viewAt, viewSelf, AnchorBottomStart, AnchorTopStart)
+	check("below, drawn", drawAt, drawSelf, AnchorBottomStart, AnchorTopStart)
+	origin(0, 0)
+
+	// Without room below, it goes above: drawn and its origin in this
+	// frame, read by the view in the next.
+	top = 260
+	tt.Frame()
+	check("above, in the view of the frame it moved", viewAt, viewSelf, AnchorBottomStart, AnchorTopStart)
+	check("above, drawn", drawAt, drawSelf, AnchorTopStart, AnchorBottomStart)
+	origin(0, 1)
+	tt.Frame()
+	check("above, in the view", viewAt, viewSelf, AnchorTopStart, AnchorBottomStart)
+
+	// Near the right edge too, it aligns its end with the anchor's.
+	left = 350
+	tt.Frame()
+	tt.Frame()
+	check("above, near the right edge", viewAt, viewSelf, AnchorTopEnd, AnchorBottomEnd)
+	origin(1, 1)
+}
+
+func TestAnchorsFlipped(t *testing.T) {
+	for a := AnchorTopLeft; a <= AnchorBottomEnd; a++ {
+		if a.acrossFlipped().acrossFlipped() != a || a.downFlipped().downFlipped() != a {
+			t.Errorf("%v flipped twice is not itself", a)
+		}
+		for _, rtl := range []bool{false, true} {
+			fx, fy := a.physical(rtl).fractions()
+			if x, y := a.acrossFlipped().physical(rtl).fractions(); x != 1-fx || y != fy {
+				t.Errorf("%v across, rtl %v: %v %v from %v %v", a, rtl, x, y, fx, fy)
+			}
+			if x, y := a.downFlipped().physical(rtl).fractions(); x != fx || y != 1-fy {
+				t.Errorf("%v down, rtl %v: %v %v from %v %v", a, rtl, x, y, fx, fy)
+			}
+		}
 	}
 }
 

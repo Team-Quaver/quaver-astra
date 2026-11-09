@@ -255,6 +255,32 @@ export function onPreferences(listener: (preferences: ThemePreferences) => void)
   return on<ThemePreferences>("mygo:preferences", listener);
 }
 
+/**
+ * Returns whether the window hosting the page is drawn as active: the
+ * window the user's input goes to, while it or one of its flyouts has the
+ * keyboard, as native apps tell which of their windows has it. Not DOM
+ * focus, which a click into a flyout or the window's menus takes away.
+ * Throws outside MyGo, as {@link runtime} does.
+ *
+ * CSS gets it from `<html>`, which has the `data-mygo-window-inactive`
+ * attribute while the window is not active:
+ *
+ * ```css
+ * :root[data-mygo-window-inactive] .sidebar .selected { background: #0000001a; color: inherit; }
+ * ```
+ */
+export function windowActive(): boolean {
+  return runtime().windowActive;
+}
+
+/**
+ * Subscribes to changes of whether the window is drawn as active, which
+ * {@link windowActive} returns. Returns a function that unsubscribes.
+ */
+export function onWindowActive(listener: (active: boolean) => void): () => void {
+  return on<boolean>("mygo:window-active", listener);
+}
+
 /** The window hosting the page, e.g. for a custom title bar. */
 export const currentWindow: WindowControls = {
   minimize: async () => runtime().window.minimize(),

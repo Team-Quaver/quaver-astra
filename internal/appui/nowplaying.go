@@ -485,7 +485,6 @@ func (a *App) lyricColumn(c *ui.Context, t *ui.Theme) {
 				})
 				break
 			}
-			a.npList.Label = func(i int) string { return lines[i].Text }
 			// 首尾 padding 负责留白；不再叠加 Absolute 渐变——渐变只要横跨
 			// 内容层就会在右侧模糊底上切出硬边（用户反馈过这条异常分界）。
 			// 列表自身负责裁切滚动内容，背景保持原本连续的模糊渐变。
@@ -555,7 +554,7 @@ func (a *App) lyricColumnLine(c *ui.Context, line player.LyricLine, index int) {
 	if isCur {
 		size = 29 * float32(scale)
 	}
-	row := ui.Column(c).FillWidth().Padding(8, 4).Gap(5).Radius(10).
+	row := ui.Column(c).FillWidth().Padding(8, 4).Gap(5).Radius(10).Label(line.Text).
 		Cursor(ui.CursorPointer).Transition(hoverFade)
 	if isCur {
 		a.followLyricRow(c, row, index)
@@ -741,13 +740,6 @@ func (a *App) queueBody(c *ui.Context, s queuePalette) {
 		a.PL.MoveInQueue(rows, to)
 	}
 	cur, _ := a.PL.Current()
-	a.queueList.Label = func(i int) string {
-		row, ok := a.PL.QueueRow(i)
-		if !ok {
-			return ""
-		}
-		return row.DisplayName()
-	}
 	ui.List(c, &a.queueList, n, func(i int) {
 		if row, ok := a.PL.QueueRow(i); ok {
 			a.queueRow(c, s, row, i, cur.Mid)
@@ -758,6 +750,7 @@ func (a *App) queueBody(c *ui.Context, s queuePalette) {
 func (a *App) queueRow(c *ui.Context, s queuePalette, r player.QueueRowView, i int, curMid string) {
 	isCur := r.Mid == curMid
 	row := ui.Row(c).FillWidth().Height(queueRowH).PaddingX(10).Gap(10).AlignItems(ui.Center).Radius(8).
+		Label(r.DisplayName()).
 		Transition(hoverFade)
 	row.Children(func() {
 		ui.Box(c).Width(22).Center().Children(func() {

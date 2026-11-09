@@ -54,6 +54,7 @@ on the screen. Sizes and positions are in device-independent pixels.
 | `TitleBarHeight` | the height of the title bar the page draws under the window buttons (Linux, Windows) |
 | `HideWindowButtons` | hides the window buttons of a hidden title bar, which keeps its resizing top edge, shadow and corners: the page draws its own and calls `Minimize`, `Maximize`, `Unmaximize` and `Close` |
 | `Transparent`, `Vibrancy` | a transparent window, and the material behind a transparent page or [native UI](ui/windows.md) (macOS, Windows 11 22H2): `VibrancyGlass` and `VibrancyGlassClear` are macOS 26's Liquid Glass. On Windows, a transparent window of native UI shows what is behind it where it draws nothing, and a window with a material has no menu bar: Alt and F10 open its menus in a popup |
+| `VibrancyTint` | tints Liquid Glass, in CSS syntax such as `"rgba(0, 122, 255, 0.3)"` or `"light-dark(...)"`; other materials and platforms ignore it (macOS 26). `SetVibrancyTint` changes it later |
 | `CornerRadius` | rounds a frameless window's corners: its content and material are cut to them on macOS, and Windows 11 gives it its own rounded corners |
 | `BackgroundColor` | fills the window until the page paints, in CSS syntax such as `"#1e1e1e"`, or `"light-dark(#f5f5f7, #1e1e1e)"` to follow the appearance |
 | `Opacity` | between 0 and 1 |
@@ -61,7 +62,7 @@ on the screen. Sizes and positions are in device-independent pixels.
 | `AlwaysOnTop` | keeps the window above others |
 | `SkipTaskbar` | leaves the window out of the taskbar (Linux, Windows) |
 | `AutoHideMenuBar` | shows the menu bar only while the keyboard is in it, from Alt or F10 (Linux, Windows), see [the menu bar](menus.md#the-menu-bar) |
-| `Parent`, `Modal` | a child window, modal to its parent; for one placed next to a part of it, see [flyouts](#flyouts) |
+| `Parent`, `Modal` | a child window, modal to its parent, a [flyout](#a-dialog-over-a-flyout) too; for one placed next to a part of it, see [flyouts](#flyouts) |
 | `Panel` | the window of a launcher or a quick entry, floating above all apps, see [panels](#panels) |
 | `Page` | the options of the window's [page](#pages): its preload script, trusted origins, web inspector, zoom, user agent and its suffix, swipes and pinches |
 
@@ -84,6 +85,24 @@ it drew it). One created `Hidden` is ready to show once it drew its first
 frame, which it draws while hidden, so `OnReadyToShow(win.Show)` shows it
 as it does a page's.
 
+The view of native UI first runs once `NewWindow` returned, so it can use
+the window `NewWindow` returns:
+
+```go
+app.win = mygo.NewWindow(mygo.WindowOptions{Content: ui.View(func(c *ui.Context) {
+	ui.Text(c, app.win.Title()) // never nil
+})})
+```
+
+Called on the main thread, as in `App.WhenReady` or an event handler,
+`NewWindow` leaves showing the window to the main loop's next turn, when
+the window draws its first frame, or to the first method that acts on it,
+such as `IsVisible` or `Maximize`, which finds it shown. `OnShow` added
+right after `NewWindow` hears that show, and `Hide` keeps it from
+happening. Called from another goroutine, `NewWindow` shows the window and
+returns while the main thread goes on drawing it: guard the variable
+there, or set it with `Window.Update`.
+
 ## Remember where windows were
 
 With a `StateKey`, a window remembers its position, size, and maximized and
@@ -95,9 +114,16 @@ as long as it would show on a connected display. They override `X`, `Y`,
 stay the defaults of the first launch. Give each kind of window its own key:
 `"main"`, `"preferences"`.
 
+On Windows, a state also keeps the window's bounds in the screen's pixels
+(`PixelX`, `PixelY`, `PixelWidth`, `PixelHeight`): where displays have
+different scales, its position in DIPs changes with the scales, and
+earlier versions' cannot tell the displays apart.
+
 An app that keeps its data elsewhere, such as in its own database, keeps
 the states there with a `WindowStateStore`, set before the first window
-with a `StateKey`, and no `window-state.json` is written:
+with a `StateKey`, and no `window-state.json` is written. It keeps every
+field of a `WindowState`, as JSON does: on Windows, a window whose state
+lost its pixels is centered when the displays have different scales.
 
 ```go
 type windowStates struct{ db *sql.DB }
@@ -189,8 +215,12 @@ win.Hide()              // Show, ShowInactive (without focusing), IsVisible
 win.Focus()             // Blur, IsFocused
 ```
 
-`Bounds`, `ContentBounds`, `Size`, `ContentSize` and `Position` read them
-back; [`mygo.Screen`](native.md#displays) tells where the displays are.
+Sizes and positions are in the window's DIPs, whatever the zoom of its
+page (`Page.SetZoomFactor`) or of its [native UI](ui/windows.md#zoom):
+at a zoom of 1.25, a page area of 1000 DIPs shows 800 of the page's CSS
+pixels, or of the view's DIPs. `Bounds`, `ContentBounds`, `Size`,
+`ContentSize` and `Position` read them back;
+[`mygo.Screen`](native.md#displays) tells where the displays are.
 `Bounds` are the whole window's, title bar and borders included (on Linux
 X11, the window manager's frame), and `ContentBounds` those of the area the
 page or native UI shows in, below a menu bar. On Linux under Wayland the
@@ -223,7 +253,9 @@ Other properties:
   another app is in front (macOS), so that the clear Liquid Glass
   (`VibrancyGlassClear`) of a panel floating over it stays clear. It uses a
   private AppKit call, which a later macOS may drop: apps for the Mac App
-  Store should leave it off.
+  Store should leave it off. Its material stays active then as well, and
+  its pages and native UI too, on every platform (see
+  [inactive windows](#active-and-inactive-windows)).
 - `SetWindowButtonsTheme(mygo.ThemeDark)` draws the window buttons of a
   hidden title bar for a dark background in a light app, as over a dark
   view at the top of the page, and `ThemeLight` for a light one;
@@ -243,6 +275,29 @@ Other properties:
   (Windows), the window is marked urgent (Linux) or the Dock icon bounces
   (macOS).
 
+## Active and inactive windows
+
+A window is drawn as active while the user's input goes to it: while it,
+or one of its flyouts, has the keyboard. Native apps draw the others apart
+so that users tell at a glance which window has it, and MyGo's do too:
+
+- The material (`Vibrancy`) of a window fades to an opaque gray on macOS
+  while it is inactive, as AppKit's sidebars do, and Windows 11 draws
+  its Mica or Acrylic as a solid fill. Panels and flyouts keep theirs
+  active, floating over whatever app is in front, as does a window
+  `SetActiveAppearance(true)` keeps active.
+- Pages get the `data-mygo-window-inactive` attribute on `<html>` while
+  their window is inactive, for CSS, and `windowActive()` of
+  `mygo-runtime` (see [inactive windows](frontend.md#inactive-windows)).
+- Native UI reads `c.WindowActive()`, and its built-in widgets fade their
+  accent to gray (see [native UI](ui/windows.md#active-and-inactive-windows)).
+
+A window's focusable flyout taking the keyboard leaves the window active:
+on Windows its title bar and Mica stay active too. A window that never had
+the keyboard counts as active, so that the first frame of a window about
+to take it is drawn active; one shown with `ShowInactive` is not. Panels,
+and flyouts without a parent, are always active.
+
 ## Child and modal windows
 
 A window with a `Parent` stays above it and closes with it. It can go to
@@ -261,6 +316,9 @@ prefs := mygo.NewWindow(mygo.WindowOptions{
 	Height: 400,
 })
 ```
+
+On macOS a modal window is a sheet of its parent. Its parent may be a
+flyout too: see [a dialog over a flyout](#a-dialog-over-a-flyout).
 
 ## Flyouts
 
@@ -352,7 +410,11 @@ it); on Windows, the same placement flips above an icon of a taskbar at
 the bottom of the screen. On macOS, which shows a menu bar item on each
 display, it goes under the copy of the icon the user clicked. A press on
 the icon does not dismiss a focusable flyout, so the icon's click can
-toggle it. Keep the app running as the flyout, its only window, closes:
+toggle it; with `Popover`, the click closes it, as AppKit's popovers
+close on their anchor, and does not reach `OnClick`. Either way, a click
+on the icon closes the open flyout with the code below, and does not
+open it again. Keep the app running as the flyout, its only window,
+closes:
 
 ```go
 mygo.App.OnWindowAllClosed(func() {})
@@ -377,6 +439,40 @@ tray.OnClick(func() {
 Linux's tray icons tell neither clicks nor where they are: open the flyout
 from a menu item of the icon there, and it shows in the middle of the
 primary display's work area. `examples/menubar-flyout` is such an app.
+
+### A dialog over a flyout
+
+A [dialog](ui/dialog.md) of native UI draws in its window, so a flyout's is
+cut to the flyout, and a tray's flyout may have no other window that shows.
+Ask from a window modal to the flyout instead: give it the flyout as its
+`Parent`, with `Modal`. Without `X` and `Y`, it is centered over the
+flyout, moved into the work area of its display, and it stays above the
+flyout, over other apps' windows too for a tray's. The flyout takes no
+input while it shows, and stays open wherever the keyboard goes: a
+focusable flyout gets the keyboard back as the window closes, and from
+then on closes as it loses it again. Closing the flyout, as a click on
+the tray icon may, closes the window.
+
+```go
+if ui.Button(c, "Quit…").Clicked() {
+	mygo.NewWindow(mygo.WindowOptions{
+		Title:          "Quit?",
+		Parent:         panel,
+		Modal:          true,
+		Width:          360,
+		Height:         140,
+		UseContentSize: true,
+		DisableResize:  true,
+		Content:        ui.View(app.confirmQuit),
+	})
+}
+```
+
+On macOS the window is no sheet of the flyout, which a sheet would hang
+from, but a window attached to it, at its level. On Wayland, where a
+flyout with a `Parent` is a popup, the compositor decides whether the
+popup stays as the window takes the keyboard; a tray's flyout is a
+window there, and stays.
 
 ### Size a flyout to its content
 
@@ -407,8 +503,48 @@ included, beyond `MaxHeight` the page scrolls, and the room its
 scrollbar takes then is part of the size. A page that gives `html` a size of its own,
 as `height: 100%`, keeps the flyout at that size: let the root and the
 body take their content's. The size is the page's CSS pixels times its
-zoom, in DIPs, and a size that changes nothing resizes nothing. Native
-UI (`Content`) does not fit.
+zoom, in DIPs, and a size that changes nothing resizes nothing.
+
+A flyout of native UI (`Content`) fits the same way, a tray panel whose
+list of nodes, form or error line changes as the app runs, with no size
+to guess and no `SetSize` to call:
+
+```go
+fl := mygo.NewFlyout(mygo.FlyoutOptions{
+	Tray:       tray,
+	Placement:  mygo.PlacementBottom,
+	FitContent: true,
+	MinWidth:   260,
+	MaxHeight:  480,
+	Content: ui.View(func(c *ui.Context) {
+		ui.Column(c).Fill().Padding(12).Gap(8).Children(func() {
+			ui.Text(c, "Nodes")
+			ui.Scroll(c).Grow(1).Children(func() { app.nodes(c) })
+			if app.err != nil {
+				ui.Text(c, app.err.Error())
+			}
+		})
+	}),
+})
+```
+
+Each frame measures its root's content as it lays it out, as CSS sizes
+`width: fit-content; height: auto`: its widest line of children
+(max-content), within `MinWidth` and `MaxWidth` and the work area, and
+its height at that width, within `MinHeight` and `MaxHeight`, beyond
+which a `Scroll` in it scrolls: `Fill` and `Grow` take the flyout's size
+as it lays out, and measure as their content. Elements placed `Absolute`, as menus and
+toasts, take none of it. A frame that measures another size resizes the
+flyout, placed again against its anchor (flipping where the work area
+has no room), and the next frame lays the content out at that size: the
+first frame after a change shows it at the size the flyout had. A
+hidden flyout draws no frames: content changed while it was hidden
+(with `Update` or `Invalidate`) lays out as `Show` or `ShowInactive`
+shows it, and the flyout shows at the size that content takes. A frame
+that measures what the last did resizes nothing, so a size `SetSize`
+gives holds until the content's changes. A view that builds its content
+after the window's size (`Context.Size`) settles at the size it took
+rather than resize back and forth.
 
 `WindowOptions.FitContent` does the same for the page area of a window,
 a [panel](#panels) for one, within its `MinWidth`, `MinHeight`,
@@ -608,7 +744,7 @@ Page events, on `win.Page()`:
 
 | Event | When |
 |---|---|
-| `OnWillNavigate(func(e *mygo.NavigateEvent))` | the page is about to navigate, for example after a click on a link; `e.PreventDefault()` cancels it. `e.UserInitiated` says whether a user's gesture started it, a click on a link or a click whose handler sets `location.href`, or the page's script did on its own. Not called for `LoadURL` and its siblings. |
+| `OnWillNavigate(func(e *mygo.NavigateEvent))` | the page is about to navigate, for example after a click on a link; `e.PreventDefault()` cancels it. `e.UserInitiated` says whether a user's gesture started it, a click on a link or a click whose handler sets `location.href`, or the page's script did on its own. Not called for `LoadURL` and its siblings, nor for the page's iframes, except on Linux before WebKitGTK 2.56, which tells no navigation's frame: there it is called for an iframe's too, but a `srcdoc` one's. |
 | `OnDidNavigate(func(url string))` | a navigation committed |
 | `OnDOMReady` | the page's DOM is ready (`DOMContentLoaded`) |
 | `OnDidFinishLoad` | the page finished loading |
@@ -1114,6 +1250,29 @@ pid := win.Page().ProcessID()
 It is 0 too before the web view has started a process, after the window
 closed, and for a window showing native UI.
 
+`GPUProcessID` returns the ID of the process that does the page's graphics
+and media. On macOS that is where the page's sound comes out, so an app
+that shows what a page plays (a music player's visualizer, say) can capture
+it with a Core Audio process tap (`CATapDescription`, macOS 14.2 and
+later), which needs the process's ID:
+
+```go
+pid := win.Page().GPUProcessID()
+```
+
+| Platform | The process |
+|---|---|
+| macOS | WebKit's GPU process (`com.apple.WebKit.GPU`), which plays the page's audio and video, from WebKit's private `_gpuProcessIdentifier`; 0 if WebKit doesn't answer it or hasn't started the process yet, which it does once a page first needs it, to play media or draw with the GPU |
+| Windows | WebView2's GPU process (`msedgewebview2.exe --type=gpu-process`), a child of `ProcessID`'s browser process, from `ICoreWebView2Environment8`'s `GetProcessInfos`; 0 on runtimes without it. WebView2 plays sound from its audio service, a utility process, not this one: capture the tree of `ProcessID`'s process for it (process loopback) |
+| Linux | none: WebKitGTK has no API for its GPU process, so it is always 0 |
+| Browsers | none: always 0 |
+
+It is 0 too before the web view has started a process, after the window
+closed, and for a window showing native UI. The app's web views may share
+the process, and it gets a new ID each time the app runs and whenever the
+web view starts it again, after it crashed or exited, so ask again rather
+than keep the ID.
+
 ## Finding windows
 
 - `mygo.Windows()` lists the open windows, `mygo.FocusedWindow()` returns
@@ -1125,6 +1284,54 @@ closed, and for a window showing native UI.
   the `r.Context()` of a request to a custom scheme, they return the
   window and the page that made it.
 - `mygo.App.OnWindowCreated` is called for every new window.
+
+## GTK's style on Linux
+
+On Linux, GTK draws part of a window's frame itself, in the desktop's
+GTK 3 theme: the title bar and decorations of a window the desktop leaves
+to decorate itself (GNOME on Wayland), the shadow and border GTK puts
+around a frameless window or a hidden title bar on Wayland, and the title
+buttons of a hidden title bar; its menus and dialogs too.
+`mygo.Theme.SetGTKCSS` styles them with a GTK 3 style sheet of the app's,
+for a frame that matches the rest of the desktop, such as the flat header
+bars and round title buttons of GTK 4 and libadwaita apps:
+
+```go
+const gtk4Frame = `
+decoration { border-radius: 12px; box-shadow: 0 3px 9px 1px rgba(0, 0, 0, .28); }
+.maximized decoration, .fullscreen decoration, .tiled decoration { border-radius: 0; }
+.csd.popup decoration, tooltip.csd decoration { border-radius: 5px; }
+headerbar { min-height: 46px; padding: 0 6px; background-color: #f9fafb;
+            background-image: none; border-width: 0; box-shadow: none; }
+button.titlebutton { min-width: 24px; min-height: 24px; margin: 0 3px; padding: 0;
+                     border: none; border-radius: 9999px; background-color: transparent; }
+`
+
+if err := mygo.Theme.SetGTKCSS(gtk4Frame); err != nil {
+	log.Print(err) // the sheet does not parse
+}
+```
+
+- GTK takes the sheet at the user's priority
+  (`GTK_STYLE_PROVIDER_PRIORITY_USER`): its rules win over the theme's,
+  MyGo's own and those of the user's `~/.config/gtk-3.0/gtk.css`.
+- Another call replaces the sheet, as a switch of the app's theme does, and
+  `""` removes it. A sheet that does not parse returns GTK's error, with
+  where it is, and the sheet set before stays.
+- It may be called from any goroutine, before `App.Run` too: other
+  goroutines wait for Run to load the sheet, and main's sheet waits for
+  Run, which logs its error, as no call is left to return it.
+- Pages and native UI never see it: MyGo draws them, and pages have their
+  own CSS. On macOS, Windows and in browsers it does nothing and returns
+  nil.
+
+GTK 3 rounds only the top corners of a window it decorates, whatever the
+`border-radius` of `decoration`: it clips the decorations to the radius but
+never the window's content, so the page or the native UI covers the
+bottom corners, which stay square. A window that needs four rounded
+corners draws them itself: a `Frameless`, `Transparent` window, which GTK
+leaves undecorated, without its shadow, whose page or native UI rounds its
+own background, under a compositing window manager or on Wayland.
 
 ## Native access
 

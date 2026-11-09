@@ -4,6 +4,7 @@ package e2e
 
 import (
 	"bytes"
+	"fmt"
 	"image/png"
 	"os"
 	"path/filepath"
@@ -38,29 +39,7 @@ func TestFileIcon(t *testing.T) {
 	for _, p := range paths {
 		for _, size := range []int{16, 64} {
 			data, err := mygo.Shell.FileIcon(p, size)
-			if err != nil {
-				t.Errorf("FileIcon(%q, %d): %v", p, size, err)
-				continue
-			}
-			img, err := png.Decode(bytes.NewReader(data))
-			if err != nil {
-				t.Errorf("FileIcon(%q, %d): not a PNG: %v", p, size, err)
-				continue
-			}
-			if b := img.Bounds(); b.Dx() != size || b.Dy() != size {
-				t.Errorf("FileIcon(%q, %d) is %dx%d", p, size, b.Dx(), b.Dy())
-			}
-			opaque := 0
-			for y := 0; y < size; y++ {
-				for x := 0; x < size; x++ {
-					if _, _, _, a := img.At(x, y).RGBA(); a > 0 {
-						opaque++
-					}
-				}
-			}
-			if opaque < size*size/8 {
-				t.Errorf("FileIcon(%q, %d) draws %d of %d pixels", p, size, opaque, size*size)
-			}
+			checkIcon(t, fmt.Sprintf("FileIcon(%q, %d)", p, size), data, err, size)
 		}
 	}
 	if runtime.GOOS == "linux" {
@@ -73,5 +52,45 @@ func TestFileIcon(t *testing.T) {
 	}
 	if _, err := mygo.Shell.FileIcon(filepath.Join(dir, "missing"), 32); err == nil {
 		t.Error("FileIcon of a missing file did not fail")
+	}
+}
+
+// TestTypeIcon draws the icons of file types no file has, and of a type
+// no application knows, at the size asked for.
+func TestTypeIcon(t *testing.T) {
+	for _, ext := range []string{"pdf", ".txt", "zip", "mygo-unknown", ""} {
+		for _, size := range []int{16, 64} {
+			data, err := mygo.Shell.TypeIcon(ext, size)
+			checkIcon(t, fmt.Sprintf("TypeIcon(%q, %d)", ext, size), data, err, size)
+		}
+	}
+}
+
+// checkIcon checks that an icon is a PNG of size by size pixels that
+// draws at least an eighth of them.
+func checkIcon(t *testing.T, call string, data []byte, err error, size int) {
+	t.Helper()
+	if err != nil {
+		t.Errorf("%s: %v", call, err)
+		return
+	}
+	img, err := png.Decode(bytes.NewReader(data))
+	if err != nil {
+		t.Errorf("%s: not a PNG: %v", call, err)
+		return
+	}
+	if b := img.Bounds(); b.Dx() != size || b.Dy() != size {
+		t.Errorf("%s is %dx%d", call, b.Dx(), b.Dy())
+	}
+	opaque := 0
+	for y := 0; y < size; y++ {
+		for x := 0; x < size; x++ {
+			if _, _, _, a := img.At(x, y).RGBA(); a > 0 {
+				opaque++
+			}
+		}
+	}
+	if opaque < size*size/8 {
+		t.Errorf("%s draws %d of %d pixels", call, opaque, size*size)
 	}
 }

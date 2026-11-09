@@ -74,10 +74,25 @@ The terminal does what terminal apps do:
 
 - **Selecting** with the pointer works as in Ghostty: a drag selects
   cells, a double click words and a triple click lines, and dragging past
-  the top or the bottom scrolls. Option (Alt elsewhere) drags a rectangle.
+  the top or the bottom scrolls. Option (Alt elsewhere) drags a rectangle
+  (from off a shell's command, where Option+click moves the cursor).
   Shift-click extends an existing selection from its original anchor;
   subsequent Shift-clicks can extend or shrink it, including across lines.
   While a program takes the mouse, as editors do, Shift selects.
+- **Moving the cursor**: Option+click (Alt+click elsewhere) on the
+  command being typed at a shell's prompt moves the shell's cursor to the
+  clicked cell, as in Ghostty and kitty, even on a command that wraps over
+  rows: the terminal sends the Left or Right arrows that take the cursor
+  there (in the application's mode, `ESC O`, when the shell set DECCKM).
+  A click past the end of the command moves to its end and no further, so
+  that a Right arrow does not accept a suggestion (zsh-autosuggestions,
+  fish). It takes a shell that marks its prompt with OSC 133 (shell
+  integration, as Ghostty's, kitty's or the shell's own). Without it, off
+  the command, on a full-screen program's screen and while the view shows
+  the scrollback, Option+click and Option drags select as before; on the
+  command, the click is the cursor's, so a rectangle starts off it. A
+  `Mirror` marks the prompt's rows for the other terminal too, where a
+  click works the same.
 - **The pointer** is Ghostty's: the I-beam over a shell, the arrow while a
   program takes the mouse (the I-beam again while Shift is held, as Shift
   selects then), and the shape a program asks for with OSC 22 (`pointer`,
@@ -141,6 +156,18 @@ term, err := terminal.New(terminal.Options{
   shell (`-zsh`), as terminal apps start it, so that it reads the user's
   profile: `$SHELL`, else `/bin/zsh` on macOS and `/bin/sh` elsewhere, and
   PowerShell on Windows.
+- `ShellIntegration: true` enables zsh prompt integration. A temporary
+  `.zshenv` restores the original `ZDOTDIR` before sourcing the user's startup
+  files and installs OSC 133 prompt markers after the user's prompt theme.
+  Powerlevel10k is asked to emit its own markers for asynchronous redraws.
+  When columns change, the marked prompt is cleared at its old width before
+  reflow, and zsh redraws it after `SIGWINCH`; right and multiline prompts
+  therefore do not accumulate in the scrollback. Command output and alternate
+  screens retain their normal resize behavior. The user's files are never
+  modified, temporary files are removed when the terminal exits or closes,
+  and other local shells are unchanged. With `Conn`, the source must provide
+  OSC 133 markers and redraw its prompt on resize; the plugin does not inject
+  shell startup configuration into remote sessions. Integration is off by default.
 - `Env` adds to the environment, which has `TERM=xterm-256color`,
   `COLORTERM=truecolor`, and `LANG=en_US.UTF-8` when no locale is set, as
   for apps started from the Finder.
@@ -191,7 +218,8 @@ term, err := terminal.New(terminal.Options{
   })
   ```
 - `OptionAsAlt` makes Option on macOS the Alt key of programs (Meta),
-  instead of the key typing accented letters.
+  instead of the key typing accented letters: Option-E sends Esc and e,
+  without the ´ it types otherwise.
 - `CopyOnSelect: terminal.CopyOnSelectClipboard` copies the selection to
   the clipboard as the pointer ends it, and as Select All makes it, as
   Ghostty's `copy-on-select = clipboard`. Ghostty's `primary`, Linux's
@@ -276,8 +304,11 @@ term, err := terminal.New(terminal.Options{
   exited]".
 - `OpenLink` takes the links Command+click opens, on the main thread,
   and with it file paths printed as text too (`/abs/path`, `~/notes.md`,
-  `./a.go`, `src/app.go:12:3`, `main.go:250`), as printed: a relative
-  path is the program's, as of `Dir`. It reports whether it opened the
+  `./a.go`, `src/app.go:12:3`, `main.go:250`, `app.ts(12,3)`,
+  `app.go#L12C3`, a quoted path with spaces, a path in Chinese prose with
+  no space around it), the place in the file as `path:line:col` however
+  it was printed, and without the quotes: a relative path is the
+  program's, as of `Dir`. It reports whether it opened the
   link; a hyperlink or a URL it leaves opens with the system, as every one
   does without `OpenLink`. An app opens a remote shell's paths in a
   preview of its own this way, rather than the system opening them
@@ -399,6 +430,7 @@ term, err := terminal.New(terminal.Options{Font: terminal.Font{
 	Size:       14,                                  // DIPs, 13 when zero
 	Weight:     500,                                 // 400 when zero
 	Features:   []string{"-calt", "+ss01"},          // as Ghostty's font-feature
+	CellWidth:  1.03,                                // wider cells, unchanged glyph size
 	LineHeight: 1.2,                                 // as adjust-cell-height = 20%
 	Thicken:    true,                                // as font-thicken, on macOS
 }})
@@ -425,7 +457,16 @@ term, err := terminal.New(terminal.Options{Font: terminal.Font{
 - `Features` turn OpenType features on and off: `"ss01"` or `"+ss01"` on,
   `"calt=0"` or `"-calt"` off, `"cv05=2"` an alternate. Coding fonts make
   most of their ligatures with `calt`, the others with `liga`; a ligature
-  spans the cells of its characters.
+  spans the cells of its characters. On macOS, kerning is off unless the
+  list names `kern`, so that each character keeps its place in its cells;
+  `"+kern"` keeps the font's.
+- `CellWidth` multiplies the font's horizontal advance to size columns,
+  without scaling glyphs or changing row height. Zero or less means `1`;
+  `1.03` requests 3% wider cells, and below `1` glyphs overlap. Cell
+  widths round to whole display pixels, so small increments can share a
+  width or jump a pixel. Wide characters, the cursor, selection, mouse
+  reports and box drawing all follow the adjusted grid; glyphs too wide
+  for a cell, as emoji are, shrink to the font's own cell width.
 - `LineHeight` makes rows taller or shorter than the font's line height,
   with the text centered in them; box drawing still joins.
 - `Thicken` draws text with a thicker stroke, with Core Text's font
@@ -556,8 +597,9 @@ before to what the server's shows now. The window's terminal reads them from
 its `Conn` as if a program wrote them, and shows the server's screen and
 scrollback cell for cell, with its cursor and the modes that change what it
 sends (the cursor keys', the keyboard protocols', the mouse's, bracketed
-paste) and the colors programs set (OSC 4, 10, 11, 12), while it still selects, copies, opens links and composes as any
-terminal does. It never lays out a program's output itself, so it cannot
+paste), the colors programs set (OSC 4, 10, 11, 12) and the rows of a
+shell's prompt (OSC 133), while it still selects, copies, opens links,
+composes and moves the shell's cursor on Option+click as any terminal does. It never lays out a program's output itself, so it cannot
 come to show something else: a window fed the program's output from a
 snapshot of the server's screen can, as programs that redraw by moving the
 cursor relative to where it is show, as agents' interfaces do.

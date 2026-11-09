@@ -22,8 +22,9 @@ import (
 	"github.com/egoist/mygo/ui"
 )
 
-// automationApp is the app TestAutomation drives from another process: a
-// counter and a text field of native UI, and a menu that resets the
+// automationApp is the app TestAutomation and TestAutomationCLI drive
+// from another process: a counter, a text field of native UI and a
+// greeting shown while the field has text, and a menu that resets the
 // counter and quits. MYGO_AUTOMATION names its socket.
 func automationApp() {
 	count, name := 0, ""
@@ -43,7 +44,9 @@ func automationApp() {
 			}
 			c.Key("name")
 			ui.TextInput(c, &name).Label("Name")
-			ui.Text(c, "Hello, "+name)
+			if name != "" {
+				ui.Text(c, "Hello, "+name)
+			}
 		})
 	}
 	mygo.App.WhenReady(func() {
@@ -111,48 +114,70 @@ type automationNode struct {
 	Bounds                 struct{ X, Y, Width, Height float64 }
 }
 
-// TestAutomation drives an app of native UI from another process through
-// plugins/automation's socket: it lists the windows, reads the elements,
-// presses a button, clicks a text field and types, chooses menu items,
-// captures the window and waits for it to settle.
-func TestAutomation(t *testing.T) {
+// automationProc is automationApp running in a process of its own.
+type automationProc struct {
+	path   string
+	exited chan error
+	// ended is set once exited was read.
+	ended bool
+}
+
+// startAutomationApp starts automationApp listening on a socket of its
+// own, and stops it when the test ends.
+func startAutomationApp(t *testing.T) *automationProc {
+	t.Helper()
 	dir, err := os.MkdirTemp("", "mygo-e2e")
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer os.RemoveAll(dir)
-	path := filepath.Join(dir, "app.sock")
+	p := &automationProc{path: filepath.Join(dir, "app.sock"), exited: make(chan error, 1)}
 	cmd := exec.Command(os.Args[0], "-test.run=^$")
-	cmd.Env = append(os.Environ(), "MYGO_E2E_AUTOMATION_APP=1", "MYGO_AUTOMATION="+path)
+	cmd.Env = append(os.Environ(), "MYGO_E2E_AUTOMATION_APP=1", "MYGO_AUTOMATION="+p.path)
 	var out bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &out, &out
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
 	}
-	exited := make(chan error, 1)
-	go func() { exited <- cmd.Wait() }()
-	ended := false
-	defer func() {
-		if !ended {
+	go func() { p.exited <- cmd.Wait() }()
+	t.Cleanup(func() {
+		if !p.ended {
 			cmd.Process.Kill()
-			<-exited
+			<-p.exited
 		}
 		if t.Failed() {
 			t.Logf("the app's output:\n%s", out.String())
 		}
-	}()
+		os.RemoveAll(dir)
+	})
+	return p
+}
 
+// dial connects to the app's socket once it listens.
+func (p *automationProc) dial(t *testing.T) net.Conn {
+	t.Helper()
 	var conn net.Conn
 	wait.Until(t, "the app's socket", func() bool {
 		select {
-		case err := <-exited:
-			ended = true
+		case err := <-p.exited:
+			p.ended = true
 			t.Fatalf("the app exited: %v", err)
 		default:
 		}
-		conn, err = net.Dial("unix", path)
+		var err error
+		conn, err = net.Dial("unix", p.path)
 		return err == nil
 	})
+	return conn
+}
+
+// TestAutomation drives an app of native UI from another process through
+// plugins/automation's socket: it lists the windows, reads the elements,
+// presses a button, clicks a text field and types, chooses menu items,
+// captures the window and waits for it to settle.
+func TestAutomation(t *testing.T) {
+	app := startAutomationApp(t)
+	path := app.path
+	conn := app.dial(t)
 	defer conn.Close()
 	if runtime.GOOS != "windows" {
 		if fi, err := os.Stat(path); err != nil || fi.Mode().Perm() != 0o600 {
@@ -268,10 +293,10 @@ func TestAutomation(t *testing.T) {
 	// not come.
 	line, _ := json.Marshal(map[string]any{"id": 0, "method": "menu", "params": map[string]any{"window": win.ID, "path": []string{"Test", "Quit"}}})
 	conn.Write(append(line, '\n'))
-	if err := wait.For(t, "the app to quit", exited); err != nil {
+	if err := wait.For(t, "the app to quit", app.exited); err != nil {
 		t.Errorf("the app exited: %v", err)
 	}
-	ended = true
+	app.ended = true
 	if _, err := os.Lstat(path); !os.IsNotExist(err) {
 		t.Errorf("the socket stays: %v", err)
 	}

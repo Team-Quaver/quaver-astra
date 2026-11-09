@@ -5,6 +5,9 @@
 // unified, which edits the same buffer.
 //
 //	go run ./examples/code-editor
+//
+// In a Go file, complete funcdef or forrange with Tab to insert a snippet;
+// Tab and Shift+Tab visit its fields, and Escape ends snippet editing.
 package main
 
 import (
@@ -172,8 +175,25 @@ func wordsOf(b *editor.Buffer, prefix string) []editor.Completion {
 			}
 		}
 	}
+	if l := b.Language(); l != nil && l.Name == "Go" {
+		out = append(out, goSnippets...)
+	}
 	slices.SortFunc(out, func(x, y editor.Completion) int { return strings.Compare(x.Label, y.Label) })
 	return out
+}
+
+// Templates are parsed once and shared by completions, not per frame.
+var goSnippets = []editor.Completion{
+	exampleSnippet("funcdef", "func ${1:name}(${2:args}) ${3:error} {\n\t$0\n}"),
+	exampleSnippet("forrange", "for ${1:index}, ${2:value} := range ${3:items} {\n\t$0\n}"),
+}
+
+func exampleSnippet(label, source string) editor.Completion {
+	s, err := editor.ParseSnippet(source)
+	if err != nil {
+		panic(err)
+	}
+	return editor.Completion{Label: label, Kind: editor.CompletionSnippet, Detail: "snippet · Tab visits fields", Snippet: s}
 }
 
 func wordAt(b *editor.Buffer, off int) (string, int, int) {

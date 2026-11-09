@@ -24,9 +24,45 @@ type OutlineState[K comparable] struct {
 	// Open holds the items showing their children.
 	Open Selection[K]
 	// Indent is the width in DIPs each level adds before a row's arrow,
-	// the theme's Space(4) when zero. It must not be negative.
+	// without a Prefix, the theme's Space(4) when zero. It must not be
+	// negative.
 	Indent float32
+	// Prefix, when set, builds the start of each row in place of the
+	// outline's indentation and arrow, before what row builds, for rows of
+	// a look of your own: r tells how deep the row's item is and whether
+	// it is open, and Arrow makes the element opening and closing it. An
+	// Outline's rows then have neither padding nor a gap, and center
+	// what they hold; an OutlineTable's first cells keep their padding.
+	Prefix func(r OutlineRow)
 	rows   []outlineRow[K]
+}
+
+// OutlineRow is a row of an outline as its Prefix builds it, while it
+// builds it.
+type OutlineRow struct {
+	// Depth is how deep the row's item is: 0 at the top. Branch tells
+	// that it has children, and Open that they show.
+	Depth        int
+	Branch, Open bool
+	c            *context
+	arrow        func() *node
+}
+
+// Arrow creates the row's arrow without a look: a box that opens or
+// closes the item when clicked, with all inside it with Option (Alt),
+// leaving the keyboard focus where it is. Size it and draw it from Open.
+// Of an item without children, it is a box that does nothing, which
+// keeps the rows' content in line.
+func (r OutlineRow) Arrow() Element {
+	if r.c == nil || r.c.rt == nil {
+		return Element{}
+	}
+	// A constructor, as the generated ones: its click applies as it
+	// returns.
+	r.c.rt.beginBuild()
+	a := r.arrow()
+	r.c.rt.endBuild()
+	return wrapElement(a)
 }
 
 // outlineRow is a row of an outline: its item, how deep it is, the row of
@@ -110,7 +146,10 @@ func coreOutline[K comparable](c *context, s *OutlineState[K], roots []K, childr
 	s.flatten(roots, children)
 	s.List.Key = func(i int) any { return s.rows[i].item }
 	buildList(c, e, e, &s.List, len(s.rows), func(i int) {
-		r := coreRow(c).AlignItems(Center).Gap(c.theme.Space(1)).Padding(c.theme.Space(1), c.theme.Space(2))
+		r := coreRow(c).AlignItems(Center)
+		if s.Prefix == nil {
+			r.Gap(c.theme.Space(1)).Padding(c.theme.Space(1), c.theme.Space(2))
+		}
 		r.Role(RoleNone)
 		r.Children(func() { s.prefix(c, i, children, func() { row(s.rows[i].item) }) })
 	}, treeList)
@@ -145,8 +184,9 @@ func coreOutlineTable[K comparable](c *context, s *OutlineState[K], columns []Ta
 	return e
 }
 
-// prefix builds the indentation and the arrow of row i, then content, and
-// tells assistive technology how deep the row is and whether it is open.
+// prefix builds the indentation and the arrow of row i, or what Prefix
+// builds there, then content, and tells assistive technology how deep the
+// row is and whether it is open, opening and closing it as that asks.
 func (s *OutlineState[K]) prefix(c *context, i int, children func(K) []K, content func()) {
 	t := c.theme
 	r := s.rows[i]
@@ -160,6 +200,44 @@ func (s *OutlineState[K]) prefix(c *context, i int, children func(K) []K, conten
 			break
 		}
 	}
+	toggle := func(all bool) {
+		s.setOpen(r.item, !open, all, children)
+		s.closed(i, open)
+		open = !open
+		if item != nil {
+			item.expanded = open
+		}
+	}
+	if item != nil && r.branch && item.st.expand != 0 {
+		// Assistive technology opening or closing it, once the outline is
+		// built, as a click on the arrow does.
+		item.afterInput(func() {
+			if st := item.st; st.expand != 0 {
+				if (st.expand > 0) != open {
+					toggle(false)
+				}
+				st.expand = 0
+				c.rt.consumed = true
+			}
+		})
+	}
+	arrow := func() *node {
+		a := coreBox(c).Shrink(0).Role(RoleNone)
+		if r.branch {
+			a.flags |= flagClickable | flagKeepFocus
+			a.afterInput(func() {
+				if a.Clicked() {
+					toggle(a.ClickModifiers()&Alt != 0)
+				}
+			})
+		}
+		return a
+	}
+	if s.Prefix != nil {
+		s.Prefix(OutlineRow{Depth: r.depth, Branch: r.branch, Open: open, c: c, arrow: arrow})
+		content()
+		return
+	}
 	if r.depth > 0 {
 		indent := s.Indent
 		if indent == 0 {
@@ -167,30 +245,11 @@ func (s *OutlineState[K]) prefix(c *context, i int, children func(K) []K, conten
 		}
 		coreBox(c).Width(float32(r.depth) * indent).Shrink(0)
 	}
-	arrow := coreBox(c).Size(t.Space(4), t.Space(4)).Shrink(0).Role(RoleNone)
+	a := arrow().Size(t.Space(4), t.Space(4))
 	if r.branch {
-		arrow.flags |= flagClickable | flagKeepFocus
-		arrow.afterInput(func() {
-			toggle := arrow.Clicked()
-			if item != nil && item.st.expand != 0 {
-				// Assistive technology opening or closing it.
-				toggle = (item.st.expand > 0) != open
-				item.st.expand = 0
-				c.rt.consumed = true
-			}
-			if toggle {
-				s.setOpen(r.item, !open, arrow.ClickModifiers()&Alt != 0, children)
-				s.closed(i, open)
-				open = !open
-				if item != nil {
-					item.expanded = open
-				}
-			}
-
-		})
-		turn := arrow.Animate("open", 90*b2f(open), 150*time.Millisecond)
-		rtl := arrow.rtl()
-		arrow.Draw(func(p *Painter, rect Rect) {
+		turn := a.Animate("open", 90*b2f(open), 150*time.Millisecond)
+		rtl := a.rtl()
+		a.Draw(func(p *Painter, rect Rect) {
 			p.StrokePath(disclosurePath(rect, turn, rtl), 1.5, arrowColor(t, item))
 		})
 	}

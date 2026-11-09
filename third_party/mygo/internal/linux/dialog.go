@@ -50,7 +50,7 @@ func setupChooser(fc ptr, defaultPath string, filters []platform.FileFilter, hid
 		filter := gtkFileFilterNew()
 		name := f.Name
 		if name == "" {
-			name = strings.Join(f.Extensions, ", ")
+			name = strings.Join(append(slices.Clip(f.Extensions), f.MIMETypes...), ", ")
 		}
 		gtkFileFilterSetName(filter, cs(name))
 		for _, e := range f.Extensions {
@@ -63,6 +63,11 @@ func setupChooser(fc ptr, defaultPath string, filters []platform.FileFilter, hid
 			if up := strings.ToUpper(e); up != e {
 				gtkFileFilterAddPattern(filter, cs("*."+up))
 			}
+		}
+		// GTK matches "kind/*" itself, and the portal's file chooser
+		// takes the types as they are.
+		for _, m := range f.MIMETypes {
+			gtkFileFilterAddMimeType(filter, cs(m))
 		}
 		gtkFileChooserAddFilter(fc, filter)
 	}

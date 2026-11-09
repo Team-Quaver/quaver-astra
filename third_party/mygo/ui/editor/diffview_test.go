@@ -3,6 +3,7 @@ package editor
 import (
 	"math"
 	"math/rand/v2"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -589,6 +590,626 @@ func TestFitContentDiffHorizontalScrollbar(t *testing.T) {
 		tt.Frame()
 		if ed.scrollX <= 0 {
 			t.Fatalf("%v: dragging the bar scrolled to %v", layout, ed.scrollX)
+		}
+	}
+}
+
+// A diff's scroll position, the height it shows and where its lines are
+// read as the last frame laid them out, however it scrolled: the wheel,
+// the keys, the scroll bar's thumb, GoToHunk and SetScrollY; and the view
+// built after a scroll reads it, as a minimap beside the diff does.
+func TestDiffScrollPosition(t *testing.T) {
+	var a []string
+	for i := range 600 {
+		a = append(a, "line "+strconv.Itoa(i))
+	}
+	b := append([]string(nil), a...)
+	for i := 25; i < len(b); i += 50 {
+		b[i] = "changed"
+	}
+	for _, layout := range []DiffLayout{DiffSplit, DiffUnified} {
+		d := &DiffState{Old: NewBuffer(strings.Join(a, "\n")), New: NewBuffer(strings.Join(b, "\n")), Layout: layout, Editable: true}
+		var built float64
+		tt := ui.NewTester(func(c *ui.Context) {
+			built = d.ScrollY()
+			DiffView(c, d).Fill()
+		}, 800, 600)
+		tt.Frame()
+		tt.Frame()
+		check := func(how string) {
+			t.Helper()
+			tt.Frame()
+			y := d.ScrollY()
+			if y != d.eds[1].scrollY || layout == DiffSplit && y != d.eds[0].scrollY {
+				t.Fatalf("layout %v, %s: ScrollY %v, the sides %v and %v", layout, how, y, d.eds[0].scrollY, d.eds[1].scrollY)
+			}
+			if built != y {
+				t.Fatalf("layout %v, %s: the view was last built at %v, ScrollY %v", layout, how, built, y)
+			}
+		}
+		if h := d.ViewportHeight(); h != 600 {
+			t.Fatalf("layout %v: ViewportHeight %v, want 600", layout, h)
+		}
+		total := d.LineTop(DiffNew, d.New.LineCount())
+		if total != d.eds[1].view.heights.total() || total <= 600 {
+			t.Fatalf("layout %v: the diff is %v high, its rows %v", layout, total, d.eds[1].view.heights.total())
+		}
+		// The collapsed lines take no room: far less than 600 lines.
+		if lh := float64(d.eds[1].view.lineHeight); total >= 600*lh {
+			t.Fatalf("layout %v: the diff is %v high, as all its lines", layout, total)
+		}
+		if old := d.LineTop(DiffOld, d.Old.LineCount()); old != total {
+			t.Errorf("layout %v: the old side is %v high, the new %v", layout, old, total)
+		}
+		// The wheel.
+		tt.Scroll(600, 300, 0, 40)
+		check("the wheel")
+		if d.ScrollY() != 40 {
+			t.Fatalf("layout %v: ScrollY %v after the wheel, want 40", layout, d.ScrollY())
+		}
+		// The keys, in the new side's editor.
+		tt.ClickAt(700, 300)
+		before := d.ScrollY()
+		for range 3 {
+			tt.Key(0, ui.KeyPageDown)
+		}
+		check("the keys")
+		if d.ScrollY() <= before {
+			t.Fatalf("layout %v: Page Down left ScrollY at %v", layout, d.ScrollY())
+		}
+		// The thumb.
+		ed := &d.eds[1]
+		t0, n := ed.bar(false).Thumb()
+		x, y := ed.r.X+ed.r.W-scrollbarWidth/2, ed.r.Y+t0+n/2
+		before = d.ScrollY()
+		// Up, as Page Down went to the end.
+		tt.Press(x, y)
+		tt.Move(x, y-100)
+		tt.Release(x, y-100)
+		check("the thumb")
+		if d.ScrollY() >= before {
+			t.Fatalf("layout %v: dragging the thumb left ScrollY at %v", layout, d.ScrollY())
+		}
+		// GoToHunk, which scrolls as the frame lays the view out.
+		last := len(d.Hunks()) - 1
+		d.GoToHunk(last)
+		check("GoToHunk")
+		top := d.LineTop(DiffNew, d.Hunks()[last].NewStart)
+		if y := d.ScrollY(); top < y || top >= y+d.ViewportHeight() {
+			t.Fatalf("layout %v: GoToHunk showed %v to %v, the hunk at %v", layout, y, y+d.ViewportHeight(), top)
+		}
+		// SetScrollY, as far as the diff scrolls.
+		// Line 323, the first after the lines collapsed under line 275's
+		// change.
+		d.SetScrollY(d.LineTop(DiffNew, 323))
+		check("SetScrollY")
+		if d.ScrollY() != d.LineTop(DiffNew, 323) {
+			t.Fatalf("layout %v: SetScrollY scrolled to %v, want %v", layout, d.ScrollY(), d.LineTop(DiffNew, 323))
+		}
+		if first := d.eds[1].shown[0]; first != 323 {
+			t.Errorf("layout %v: SetScrollY to line 323 shows line %d first", layout, first)
+		}
+		d.SetScrollY(-5)
+		check("SetScrollY above the top")
+		if d.ScrollY() != 0 {
+			t.Fatalf("layout %v: SetScrollY(-5) scrolled to %v", layout, d.ScrollY())
+		}
+		d.SetScrollY(math.MaxFloat64)
+		check("SetScrollY past the end")
+		if y := d.ScrollY(); y != d.eds[1].scrollMax() || y <= 0 {
+			t.Fatalf("layout %v: SetScrollY past the end scrolled to %v, want %v", layout, y, d.eds[1].scrollMax())
+		}
+	}
+}
+
+// LineTop places the lines of both sides where they show: side by side,
+// a changed line across from its new version; one over the other, the
+// deleted line above the new one, and an unchanged line of the old text
+// where it is in the new.
+func TestDiffLineTop(t *testing.T) {
+	a := []string{"a", "b", "c", "d", "e", "f"}
+	b := []string{"a", "B", "c", "d", "e", "f", "g"}
+	for _, layout := range []DiffLayout{DiffSplit, DiffUnified} {
+		d := &DiffState{Old: NewBuffer(strings.Join(a, "\n")), New: NewBuffer(strings.Join(b, "\n")), Layout: layout, ExpandUnchanged: true}
+		tt := ui.NewTester(func(c *ui.Context) { DiffView(c, d).Fill() }, 800, 600)
+		tt.Frame()
+		tt.Frame()
+		lh := float64(d.eds[1].view.lineHeight)
+		for line := range b {
+			if got, want := d.LineTop(DiffNew, line), float64(line)*lh; layout == DiffSplit && got != want {
+				t.Errorf("split: new line %d at %v, want %v", line, got, want)
+			}
+		}
+		switch layout {
+		case DiffSplit:
+			if got, want := d.LineTop(DiffOld, 1), d.LineTop(DiffNew, 1); got != want {
+				t.Errorf("split: old line 1 at %v, its new version at %v", got, want)
+			}
+		case DiffUnified:
+			if got, want := d.LineTop(DiffOld, 1), 1*lh; got != want {
+				t.Errorf("unified: deleted line 1 at %v, want %v", got, want)
+			}
+			if got, want := d.LineTop(DiffNew, 1), 2*lh; got != want {
+				t.Errorf("unified: new line 1 at %v, want %v below the deleted one", got, want)
+			}
+			for _, line := range []int{0, 2, 5} {
+				if got, want := d.LineTop(DiffOld, line), d.LineTop(DiffNew, line); got != want {
+					t.Errorf("unified: unchanged old line %d at %v, the new at %v", line, got, want)
+				}
+			}
+			if got, want := d.LineTop(DiffNew, len(b)), float64(len(b)+1)*lh; got != want {
+				t.Errorf("unified: the diff is %v high, want %v", got, want)
+			}
+		}
+		if got, want := d.LineTop(DiffOld, len(a)), d.LineTop(DiffNew, len(b)); got != want {
+			t.Errorf("layout %v: the old side ends at %v, the new at %v", layout, got, want)
+		}
+	}
+}
+
+// KeepScrollbars shows the diff's thumb with the pointer away, and
+// NoScrollbars takes it away, with its room, on both sides.
+func TestDiffScrollbarsKeptAndHidden(t *testing.T) {
+	var a []string
+	for i := range 200 {
+		a = append(a, "line "+strconv.Itoa(i))
+	}
+	b := append([]string(nil), a...)
+	b[100] = "changed"
+	for _, layout := range []DiffLayout{DiffSplit, DiffUnified} {
+		d := &DiffState{Old: NewBuffer(strings.Join(a, "\n")), New: NewBuffer(strings.Join(b, "\n")), Layout: layout, ExpandUnchanged: true}
+		tt := ui.NewTester(func(c *ui.Context) { DiffView(c, d).Fill() }, 800, 600)
+		tt.Move(-10, -10)
+		tt.Frame()
+		column := func() []uint32 {
+			img := tt.Image()
+			s := img.Bounds().Dx() / 800
+			var px []uint32
+			for y := 0; y < 600*s; y++ {
+				for x := (800 - scrollbarWidth) * s; x < 800*s; x++ {
+					c := img.RGBAAt(x, y)
+					px = append(px, uint32(c.R)<<24|uint32(c.G)<<16|uint32(c.B)<<8|uint32(c.A))
+				}
+			}
+			return px
+		}
+		none := column()
+		d.KeepScrollbars = true
+		tt.Frame()
+		if slices.Equal(column(), none) {
+			t.Errorf("layout %v: a kept thumb doesn't show with the pointer away", layout)
+		}
+		d.KeepScrollbars, d.NoScrollbars = false, true
+		tt.Move(400, 300)
+		tt.Frame()
+		for i := range d.eds {
+			if i == 0 && layout == DiffUnified {
+				continue
+			}
+			ed := &d.eds[i]
+			if v, h := ed.scrollbars(); v || h || ed.trackWidth() != 0 {
+				t.Errorf("layout %v, side %d: NoScrollbars left bars %v %v, room %v", layout, i, v, h, ed.trackWidth())
+			}
+		}
+		if layout == DiffSplit && d.eds[0].view.wrapWidth != d.eds[1].view.wrapWidth {
+			t.Errorf("NoScrollbars: the sides wrap at %v and %v", d.eds[0].view.wrapWidth, d.eds[1].view.wrapWidth)
+		}
+	}
+}
+
+// A minimap beside a diff, as its guide builds one, shows where the view
+// is and scrolls the diff where it is pressed and dragged, and follows
+// the diff as it scrolls.
+func TestDiffMinimap(t *testing.T) {
+	var a []string
+	for i := range 600 {
+		a = append(a, "line "+strconv.Itoa(i))
+	}
+	b := append([]string(nil), a...)
+	for i := 25; i < len(b); i += 50 {
+		b[i] = "changed"
+	}
+	d := &DiffState{Old: NewBuffer(strings.Join(a, "\n")), New: NewBuffer(strings.Join(b, "\n")), KeepScrollbars: true}
+	var box ui.Rect
+	tt := ui.NewTester(func(c *ui.Context) {
+		var scale float64
+		ui.Row(c).Fill().Children(func() {
+			DiffView(c, d).Grow(1).FillHeight()
+			mini := ui.Box(c).Width(18).FillHeight()
+			mini.Draw(func(p *ui.Painter, r ui.Rect) {
+				scale = float64(r.H) / max(d.LineTop(DiffNew, d.New.LineCount()), 1)
+				at := func(y float64) float32 { return r.Y + float32(y*scale) }
+				for _, h := range d.Hunks() {
+					top := at(d.LineTop(DiffNew, h.NewStart))
+					bottom := at(d.LineTop(DiffNew, max(h.NewEnd, h.NewStart+1)))
+					p.Fill(ui.Rect{X: r.X, Y: top, W: r.W, H: max(bottom-top, 2)}, ui.RGB(46, 160, 67), 0)
+				}
+				box = ui.Rect{X: r.X, Y: at(d.ScrollY()), W: r.W, H: float32(d.ViewportHeight() * scale)}
+				p.Stroke(box, c.Theme().Border, 0, 1)
+			})
+			mini.HandleInput(func(ev ui.InputEvent) bool {
+				if ev.Kind == ui.InputPointerDown || ev.Kind == ui.InputPointerMove && ev.Button == 0 {
+					d.SetScrollY(float64(ev.Y)/max(scale, 1e-9) - d.ViewportHeight()/2)
+					return true
+				}
+				return ev.Kind == ui.InputPointerUp
+			})
+		})
+	}, 800, 600)
+	tt.Frame()
+	tt.Frame()
+	total := d.LineTop(DiffNew, d.New.LineCount())
+	if box.Y != 0 || math.Abs(float64(box.H)-600*600/total) > 0.01 {
+		t.Fatalf("the view's box at %v, want at the top, %v high", box, 600*600/total)
+	}
+	tt.Press(791, 300)
+	tt.Move(791, 400)
+	tt.Release(791, 400)
+	tt.Frame()
+	want := 400*total/600 - 300
+	if want <= 0 || want >= d.eds[1].scrollMax() {
+		t.Fatalf("the fixture scrolls to %v, out of 0 to %v", want, d.eds[1].scrollMax())
+	}
+	if math.Abs(d.ScrollY()-want) > 0.01 {
+		t.Fatalf("dragging the minimap to 400 scrolled to %v, want %v", d.ScrollY(), want)
+	}
+	if mid := float64(box.Y + box.H/2); math.Abs(mid-400) > 0.01 {
+		t.Fatalf("the view's box is centered at %v, want 400", mid)
+	}
+	// The wheel over the diff moves the box.
+	before := box.Y
+	tt.Scroll(600, 300, 0, -100)
+	tt.Frame()
+	if box.Y >= before {
+		t.Fatalf("the view's box stayed at %v as the diff scrolled up", box.Y)
+	}
+}
+
+// Unchanged lines collapsed into a separator are at the separator's top,
+// before the first change, between changes and after the last, on both
+// sides of both layouts; past the last line is the height of the diff.
+func TestDiffLineTopCollapsed(t *testing.T) {
+	var a []string
+	for i := range 100 {
+		a = append(a, "line "+strconv.Itoa(i))
+	}
+	b := append([]string(nil), a...)
+	b[20], b[60] = "changed", "changed"
+	for _, layout := range []DiffLayout{DiffSplit, DiffUnified} {
+		d := &DiffState{Old: NewBuffer(strings.Join(a, "\n")), New: NewBuffer(strings.Join(b, "\n")), Layout: layout}
+		seps := map[int]float64{} // by the old line the gap starts at
+		d.RenderSeparator = func(c *ui.Context, sep ui.Element, s *DiffSeparator) {
+			seps[s.a] = float64(sep.Bounds().Y)
+			DefaultSeparator(c, sep, s)
+		}
+		tt := ui.NewTester(func(c *ui.Context) { DiffView(c, d).Fill() }, 800, 2000)
+		tt.Frame()
+		tt.Frame()
+		// The gaps: lines 0 to 16, 24 to 56 and 64 to 99 collapse.
+		for _, gap := range []struct{ start, line int }{{0, 5}, {21, 40}, {61, 80}} {
+			top, ok := seps[gap.start]
+			if !ok {
+				t.Fatalf("layout %v: no separator of the gap at %d: %v", layout, gap.start, seps)
+			}
+			for _, side := range []DiffSide{DiffOld, DiffNew} {
+				if got := d.LineTop(side, gap.line); got != top {
+					t.Errorf("layout %v, side %v: collapsed line %d at %v, its separator's top %v", layout, side, gap.line, got, top)
+				}
+			}
+		}
+		total := d.eds[1].view.heights.total()
+		for _, side := range []DiffSide{DiffOld, DiffNew} {
+			if got := d.LineTop(side, 100); got != total {
+				t.Errorf("layout %v, side %v: past the last line at %v, want the height %v", layout, side, got, total)
+			}
+		}
+	}
+}
+
+// A view built after the diff or the editor was resized reads the height
+// it shows now, though the scroll and the content stay.
+func TestViewportHeightAfterResize(t *testing.T) {
+	d := &DiffState{Old: NewBuffer("a\nb\nc"), New: NewBuffer("a\nB\nc")}
+	st := &State{Buffer: NewBuffer("a\nb\nc")}
+	var diffH, editorH float64
+	tt := ui.NewTester(func(c *ui.Context) {
+		diffH, editorH = d.ViewportHeight(), st.ViewportHeight()
+		ui.Column(c).Fill().Children(func() {
+			DiffView(c, d).Grow(1).FillWidth()
+			View(c, st).Grow(1).FillWidth()
+		})
+	}, 800, 600)
+	tt.Frame()
+	if diffH != 300 || editorH != 300 {
+		t.Fatalf("the view read heights %v and %v, want 300", diffH, editorH)
+	}
+	// The frame of the resize builds before it lays out: the view is
+	// built again, with no other frame asked for.
+	tt.SetSize(800, 400)
+	if d.ViewportHeight() != 200 || diffH != 200 || editorH != 200 {
+		t.Fatalf("after a resize the view read heights %v and %v, the diff's %v, want 200", diffH, editorH, d.ViewportHeight())
+	}
+}
+
+// splitDiff returns a split diff of lines, long ones when long, whose
+// line 20 changed.
+func splitDiff(long bool) *DiffState {
+	var a, b []string
+	for i := range 40 {
+		line := "line " + strconv.Itoa(i)
+		if long {
+			line += strings.Repeat(" word", 30)
+		}
+		a = append(a, line)
+		if i == 20 {
+			line = "changed " + line
+		}
+		b = append(b, line)
+	}
+	return &DiffState{Old: NewBuffer(strings.Join(a, "\n")), New: NewBuffer(strings.Join(b, "\n")), ExpandUnchanged: true}
+}
+
+// sideWidths returns the widths the sides of a split diff were drawn at,
+// and the left of the new one.
+func sideWidths(d *DiffState) (old, nw, newX float32) {
+	return d.eds[0].r.W, d.eds[1].r.W, d.eds[1].r.X
+}
+
+// A split diff's sides share its width by SplitPercent, as two halves
+// with none, the line between them taking a DIP.
+func TestDiffSplitShare(t *testing.T) {
+	d := splitDiff(false)
+	tt := ui.NewTester(func(c *ui.Context) { DiffView(c, d).Fill() }, 901, 400)
+	tt.Frame()
+	if a, b, x := sideWidths(d); a != 450 || b != 450 || x != 451 {
+		t.Fatalf("with no share, the sides are %v and %v wide, the new one at %v, want halves", a, b, x)
+	}
+	if tt.FramePending() {
+		t.Fatal("the halves ask for frames")
+	}
+	d.SplitPercent = 30
+	tt.Frame()
+	if a, b, x := sideWidths(d); a != 270 || b != 630 || x != 271 {
+		t.Fatalf("at 30%%, the sides are %v and %v wide, the new one at %v", a, b, x)
+	}
+	// They keep the share as the view grows and shrinks.
+	tt.SetSize(1201, 400)
+	tt.Frame()
+	if a, b, _ := sideWidths(d); a != 360 || b != 840 {
+		t.Fatalf("at 30%% of a wider view, the sides are %v and %v wide", a, b)
+	}
+	if tt.FramePending() {
+		t.Fatal("the share asks for frames")
+	}
+}
+
+// The pointer drags the line between the sides, from a few DIPs either
+// side of it, which focuses it; SplitPercent follows.
+func TestDiffSplitDrag(t *testing.T) {
+	d := splitDiff(false)
+	tt := ui.NewTester(func(c *ui.Context) { DiffView(c, d).Fill() }, 901, 400)
+	tt.Frame()
+	x, y := float32(450.5), float32(200)
+	tt.Press(x, y)
+	if !tt.Focused("Divider") {
+		t.Fatal("a press on the line does not focus it")
+	}
+	if tt.Cursor() != ui.CursorResizeEW {
+		t.Fatalf("the cursor over the line is %v", tt.Cursor())
+	}
+	tt.Move(x+90, y)
+	tt.Release(x+90, y)
+	if a, b, nx := sideWidths(d); a != 540 || b != 360 || nx != 541 {
+		t.Fatalf("dragged 90 DIPs right, the sides are %v and %v wide, the new one at %v", a, b, nx)
+	}
+	if d.SplitPercent != 60 {
+		t.Fatalf("dragged to 540 of 900 DIPs, SplitPercent is %v", d.SplitPercent)
+	}
+	// From over the old side as from over the new, and with the
+	// release's own move.
+	tt.Press(538, y)
+	tt.Move(448, y)
+	tt.Release(358, y)
+	if a, _, _ := sideWidths(d); a != 360 || d.SplitPercent != 40 {
+		t.Fatalf("dragged 180 DIPs left, the old side is %v wide, at %v%%", a, d.SplitPercent)
+	}
+	// A press without a move keeps the share, as the editors' text.
+	tt.Press(360.5, y)
+	tt.Release(360.5, y)
+	if d.SplitPercent != 40 || d.Old.String() != splitDiff(false).Old.String() {
+		t.Fatalf("a press moved the line to %v%%", d.SplitPercent)
+	}
+}
+
+// Tab goes from the old side to the line between the sides and on to the
+// new side, and the arrows move the line.
+func TestDiffSplitKeys(t *testing.T) {
+	d := splitDiff(false)
+	tt := ui.NewTester(func(c *ui.Context) { DiffView(c, d).Fill() }, 901, 400)
+	tt.Frame()
+	tt.ClickAt(200, 10)
+	if d.ActiveSide() != DiffOld {
+		t.Fatal("a click on the old side does not give it the keyboard")
+	}
+	tt.Key(0, ui.KeyTab)
+	if !tt.Focused("Divider") {
+		t.Fatal("Tab from the old side does not focus the line")
+	}
+	// By 10 DIPs, as ui.Split's; the share is a percentage, which the
+	// sides' widths come back from as near as floats are.
+	near := func(a, b float32) bool { return math.Abs(float64(a-b)) < 1e-3 }
+	tt.Key(0, ui.KeyRight)
+	if a, b, _ := sideWidths(d); !near(a, 460) || !near(b, 440) {
+		t.Fatalf("Right on the line: the sides are %v and %v wide", a, b)
+	}
+	tt.Key(0, ui.KeyLeft)
+	tt.Key(0, ui.KeyLeft)
+	if a, _, _ := sideWidths(d); !near(a, 440) || !near(d.SplitPercent, 440*100/float32(900)) {
+		t.Fatalf("Left twice: the old side is %v wide, at %v%%", a, d.SplitPercent)
+	}
+	tt.Key(0, ui.KeyTab)
+	if !tt.Focused("New text") {
+		t.Fatal("Tab from the line does not go to the new side")
+	}
+}
+
+// Neither side is dragged narrower than its gutter and 12 columns, and a
+// view too narrow for both shows halves, keeping the share for when it is
+// wide enough again.
+func TestDiffSplitMinimum(t *testing.T) {
+	d := splitDiff(false)
+	tt := ui.NewTester(func(c *ui.Context) { DiffView(c, d).Fill() }, 901, 400)
+	tt.Frame()
+	ed := &d.eds[0]
+	least := ed.textX + diffMinColumns*ed.view.charWidth + ed.trackWidth() + 4
+	if least < 100 {
+		t.Fatalf("a side keeps only %v DIPs", least)
+	}
+	tt.Press(450.5, 200)
+	tt.Move(0, 200)
+	tt.Release(0, 200)
+	if a, b, _ := sideWidths(d); a != least || b != 900-least {
+		t.Fatalf("dragged to the left edge, the sides are %v and %v wide, want the old one %v", a, b, least)
+	}
+	tt.Press(least+0.5, 200)
+	tt.Move(900, 200)
+	tt.Release(900, 200)
+	if a, b, _ := sideWidths(d); b != least || a != 900-least {
+		t.Fatalf("dragged to the right edge, the sides are %v and %v wide, want the new one %v", a, b, least)
+	}
+	// The arrows stop there too.
+	tt.Key(0, ui.KeyRight)
+	if _, b, _ := sideWidths(d); b != least {
+		t.Fatalf("Right at the edge: the new side is %v wide", b)
+	}
+	// A share the app sets past them shows at them.
+	d.SplitPercent = 1
+	tt.Frame()
+	if a, _, _ := sideWidths(d); a != least {
+		t.Fatalf("at 1%%, the old side is %v wide", a)
+	}
+	// Too narrow for both: halves, the share kept.
+	tt.SetSize(201, 400)
+	tt.Frame()
+	if a, b, x := sideWidths(d); a != 100 || b != 100 || x != 101 {
+		t.Fatalf("in 201 DIPs, the sides are %v and %v wide, the new one at %v", a, b, x)
+	}
+	tt.Press(100.5, 200)
+	tt.Move(150, 200)
+	tt.Release(150, 200)
+	if d.SplitPercent != 1 {
+		t.Fatalf("a drag where the sides do not fit set the share to %v", d.SplitPercent)
+	}
+	tt.SetSize(901, 400)
+	tt.Frame()
+	if a, _, _ := sideWidths(d); a != least {
+		t.Fatalf("wide again, the old side is %v wide", a)
+	}
+}
+
+// A hunk's header in a split diff keeps to the old side, cut at the line
+// between the sides wherever that is dragged, though its bar spans both;
+// a unified diff shows it whole.
+func TestDiffSplitHeaderKeepsToOldSide(t *testing.T) {
+	const header = "@@ -21,6 +21,7 @@ import jakarta.servlet.AsyncContext;"
+	files, err := ParsePatch("--- a/x\n+++ b/x\n" + header + "\n a\n b\n c\n+d\n e\n f\n g\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// headerBox returns the box of the header's text, not that of the
+	// separator labeled with it.
+	headerBox := func(tt *ui.Tester) ui.Rect {
+		t.Helper()
+		a, ok := tt.AccessByRole(ui.RoleText, header)
+		if !ok {
+			t.Fatalf("no %q in %q", header, tt.Texts())
+		}
+		return a.Bounds
+	}
+	d := &DiffState{}
+	d.SetPatch(files[0])
+	tt := ui.NewTester(func(c *ui.Context) { DiffView(c, d).Fill() }, 901, 400)
+	tt.Frame()
+	tt.Press(450.5, 200)
+	tt.Move(0, 200)
+	tt.Release(0, 200)
+	tt.Frame()
+	old, _, _ := sideWidths(d)
+	if old > 200 {
+		t.Fatalf("dragged to the left edge, the old side is %v wide", old)
+	}
+	if r := headerBox(tt); r.X+r.W > old {
+		t.Fatalf("the header's text spans %v to %v, past the old side's right edge at %v", r.X, r.X+r.W, old)
+	}
+
+	// Unified, nothing cuts it: it is as wide as in a view twice as wide.
+	d.Layout = DiffUnified
+	tt.Frame()
+	whole := headerBox(tt)
+	tt.SetSize(1801, 400)
+	tt.Frame()
+	if r := headerBox(tt); whole.W != r.W || whole.W <= old {
+		t.Fatalf("unified, the header's text is %v wide, %v in a wider view", whole.W, r.W)
+	}
+}
+
+// Sides of different widths keep scrolling together and their lines
+// aligned, wrapped too, each wrapping at its own width.
+func TestDiffSplitAligned(t *testing.T) {
+	for _, c := range []struct{ wrap, collapse bool }{{false, false}, {true, false}, {true, true}} {
+		wrap := c.wrap
+		d := splitDiff(true)
+		d.Wrap, d.SplitPercent, d.ExpandUnchanged = wrap, 30, !c.collapse
+		d.Annotations = []DiffAnnotation{{Side: DiffNew, Line: 22, Height: 40}}
+		d.RenderAnnotation = func(c *ui.Context, a DiffAnnotation) { ui.Text(c, "note") }
+		tt := ui.NewTester(func(c *ui.Context) { DiffView(c, d).Fill() }, 901, 400)
+		tt.Frame()
+		tt.Press(270.5, 200)
+		tt.Move(200, 200)
+		tt.Release(200, 200)
+		tt.Frame()
+		if tt.FramePending() {
+			t.Fatalf("%+v: the sides ask for frames", c)
+		}
+		ha, hb := &d.eds[0].view.heights, &d.eds[1].view.heights
+		if ha.total() != hb.total() {
+			t.Fatalf("%+v: heights %v and %v", c, ha.total(), hb.total())
+		}
+		lines := []int{0, 5, 19, 21, 22, 23, 39}
+		if c.collapse {
+			// The context around the change, and the separators' tops.
+			lines = []int{17, 18, 19, 21, 22, 23, 24, 39}
+		}
+		for _, l := range lines {
+			if ga, gb := rowsTop(ha, l), rowsTop(hb, l); ga != gb {
+				t.Fatalf("%+v: old line %d at %v, new line at %v", c, l, ga, gb)
+			}
+		}
+		if wrap && ha.wraps.rows(19) <= hb.wraps.rows(19) {
+			t.Fatalf("the narrow old side wraps line 19 in %d rows, the new side in %d", ha.wraps.rows(19), hb.wraps.rows(19))
+		}
+		if c.collapse {
+			continue
+		}
+		tt.Scroll(600, 200, 0, 120)
+		tt.Frame()
+		if d.eds[0].scrollY != 120 || d.eds[1].scrollY != 120 {
+			t.Fatalf("%+v: scrolled the sides to %v and %v", c, d.eds[0].scrollY, d.eds[1].scrollY)
+		}
+		if !wrap {
+			// Sideways the sides scroll together, as before, each as far
+			// as its own lines run past it: the narrow old side further.
+			old, nw := &d.eds[0], &d.eds[1]
+			tt.Scroll(600, 200, 5000, 0)
+			tt.Frame()
+			if m := nw.maxScrollX(); m <= 0 || nw.scrollX != m || old.scrollX != m {
+				t.Fatalf("over the new side, scrolled sideways to %v and %v, the new side's end %v", old.scrollX, nw.scrollX, m)
+			}
+			tt.Scroll(100, 200, 5000, 0)
+			tt.Frame()
+			if m := old.maxScrollX(); m <= nw.maxScrollX() || old.scrollX != m || nw.scrollX != nw.maxScrollX() {
+				t.Fatalf("over the old side, scrolled sideways to %v of %v, the new side to %v of %v", old.scrollX, m, nw.scrollX, nw.maxScrollX())
+			}
 		}
 	}
 }

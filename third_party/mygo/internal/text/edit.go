@@ -2,6 +2,8 @@ package text
 
 import (
 	"slices"
+	"strings"
+	"unicode"
 
 	"github.com/go-text/typesetting/segmenter"
 )
@@ -328,4 +330,102 @@ func lineBreaks(seg *segmenter.Segmenter, breaks []bool, text []rune) []bool {
 		breaks[l.Offset+len(l.Text)] = true
 	}
 	return breaks
+}
+
+// Korean is written with spaces between words, and its lines break at
+// them: a word of Hangul syllables is not broken across lines, as CSS's
+// word-break: keep-all has it. Unicode's line breaking algorithm, which
+// the text engines follow, allows a break between any two syllables, as
+// between Han characters. So in the languages that keep their words whole
+// (keepsWords), the engines take the breaks between two letters or digits
+// out of those it allows (keepWordsWhole), and break lines at the others,
+// as at spaces and after punctuation; a word longer than a line still
+// breaks where the engine breaks it, as CSS's overflow-wrap does, unless
+// the text keeps words whole anyway (Params.NoBreakWords).
+
+// keepsWords reports whether the lines of text in language lang, a BCP 47
+// tag, break between words only: Korean's.
+func keepsWords(lang string) bool {
+	base, _, _ := strings.Cut(lang, "-")
+	base, _, _ = strings.Cut(base, "_")
+	return strings.EqualFold(base, "ko")
+}
+
+// keepsAnyWords reports whether a text of language lang, with spans of
+// their own languages, has runes in a language that keeps words whole.
+func keepsAnyWords(lang string, spans []Span) bool {
+	if keepsWords(lang) {
+		return true
+	}
+	for _, sp := range spans {
+		if sp.Lang != "" && keepsWords(sp.Lang) {
+			return true
+		}
+	}
+	return false
+}
+
+// keepWordsWhole takes out of breaks, where lines of text may break
+// (lineBreaks), the breaks between two letters or digits of the runes in a
+// language that keeps words whole: lang, the text's, or a span's. It
+// reports whether it took any out.
+func keepWordsWhole(breaks []bool, text []rune, lang string, spans []Span) bool {
+	taken := false
+	// The span of the rune last asked, and where it starts.
+	span, from := 0, 0
+	keeps := func(i int) bool {
+		for span < len(spans) && max(spans[span].End, from) <= i {
+			from = max(spans[span].End, from)
+			span++
+		}
+		if span < len(spans) && spans[span].Lang != "" {
+			return keepsWords(spans[span].Lang)
+		}
+		return keepsWords(lang)
+	}
+	for i := 1; i < len(text) && i < len(breaks); i++ {
+		if !breaks[i] || !wordInside(text[i]) {
+			continue
+		}
+		// A mark goes with the letter it is on.
+		j := i - 1
+		for j > 0 && unicode.Is(unicode.M, text[j]) {
+			j--
+		}
+		if wordInside(text[j]) && keeps(j) && keeps(i) {
+			breaks[i] = false
+			taken = true
+		}
+	}
+	return taken
+}
+
+// breakAt reports whether a line may break before UTF-16 unit u, 0 < u < n,
+// of a text, given breaks of its runes and the rune of each unit, index: not
+// within a surrogate pair.
+func breakAt(breaks []bool, index []int, u int) bool {
+	return index[u] != index[u-1] && breaks[index[u]]
+}
+
+// wordInside reports whether r is a letter or digit that a word keeping
+// whole holds, as Chromium takes them for keep-all: but those of the
+// scripts written without spaces between words, as Thai, whose breaks
+// come from a dictionary.
+func wordInside(r rune) bool {
+	if !unicode.IsLetter(r) && !unicode.IsNumber(r) {
+		return false
+	}
+	switch {
+	case r < 0x0E00:
+		return true
+	case r <= 0x0EFF, // Thai, Lao
+		r >= 0x1000 && r <= 0x109F,   // Myanmar
+		r >= 0x1780 && r <= 0x17FF,   // Khmer
+		r >= 0x1950 && r <= 0x1AAF,   // Tai Le, New Tai Lue, Khmer's symbols, Tai Tham
+		r >= 0xA9E0 && r <= 0xA9FF,   // Myanmar Extended-B
+		r >= 0xAA60 && r <= 0xAADF,   // Myanmar Extended-A, Tai Viet
+		r >= 0x11700 && r <= 0x1174F: // Ahom
+		return false
+	}
+	return true
 }

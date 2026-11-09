@@ -248,6 +248,99 @@ func TestAccessibilityOfTables(t *testing.T) {
 	}
 }
 
+// TestColumnHeaderShowsItsChildren checks that a column header keeps the
+// buttons inside it in the tree, as ARIA's columnheader, whose children
+// are not presentational, and is still named by its content (#1275).
+func TestColumnHeaderShowsItsChildren(t *testing.T) {
+	sorted := 0
+	tt := coreNewTester(func(c *context) {
+		coreBox(c).Role(RoleColumnHeader).Children(func() {
+			if coreButton(c, "Sort").Clicked() {
+				sorted++
+			}
+			coreButton(c, "Options")
+		})
+	}, 300, 200)
+	tt.send(platform.SurfaceEvent{Kind: platform.AccessibilityOn})
+	tree := tt.h.access
+	head := accessNode(t, tree, platform.RoleColumnHeader, "Sort Options")
+	if head.Label != "Sort Options" {
+		t.Errorf("the header is named %q", head.Label)
+	}
+	for _, name := range []string{"Sort", "Options"} {
+		b := accessNode(t, tree, platform.RoleButton, name)
+		if b.Parent < 0 || tree.Nodes[b.Parent].ID != head.ID {
+			t.Errorf("%s is not inside the header", name)
+		}
+		if b.States&platform.AccessFocusable == 0 || b.Actions&platform.ActionPress == 0 {
+			t.Errorf("%s: %+v", name, b)
+		}
+	}
+	sort := accessNode(t, tree, platform.RoleButton, "Sort")
+	tt.send(platform.SurfaceEvent{Kind: platform.AccessAction, ID: sort.ID, Action: platform.AccessPress})
+	if sorted != 1 {
+		t.Errorf("pressing Sort clicked it %d times", sorted)
+	}
+	// A table's headers are named by their titles alone, with nothing
+	// inside them.
+	s := ListState{}
+	cols := []TableColumn{{Title: "Name", Sortable: true}, {Title: "Kind"}}
+	tt = coreNewTester(tableView(&s, cols, []string{"a.txt"}), 400, 300)
+	tt.send(platform.SurfaceEvent{Kind: platform.AccessibilityOn})
+	tree = tt.h.access
+	for _, title := range []string{"Name", "Kind"} {
+		h := accessNode(t, tree, platform.RoleColumnHeader, title)
+		for _, n := range tree.Nodes {
+			if n.Parent >= 0 && tree.Nodes[n.Parent].ID == h.ID {
+				t.Errorf("the header %s holds %+v", title, n)
+			}
+		}
+	}
+}
+
+// TestHeadingShowsItsChildren checks that a heading exposes the button
+// inside it, as an accordion header does, while keeping its name and level.
+func TestHeadingShowsItsChildren(t *testing.T) {
+	open := false
+	label := ""
+	tt := coreNewTester(func(c *context) {
+		coreRow(c).Role(RoleHeading).Level(3).Label(label).Children(func() {
+			if coreButton(c, "Privacy").Expanded(open).Clicked() {
+				open = !open
+			}
+		})
+	}, 300, 200)
+	tt.send(platform.SurfaceEvent{Kind: platform.AccessibilityOn})
+	tree := tt.h.access
+	heading := accessNode(t, tree, platform.RoleHeading, "Privacy")
+	if heading.Label != "Privacy" || heading.Level != 3 {
+		t.Errorf("heading: %+v", heading)
+	}
+	button := accessNode(t, tree, platform.RoleButton, "Privacy")
+	if button.Parent < 0 || tree.Nodes[button.Parent].ID != heading.ID {
+		t.Error("the button is not inside the heading")
+	}
+	if button.States&platform.AccessFocusable == 0 || button.Actions&platform.ActionPress == 0 {
+		t.Errorf("button: %+v", button)
+	}
+	tt.send(platform.SurfaceEvent{Kind: platform.AccessAction, ID: button.ID, Action: platform.AccessPress})
+	if !open {
+		t.Error("pressing the button did not open the section")
+	}
+	// An explicit name replaces the content's name without hiding it.
+	label = "Privacy settings"
+	tt.Frame()
+	tree = tt.h.access
+	heading = accessNode(t, tree, platform.RoleHeading, label)
+	if heading.Label != label || heading.Level != 3 {
+		t.Errorf("named heading: %+v", heading)
+	}
+	button = accessNode(t, tree, platform.RoleButton, "Privacy")
+	if button.States&platform.AccessExpanded == 0 {
+		t.Error("the button is not expanded after opening the section")
+	}
+}
+
 func TestAccessibilityOfOverlays(t *testing.T) {
 	open := true
 	tt := coreNewTester(func(c *context) {

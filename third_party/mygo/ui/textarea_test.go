@@ -443,6 +443,42 @@ func TestTextAreaSelectsAsWholeText(t *testing.T) {
 	}
 }
 
+// TestTextAreaDragReleaseBeforeFrame selects as far as the pointer let go
+// before a frame showed its last moves, as a drag with frames between its
+// moves does.
+func TestTextAreaDragReleaseBeforeFrame(t *testing.T) {
+	s := "a line of text to select by dragging"
+	tt := coreNewTester(func(c *context) { coreTextArea(c, &s).Fill() }, 400, 300)
+	tt.Press(20, 15)
+	tt.Move(80, 15)
+	tt.Move(140, 15)
+	tt.Release(140, 15)
+	ed := textAreaState(tt).editor
+	want := ed.caret
+	tt.Advance(time.Second)
+	tt.Press(20, 15)
+	tt.Move(80, 15)
+	tt.rt.event(platform.SurfaceEvent{Kind: platform.PointerMove, X: 110, Y: 15})
+	tt.rt.event(platform.SurfaceEvent{Kind: platform.PointerUp, X: 140, Y: 15})
+	tt.rt.event(platform.SurfaceEvent{Kind: platform.PointerMove, X: 60, Y: 15})
+	tt.settle()
+	if ed.caret != want {
+		t.Errorf("let go before a frame: selected to %d, want %d as with frames", ed.caret, want)
+	}
+	// Right, pressed after the release before a frame, collapses the
+	// selection where the drag ended, and the drag selects no more.
+	tt.Advance(time.Second)
+	tt.Press(20, 15)
+	tt.Move(80, 15)
+	tt.rt.event(platform.SurfaceEvent{Kind: platform.PointerUp, X: 140, Y: 15})
+	tt.rt.event(platform.SurfaceEvent{Kind: platform.KeyPressed, Key: platform.Key(KeyRight)})
+	tt.rt.event(platform.SurfaceEvent{Kind: platform.KeyReleased, Key: platform.Key(KeyRight)})
+	tt.Frame()
+	if ed.anchor != want || ed.caret != want {
+		t.Errorf("Right after letting go before a frame: selected %d to %d, want the caret at %d", ed.anchor, ed.caret, want)
+	}
+}
+
 // TestTextAreaUndoAppChanges undoes typing that the app reformatted: the
 // step takes the app's change back with the typing.
 func TestTextAreaUndoAppChanges(t *testing.T) {

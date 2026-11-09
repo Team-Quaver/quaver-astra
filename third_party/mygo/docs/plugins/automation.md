@@ -14,6 +14,10 @@ engine and the `Key`s the app gave elements. [ui.Tester](../ui/testing.md)
 remains the way to test a view inside `go test`; this plugin is for the
 built app, from outside.
 
+Clients speak [the protocol](#the-protocol) themselves, or run
+[`mygo-automation`](#the-command-line-mygo-automation), its command line
+client for agents.
+
 ## Turning it on
 
 An app opts in by importing the package. Keep it out of the app's
@@ -119,9 +123,26 @@ A node has its `id`, the `parent`'s ID unless it is at the top, its
 `role`, and those of `key`, `label`, `value`, `placeholder`,
 `description`, `bounds`, `states`, `actions`, `min`, `max`, `now` and
 `step` (of sliders, progress bars, meters and steppers), `selection` (of
-text fields, in runes), `level`, `posInSet` and `setSize` that it has.
+text fields, in runes), `level`, `posInSet`, `setSize`, `rowCount`,
+`colCount`, `rowIndex` and `colIndex` (the size of a table or a grid,
+and the place of a row or a cell in it from 1, as the app gave them:
+ARIA's `aria-rowcount` and the like), `rowSpan` and `colSpan` (how many
+rows and columns a cell covers, when more than one: `aria-rowspan` and
+`aria-colspan`), `current`
+(what it is the current one of, as ARIA's `aria-current`: `true`,
+`page`, `step`, `location`, `date` or `time`), `autoComplete` (what
+a text field's or a combo box's suggestions complete, as ARIA's
+`aria-autocomplete`: `inline`, `list` or `both`), `roleDescription` (as
+`aria-roledescription`), `hasPopup` (the kind of popup it opens, as
+`aria-haspopup`: `menu`, `listbox`, `tree`, `grid` or `dialog`),
+`controls` (the IDs of the elements it controls, as `aria-controls`),
+`describedBy` (the IDs of the elements describing it, as
+`aria-describedby`) and `errorMessage` (those holding its error while it
+is `invalid`, as `aria-errormessage`) that it has.
 IDs are strings of digits: they are 64-bit, which JavaScript's numbers
-would round.
+would round. `keyShortcuts` is the keys that press or focus the element,
+as ARIA's `aria-keyshortcuts`, written as the platform's menus write
+them (`⌘K` on macOS, `Ctrl+K` elsewhere) and separated by spaces.
 
 `key` is the element's `Key`, given with `Element.Key` or, for widgets
 that take theirs before they are made, `Context.Key`: a string, a
@@ -145,11 +166,13 @@ a column that lays others out has no node, keyed or not. Roles are
 `listItem`, `menuButton`, `toolbar`, `radioGroup`, `toggleButton`,
 `comboBox`, `disclosure`, `meter`, `stepper`, `colorWell`,
 `alertDialog`, `menu`, `menuBar`, `menuItem`, `menuItemCheckBox`,
-`menuItemRadio` and `heading`. States are `focusable`, `disabled`,
+`menuItemRadio`, `heading`, `region`, `log`, `timer`, `alert`,
+`separator`, `rowHeader`, `search`, `article`, `navigation`, `grid`,
+`treeGrid`, `deletion` and `insertion`. States are `focusable`, `disabled`,
 `checked`, `mixed`, `selected`, `expanded`, `multiline`, `password`,
 `readOnly`, `selectable`, `offscreen`, `multiselectable`, `segment`,
-`search`, `invalid`, `sortAscending`, `sortDescending`, `expandable` and
-`vertical`.
+`search`, `invalid`, `sortAscending`, `sortDescending`, `expandable`,
+`vertical`, `busy`, `sortOther` and `horizontal`.
 
 A web view in native UI shows as a node marked `webView`, without the
 elements of its page. A window showing a web page has no tree: `tree`
@@ -294,10 +317,101 @@ and in a shell, with `socat`:
 echo '{"id": 1, "method": "windows"}' | socat - UNIX-CONNECT:/tmp/app.sock
 ```
 
+## The command line: mygo-automation
+
+An AI coding agent driving the app it develops wants to look at the UI
+and act on it with short commands, and to read short answers: not to
+write a socket client of its own, nor to read whole JSON trees and
+20-digit element IDs into its context. `mygo-automation` is that client,
+over the same socket:
+
+```sh
+mygo-automation open --socket /tmp/app.sock
+mygo-automation snapshot -i
+# @e2 [button] "Add" key=add
+# @e3 [textField] "Name" key=name
+mygo-automation press @e2 --settle
+# - @e1 [text] "Count: 0"
+# + @e1 [text] "Count: 1"
+# = @e2 [button] "Add" key=add
+mygo-automation fill @e3 "Ada" --settle
+mygo-automation screenshot /tmp/app.png
+mygo-automation close
+```
+
+`snapshot` prints a window's elements a line each: a short ref (`@e1`),
+the role, label, value, key and states, leaving out what is empty;
+`-i` keeps the controls, `--json` prints the protocol's answer. Actions
+take a ref, `key=<key>` or `id=<digits>`, and cover the protocol's
+methods: `press`, `fill` and the other actions, `click`, `pointer`,
+`wheel`, `type`, `key`, `menu`, `eval`, `wait`, `screenshot` (to a file)
+and `windows`. With `--settle`, an action waits for the window to settle,
+with `idle` and a timeout, and prints what changed since the last
+snapshot: `+` and `-` for elements that came and went, or changed, `=`
+for the elements around them, with their refs.
+
+A session (`--session`, or `MYGO_AUTOMATION_SESSION`) keeps its socket,
+window and refs in a file of its own under the user's cache directory,
+so agents side by side don't change each other's refs. A ref lasts while
+its window shows its element, and is never given to another element: one
+whose element went is refused as stale. `close` ends the session and
+leaves the app running.
+
+`mygo-automation skills` prints its guide, a `SKILL.md` built into the
+command: the commands, sessions, selectors, refs, settling and diffs,
+limits and errors of the version installed, and nothing else.
+
+### Installing
+
+The command is in MyGo's module. In the app's module directory, `go
+install` builds the version of MyGo the app's `go.mod` requires, so that
+the command, and its guide, match the app:
+
+```sh
+go install github.com/egoist/mygo/plugins/automation/cmd/mygo-automation
+```
+
+Elsewhere, name that version, which `go list -m github.com/egoist/mygo`
+prints in the app's module:
+
+```sh
+go install github.com/egoist/mygo/plugins/automation/cmd/mygo-automation@vX.Y.Z
+```
+
+`mygo-automation version` prints the version it was built from. Upgrading
+the app's MyGo does not upgrade the installed command: install it again
+along with the upgrade, and the guide comes with it. It needs only Go's
+standard library, and runs on macOS, Linux and Windows, as the plugin.
+
+### A skill for agents
+
+Since the guide comes from the command, an agent's configuration only
+needs to say that it exists. Keep this stub as a skill: in
+`.claude/skills/mygo-automation/SKILL.md` for Claude Code, in
+`.agents/skills/mygo-automation/SKILL.md` for Codex and the agents that
+read skills there:
+
+````markdown
+---
+name: mygo-automation
+description: Use when reading a MyGo app's native UI elements and acting on them, sending pointer, wheel, key and text input, choosing items of the application menu, evaluating scripts in pages, or taking screenshots of a running MyGo app.
+---
+
+This file is a discovery stub, not the usage guide. Before running a mygo-automation command, load the actual workflow from the CLI:
+
+```bash
+mygo-automation skills # start here
+```
+
+Do not probe first with --help or --version. Only if the command is missing, install it from the app's module directory with `go install github.com/egoist/mygo/plugins/automation/cmd/mygo-automation`.
+````
+
 ## Security
 
 Whoever opens the socket drives the app as its user would, and runs
-scripts in its pages: keep the plugin out of the builds you ship. It is
+scripts in its pages: keep the plugin out of the builds you ship.
+`mygo-automation` is a client of the socket like any other: it adds no
+listener, and reaches only apps that listen. It is
 opt-in twice: an app links it only by importing it, which a build tag
 keeps to test builds, and listens only when `MYGO_AUTOMATION` is set.
 Builds without the inspector leave it out whatever they import.

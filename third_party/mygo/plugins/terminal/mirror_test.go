@@ -114,6 +114,9 @@ func (x *mirrored) same(label string) {
 		if rowsA[y].wrap != rowsB[y].wrap && y != len(rowsA)-1 {
 			fail("row %d wraps %v, mirrored %v", y, rowsA[y].wrap, rowsB[y].wrap)
 		}
+		if rowsA[y].prompt != rowsB[y].prompt {
+			fail("row %d (screen row %d) is of a prompt %d, mirrored %d", y, y-(len(rowsA)-ra), rowsA[y].prompt, rowsB[y].prompt)
+		}
 	}
 	xa, ya := ta.Cursor()
 	if xb, yb := tb.Cursor(); xa != xb || ya != yb {
@@ -136,10 +139,12 @@ func (x *mirrored) same(label string) {
 }
 
 // cellRow is a row as its cells show: their text, styles, colors, widths
-// and links, written out, and whether it wraps.
+// and links, written out, whether it wraps, and how it belongs to a
+// shell's prompt.
 type cellRow struct {
-	cells string
-	wrap  bool
+	cells  string
+	wrap   bool
+	prompt vt.RowPrompt
 }
 
 // cellRows reads every row of the scrollback and the screen, cell by cell,
@@ -208,7 +213,7 @@ func cellRows(term *vt.Terminal) []cellRow {
 				}
 				fmt.Fprintf(&b, "[%s|%q|%d|%s]", text, st, wide, link)
 			}
-			out = append(out, cellRow{cells: strings.TrimRight(trimBlankCells(b.String()), ""), wrap: rs.RowWrapped()})
+			out = append(out, cellRow{cells: strings.TrimRight(trimBlankCells(b.String()), ""), wrap: rs.RowWrapped(), prompt: rs.RowPrompt()})
 		}
 		next := off + rows
 		if next <= y {
@@ -507,6 +512,68 @@ func TestMirrorRandom(t *testing.T) {
 			var b strings.Builder
 			for range 1 + r.IntN(4) {
 				b.WriteString(ops[r.IntN(len(ops))]())
+			}
+			x.feed(fmt.Sprintf("seed %d op %d %q", seed, i, b.String()), b.String())
+		}
+	}
+}
+
+// The other terminal's rows are marked as the source's are as a shell's
+// prompt (OSC 133), for Alt+click to move the shell's cursor there too:
+// the prompt's first row, the rows its input wraps onto or that a prompt
+// of many lines goes on over, and none of those its output takes, nor
+// those drawn over a prompt, though the other terminal keeps a row's mark
+// as it is cleared. Soft wraps stay soft.
+func TestMirrorPrompts(t *testing.T) {
+	loadLib(t)
+	x := newMirrored(t, 20, 6, Options{})
+	const prompt, input, output = "\x1b]133;A\a", "\x1b]133;B\a", "\x1b]133;C\a"
+	x.feed("output", lines(0, 2, "out "))
+	f0 := x.frames
+	x.feed("a prompt", prompt+"$ "+input)
+	x.feed("typing", "echo hi")
+	x.feed("a command that wraps", strings.Repeat("x", 30))
+	x.feed("the line redrawn shorter", "\x1b[2A\r\x1b[J$ echo short")
+	x.feed("it wraps again", strings.Repeat("y", 20))
+	x.feed("it runs", "\r\n"+output+lines(0, 3, "ran ")+"\x1b]133;D;0\a")
+	x.feed("output that wraps", strings.Repeat("o", 25)+"\r\n")
+	x.feed("a prompt of two lines", prompt+"~/dev\r\n$ "+input+"ls")
+	x.feed("scrolling off", "\r\n"+output+lines(0, 8, "after "))
+	x.feed("the screen cleared", "\x1b[H\x1b[2J"+prompt+"$ "+input+strings.Repeat("z", 25))
+	x.feed("drawn over without a clear", "\x1b[H"+output+strings.Repeat("w", 30)+"\x1b[1G\x1b[3B")
+	x.feed("a prompt on a full-screen program's screen", "\x1b[?1049h\x1b[H"+prompt+"> "+input+"q")
+	x.feed("back", "\x1b[?1049l")
+	if f0 == x.frames {
+		t.Fatal("no frames")
+	}
+	// A terminal that takes the session over starts out of the prompt.
+	if h := string(x.src.History()); strings.Contains(h, "\x1b]133;") {
+		t.Errorf("History has prompt marks: %q", h)
+	}
+	x.m.Reset()
+	f, _ := x.m.Frame()
+	for _, mark := range []string{markPrompt, markContinuation} {
+		if !strings.Contains(string(f), mark) {
+			t.Errorf("a frame from the start has no %q", mark)
+		}
+	}
+}
+
+// Random output with a shell's prompts' marks among it.
+func TestMirrorPromptsRandom(t *testing.T) {
+	loadLib(t)
+	for seed := uint64(1); seed <= 3; seed++ {
+		r := rand.New(rand.NewPCG(seed, 133))
+		x := newMirrored(t, 12, 5, Options{Scrollback: 2})
+		ops := []string{
+			"\x1b]133;A\a$ ", "\x1b]133;A;k=c\a> ", "\x1b]133;P;k=s\a", "\x1b]133;B\a", "\x1b]133;C\a", "\x1b]133;D;0\a",
+			"word", strings.Repeat("w", 15), "世界", "\r\n", "\r\x1b[K", "\x1b[J", "\x1b[2K", "\x1b[A", "\x1b[B", "\x1b[H", "\x1b[2J",
+			"\x1b[?1049h", "\x1b[?1049l", "\x1b[L", "\x1b[M",
+		}
+		for i := range 600 {
+			var b strings.Builder
+			for range 1 + r.IntN(4) {
+				b.WriteString(ops[r.IntN(len(ops))])
 			}
 			x.feed(fmt.Sprintf("seed %d op %d %q", seed, i, b.String()), b.String())
 		}

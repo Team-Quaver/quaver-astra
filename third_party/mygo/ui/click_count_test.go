@@ -3,6 +3,7 @@ package ui
 import (
 	"slices"
 	"testing"
+	"time"
 
 	"github.com/egoist/mygo/internal/platform"
 )
@@ -265,6 +266,117 @@ func TestReleaseDuringPress(t *testing.T) {
 		}
 		if clicked != clicks {
 			t.Errorf("taken %v: the button was clicked %d times, want %d", takes, clicked, clicks)
+		}
+		tt.rt.close()
+	}
+}
+
+// A release that comes with moves no frame read, and the window losing the
+// focus before the next frame, click the element once: the release ended
+// the press, and the blur ends no other.
+func TestBlurAfterReleaseOfDrag(t *testing.T) {
+	held, clicks := false, 0
+	tt := NewTester(func(c *Context) {
+		b := Box(c).Size(100, 100)
+		_, _, held = b.Dragged()
+		if b.Clicked() {
+			clicks++
+		}
+	}, 100, 100)
+	tt.Press(20, 50)
+	tt.Move(30, 50)
+	tt.rt.event(platform.SurfaceEvent{Kind: platform.PointerUp, X: 40, Y: 50})
+	tt.rt.event(platform.SurfaceEvent{Kind: platform.SurfaceBlur})
+	tt.Frame()
+	if held || clicks != 1 {
+		t.Errorf("let go, then the window lost the focus: still pressed %v, %d clicks, want 1", held, clicks)
+	}
+}
+
+// Enter on an element whose release still waits for its pass clicks it
+// after that release: the element sees both clicks, the last without the
+// release's Shift.
+func TestEnterAfterReleaseOfDrag(t *testing.T) {
+	clicks, mods := 0, Modifiers(0)
+	tt := NewTester(func(c *Context) {
+		b := Box(c).Size(100, 100).Focusable()
+		if n := b.Clicks(); n > 0 {
+			clicks += n
+			mods = b.ClickModifiers()
+		}
+	}, 100, 100)
+	shift := platform.Modifiers(Shift)
+	tt.send(platform.SurfaceEvent{Kind: platform.PointerDown, X: 20, Y: 50, Mods: shift})
+	tt.rt.event(platform.SurfaceEvent{Kind: platform.PointerMove, X: 30, Y: 50, Mods: shift})
+	tt.rt.event(platform.SurfaceEvent{Kind: platform.PointerUp, X: 30, Y: 50, Mods: shift})
+	tt.rt.event(platform.SurfaceEvent{Kind: platform.KeyPressed, Key: platform.Key(KeyEnter)})
+	tt.rt.event(platform.SurfaceEvent{Kind: platform.KeyReleased, Key: platform.Key(KeyEnter)})
+	tt.Frame()
+	if clicks != 2 || mods != 0 {
+		t.Errorf("Shift-clicked, then Enter before a frame: %d clicks, the last with %v, want 2 and none", clicks, mods)
+	}
+}
+
+// A press that moves the element taking it into another container, as a
+// Command-click on a link in a terminal opening a side panel beside it,
+// gets its release, though the element pressed is gone: one built over by
+// a pane of the split, or, keyed, not built again. The next click on the
+// element moved is a press and a release of its own, not that release.
+// Built over, the release comes in the axes of the element pressed, not
+// of the pane built in its place.
+func TestPressOfElementGoneReleases(t *testing.T) {
+	for _, keyed := range []bool{false, true} {
+		split, held, presses, releases := false, false, 0, 0
+		var down, up [2]float32
+		size := float32(100)
+		tt := NewTester(func(c *Context) {
+			element := func() {
+				b := c
+				if keyed {
+					b = c.Key("element")
+				}
+				Box(b).Size(100, 100).HandleInput(func(ev InputEvent) bool {
+					if held {
+						// The press is the handler's: its moves and its
+						// release are no one else's.
+						held = ev.Kind != InputPointerUp
+						if !held {
+							releases++
+							if releases == 1 {
+								up = [2]float32{ev.X, ev.Y}
+							}
+						}
+						return true
+					}
+					if ev.Kind == InputPointerDown && ev.Button == 0 {
+						presses++
+						if presses == 1 {
+							down = [2]float32{ev.X, ev.Y}
+						}
+						held, split = true, true
+						return true
+					}
+					return false
+				})
+			}
+			if !split {
+				Row(c).Size(200, 100).Padding(20).Children(element)
+			} else {
+				Split(c, &size, element, func() { Box(c).Size(10, 10) }).Size(200, 100)
+			}
+		}, 200, 100)
+		tt.Frame()
+		tt.ClickAt(50, 50)
+		if !split || held {
+			t.Errorf("keyed %v: the press moved the element %v, and its handler still held it %v; want moved, not held", keyed, split, held)
+		}
+		if !keyed && up != down {
+			t.Errorf("the release came at %v, want %v, where the press came in the axes of the element pressed", up, down)
+		}
+		tt.Advance(time.Second)
+		tt.ClickAt(50, 50)
+		if presses != 2 || releases != 2 {
+			t.Errorf("keyed %v: the handler saw %d presses and %d releases, want 2 and 2", keyed, presses, releases)
 		}
 		tt.rt.close()
 	}

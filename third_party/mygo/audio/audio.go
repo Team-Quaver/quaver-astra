@@ -412,7 +412,7 @@ func (p *Player) Pan() float64 {
 // SetSpeed sets how fast the player plays, which changes its pitch with
 // it, as a record's speed does: 1 (the default) as decoded, 2 twice as
 // fast and an octave higher. Games vary it a little for effects that
-// play often.
+// play often. SetPreservesPitch keeps the pitch instead.
 func (p *Player) SetSpeed(s float64) *Player {
 	mu.Lock()
 	defer mu.Unlock()
@@ -427,6 +427,35 @@ func (p *Player) Speed() float64 {
 	mu.Lock()
 	defer mu.Unlock()
 	return p.v.speed
+}
+
+// SetPreservesPitch sets whether the player keeps its pitch at a speed
+// other than 1, as HTML media's preservesPitch does: true time-stretches
+// it, as a podcast or a lecture plays at 1.5× in the voice it was
+// recorded in, while false, the default, changes the pitch with the
+// speed (SetSpeed). Time-stretching suits speech and other sound with a
+// pitch at speeds from about 0.5 to 4, and costs a little more to mix;
+// sharp attacks, as drums', come out a little smeared. A change applies
+// after what the player stretched ahead, about 16 ms, without a gap.
+func (p *Player) SetPreservesPitch(on bool) *Player {
+	mu.Lock()
+	defer mu.Unlock()
+	v := p.v
+	if v.closed {
+		return p
+	}
+	v.pitch = on
+	if on && v.st == nil {
+		v.stretch()
+	}
+	return p
+}
+
+// PreservesPitch reports whether the player keeps its pitch at its speed.
+func (p *Player) PreservesPitch() bool {
+	mu.Lock()
+	defer mu.Unlock()
+	return p.v.pitch
 }
 
 // SetLoop sets whether the player starts again from the start when it

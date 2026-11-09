@@ -67,11 +67,15 @@ type Glyph struct {
 	// and Advance its width. Move X to draw the glyph elsewhere, as in the
 	// cell of a grid.
 	X, Advance float32
+	// RTL marks a glyph of a right-to-left run, as of Hebrew or Arabic,
+	// whose clusters go from right to left: its cluster's first rune is
+	// at the right of its advance.
+	RTL bool
 
-	font  *text.Font
-	id    uint32
-	thick bool
-	flat  bool
+	// After RTL, so that a Glyph takes no more room with it.
+	thick, flat bool
+	id          uint32
+	font        *text.Font
 }
 
 // Shape shapes s in font f, on one line, for Painter.Glyphs: the
@@ -79,12 +83,18 @@ type Glyph struct {
 // lacks, and applies ligatures and kerning. Unlike the text of elements,
 // which ui caches by content, it caches nothing: keep the glyphs of text
 // drawn in several frames.
+//
+// The glyphs are in visual order, on every platform, as they show from
+// left to right: X ascends, and through a right-to-left run Cluster
+// descends, with RTL set. Find the glyphs of a range of runes by their
+// Cluster and Runes, not by their place in the slice; the glyphs of a
+// cluster are next to each other.
 func Shape(s string, f Font) []Glyph {
 	l := text.Shared().Shape(text.Params{Text: s, Style: f.style(), NoWrap: true, KeepSpaces: true})
 	var out []Glyph
 	for _, line := range l.Lines {
 		for _, g := range line.Glyphs {
-			out = append(out, Glyph{Cluster: g.Cluster, Runes: g.Runes, X: line.X + g.X, Advance: g.Advance, font: g.Font, id: g.ID, thick: f.Thicken, flat: f.Antialiased})
+			out = append(out, Glyph{Cluster: g.Cluster, Runes: g.Runes, X: line.X + g.X, Advance: g.Advance, RTL: g.RTL, font: g.Font, id: g.ID, thick: f.Thicken, flat: f.Antialiased})
 		}
 	}
 	return out

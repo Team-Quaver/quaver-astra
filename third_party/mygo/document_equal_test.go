@@ -60,6 +60,43 @@ func TestDocumentEqualReadsDocument(t *testing.T) {
 	}
 }
 
+func TestDocumentSetDiscardsStaleEqual(t *testing.T) {
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	ds := testDocs(t, DocumentsOptions[string]{
+		Autosave: AutosaveOff,
+		Equal: func(a, b string) bool {
+			if a == "one" && b == "one" {
+				close(entered)
+				<-release
+			}
+			return a == b
+		},
+	})
+	path := writeTemp(t, "stale-equal.txt", "one")
+	doc, err := ds.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	done := make(chan struct{})
+	go func() {
+		doc.Set("one")
+		close(done)
+	}()
+	<-entered
+	doc.Set("two")
+	close(release)
+	<-done
+
+	if got := doc.Content(); got != "two" {
+		t.Fatalf("content = %q, want two", got)
+	}
+	if !doc.IsEdited() {
+		t.Fatal("the newer edit was marked saved by an older Equal result")
+	}
+}
+
 // Equal is for contents that == can't compare, as []byte.
 func TestDocumentEqualUncomparable(t *testing.T) {
 	ds := &Documents[[]byte]{opts: DocumentsOptions[[]byte]{Equal: bytes.Equal}}
