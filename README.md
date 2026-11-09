@@ -20,7 +20,7 @@ Astra 名字取自《绝区零》角色耀嘉音（Astra Yao），也可以是�
 
 - **UI**：[MyGo](https://github.com/egoist/mygo) 的原生 UI 工具包（`ui` 包）——视图是状态的函数，由 MyGo 在 GPU 上直接绘制（Linux 走 OpenGL），不开 WebKitGTK，窗口秒开、内存占用小。已合并 MyGo 主线（增量绘制、文本测量缓存、局部布局重算、滚动惯性）；Linux GtkGLArea 渲染回调固定在持有 GL context 的原生线程，避免 Go 调度迁移后 libepoxy 找不到当前 GLX/EGL context；检测到 NVIDIA 显卡时在加载 GL 前设置 `__GL_THREADED_OPTIMIZATIONS=0`。
 - **后端**：[Typhoeus-go](https://github.com/Team-Quaver/typhoeus-go)（子模块 `third_party/Typhoeus-go`）**进程内嵌**——不再是 sidecar 独立进程，`quaver-server` 的完整路由表直接挂在本进程 `127.0.0.1` 的随机端口上。
-- **音频后端**：[Liino](https://github.com/Team-Quaver/liino)（子模块 `third_party/Liino`）**进程内嵌**，使用其 Native 模式：纯 Go（`CGO_ENABLED=0`）在 Astra 进程内完成解码 → DSP → 缓冲 → 系统输出，不启动 mpv 子进程。Linux 走 `decode/native`（ffgo 动态加载系统 FFmpeg）并输出到 PipeWire，Windows 优先 WMF + WASAPI，macOS 优先 AVFoundation + Core Audio。macOS 上 Liino 为**实验性**后端，默认使用 mpv 子进程；可在设置 → 播放关闭 **「使用 MPV 作为播放后端」** 切回 Liino。mpv 按本地/随包/PATH 三级定位，保留其缓存与断流重连能力，切换立即生效。
+- **音频后端**：[Liino](https://github.com/Team-Quaver/liino)（子模块 `third_party/Liino`）**进程内嵌**，使用其 Native 模式：纯 Go（`CGO_ENABLED=0`）在 Astra 进程内完成解码 → DSP → 缓冲 → 系统输出，不启动 mpv 子进程。Linux 走 `decode/native`（ffgo 动态加载系统 FFmpeg）并输出到 PipeWire，Windows 优先 WinRT（MediaSource/AudioGraph）+ WASAPI（WMF/ffgo 兜底），macOS 优先 AVFoundation + Core Audio。macOS 上 Liino 为**实验性**后端，默认使用 mpv 子进程；可在设置 → 播放关闭 **「使用 MPV 作为播放后端」** 切回 Liino。mpv 按本地/随包/PATH 三级定位，保留其缓存与断流重连能力，切换立即生效。
 
 > [!CAUTION]
 > 真爱音乐，尊重正版，音乐平台不易，该应用**不提供盗版 QQ 音乐曲目服务！**
@@ -32,7 +32,7 @@ Astra 名字取自《绝区零》角色耀嘉音（Astra Yao），也可以是�
 - Go 1.27+（Linux 需 GTK3）
 - **Liino 运行库**（播放必需）：
   - Linux：系统 FFmpeg 共享库（`libavformat` / `libavcodec` / `libavutil` / `libswresample`，装 `ffmpeg` 或发行版的 `ffmpeg-libs` 即可）与 PipeWire。设置 → 关于页会显示解码后端/输出驱动的自检结果。
-  - Windows：Media Foundation（Windows N 版需 Media Feature Pack）+ WASAPI；遇到 WMF 解不了的容器时回退系统 FFmpeg DLL。
+  - Windows：WinRT `Windows.Media.Core` / `AudioGraph` + WASAPI（Windows N 版需 Media Feature Pack）；Ogg/Opus 依赖 Microsoft Store 的「Web Media Extensions」，WinRT 打不开时回退 WMF，容器仍不支持再回退系统 FFmpeg DLL。
   - macOS：AVFoundation + Core Audio；同样在需要时回退系统 FFmpeg 动态库。
   - LoongArch64：Liino 的 ffgo 后端只覆盖 amd64/arm64，龙芯构建可以启动，但当前没有可用的解码后端（设置 → 关于会显示原因）。
 
@@ -131,7 +131,7 @@ internal/update/        自动更新：GitHub Releases 渠道/产物选择/下�
 ```
 player.startCurrent
   → backend /stream/resolve      解析音档 → 本地中继 URL
-  → audio.OpenURL                Liino 解码（ffgo/WMF/AVF 动态加载，自己发 Range / 重试）
+  → audio.OpenURL                Liino 解码（WinRT/WMF/AVF/ffgo 动态加载，自己发 Range / 重试）
   ← liino Events                 loaded / playing / buffering / ended / failed
   → player.tick                  读 Liino 高精度时钟同步位置、检测自然播完切下一首
 ```

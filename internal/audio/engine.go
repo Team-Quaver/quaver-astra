@@ -8,7 +8,8 @@
 // 这就是 Liino 的 Native 模式：音频会话属于本进程（Windows 上按应用捕获
 // 才能只录到 Astra 自己的声音），输出直连系统音频服务。解码后端留空，由
 // Liino 按平台选择：Linux 走 decode/native（ffgo 动态加载系统 FFmpeg），
-// Windows 优先 WMF，macOS 优先 AVFoundation，缺容器时再回退 ffgo。
+// Windows 优先 WinRT（MediaSource/AudioGraph），WMF 兜底，缺容器时再回退
+// ffgo；macOS 优先 AVFoundation，缺容器时再回退 ffgo。
 //
 // 本包把 Liino 的 Player 适配成 player.Engine：载入/失败以事件回报，位置
 // 取 Liino 的高精度时钟，其余行为与旧引擎保持一致（player 不感知后端）。
@@ -70,8 +71,8 @@ func New() *Engine { return newEngine(defaultConfig()) }
 func defaultConfig() liino.Config {
 	cfg := liino.Config{
 		// Decoder 留空 = 按源自动选择：Linux 的 native（ffgo）、Windows 的
-		// WMF、macOS 的 AVF，OS 解不了的容器再回退 ffgo。显式写 "ffgo"
-		// 可把整条链钉死在 native 后端（见 liino.decode.native）。
+		// WinRT/WMF、macOS 的 AVF，OS 解不了的容器再回退 ffgo。显式写
+		// "ffgo" 可把整条链钉死在 native 后端（见 liino.decode.native）。
 		AppName:    appName,
 		StreamName: appName,
 		// 切歌时 120ms 淡出，避免设备回调里的硬切。

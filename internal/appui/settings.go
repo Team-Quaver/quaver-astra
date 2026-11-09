@@ -450,7 +450,7 @@ func (a *App) settingsAbout(c *ui.Context, t *ui.Theme) {
 				} else {
 					dot.Background(ui.Hex("#e81123"))
 				}
-				ui.Text(c, "Liino "+st.Version).FontSize(fz(13))
+				ui.Text(c, "Liino").FontSize(fz(13))
 				ui.Text(c, "Native 原生模式").FontSize(fz(12)).TextColor(t.TextMuted)
 				if liinoExperimental() {
 					badge := ui.Badge(c, "实验性")
