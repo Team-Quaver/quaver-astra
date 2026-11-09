@@ -54,6 +54,14 @@ func TestQualityLabelDefaultsToAuto(t *testing.T) {
 	}
 }
 
+// TestQualityLabelAtmos2IsPremium 钉住 atmos2 的展示名：它对应 QQ 音乐的
+// 「臻品音质 2.0」（Q000），不是 5.1/7.1 全景声，播放条不能缩写成「全景声」。
+func TestQualityLabelAtmos2IsPremium(t *testing.T) {
+	if got := qualityLabel("atmos2", false); got != "臻品2.0" {
+		t.Fatalf("atmos2 label = %q, want 臻品2.0", got)
+	}
+}
+
 // TestPlayerBarCanDragToZero is the regression guard for issue #1. A drag
 // that begins on the bar itself must keep receiving moves after it crosses
 // the cover and transport buttons; otherwise it loses pressed and cannot

@@ -336,7 +336,7 @@ func (a *App) settingsPlayback(c *ui.Context, t *ui.Theme) {
 
 		a.prefRow(c, "回退到全景声（含 7.1 / 5.1，不推荐）", func() bool { return a.Conf.Bool("Quality.FallbackToQMAtmos", false) },
 			func(v bool) { a.Conf.Set("Quality.FallbackToQMAtmos", v) })
-		ui.Text(c, "关闭后自动选档与降档都跳过全景声；手动选择仍然生效。").
+		ui.Text(c, "关闭后自动选档与降档都跳过全景声（7.1 / 5.1），不影响臻品音质 2.0；手动选择仍然生效。").
 			FontSize(fz(11.5)).TextColor(t.TextMuted).MaxLines(2)
 
 		a.prefRow(c, "上报每日听歌音响力", func() bool {

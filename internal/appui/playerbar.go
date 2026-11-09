@@ -11,7 +11,7 @@ import (
 // qualityShort 是档位短标签。
 var qualityShort = map[string]string{
 	"auto": "自动", "master": "Master", "atmos71": "全景7.1", "atmos51": "全景5.1",
-	"atmos2": "全景声", "flac": "FLAC", "640ogg": "640K", "320ogg": "320K",
+	"atmos2": "臻品2.0", "flac": "FLAC", "640ogg": "640K", "320ogg": "320K",
 	"320": "320K", "128": "128K", "weiyun": "微云",
 }
 
