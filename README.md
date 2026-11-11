@@ -91,7 +91,7 @@ CI 发布：每次 push 都会构建快照版，但只保留一个滚动 `snapsh
 - **动效**：对齐主项目（桌面版 Quaver）的动效语言——正在播放页上滑开合、路由页错峰入场（route-in）、行/卡片底色过渡、进度条缓动、逐字歌词每帧推进
 - **顶栏**：菜单栏横置顶部、只显示图标（功能名走 tooltip），无限电台用 ∞ 标记；搜索是按钮 + 浮窗；设置与头像在右侧；自绘 CSD 在非 macOS 右置，macOS 按 HIG 改为左侧交通灯；布局有测试守护（菜单居中、按钮共线、搜索浮窗）
 - 系统托盘：对齐 Quaver Music 的曲目行、上一曲 / 播放暂停 / 下一曲、循环与随机、显示主窗口、退出；左键双击把程序拉回前台（单击不切换），右键弹出菜单；窗口关闭按钮可收进托盘
-- **系统媒体控制中心**：Linux 注册 MPRIS2（总线名 `org.mpris.MediaPlayer2.QuaverAstra`，`DesktopEntry` 为应用 ID `red.0w0.quaver-astra`，桌面键盘媒体键、播放状态/封面/进度/循环模式双向同步），Windows 接入 SMTC（系统媒体浮层、媒体键、封面缩略图与进度时间轴，支持系统侧循环/随机切换），macOS 接入 Now Playing（`MPNowPlayingInfoCenter` + `MPRemoteCommandCenter`，控制中心/菜单栏正在播放卡片：标题/歌手/专辑/封面与进度，播放/暂停/上一首/下一首/拖动进度回传）。macOS 的系统投影只对带 `CFBundleIdentifier` 的应用生效，裸跑可能看不到，打包 `.app` 后正常；架构见 `internal/smedia/`
+- **系统媒体控制中心**：Linux 注册 MPRIS2（总线名 `org.mpris.MediaPlayer2.QuaverAstra`，`DesktopEntry` 为应用 ID `red.0w0.quaver-astra`，桌面键盘媒体键、播放状态/封面/进度/循环模式双向同步，`xesam:asText` 透传歌词：QRC/TTML/LRC 统一转成行级 LRC，可在设置 → 外观切为纯文本），Windows 接入 SMTC（系统媒体浮层、媒体键、封面缩略图与进度时间轴，支持系统侧循环/随机切换），macOS 接入 Now Playing（`MPNowPlayingInfoCenter` + `MPRemoteCommandCenter`，控制中心/菜单栏正在播放卡片：标题/歌手/专辑/封面与进度，播放/暂停/上一首/下一首/拖动进度回传）。macOS 的系统投影只对带 `CFBundleIdentifier` 的应用生效，裸跑可能看不到，打包 `.app` 后正常；架构见 `internal/smedia/`
 - **快捷键**（设置 → 快捷键）：全局与窗口内两套绑定，动作是播放/暂停、上一曲、下一曲、退出。全局默认 `Ctrl+Alt+P` / `Ctrl+Alt+←` / `Ctrl+Alt+→`（Windows `RegisterHotKey`、macOS Carbon 热键、Linux X11 由 Astra 抓键；Wayland 经 XDG GlobalShortcuts 门户注册，设置页不展示全局列，改键交给桌面）。窗口内默认与全局同键（全局不可用时顶上），另加退出 `Ctrl+Q`；点绑定格再按下组合键即改，Esc 取消，小叉解绑。两个作用域同键时全局优先（按键被系统截走，窗口收不到），同一动作在两个作用域同键不算冲突；媒体键只能作全局绑定；注册失败或与别的绑定撞车会在设置页标出来。
 - 播放音频时阻止系统睡眠（暂停/停止即恢复，不阻止熄屏）；正常退出、TERM/Ctrl+C 与 native SIGABRT 清理时都会释放 Liino 的输出会话与解码线程
 - **版本号**：「设置 → 关于」标题旁显示当前版本（优先取构建注入值，本地 `go build` 时回落到工作区的 git tag）
@@ -105,7 +105,7 @@ main.go                 启动：内嵌后端 → 配置 → MyGo 窗口
 internal/backend/       quaver-server 进程内嵌 + HTTP 客户端（信封 {code,msg,data}）
                         vip.go = 会员权益契约：档位顺序 + 只认各档 *_end 的到期解析
 internal/player/        播放器状态机（队列/模式/随机/回退链/歌词/收藏），与 UI 解耦
-                        lyric.go = 行级 LRC 解析；qrc.go = 逐字 QRC 解码与解析；ttml.go = 导入 TTML 解析
+                        lyric.go = 行级 LRC 解析 + MPRIS asText 序列化；qrc.go = 逐字 QRC 解码与解析；ttml.go = 导入 TTML 解析
 internal/audio/         Liino 原生音频适配层（进程内解码 + 直连系统音频）
                         mpv/ = 可选的 mpv 子进程后端（JSON IPC；设置 → 播放切换）
                         engine.go = 把 liino.Player 适配成 player.Engine（异步载入 / 时钟 / 事件）

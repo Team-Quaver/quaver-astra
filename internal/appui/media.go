@@ -38,6 +38,7 @@ func (a *App) mediaSnapshot() smedia.Snapshot {
 		s.Artist = oneLine(artistLine(cur))
 		s.Album = oneLine(cur.Album)
 		s.ArtURL = a.songCoverURL(cur, 500)
+		s.Lyrics = a.PL.LyricAsText()
 	}
 	return s
 }

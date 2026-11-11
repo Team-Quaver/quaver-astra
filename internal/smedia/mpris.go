@@ -6,6 +6,7 @@ package smedia
 
 import (
 	"fmt"
+	"strings"
 	"sync"
 
 	"github.com/Team-Quaver/quaver-astra/internal/appid"
@@ -125,7 +126,8 @@ func (m *mpris) Update(s Snapshot) {
 		changed["CanGoPrevious"] = dbus.MakeVariant(s.HasTrack)
 	}
 	if old.HasTrack != s.HasTrack || old.TrackID != s.TrackID || old.Title != s.Title ||
-		old.Artist != s.Artist || old.Album != s.Album || old.ArtURL != s.ArtURL {
+		old.Artist != s.Artist || old.Album != s.Album || old.ArtURL != s.ArtURL ||
+		old.Lyrics != s.Lyrics {
 		changed["Metadata"] = dbus.MakeVariant(m.metadata())
 	}
 	m.lastSig = sig
@@ -187,6 +189,9 @@ func (m *mpris) metadata() map[string]dbus.Variant {
 	if m.snap.ArtURL != "" {
 		md["mpris:artUrl"] = dbus.MakeVariant(m.snap.ArtURL)
 	}
+	if m.snap.Lyrics != "" {
+		md["xesam:asText"] = dbus.MakeVariant(m.snap.Lyrics)
+	}
 	md["mpris:length"] = dbus.MakeVariant(int64(m.snap.Duration * 1e6))
 	return md
 }
@@ -195,14 +200,38 @@ func (m *mpris) trackPath() dbus.ObjectPath {
 	id := m.snap.TrackID
 	if id == "" {
 		id = "no-track"
+	} else {
+		id = objectPathElement(id)
 	}
 	return dbus.ObjectPath(fmt.Sprintf("/org/mpris/MediaPlayer2/Track/%s", id))
 }
 
+// objectPathElement 把曲目标识转成 D-Bus object path 元素。网盘曲目的 Mid
+// 形如 "cloud:<sha1>"，冒号等字符在 object path 里非法；直接拼进去会让
+// godbus 编码失败，整条 PropertiesChanged（包括 xesam:asText 歌词）被丢弃。
+// 非法字节统一转成 _XX，并连下划线本身也转义，保证不同标识不会撞成同一路径。
+func objectPathElement(id string) string {
+	const hex = "0123456789abcdef"
+	var b strings.Builder
+	b.Grow(len(id))
+	for i := 0; i < len(id); i++ {
+		c := id[i]
+		switch {
+		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9':
+			b.WriteByte(c)
+		default:
+			b.WriteByte('_')
+			b.WriteByte(hex[c>>4])
+			b.WriteByte(hex[c&0x0f])
+		}
+	}
+	return b.String()
+}
+
 func (m *mpris) stateSig() string {
-	return fmt.Sprintf("%s\x00%t\x00%t\x00%s\x00%t\x00%.4f\x00%s\x00%s\x00%s",
+	return fmt.Sprintf("%s\x00%t\x00%t\x00%s\x00%t\x00%.4f\x00%s\x00%s\x00%s\x00%s",
 		m.snap.TrackID, m.snap.HasTrack, m.snap.Playing, m.snap.Loop, m.snap.Shuffle,
-		m.snap.Volume, m.snap.Title, m.snap.Artist, m.snap.ArtURL)
+		m.snap.Volume, m.snap.Title, m.snap.Artist, m.snap.ArtURL, m.snap.Lyrics)
 }
 
 // ===== org.mpris.MediaPlayer2（根接口）=====

@@ -10,11 +10,14 @@ type Snapshot struct {
 	HasTrack bool
 	// TrackID 是当前曲目在应用内的稳定标识（QQ 音乐 media mid），
 	// MPRIS 用它构造 mpris:trackid，SMTC 用它过滤过期的 SetPosition。
-	TrackID  string
-	Title    string
-	Artist   string
-	Album    string
-	ArtURL   string // 封面 http(s) 地址，可为空
+	TrackID string
+	Title   string
+	Artist  string
+	Album   string
+	ArtURL  string // 封面 http(s) 地址，可为空
+	// Lyrics 是 MPRIS 扩展元数据 xesam:asText 的载荷：默认带行级时间戳的
+	// LRC；用户可切为纯文本。为空时不上总线。
+	Lyrics   string
 	Playing  bool
 	Position float64 // 秒
 	Duration float64 // 秒
@@ -75,6 +78,7 @@ func (s Snapshot) stateSignature() string {
 	appendField(s.Artist)
 	appendField(s.Album)
 	appendField(s.ArtURL)
+	appendField(s.Lyrics)
 	appendField(s.Loop)
 	if s.HasTrack {
 		sig = append(sig, 1)

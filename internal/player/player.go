@@ -45,6 +45,8 @@ type Player struct {
 	qrc         []QrcLine // 逐字时间轴，与 lyrics 同源同序；无逐字歌词时为空
 	lyricState  string    // idle|loading|ok|none
 	lyricAux    string    // off|translation|romanization
+	lyricAsText string    // MPRIS xesam:asText 载荷（LRC 或纯文本）
+	mprisLrc    bool      // true = asText 带行级时间戳；false = 纯文本
 	lyricSeq    uint64    // 歌词请求代号：后发起的覆盖先发起的
 	lyricFormat string    // 逐字来源：qrc|ttml；行级歌词为空
 
@@ -283,6 +285,7 @@ func New(b Backend, e Engine, prefs Preferences) *Player {
 		lyricState: "idle",
 		loved:      map[string]struct{}{},
 		lyricAux:   readLyricAux(prefs),
+		mprisLrc:   readMprisLrc(prefs),
 	}
 	return p
 }
@@ -298,6 +301,17 @@ func readLyricAux(prefs Preferences) string {
 		return "translation"
 	}
 	return "off"
+}
+
+// readMprisLrc 读系统媒体控件的歌词载荷格式：默认 LRC（带时间戳）。
+func readMprisLrc(prefs Preferences) bool {
+	switch strings.ToLower(strings.TrimSpace(prefs.String("Lyrics.MprisLrc", ""))) {
+	case "false", "0", "no":
+		return false
+	case "true", "1", "yes":
+		return true
+	}
+	return prefs.Bool("Lyrics.MprisLrc", true)
 }
 
 // OnNotify 注册状态变化回调。
@@ -2075,6 +2089,10 @@ func (p *Player) fetchLyricMode(song Song, seq uint64, keepCurrent bool) {
 	if !keepCurrent || len(p.lyrics) == 0 {
 		p.lyricState = "loading"
 	}
+	if !keepCurrent {
+		// 换曲后歌词到达前，别把上一首的 asText 挂在新曲目的媒体元数据上。
+		p.lyricAsText = ""
+	}
 	p.mu.Unlock()
 	p.notifyChange()
 	var src, trans, roma string
@@ -2097,6 +2115,7 @@ func (p *Player) fetchLyricMode(song Song, seq uint64, keepCurrent bool) {
 	if err != nil || strings.TrimSpace(src) == "" {
 		p.lyrics, p.qrc = nil, nil
 		p.lyricFormat = ""
+		p.lyricAsText = ""
 		p.lyricState = "none"
 		p.mu.Unlock()
 		p.notifyChange()
@@ -2126,8 +2145,10 @@ func (p *Player) fetchLyricMode(song Song, seq uint64, keepCurrent bool) {
 	if len(p.lyrics) == 0 {
 		p.lyrics, p.qrc = nil, nil
 		p.lyricFormat = ""
+		p.lyricAsText = ""
 		p.lyricState = "none"
 	} else {
+		p.lyricAsText = mprisLyricText(p.lyrics, p.mprisLrc)
 		p.lyricState = "ok"
 	}
 	p.mu.Unlock()
@@ -2187,6 +2208,45 @@ func (p *Player) LyricFormat() string {
 	return p.lyricFormat
 }
 
+// LyricAsText 返回系统媒体控件 xesam:asText 的载荷。歌词在拉取时已按当前
+// 模式缓存为 LRC 或纯文本，这里只做快照读取。
+func (p *Player) LyricAsText() string {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.lyricAsText
+}
+
+// MprisLrc 报告 xesam:asText 是否使用带时间戳的 LRC（默认 true）。
+func (p *Player) MprisLrc() bool {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.mprisLrc
+}
+
+// SetMprisLrc 切换 xesam:asText 的格式：true = LRC，false = 纯文本。
+// 只重排内存里已解析的行，不重新拉歌词；notify 让媒体中心补推一帧元数据。
+func (p *Player) SetMprisLrc(on bool) {
+	p.mu.Lock()
+	if p.mprisLrc == on {
+		p.mu.Unlock()
+		return
+	}
+	p.mprisLrc = on
+	p.lyricAsText = mprisLyricText(p.lyrics, p.mprisLrc)
+	p.mu.Unlock()
+	p.conf.Set("Lyrics.MprisLrc", on)
+	p.notifyChange()
+}
+
+// RefreshMprisLyrics 按当前模式重算 asText。保留给「偏好已由外部写入」
+// 的调用方；正常切换请用 SetMprisLrc。
+func (p *Player) RefreshMprisLyrics() {
+	p.mu.Lock()
+	p.lyricAsText = mprisLyricText(p.lyrics, p.mprisLrc)
+	p.mu.Unlock()
+	p.notifyChange()
+}
+
 func (p *Player) LyricLines() ([]LyricLine, string) {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
@@ -2238,6 +2298,13 @@ func (p *Player) SetShowTranslation(on bool) {
 
 func (p *Player) ShowTranslation() bool {
 	return p.LyricAuxMode() != "off"
+}
+
+func mprisLyricText(lines []LyricLine, lrc bool) string {
+	if lrc {
+		return LyricLinesToLRC(lines)
+	}
+	return LyricLinesToText(lines)
 }
 
 // ===== 收藏 =====

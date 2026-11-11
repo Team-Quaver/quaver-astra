@@ -164,6 +164,23 @@ func (a *App) settingsAppearance(c *ui.Context, t *ui.Theme) {
 				FontSize(fz(11.5)).TextColor(t.TextMuted).MaxLines(2)
 		})
 
+		// 系统媒体控件（MPRIS）的扩展元数据 xesam:asText。QRC/TTML 解析后
+		// 与 LRC 同形，切格式只重排内存歌词，不重新拉取。
+		mprisLabels := []string{"LRC（带时间戳）", "纯文本"}
+		curMprisLabel := mprisLabels[1]
+		if a.PL.MprisLrc() {
+			curMprisLabel = mprisLabels[0]
+		}
+		ui.Column(c).FillWidth().Gap(6).Children(func() {
+			ui.Text(c, "系统媒体控件歌词").FontSize(fz(12.5)).TextColor(t.TextMuted)
+			sel := ui.Select(c, &curMprisLabel, mprisLabels).Width(280)
+			if sel.Changed() {
+				a.PL.SetMprisLrc(curMprisLabel == mprisLabels[0])
+			}
+			ui.Text(c, "LRC 供会解析时间戳的媒体控件跟随进度；纯文本适合只按原样展示歌词的控件。").
+				FontSize(fz(11.5)).TextColor(t.TextMuted).MaxLines(2)
+		})
+
 		ui.Divider(c)
 
 		ui.Text(c, "关闭窗口行为").FontSize(fz(14)).FontWeight(700)

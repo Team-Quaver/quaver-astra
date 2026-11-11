@@ -1,6 +1,8 @@
 package player
 
 import (
+	"fmt"
+	"math"
 	"regexp"
 	"sort"
 	"strconv"
@@ -246,6 +248,42 @@ func AuxText(line LyricLine, mode string) string {
 	default:
 		return ""
 	}
+}
+
+// LyricLinesToText 把解析后的歌词拍成 xesam:asText 的纯文本载荷：只留主歌词，
+// 一行一句，不带时间戳。翻译/音译属于辅助行，不进入这个字段。
+func LyricLinesToText(lines []LyricLine) string {
+	out := make([]string, 0, len(lines))
+	for _, line := range lines {
+		if text := strings.TrimSpace(line.Text); text != "" {
+			out = append(out, text)
+		}
+	}
+	return strings.Join(out, "\n")
+}
+
+// LyricLinesToLRC 把解析后的歌词序列化成 LRC 文本（[mm:ss.xx]一行）。
+//
+// QRC/TTML 的逐字时间轴已经在行级 LyricLine 里，这里只保留行级时间戳：
+// LRC 装不下词级时间轴。时间先取整到厘秒再拆分，避免 59.999 秒进位成
+// 60.00；空行与翻译/音译跳过。
+func LyricLinesToLRC(lines []LyricLine) string {
+	out := make([]string, 0, len(lines))
+	for _, line := range lines {
+		text := strings.TrimSpace(line.Text)
+		if text == "" {
+			continue
+		}
+		cs := int64(math.Round(line.Time * 100))
+		if cs < 0 {
+			cs = 0
+		}
+		min := cs / 6000
+		sec := (cs % 6000) / 100
+		frac := cs % 100
+		out = append(out, fmt.Sprintf("[%02d:%02d.%02d]%s", min, sec, frac, text))
+	}
+	return strings.Join(out, "\n")
 }
 
 func abs(v float64) float64 {
