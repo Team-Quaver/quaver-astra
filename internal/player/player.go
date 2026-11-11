@@ -1301,9 +1301,8 @@ func (p *Player) PlayOrPause() {
 		p.eng.Pause()
 		p.playing = false
 	}
-	listenActive := p.listenAudioLocked()
 	p.mu.Unlock()
-	go p.listenSetPlaying(listenActive)
+	p.listenSetPlaying()
 	p.sessionSaveSoon(true)
 	p.notifyChange()
 }
@@ -1336,9 +1335,8 @@ func (p *Player) Play() {
 		}
 		p.eng.Play()
 		p.playing = true
-		listenActive := p.listenAudioLocked()
 		p.mu.Unlock()
-		go p.listenSetPlaying(listenActive)
+		p.listenSetPlaying()
 		p.sessionSaveSoon(true)
 		p.notifyChange()
 		return
@@ -1355,9 +1353,8 @@ func (p *Player) Pause() {
 		p.eng.Pause()
 		p.playing = false
 	}
-	listenActive := p.listenAudioLocked()
 	p.mu.Unlock()
-	go p.listenSetPlaying(listenActive)
+	p.listenSetPlaying()
 	if paused {
 		p.sessionSaveSoon(true)
 		p.notifyChange()
@@ -1457,9 +1454,11 @@ func (p *Player) listenTick() {
 }
 
 // listenSetPlaying 在真实出声与暂停/缓冲之间切换采样窗口。
-func (p *Player) listenSetPlaying(active bool) {
+// 状态必须在这里按锁内现场推导，不能采信调用方在解锁前捕获的旧值：
+// 暂停与续播可能紧挨着发生，旧快照若晚到会把刚恢复的采样窗口又关掉。
+func (p *Player) listenSetPlaying() {
 	p.mu.Lock()
-	p.listenSyncLocked(active)
+	p.listenSyncLocked(p.listenAudioLocked())
 	p.mu.Unlock()
 	p.listenDrain()
 }
@@ -1860,9 +1859,8 @@ func (p *Player) startCurrent(resumeTo float64, autoplay bool, overrideTier stri
 		p.stream = info
 		p.failStreak = 0
 		p.listenSwitchLocked(song, info)
-		listenActive := p.listenAudioLocked()
 		p.mu.Unlock()
-		go p.listenSetPlaying(listenActive)
+		p.listenSetPlaying()
 		p.notifyChange()
 		p.fetchLyric(song, seq)
 	}()
@@ -2347,7 +2345,7 @@ func (p *Player) tick() {
 
 	// 进度节流落盘：切歌或跨 5 秒才真写，退出时另有 Close 兜底。
 	p.sessionTickSave()
-	p.listenSetPlaying(p.PlayingAudio())
+	p.listenSetPlaying()
 
 	// 加载中不重复触发自动切歌：eof/atEnd 是上一首的残留状态——引擎的
 	// end-file 已置 eof=true，但 startCurrent 的 goroutine 还在做 API

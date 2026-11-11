@@ -6,9 +6,9 @@
 //
 //   - 稳定版：打 v* tag 触发的正式 Release。用 /releases/latest 读取，GitHub
 //     保证它排除 draft 与 prerelease。
-//   - 快照版：每次 push 触发的滚动预发布，tag 形如 snapshot-<sha>，标题与产物
-//     名里的版本形如 <base>-<sha>-snapshot。用 /releases 列表里最新的
-//     snapshot-* 预发布。
+//   - 快照版：每次 push 触发的滚动预发布，只保留一个固定 tag snapshot，
+//     标题与产物名里的版本形如 <base>-<sha>-snapshot。CI 只在提交时间更新时
+//     覆盖它，客户端用 /releases 列表里最新的 snapshot 预发布。
 package update
 
 import (
@@ -44,7 +44,7 @@ type Channel string
 const (
 	// Stable 跟踪最新的正式 Release（/releases/latest）。
 	Stable Channel = "stable"
-	// Snapshot 跟踪最新的 snapshot-* 预发布。
+	// Snapshot 跟踪唯一的滚动 snapshot 预发布。
 	Snapshot Channel = "snapshot"
 )
 
@@ -100,17 +100,31 @@ type Release struct {
 	SHA     string  `json:"-"`
 }
 
+// isSnapshotTag 报告 release tag 是否属于快照渠道。新 CI 只保留一个
+// "snapshot" 滚动 tag；旧的 snapshot-<sha> 仍可识别，方便老版本升级。
+func isSnapshotTag(tag string) bool {
+	tag = strings.TrimSpace(tag)
+	return tag == "snapshot" || strings.HasPrefix(tag, "snapshot-")
+}
+
 // normalize 从 tag/name 推导渠道、展示版本与快照标识。
 func (r *Release) normalize() {
 	tag := strings.TrimSpace(r.Tag)
-	if strings.HasPrefix(tag, "snapshot-") {
+	if isSnapshotTag(tag) {
 		r.Channel = Snapshot
-		r.SHA = strings.TrimPrefix(tag, "snapshot-")
+		if tag != "snapshot" {
+			r.SHA = strings.TrimPrefix(tag, "snapshot-")
+		}
 		// 发布标题是 "Snapshot <base>-<sha>-snapshot"，比 tag 更能表达版本。
 		if v := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(r.Name), "Snapshot")); v != "" {
 			r.Version = strings.TrimSpace(v)
 		} else {
 			r.Version = tag
+		}
+		// 固定 tag 本身不带 sha，构建标识从展示版本里取，保证同一构建
+		// 不会被误判成"可切换"而反复提示更新。
+		if r.SHA == "" {
+			r.SHA = SnapshotSHA(r.Version)
 		}
 		return
 	}
@@ -253,8 +267,8 @@ func (c *Client) latestStable(ctx context.Context) (*Release, error) {
 	return &r, nil
 }
 
-// latestSnapshot 在 Releases 列表里挑最新一条 snapshot-* 预发布。CI 用滚动
-// tag，历史上会积累多个快照，因此按发布时间取最新而不是取列表首条。
+// latestSnapshot 在 Releases 列表里挑最新一条 snapshot 预发布。单一滚动 tag
+// 通常只有一条；仍按发布时间取最新，兼容历史快照与并发发布残留。
 func (c *Client) latestSnapshot(ctx context.Context) (*Release, error) {
 	var list []Release
 	path := fmt.Sprintf("/repos/%s/releases?per_page=%d", c.repo(), releasesPerPage)
@@ -264,7 +278,7 @@ func (c *Client) latestSnapshot(ctx context.Context) (*Release, error) {
 	var best *Release
 	for i := range list {
 		r := &list[i]
-		if r.Draft || !r.Prerelease || !strings.HasPrefix(strings.TrimSpace(r.Tag), "snapshot-") {
+		if r.Draft || !r.Prerelease || !isSnapshotTag(r.Tag) {
 			continue
 		}
 		r.normalize()

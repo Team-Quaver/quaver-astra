@@ -47,6 +47,13 @@ func TestNormalizeRelease(t *testing.T) {
 		t.Fatalf("snapshot normalized = %+v", snap)
 	}
 
+	// 单一滚动 tag：sha 只能从标题里的版本串取。
+	rolling := &Release{Tag: "snapshot", Name: "Snapshot 1.2.3-abcdef123456-snapshot"}
+	rolling.normalize()
+	if rolling.Channel != Snapshot || rolling.Version != "1.2.3-abcdef123456-snapshot" || rolling.SHA != "abcdef123456" {
+		t.Fatalf("rolling snapshot normalized = %+v", rolling)
+	}
+
 	// 标题缺失时回落 tag。
 	bare := &Release{Tag: "snapshot-deadbeef", Name: "snapshot-deadbeef"}
 	bare.normalize()
@@ -204,7 +211,7 @@ func TestLatestSnapshotPicksNewest(t *testing.T) {
 	list := []Release{
 		{Tag: "snapshot-old", Name: "Snapshot 1.0.0-old-snapshot", Prerelease: true, PublishedAt: older},
 		{Tag: "v1.2.3", Name: "Quaver Astra 1.2.3", PublishedAt: newer}, // 稳定版混在列表里
-		{Tag: "snapshot-new", Name: "Snapshot 1.2.3-new-snapshot", Prerelease: true, PublishedAt: newer},
+		{Tag: "snapshot", Name: "Snapshot 1.2.3-new-snapshot", Prerelease: true, PublishedAt: newer},
 	}
 	c := stubClient(func(r *http.Request) (*http.Response, error) {
 		if !strings.HasPrefix(r.URL.Path, "/repos/Team-Quaver/quaver-astra/releases") {
@@ -216,7 +223,7 @@ func TestLatestSnapshotPicksNewest(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if rel.Tag != "snapshot-new" || rel.SHA != "new" {
+	if rel.Tag != "snapshot" || rel.SHA != "new" {
 		t.Fatalf("snapshot = %+v", rel)
 	}
 }
