@@ -1,0 +1,149 @@
+# Quaver Astra — 同步「问题反馈」表单里的版本号下拉
+#
+# 背景：.github/ISSUE_TEMPLATE/bug_report.yml 的版本号是一个下拉（dropdown），options 里
+# 列出所有可选的 Tag。GitHub Issue Form 不支持「动态拉 tag」，只能写死 —— 所以这里在每次
+# Release 发布时，用仓库当前的 v* tag 重建那段 options，并提交回默认分支。
+#
+# 触发：release: published。Astra 的 build.yml 在 v* tag 构建完成后会创建 GitHub Release，
+# 这个事件正好代表「这个版本已经可用」。另留 workflow_dispatch 手动兜底。
+#
+# 只改标记区间（# >>> auto-generated-options ... # <<< auto-generated-options），
+# 「其他（手动填写）」永远在区间外、排最后，脚本不碰。没变化就静默退出。
+name: Refresh issue versions
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: refresh-issue-versions
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    name: 重建版本下拉
+    runs-on: ubuntu-24.04
+    steps:
+      # 必须显式 checkout 默认分支：release 事件下 github.ref 指向 tag，直接 checkout 会
+      # 停在 tag 上，改动提交不回去。fetch-depth: 0 才会把全部 tag 拉下来。
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          fetch-depth: 0
+
+      - name: Rebuild dropdown from tags
+        env:
+          MAX_VERSIONS: "50"
+          TEMPLATE: .github/ISSUE_TEMPLATE/bug_report.yml
+        run: |
+          set -euo pipefail
+
+          BEGIN_RE='^[[:space:]]*# >>> auto-generated-options'
+          END_RE='^[[:space:]]*# <<< auto-generated-options'
+
+          # v* tag，按版本倒序（最新在前），只取前 MAX 个 —— 下拉太长没人看。
+          mapfile -t tags < <(git tag -l 'v*' | sort -Vr | head -n "$MAX_VERSIONS")
+          if [ "${#tags[@]}" -eq 0 ]; then
+            echo "没有 v* tag，跳过。" >&2
+            exit 0
+          fi
+
+          new_block=$(for t in "${tags[@]}"; do printf '        - %s\n' "$t"; done)
+
+          tmp=$(mktemp)
+          awk -v begin="$BEGIN_RE" -v end="$END_RE" -v block="$new_block" '
+            $0 ~ begin { print; print block; skip=1; next }
+            $0 ~ end   { skip=0 }
+            skip       { next }
+            { print }
+          ' "$TEMPLATE" > "$tmp"
+
+          if cmp -s "$TEMPLATE" "$tmp"; then
+            rm -f "$tmp"
+            echo "版本下拉无变化。"
+            exit 0
+          fi
+          mv "$tmp" "$TEMPLATE"
+          echo "已用 ${#tags[@]} 个 tag 重建版本下拉。"
+
+      # 提交前自检：Issue Form 的 YAML 一旦不合法（比如首行多了缩进），GitHub 只会在
+      # 建 Issue 时报「Body cannot be empty」，普通 CI 完全看不出来。这里直接把模板跑一遍
+      # 结构校验，不过就 fail，绝不把坏模板推上默认分支。
+      - name: Validate issue form
+        env:
+          TEMPLATE: .github/ISSUE_TEMPLATE/bug_report.yml
+        run: |
+          set -euo pipefail
+          # ubuntu runner 自带 PyYAML，这里只是兜底，别让缺包把整个刷新任务弄红。
+          python3 -c "import yaml" 2>/dev/null \
+            || python3 -m pip install --quiet --disable-pip-version-check pyyaml
+          python3 - "$TEMPLATE" <<'PY'
+          import re, sys, yaml
+          path = sys.argv[1]
+          raw = open(path, encoding="utf-8").read()
+          errors = []
+          if raw.startswith((" ", "\t", "\ufeff")):
+              errors.append("首行前有多余缩进/BOM，GitHub 会判定 body 为空")
+          if any(line.strip() == "---" for line in raw.splitlines()):
+              errors.append("存在 --- 文档分隔符，模板会被截断")
+          try:
+              doc = yaml.safe_load(raw)
+          except yaml.YAMLError as exc:
+              print("::error::issue form 模板校验失败")
+              for err in errors:
+                  print(" -", err)
+              print("YAML 解析错误:", exc)
+              sys.exit(1)
+          if not isinstance(doc, dict):
+              print("::error::issue form 模板校验失败")
+              print(" - 顶层不是一个 mapping")
+              sys.exit(1)
+          for key in ("name", "description", "body"):
+              if key not in doc:
+                  errors.append(f"缺少顶层键 {key}")
+          body = doc.get("body") or []
+          if not body:
+              errors.append("body 为空")
+          if not any(item.get("type") != "markdown" for item in body):
+              errors.append("body 至少要有一个非 markdown 输入项")
+          ids = [item["id"] for item in body if "id" in item]
+          if len(ids) != len(set(ids)):
+              errors.append("body 内 id 重复")
+          labels = [item["attributes"].get("label") for item in body
+                    if item.get("type") != "markdown"]
+          if len(labels) != len(set(labels)):
+              errors.append("body 内 label 重复")
+          for item in body:
+              if item["type"] == "dropdown":
+                  options = item["attributes"]["options"]
+                  if len(options) != len(set(options)):
+                      errors.append(f"下拉 {item.get('id')} 的 options 有重复")
+                  reserved = {"yes","no","true","false","on","off","none"}
+                  for opt in options:
+                      if str(opt).lower() in reserved:
+                          errors.append(f"下拉 {item.get('id')} 含保留字选项 {opt!r}")
+          if errors:
+              print("::error::issue form 模板校验失败")
+              for err in errors:
+                  print(" -", err)
+              sys.exit(1)
+          print(f"模板校验通过：{len(body)} 个字段。")
+          PY
+
+      - name: Commit & push if changed
+        run: |
+          set -euo pipefail
+          if git diff --quiet -- .github/ISSUE_TEMPLATE/bug_report.yml; then
+            echo "无改动，跳过提交。"
+            exit 0
+          fi
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add .github/ISSUE_TEMPLATE/bug_report.yml
+          # [skip ci]：这次提交只是模板下拉，不需要触发 build.yml 全平台打包。
+          git commit -m "chore(issue-template): 同步版本号下拉 [skip ci]"
+          git push origin "HEAD:${{ github.event.repository.default_branch }}"
