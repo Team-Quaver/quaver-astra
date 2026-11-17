@@ -38,6 +38,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -72,6 +73,29 @@ type Options struct {
 	//		"sv": {Title: "Programuppdatering", ...},
 	//	}
 	Strings map[string]Strings
+	// Enabled, when set, reports whether the app can update itself. It
+	// replaces mygo.Updater.Enabled, for an app whose updates do not use
+	// the signed archives of `mygo build`.
+	Enabled func() bool
+	// Check, when set, finds a newer version of the app. It replaces
+	// mygo.Updater.Check, for an app whose updates come from another
+	// service. It returns nil when the app is up to date.
+	Check func(ctx context.Context) (*Release, error)
+	// ImageBase resolves relative image URLs in release notes, such as
+	// images committed next to a CHANGELOG. It is the URL of the
+	// directory the paths are relative to.
+	ImageBase string
+}
+
+// Release is a newer version of the app that Options.Check found.
+type Release struct {
+	// Version is the version of the update, and Notes its release notes
+	// in Markdown.
+	Version string
+	Notes   string
+	// Install downloads and installs the update, reporting the bytes
+	// downloaded and the total size, which is 0 when unknown.
+	Install func(ctx context.Context, progress func(downloaded, total int64)) error
 }
 
 // Plugin is the plugin with the default options.
@@ -187,6 +211,11 @@ func AvailableVersion() string {
 // returns a function that removes fn.
 func OnChange(fn func()) (off func()) { return used().onChange(fn) }
 
+// OnInstalled calls fn on the main thread once an update is installed,
+// before the app relaunches into it. It returns a function that removes
+// fn.
+func OnInstalled(fn func()) (off func()) { return used().onInstalled(fn) }
+
 // active is the plugin that was used.
 var active atomic.Pointer[updater]
 
@@ -227,6 +256,34 @@ func checkRelease(ctx context.Context) (*release, error) {
 	return &release{version: up.Version, notes: up.Notes, install: up.Install}, nil
 }
 
+// enabled reports whether this app can update itself, with the app's own
+// check when it has one.
+func (u *updater) enabled() bool {
+	if u.opts.Enabled != nil {
+		return u.opts.Enabled()
+	}
+	return enabled()
+}
+
+// check finds a newer version of this app, with the app's own check when
+// it has one.
+func (u *updater) check(ctx context.Context) (*release, error) {
+	if u.opts.Check == nil {
+		return check(ctx)
+	}
+	r, err := u.opts.Check(ctx)
+	if err != nil || r == nil {
+		return nil, err
+	}
+	if strings.TrimSpace(r.Version) == "" {
+		return nil, errors.New("updater: the app returned a release without a version")
+	}
+	if r.Install == nil {
+		return nil, errors.New("updater: the app returned a release without an install function")
+	}
+	return &release{version: r.Version, notes: r.Notes, install: r.Install}, nil
+}
+
 // state is what updater.json keeps.
 type state struct {
 	// AutomaticChecks is nil until the app or the user chose.
@@ -265,6 +322,8 @@ type updater struct {
 	state    state
 	// changes are the functions of OnChange, in the order they were added.
 	changes []*func()
+	// installedFns are the functions of OnInstalled.
+	installedFns []*func()
 	// running is set once the app is ready and can update itself: only
 	// then are checks scheduled.
 	running bool
@@ -307,7 +366,7 @@ func (u *updater) text() *text {
 
 // start schedules the automatic checks, once the app is ready.
 func (u *updater) start() {
-	if !enabled() {
+	if !u.enabled() {
 		return
 	}
 	u.load()
@@ -383,6 +442,32 @@ func (u *updater) onChange(fn func()) (off func()) {
 		defer u.mu.Unlock()
 		u.changes = slices.DeleteFunc(u.changes, func(q *func()) bool { return q == p })
 	}
+}
+
+func (u *updater) onInstalled(fn func()) (off func()) {
+	p := &fn
+	u.mu.Lock()
+	u.installedFns = append(u.installedFns, p)
+	u.mu.Unlock()
+	return func() {
+		u.mu.Lock()
+		defer u.mu.Unlock()
+		u.installedFns = slices.DeleteFunc(u.installedFns, func(q *func()) bool { return q == p })
+	}
+}
+
+func (u *updater) notifyInstalled() {
+	u.mu.Lock()
+	fns := slices.Clone(u.installedFns)
+	u.mu.Unlock()
+	if len(fns) == 0 {
+		return
+	}
+	runOnMain(func() {
+		for _, fn := range fns {
+			(*fn)()
+		}
+	})
 }
 
 func (u *updater) automaticChecks() bool {
@@ -490,7 +575,7 @@ func (u *updater) end(s *session) {
 func (u *updater) run(s *session) {
 	defer u.end(s)
 	t := s.t
-	if !enabled() {
+	if !u.enabled() {
 		u.update(func(*state) { u.available = "" })
 		s.set(t.unavailableView())
 		s.show()
@@ -509,7 +594,7 @@ func (u *updater) run(s *session) {
 	if s.User() {
 		s.show()
 	}
-	r, err := check(s.ctx)
+	r, err := u.check(s.ctx)
 	if s.ctx.Err() != nil {
 		return // canceled
 	}
@@ -590,6 +675,7 @@ func (u *updater) install(s *session, r *release) {
 	u.mu.Lock()
 	u.installed = r
 	u.mu.Unlock()
+	u.notifyInstalled()
 	if s.User() || s.isShown() {
 		u.offerRelaunch(s, r)
 	}

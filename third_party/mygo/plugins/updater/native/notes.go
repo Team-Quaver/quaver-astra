@@ -164,6 +164,8 @@ func buildInlines(c *ui.Context, t *ui.Theme, inlines []markdown.Inline) {
 			ui.RichText(c).Bold().Children(func() { buildInlines(c, t, in.Children) })
 		case markdown.Link:
 			ui.Link(c, "", in.URL).Children(func() { buildInlines(c, t, in.Children) })
+		case markdown.Image:
+			ui.Link(c, in.Text, in.URL)
 		}
 	}
 }

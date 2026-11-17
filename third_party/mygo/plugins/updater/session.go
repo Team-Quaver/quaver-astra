@@ -161,6 +161,10 @@ func (s *session) Texts() frontend.Texts { return s.t.texts() }
 // Icon returns the icon of the window, or nil.
 func (s *session) Icon() []byte { return s.u.icon() }
 
+// ImageBase returns the URL of the directory relative image URLs in
+// release notes are relative to, or "".
+func (s *session) ImageBase() string { return s.u.opts.ImageBase }
+
 // icon returns the PNG image of the update window: Options.Icon, else
 // icon.png among the app's resources, or nil.
 func (u *updater) icon() []byte {
@@ -310,12 +314,13 @@ func (t *text) availableView(r *release, automaticDownloads bool) view {
 	name := mygo.App.Name()
 	notes := markdown.Parse(r.notes)
 	return view{
-		Release:  len(notes) > 0,
-		Title:    fmt.Sprintf(t.Available, name),
-		Message:  fmt.Sprintf(t.AvailableMessage, name, r.version, appVersion()),
-		Notes:    notes,
-		Checkbox: true,
-		Checked:  automaticDownloads,
+		Release:   len(notes) > 0,
+		Title:     fmt.Sprintf(t.Available, name),
+		Message:   fmt.Sprintf(t.AvailableMessage, name, r.version, appVersion()),
+		Notes:     notes,
+		NotesText: r.notes,
+		Checkbox:  true,
+		Checked:   automaticDownloads,
 		Buttons: []button{
 			{Action: actionSkip, Label: t.Skip, Aside: true},
 			{Action: actionLater, Label: t.RemindLater, Cancel: true},

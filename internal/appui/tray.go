@@ -15,6 +15,7 @@ import (
 	"github.com/Team-Quaver/quaver-astra/internal/player"
 
 	"github.com/egoist/mygo"
+	"github.com/egoist/mygo/plugins/updater"
 	"golang.org/x/image/draw"
 )
 
@@ -62,6 +63,7 @@ func (a *App) buildTrayMenu() (*mygo.Menu, *trayMenu) {
 		{Label: "循环模式", Submenu: []*mygo.MenuItem{menu.off, menu.all, menu.one, mygo.Separator(), menu.shuf}},
 		mygo.Separator(),
 		{Label: trayWindowShowLabel, Click: func(*mygo.MenuItem, *mygo.Window) { a.showWindow() }},
+		{Label: "检查更新…", Click: func(*mygo.MenuItem, *mygo.Window) { updater.CheckForUpdates() }},
 		mygo.Separator(),
 		{Label: "退出", Click: func(*mygo.MenuItem, *mygo.Window) { mygo.App.Quit() }},
 	})

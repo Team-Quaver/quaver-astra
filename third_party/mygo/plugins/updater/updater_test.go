@@ -59,6 +59,31 @@ func newHarness(t *testing.T, opts Options) *harness {
 	return h
 }
 
+func TestCustomBackend(t *testing.T) {
+	enabledCalls, checkCalls := 0, 0
+	h := newHarness(t, Options{
+		Enabled: func() bool { enabledCalls++; return true },
+		Check: func(context.Context) (*Release, error) {
+			checkCalls++
+			return &Release{
+				Version: "2.0.0",
+				Notes:   "![logo](https://example.com/logo.png)",
+				Install: func(context.Context, func(int64, int64)) error { return nil },
+			}, nil
+		},
+	})
+	if !h.u.enabled() || enabledCalls != 1 {
+		t.Fatalf("enabled = %v, calls = %d", h.u.enabled(), enabledCalls)
+	}
+	r, err := h.u.check(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if checkCalls != 1 || r.version != "2.0.0" || r.notes != "![logo](https://example.com/logo.png)" {
+		t.Fatalf("check = %+v, calls = %d", r, checkCalls)
+	}
+}
+
 // begin starts a check and returns a channel closed when it ends.
 func (h *harness) begin(user bool) chan struct{} {
 	done := make(chan struct{})
@@ -160,6 +185,9 @@ func TestUpToDate(t *testing.T) {
 
 func TestInstallAndRelaunch(t *testing.T) {
 	h := newHarness(t, Options{})
+	installed := 0
+	off := h.u.onInstalled(func() { installed++ })
+	t.Cleanup(off)
 	proceed := make(chan struct{})
 	h.result = func(context.Context) (*release, error) {
 		return newRelease("2.0.0", func(ctx context.Context, progress func(int64, int64)) error {
@@ -196,6 +224,9 @@ func TestInstallAndRelaunch(t *testing.T) {
 	v = waitView(t, s, "Ready to Relaunch")
 	if !strings.Contains(v.Message, "2.0.0 is installed") {
 		t.Errorf("message %q", v.Message)
+	}
+	if installed != 1 {
+		t.Errorf("OnInstalled called %d times, want 1", installed)
 	}
 	s.Respond(v.Prompt, actionRelaunch, false)
 	waitDone(t, done)

@@ -95,8 +95,8 @@ CI 发布：每次 push 都会构建快照版，但只保留一个滚动 `snapsh
 - **快捷键**（设置 → 快捷键）：全局与窗口内两套绑定，动作是播放/暂停、上一曲、下一曲、退出。全局默认 `Ctrl+Alt+P` / `Ctrl+Alt+←` / `Ctrl+Alt+→`（Windows `RegisterHotKey`、macOS Carbon 热键、Linux X11 由 Astra 抓键；Wayland 经 XDG GlobalShortcuts 门户注册，设置页不展示全局列，改键交给桌面）。窗口内默认与全局同键（全局不可用时顶上），另加退出 `Ctrl+Q`；点绑定格再按下组合键即改，Esc 取消，小叉解绑。两个作用域同键时全局优先（按键被系统截走，窗口收不到），同一动作在两个作用域同键不算冲突；媒体键只能作全局绑定；注册失败或与别的绑定撞车会在设置页标出来。
 - 播放音频时阻止系统睡眠（暂停/停止即恢复，不阻止熄屏）；正常退出、TERM/Ctrl+C 与 native SIGABRT 清理时都会释放 Liino 的输出会话与解码线程
 - **版本号**：「设置 → 关于」标题旁显示当前版本（优先取构建注入值，本地 `go build` 时回落到工作区的 git tag）
-- **自动更新**：「设置 → 关于」可切换**稳定版**（GitHub latest API，最新正式 Release）与**快照版**（唯一的滚动 `snapshot` 预发布）两个渠道，启动时自动检查（可关）。
-  AppImage / 单文件二进制 / Windows 便携目录支持原地热替换（下载边算 sha256 校验 GitHub `digest`，同目录原子改名覆盖），系统包（deb/rpm/pacman）与 macOS `.app` 回退到打开发行页；发现新版本时只提示一次，可在设置页手动检查与下载安装
+- **自动更新**：「设置 → 关于」或托盘「检查更新…」打开 MyGo updater 原生窗口，可切换**稳定版**（GitHub latest API，最新正式 Release）与**快照版**（唯一的滚动 `snapshot` 预发布）两个渠道，启动时自动检查（可关）。
+  更新窗口按 Sparkle 的方式展示 Release Notes，**Markdown 格式与图片正常渲染**，支持安装、稍后提醒、跳过此版本与下载进度；AppImage / 单文件二进制 / Windows 便携目录仍走 Astra 原有原地热替换（下载边算 sha256 校验 GitHub `digest`，同目录原子改名覆盖），系统包（deb/rpm/pacman）与 macOS `.app` 回退到打开发行页
 
 ## 架构
 

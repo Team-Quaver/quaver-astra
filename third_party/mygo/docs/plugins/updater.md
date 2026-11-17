@@ -10,7 +10,9 @@ native UI with [`native.Plugin`](#native-ui), for apps that show no web
 page at all.
 
 It is built on `mygo.Updater`, so the app must be built with updates: see
-[auto-updates](../updates.md) to sign and publish them.
+[auto-updates](../updates.md) to sign and publish them. Apps with an
+update service of their own can provide `Options.Check` and
+`Options.Enabled` instead.
 
 ## Set up
 
@@ -88,6 +90,13 @@ mygo.Use(updater.New(updater.Options{
   app's resources, the icon that `mygo build` uses, when there is one.
 - `Language` and `Strings` choose and change the window's texts (see
   [languages](#languages)).
+- `Enabled` and `Check` replace `mygo.Updater.Enabled` and
+  `mygo.Updater.Check`, for an app whose signed updates come from another
+  service. `Check` returns a `updater.Release` with the version, the
+  Markdown release notes, and an `Install` function that reports download
+  progress.
+- `ImageBase` is the URL that relative image paths in release notes are
+  relative to, such as images committed next to a `CHANGELOG.md`.
 
 ## Preferences
 
@@ -179,8 +188,9 @@ It takes the same options and speaks the same languages, and everything
 else is package `updater`'s: `updater.MenuItem()`,
 `updater.CheckForUpdates()` and the preferences work as with
 `updater.Plugin`. Use one of the two plugins only. The window looks the
-same; its release notes are the same Markdown, with text to select and
-links that open in the browser.
+same; its release notes are the same Markdown, with headings, lists,
+quotes, code, tables, text to select, links that open in the browser, and
+images loaded over HTTP or HTTPS.
 
 ## Your own update UI
 

@@ -78,12 +78,12 @@ func TestTrayMenuMatchesQuaverAstra(t *testing.T) {
 	a := &App{PL: p}
 	root, items := a.buildTrayMenu()
 	got := root.Items()
-	if len(got) != 9 {
-		t.Fatalf("托盘根菜单 = %d 项, want 9", len(got))
+	if len(got) != 10 {
+		t.Fatalf("托盘根菜单 = %d 项, want 10", len(got))
 	}
 	wantLabels := []string{
 		trayIdleLabel, "上一曲", "播放", "下一曲", "循环模式",
-		"", trayWindowShowLabel, "", "退出",
+		"", trayWindowShowLabel, "检查更新…", "", "退出",
 	}
 	for i, want := range wantLabels {
 		if got[i].Label != want {

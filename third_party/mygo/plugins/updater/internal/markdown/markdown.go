@@ -49,6 +49,7 @@ const (
 	Emphasis
 	Strong
 	Link
+	Image
 )
 
 // Inline is a run of text in a paragraph or heading.
@@ -318,13 +319,15 @@ func parseInline(s string) []Inline {
 				start++
 			}
 			if text, href, n, ok := parseLink(s[start:]); ok {
-				var children []Inline
 				if image {
-					children = []Inline{{Kind: Text, Text: text}}
+					if SafeURL(href) {
+						in = append(in, Inline{Kind: Image, Text: text, URL: href})
+					} else {
+						in.text(text)
+					}
 				} else {
-					children = parseInline(text)
+					in.link(href, parseInline(text))
 				}
-				in.link(href, children)
 				i = start + n
 				continue
 			}
@@ -529,6 +532,8 @@ func writeInlines(b *strings.Builder, inlines []Inline) {
 			b.WriteString(`<a href="` + html.EscapeString(in.URL) + `">`)
 			writeInlines(b, in.Children)
 			b.WriteString("</a>")
+		case Image:
+			b.WriteString(`<img src="` + html.EscapeString(in.URL) + `" alt="` + html.EscapeString(in.Text) + `">`)
 		}
 	}
 }

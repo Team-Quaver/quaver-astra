@@ -2,9 +2,11 @@ package native
 
 import (
 	"math"
+	"strings"
 
 	"github.com/egoist/mygo/plugins/updater/internal/frontend"
 	"github.com/egoist/mygo/ui"
+	uimarkdown "github.com/egoist/mygo/ui/markdown"
 )
 
 // window is the update window of a session.
@@ -12,6 +14,8 @@ type window struct {
 	s     frontend.Session
 	texts frontend.Texts
 	icon  *ui.Bitmap // nil without an icon
+	// notesOpts keeps the images of release notes between frames.
+	notesOpts uimarkdown.Options
 
 	// What the view keeps from frame to frame, on the main thread: the
 	// prompt of the view it shows, the prompt the user answered, and the
@@ -58,6 +62,7 @@ func newWindow(s frontend.Session) *window {
 	if png := s.Icon(); png != nil {
 		w.icon, _ = ui.DecodeBitmap(png) // no icon when it is not an image
 	}
+	w.notesOpts.LoadImage = noteImageLoader(s.ImageBase())
 	return w
 }
 
@@ -132,11 +137,16 @@ func (w *window) body(c *ui.Context, t *ui.Theme, v frontend.View) {
 		// tooltip would cover the title.
 		ui.Text(c.Key("detail"), v.Detail).FontSize(small).TextColor(t.TextMuted).Selectable()
 	}
-	if len(v.Notes) > 0 {
+	if strings.TrimSpace(v.NotesText) != "" || len(v.Notes) > 0 {
 		ui.Column(c.Key("notes")).Grow(1).Margin(6, 0, 0, 0).Children(func() {
 			ui.Text(c, w.texts.ReleaseNotes).FontSize(small).Bold().Margin(0, 0, 4, 0)
 			ui.Scroll(c).Grow(1).Background(panel(t)).Border(1, t.Border).Padding(8, 12).Children(func() {
-				notes(c, t, v.Notes)
+				if strings.TrimSpace(v.NotesText) != "" {
+					w.notesOpts.Theme = uimarkdown.DefaultTheme(t)
+					uimarkdown.View(c, v.NotesText, &w.notesOpts)
+				} else {
+					notes(c, t, v.Notes)
+				}
 			})
 		})
 	}

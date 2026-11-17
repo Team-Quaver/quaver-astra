@@ -49,6 +49,7 @@ func (s *session) NewWindow(mygo.Content) *mygo.Window { panic("no windows in te
 func (s *session) Done() <-chan struct{}               { return nil }
 func (s *session) Texts() frontend.Texts               { return s.texts }
 func (s *session) Icon() []byte                        { return s.icon }
+func (s *session) ImageBase() string                   { return "" }
 func (s *session) User() bool                          { return true }
 func (s *session) Fit(width, height int)               { s.fits <- [2]int{width, height} }
 
@@ -166,6 +167,20 @@ func TestAvailable(t *testing.T) {
 	tt.Key(0, ui.KeyEscape)
 	if got := s.answers(); !slices.Equal(got[1:], []response{{2, frontend.Later, false}}) {
 		t.Fatalf("responses %v", got)
+	}
+}
+
+func TestMarkdownNotes(t *testing.T) {
+	v := available(1, "")
+	v.Notes = nil
+	v.NotesText = "## Fixed\n\n| Renderer | Images |\n|---|:-:|\n| MyGo | yes |\n\n- **done**"
+	s := newSession(v)
+	w := newWindow(s)
+	tt := ui.NewTester(w.view, frontend.ReleaseWidth, frontend.ReleaseHeight)
+	for _, want := range []string{"Fixed", "Renderer", "MyGo", "done"} {
+		if !tt.HasText(want) {
+			t.Errorf("the Markdown notes lack %q: %q", want, tt.Texts())
+		}
 	}
 }
 

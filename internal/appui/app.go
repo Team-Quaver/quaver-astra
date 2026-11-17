@@ -283,7 +283,6 @@ func (a *App) Attach(win *mygo.Window) {
 		a.media.AttachWindow(win.NativeHandle())
 	}
 	a.maybeSelfCheck()
-	a.maybeAutoCheckUpdate()
 }
 
 // ApplyWindowBackground 让原生窗口的启动底色跟上配置的明暗。

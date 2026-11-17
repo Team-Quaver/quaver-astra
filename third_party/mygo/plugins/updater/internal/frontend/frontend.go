@@ -35,6 +35,9 @@ type Session interface {
 	Texts() Texts
 	// Icon returns the PNG image of the window, or nil.
 	Icon() []byte
+	// ImageBase returns the URL of the directory relative image URLs in
+	// release notes are relative to, or "".
+	ImageBase() string
 	// User reports whether the user asked for the check: the window shows
 	// in front.
 	User() bool
@@ -150,6 +153,9 @@ type View struct {
 	Detail string `json:"detail,omitzero"`
 	// Notes are the release notes.
 	Notes []markdown.Block `json:"-"`
+	// NotesText is the release notes as Markdown, for windows that render
+	// Markdown themselves.
+	NotesText string `json:"-"`
 	// Bar shows a progress bar with Progress, between 0 and 1, or -1 when
 	// the progress is unknown.
 	Bar      bool    `json:"bar,omitzero"`
