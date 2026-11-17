@@ -10,9 +10,11 @@ package backend
 import (
 	"bufio"
 	"context"
+	"fmt"
 	"net"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -32,13 +34,24 @@ type Server struct {
 
 // Start 在 127.0.0.1 的随机端口上启动内嵌后端。
 //
-// 必须在调用前设好配置目录：quaver-server 在 NewApp() 时读取
-// QUAVER_CONFIG_DIR 并在那里落设备指纹。凭证走 external 模式 +
-// 管道交接（vault 为 nil 时按"无已存凭证"处理，登录态仍会在登录后
-// 交给 vault 保存——v 为 nil 时不落盘，行为退化为 memory）。
-func Start(configDir string, v *vault.Vault) (*Server, error) {
+// configDir 是配置目录（quaver-server 在 NewApp() 时读 QUAVER_CONFIG_DIR 落
+// 设备指纹）；cacheRoot 是用户自定义的音乐缓存根目录，空串 = 平台默认
+// （Linux XDG_CACHE_HOME、macOS ~/Library/Caches、Windows %LocalAppData%）。
+// 凭证走 external 模式 + 管道交接（vault 为 nil 时按"无已存凭证"处理，登录态
+// 仍会在登录后交给 vault 保存——v 为 nil 时不落盘，行为退化为 memory）。
+func Start(configDir, cacheRoot string, v *vault.Vault) (*Server, error) {
 	if configDir != "" {
 		_ = os.Setenv("QUAVER_CONFIG_DIR", configDir)
+	}
+	// 缓存与配置分家：音乐缓存是几个 GiB 的可再生字节，混进配置目录会被
+	// 备份/同步一起搬走。**自定义位置不写 QUAVER_CACHE_DIR**：那个变量在后端
+	// 眼里就是「平台默认」，写进去之后设置页的「恢复默认」会被解析回同一个
+	// 自定义目录，等于恢复不了。这里把它清干净，让后端的默认永远是真正的平台
+	// 默认；自定义位置在起好听众后经 /cache/music/dir 下传，与热切换同一条路径。
+	_ = os.Unsetenv("QUAVER_CACHE_DIR")
+	cacheRoot = strings.TrimSpace(cacheRoot)
+	if cacheRoot != "" && !filepath.IsAbs(cacheRoot) {
+		return nil, fmt.Errorf("音乐缓存位置必须是绝对路径: %q", cacheRoot)
 	}
 	// external 模式只在 NewSession() 构造时读取 os.Stdin/os.Stdout：
 	// 先换上管道，构造完立刻还原，应用自身的 stdio 不受影响。
@@ -87,6 +100,18 @@ func Start(configDir string, v *vault.Vault) (*Server, error) {
 	// 排水：后端在登录/自动刷新/登出时回写 QCRED1 行
 	go s.drain(v)
 	go func() { _ = s.srv.Serve(ln) }()
+	if cacheRoot != "" {
+		c := NewClient(s.BaseURL())
+		// 先让后端在**平台默认位置**打开一次缓存：旧版落在配置目录里的那份
+		// 只在这里被认领（后端不对用户自选目录做升级搬家，那本该是空目录）。
+		// 跳过这一步，配置里已有自定义位置的老用户升级后旧缓存会被晾在原地。
+		_, _ = c.MusicCacheStatus()
+		// 再切到用户选的位置，已有缓存（含刚认领的旧缓存）跟着一起搬。
+		// 失败只影响位置（回落平台默认），不该拦下启动。
+		if _, err := c.SetMusicCacheDir(filepath.Clean(cacheRoot)); err != nil {
+			os.Stderr.WriteString("quaver-astra: 音乐缓存位置无效，改用默认位置: " + err.Error() + "\n")
+		}
+	}
 	return s, nil
 }
 

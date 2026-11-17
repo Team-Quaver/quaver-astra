@@ -57,14 +57,17 @@ func main() {
 		fatal(err)
 	}
 
-	// 内嵌后端（必须在构造前设好 QUAVER_CONFIG_DIR）；凭证经管道交接、加密落盘
-	srv, err := backend.Start(cfgDir, vault.Open(cfgDir))
+	store := conf.Open(cfgDir)
+	// 内嵌后端（必须在构造前设好配置目录与缓存根目录）；凭证经管道交接、加密落盘。
+	// 音乐缓存不再落在配置目录里：默认走平台缓存位置（Linux XDG_CACHE_HOME、
+	// macOS ~/Library/Caches、Windows %LocalAppData%），用户可在设置 → 播放
+	// 自定义；旧版落在 <配置目录>/cache/music 的那份由后端首次打开时搬过来。
+	srv, err := backend.Start(cfgDir, appui.MusicCacheRoot(store), vault.Open(cfgDir))
 	if err != nil {
 		fatal(err)
 	}
 	defer srv.Shutdown()
 
-	store := conf.Open(cfgDir)
 	app := appui.New(srv.BaseURL(), store, vault.Open(cfgDir), buildinfo.Resolve(version))
 	app.EnableUpdater()
 	// 正常退出与异常返回两条路径都收口音频引擎；OnQuit 在事件循环结束后执行，

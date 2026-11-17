@@ -46,6 +46,11 @@ func NewClient(base string) *Client {
 }
 
 func (c *Client) do(method, path string, body []byte) (json.RawMessage, error) {
+	return c.doWith(c.h, method, path, body)
+}
+
+// doWith 与 do 相同，但用调用方给的客户端（换缓存目录要绕开整体超时）。
+func (c *Client) doWith(h *http.Client, method, path string, body []byte) (json.RawMessage, error) {
 	var rd io.Reader
 	if body != nil {
 		rd = bytes.NewReader(body)
@@ -57,7 +62,7 @@ func (c *Client) do(method, path string, body []byte) (json.RawMessage, error) {
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
-	resp, err := c.h.Do(req)
+	resp, err := h.Do(req)
 	if err != nil {
 		return nil, &APIError{Msg: err.Error()}
 	}
@@ -88,11 +93,15 @@ func (c *Client) get(path string, q url.Values) (json.RawMessage, error) {
 }
 
 func (c *Client) postJSON(path string, body any) (json.RawMessage, error) {
+	return c.postJSONWith(c.h, path, body)
+}
+
+func (c *Client) postJSONWith(h *http.Client, path string, body any) (json.RawMessage, error) {
 	b, err := json.Marshal(body)
 	if err != nil {
 		return nil, err
 	}
-	return c.do(http.MethodPost, path, b)
+	return c.doWith(h, http.MethodPost, path, b)
 }
 
 func (c *Client) getJSON(path string, qv url.Values, out any) error {
@@ -321,10 +330,12 @@ type Resolved struct {
 }
 
 // MusicCacheStatus 是 GET /cache/music/status 的响应。
+// Dir 是当前生效的缓存目录（后端按平台默认或主进程下传的自定义根目录解析）。
 type MusicCacheStatus struct {
-	Items      int   `json:"items"`
-	Bytes      int64 `json:"bytes"`
-	LimitBytes int64 `json:"limit_bytes"`
+	Items      int    `json:"items"`
+	Bytes      int64  `json:"bytes"`
+	LimitBytes int64  `json:"limit_bytes"`
+	Dir        string `json:"dir"`
 }
 
 // WeiyunStatus 是 GET /weiyun/status 的响应。configured 表示微云 MCP 令牌
@@ -744,6 +755,23 @@ func (c *Client) SetMusicCacheLimit(bytes int64) (MusicCacheStatus, error) {
 	var out MusicCacheStatus
 	err := c.postJSONInto("/cache/music/limit", map[string]any{"bytes": bytes}, &out)
 	return out, err
+}
+
+// SetMusicCacheDir 换音乐缓存根目录（绝对路径；空串 = 回到平台默认位置）。
+// 已有缓存由后端跟着搬到新位置，返回新位置的实际目录与占用。
+//
+// 搬家可能拷几个 GiB：共用客户端的 20s 整体超时会在拷贝途中掐断请求，
+// 而搬家是在后端处理这条请求时同步做的，掐断等于半途中止。这里换成不设
+// 整体超时的客户端（与音频流同理），只保留连接层面的兜底。
+func (c *Client) SetMusicCacheDir(root string) (MusicCacheStatus, error) {
+	client := *c.h
+	client.Timeout = 0
+	raw, err := c.postJSONWith(&client, "/cache/music/dir", map[string]any{"dir": root})
+	var out MusicCacheStatus
+	if err != nil {
+		return out, err
+	}
+	return out, decode(raw, &out)
 }
 
 // WeiyunStatus 查询微云令牌与 QQ 登录态。

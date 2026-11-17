@@ -24,7 +24,7 @@ func startWithVault(t *testing.T, credJSON string) (*Server, *vault.Vault, strin
 			t.Fatal(err)
 		}
 	}
-	s, err := Start(dir, v)
+	s, err := Start(dir, t.TempDir(), v)
 	if err != nil {
 		t.Fatal(err)
 	}

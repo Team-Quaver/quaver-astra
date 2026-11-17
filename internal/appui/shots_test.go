@@ -205,4 +205,22 @@ func TestUIShots(t *testing.T) {
 	hk2Tester.Frame()
 	time.Sleep(500 * time.Millisecond)
 	shot(hk2Tester, "settings-hotkeys-notes.png")
+
+	// 设置 - 播放：本地音乐缓存面板（开关、上限、缓存位置）。后端用真的内嵌
+	// 服务，位置行显示的是实际生效目录，而不是测试桩里的假路径。
+	cacheSrv, err := backend.Start(t.TempDir(), "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(cacheSrv.Shutdown)
+	cacheShots := localCacheAppAt(t, cacheSrv.BaseURL())
+	cacheShots.settings.tab = playbackTab
+	cacheShots.Conf.Set(localCacheKey, true)
+	cacheTester := ui.NewTester(cacheShots.View, 1280, 1400)
+	cacheTester.Frame()
+	for i := 0; i < 60 && !cacheTester.HasText("缓存位置"); i++ {
+		cacheTester.Scroll(640, 700, 0, 240)
+		cacheTester.Frame()
+	}
+	shot(cacheTester, "settings-cache-dir.png")
 }

@@ -362,8 +362,9 @@ func (a *App) settingsPlayback(c *ui.Context, t *ui.Theme) {
 		ui.Text(c, "只统计真实出声时间：整曲累计，切歌/停止/退出时一次提交（分片上报会被记成多条听歌记录）；关闭后立即停止累计。").
 			FontSize(fz(11.5)).TextColor(t.TextMuted).MaxLines(2)
 
-		// 本地音乐缓存：播放过的整曲加密落盘（<配置目录>/cache/music/），
-		// 弱网重播免回源。密钥拆成磁盘半种 + 前端半种，只拿磁盘解不开。
+		// 本地音乐缓存：播放过的整曲加密落盘（平台缓存目录下的 music/，
+		// 位置可自定义），弱网重播免回源。密钥拆成磁盘半种 + 前端半种，
+		// 只拿磁盘解不开。
 		a.localCacheStatusRow(c, t)
 
 		ui.Divider(c)
