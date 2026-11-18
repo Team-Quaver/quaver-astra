@@ -5,6 +5,7 @@ import (
 	"net/url"
 	"strings"
 
+	"github.com/Team-Quaver/quaver-astra/internal/backend"
 	"github.com/Team-Quaver/quaver-astra/internal/player"
 
 	"github.com/egoist/mygo/ui"
@@ -182,7 +183,7 @@ func (a *App) songRow(c *ui.Context, st *songListState, i int, doubleClick func(
 					go func() {
 						var err error
 						a.withAPILimit(func() {
-							err = a.API.SonglistAddSong(pl.DirID, pl.ID, s.SongID, s.SongType-1)
+							err = a.API.SonglistAddSong(pl.DirID, pl.ID, s.SongID, backend.SonglistWriteType(s.SongType))
 						})
 						a.update(func() {
 							if err != nil {

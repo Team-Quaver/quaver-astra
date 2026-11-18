@@ -1003,6 +1003,47 @@ func (c *Client) SonglistDelSong(dirid, tid, songID, songType int64) error {
 	return err
 }
 
+// SonglistReorderSong 是重排请求中的一首歌。SongType 用读侧 Song.SongType 原值；
+// 写侧映射由 SonglistWriteType 统一完成。
+type SonglistReorderSong struct {
+	SongID   int64 `json:"song_id"`
+	SongType int64 `json:"song_type"`
+}
+
+// SonglistWriteType 把读侧 Song.type 映射成歌单写接口的 songType。
+// 依据上游 QQ 音乐客户端的两阶段映射：0/1 → 0；5/111/112/113 原样透传；
+// 其余 → 1。不能用简单的 -1：特殊类型按偏移发出去时上游会静默空操作。
+func SonglistWriteType(songType int64) int64 {
+	switch songType {
+	case 0, 1:
+		return 0
+	case 5, 111, 112, 113:
+		return songType
+	default:
+		return 1
+	}
+}
+
+// SonglistReorder 按给定顺序全量重排歌单（我喜欢 dirid=201，自建歌单传自己的 dirid）。
+// songs 必须覆盖歌单里的全部歌曲：只提交一部分时上游也会返回成功，但未提交的
+// 歌曲顺序会被打乱。后端 retCode 非 0 视为失败。
+func (c *Client) SonglistReorder(dirid, tid int64, songs []SonglistReorderSong) error {
+	body := struct {
+		Tid   int64                 `json:"tid"`
+		Songs []SonglistReorderSong `json:"songs"`
+	}{Tid: tid, Songs: songs}
+	var out struct {
+		OK bool `json:"ok"`
+	}
+	if err := c.postJSONInto("/songlist/"+strconv.FormatInt(dirid, 10)+"/order", body, &out); err != nil {
+		return err
+	}
+	if !out.OK {
+		return fmt.Errorf("重排歌单失败：后端未接受该顺序")
+	}
+	return nil
+}
+
 // SonglistFavCheck 返回已收藏歌单 ID 集合。
 func (c *Client) SonglistFavCheck() ([]int64, error) {
 	var out struct {

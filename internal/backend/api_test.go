@@ -267,3 +267,65 @@ func TestWeiyunAuthPending(t *testing.T) {
 		t.Fatalf("err = %v, pending = %v", err, WeiyunAuthPending(err))
 	}
 }
+
+// TestSonglistWriteTypeMapping 锁住读侧 song_type → 写侧 songType 的映射，
+// 特殊类型必须原样透传，不能简单 -1（上游会静默空操作）。
+func TestSonglistWriteTypeMapping(t *testing.T) {
+	cases := []struct{ read, write int64 }{
+		{0, 0}, {1, 0}, {2, 1}, {5, 5}, {111, 111}, {112, 112}, {113, 113}, {-1, 1},
+	}
+	for _, c := range cases {
+		if got := SonglistWriteType(c.read); got != c.write {
+			t.Errorf("SonglistWriteType(%d) = %d, want %d", c.read, got, c.write)
+		}
+	}
+}
+
+// TestSonglistReorderRequest 锁住重排接口契约：POST /songlist/{dirid}/order，
+// body 带 tid 与全量 songs（song_type 原样上行，写侧映射交给后端）。
+func TestSonglistReorderRequest(t *testing.T) {
+	var path string
+	var body struct {
+		Tid   int64 `json:"tid"`
+		Songs []struct {
+			SongID   int64 `json:"song_id"`
+			SongType int64 `json:"song_type"`
+		} `json:"songs"`
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		path = r.URL.Path
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("decode body: %v", err)
+		}
+		_, _ = w.Write([]byte(`{"code":0,"msg":"ok","data":{"ok":true}}`))
+	}))
+	defer srv.Close()
+
+	err := NewClient(srv.URL).SonglistReorder(201, 0, []SonglistReorderSong{
+		{SongID: 3, SongType: 1}, {SongID: 2, SongType: 113},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if path != "/songlist/201/order" {
+		t.Fatalf("path = %q", path)
+	}
+	if body.Tid != 0 || len(body.Songs) != 2 {
+		t.Fatalf("body = %+v", body)
+	}
+	if body.Songs[1].SongType != 113 {
+		t.Fatalf("song_type must be sent as read-side value: %+v", body.Songs[1])
+	}
+}
+
+// TestSonglistReorderBackendRejects 后端 ok=false 必须报错。
+func TestSonglistReorderBackendRejects(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"code":0,"msg":"ok","data":{"ok":false}}`))
+	}))
+	defer srv.Close()
+
+	if err := NewClient(srv.URL).SonglistReorder(9, 77, []SonglistReorderSong{{SongID: 1}}); err == nil {
+		t.Fatal("want error when backend returns ok=false")
+	}
+}

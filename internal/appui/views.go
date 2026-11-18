@@ -673,7 +673,8 @@ func (a *App) likedView(c *ui.Context) {
 		}
 		st := &a.liked
 		st.songs = liked
-		a.songList(c, st, nil, func(i int) { a.playListNow(liked, i) })
+		a.enableSongReorder(st, func(rows []int, to int) { a.reorderLiked(st, rows, to) })
+		a.songList(c, st, nil, func(i int) { a.playListNow(st.songs, i) })
 	})
 }
 
@@ -833,8 +834,11 @@ type playlistState struct {
 	favKnown    bool
 	expanded    bool
 	loadingMore bool
-	list        songListState
-	scroll      ui.ScrollState
+	prefetching bool
+	// prefetchTried 本轮加载已尝试过后台补齐：失败也不重试，退回滚动翻页。
+	prefetchTried bool
+	list          songListState
+	scroll        ui.ScrollState
 }
 
 func (a *App) playlistView(c *ui.Context, id int64) {
@@ -866,12 +870,19 @@ func (a *App) playlistView(c *ui.Context, id int64) {
 			}
 			ui.Column(c).Grow(1).Gap(8).Children(func() {
 				ui.Text(c, st.info.Title).FontSize(fz(26)).FontWeight(800).MaxLines(2).Ellipsis("…")
-				meta := st.creator.Nick
-				if meta == "" {
-					meta = st.info.Nickname
+				created := a.isCreatedPlaylist(id)
+				meta := ""
+				if !created {
+					meta = st.creator.Nick
+					if meta == "" {
+						meta = st.info.Nickname
+					}
 				}
 				if n := st.info.Songnum; n > 0 {
-					meta += " · " + strconv.FormatInt(n, 10) + " 首"
+					if meta != "" {
+						meta += " · "
+					}
+					meta += strconv.FormatInt(n, 10) + " 首"
 				}
 				ui.Text(c, meta).FontSize(fz(13)).TextColor(t.TextMuted)
 				if st.info.Desc != "" {
@@ -902,25 +913,43 @@ func (a *App) playlistView(c *ui.Context, id int64) {
 		})
 
 		// 歌曲行：整页滚动（原版行为），触底翻页
-		ui.Column(c).FillWidth().Children(func() {
-			for i := range st.songs {
-				idx := i
-				a.songRow(c, &st.list, i, func(i int) { a.playListNow(st.songs, i) }, func(m *ui.Menu, s player.Song, i int) {
-					// 自建歌单的歌曲可以删除。
-					if a.isCreatedPlaylist(id) {
-						if m.Item("从歌单删除").Chosen() {
-							a.deleteFromPlaylist(st, idx, s)
-						}
+		//
+		// 行必须交给 ui.List 铺：拖拽换序是列表自己消费 ListState.Reorder 的，
+		// 拿 Column 直接循环 songRow 的话回调挂上了也永远不会被调用（自建歌单
+		// 「拖不动」就是这么来的）。不给 List 尺寸，它就和原来的 Column 一样
+		// 按全部行的高度撑开，滚动仍由整页的 Scroll 负责。
+		//
+		// 末尾那段 Padding 是落点：无尺寸列表的底边就是最后一行的底边，指针压
+		// 在那条线上已经算列表外，「拖到最后一首之后」会被判成丢在外面。
+		st.list.songs = st.songs
+		if a.canReorderPlaylist(st, id) {
+			a.enableSongReorder(&st.list, func(rows []int, to int) { a.reorderCreatedPlaylist(st, id, rows, to) })
+		} else {
+			st.list.list.Reorder = nil
+			st.list.list.Key = nil
+		}
+		// 打开页面时用户歌单可能还没同步上来（冷启动直接进歌单页），
+		// ensurePlaylist 那会儿认不出自建歌单；认出后在这里补一次。
+		if a.isCreatedPlaylist(id) && st.loaded && st.hasMore && !st.prefetching && !st.loadingMore && !st.prefetchTried {
+			st.prefetching, st.prefetchTried = true, true
+			go a.prefetchPlaylistPages(st, id, st.page+1)
+		}
+		ui.List(c, &st.list.list, len(st.songs), func(i int) {
+			a.songRow(c, &st.list, i, func(i int) { a.playListNow(st.songs, i) }, func(m *ui.Menu, s player.Song, row int) {
+				// 自建歌单的歌曲可以删除。
+				if a.isCreatedPlaylist(id) {
+					if m.Item("从歌单删除").Chosen() {
+						a.deleteFromPlaylist(st, row, s)
 					}
-				})
-			}
-			if st.loadingMore {
-				ui.Row(c).FillWidth().Center().Padding(14).Children(func() { ui.Spinner(c) })
-			}
-		})
+				}
+			})
+		}).FillWidth().Padding(0, 0, 24, 0)
+		if st.loadingMore {
+			ui.Row(c).FillWidth().Center().Padding(14).Children(func() { ui.Spinner(c) })
+		}
 
-		// 接近底部：翻页
-		if st.hasMore && !st.loadingMore && st.scroll.MaxY > 0 && st.scroll.Y >= st.scroll.MaxY-300 {
+		// 接近底部：翻页（自建歌单后台补齐期间不重复拉）
+		if st.hasMore && !st.loadingMore && !st.prefetching && st.scroll.MaxY > 0 && st.scroll.Y >= st.scroll.MaxY-300 {
 			st.loadingMore = true
 			st.page++
 			go a.loadPlaylistPage(st, id, st.page)
@@ -934,6 +963,10 @@ func (a *App) ensurePlaylist(st *playlistState, id int64) {
 	}
 	st.loading = true
 	st.page = 1
+	// 自建歌单后台补齐期间，禁止滚动翻页重复拉同一页。
+	prefetchAll := a.isCreatedPlaylist(id)
+	st.prefetching = prefetchAll
+	st.prefetchTried = prefetchAll
 	go func() {
 		var d backend.SonglistDetail
 		var err error
@@ -942,6 +975,7 @@ func (a *App) ensurePlaylist(st *playlistState, id int64) {
 			a.update(func() {
 				st.loading = false
 				st.loaded = true
+				st.prefetching = false
 				st.err = err.Error()
 			})
 			return
@@ -954,6 +988,7 @@ func (a *App) ensurePlaylist(st *playlistState, id int64) {
 		a.update(func() {
 			st.loading = false
 			st.loaded = true
+			st.prefetching = prefetchAll
 			st.info = d.Info
 			st.creator = d.Creator
 			st.songs = toPlayerSongs(d.Songs)
@@ -968,7 +1003,38 @@ func (a *App) ensurePlaylist(st *playlistState, id int64) {
 				}
 			}
 		})
+		// 自建歌单要支持重排，而后端 SeqSonglist 要求一次提交全部歌曲：
+		// 只提交当前页会打乱未提交歌曲的顺序。这里在后台把剩余页拉齐，
+		// 拉完后 hasMore 置 false，拖拽随之开启。
+		if prefetchAll {
+			a.prefetchPlaylistPages(st, id, 2)
+		}
 	}()
+}
+
+// prefetchPlaylistPages 从 page 起把歌单剩余页拉齐（调用方已置 prefetching）。
+// 中途失败就停在那里：hasMore 留着，滚动翻页仍可继续，拖拽则保持关闭——
+// 列表没拉齐时全量重排会打乱没提交的那部分。
+func (a *App) prefetchPlaylistPages(st *playlistState, id int64, page int) {
+	for {
+		var more backend.SonglistDetail
+		var err error
+		a.withAPILimit(func() { more, err = a.API.SonglistDetail(id, page, 100) })
+		if err != nil || len(more.Songs) == 0 {
+			break
+		}
+		a.update(func() {
+			st.songs = append(st.songs, toPlayerSongs(more.Songs)...)
+			st.list.songs = st.songs
+			st.hasMore = more.Hasmore != 0
+			st.page = page
+		})
+		if more.Hasmore == 0 {
+			break
+		}
+		page++
+	}
+	a.update(func() { st.prefetching = false })
 }
 
 func (a *App) loadPlaylistPage(st *playlistState, id int64, page int) {
@@ -1022,7 +1088,7 @@ func (a *App) deleteFromPlaylist(st *playlistState, idx int, s player.Song) {
 	go func() {
 		var err error
 		a.withAPILimit(func() {
-			err = a.API.SonglistDelSong(st.info.DirID, st.info.ID, s.SongID, s.SongType-1)
+			err = a.API.SonglistDelSong(st.info.DirID, st.info.ID, s.SongID, backend.SonglistWriteType(s.SongType))
 		})
 		a.update(func() {
 			if err != nil {
@@ -1030,6 +1096,7 @@ func (a *App) deleteFromPlaylist(st *playlistState, idx int, s player.Song) {
 				st.loaded = false
 				st.songs = nil
 				st.list.songs = nil
+				st.prefetchTried = false
 				a.pendingToast = "删除失败：" + err.Error()
 			} else {
 				a.pendingToast = "已从歌单删除"

@@ -2322,6 +2322,15 @@ func (p *Player) LikedCache() []Song {
 	return p.likedCache
 }
 
+// SetLikedCache 替换「我喜欢」的本地列表（重排等场景用），随后通知 UI 重绘。
+// 只动列表本身，不碰 loved 集合与总数——那些由 LoadLoved 统一维护。
+func (p *Player) SetLikedCache(songs []Song) {
+	p.mu.Lock()
+	p.likedCache = append([]Song(nil), songs...)
+	p.mu.Unlock()
+	p.notifyChange()
+}
+
 func (p *Player) LikedTotal() int64 {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
