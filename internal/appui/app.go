@@ -857,7 +857,26 @@ func (a *App) newPlaybackEngine() player.Engine {
 	if a.mpvBackendEnabled() {
 		return mpvaudio.New()
 	}
-	return audio.New()
+	return audio.NewWithOutput(a.outputSettings())
+}
+
+// outputSettings 读取「音频输出」设置。非 ALSA 驱动一律不带独占标记：
+// 从 ALSA 切回 PipeWire 后设备独占必须已经释放，配置里也不能残留。
+func (a *App) outputSettings() audio.OutputSettings {
+	if a.Conf == nil {
+		return audio.OutputSettings{}
+	}
+	driver := a.Conf.String(audioDriverKey, "")
+	settings := audio.OutputSettings{
+		Driver:       driver,
+		DeviceID:     a.Conf.String(audioDeviceKey, ""),
+		Exclusive:    a.Conf.Bool(audioExclusiveKey, false),
+		AdaptiveRate: a.Conf.Bool(audioAdaptiveRateKey, true),
+	}
+	if driver != "alsa" {
+		settings.Exclusive = false
+	}
+	return settings
 }
 
 // setMPVBackend 切换播放后端并立即生效：正在播放时从当前进度重新取流，

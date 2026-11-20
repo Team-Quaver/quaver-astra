@@ -7,6 +7,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/Team-Quaver/quaver-astra/internal/audio"
 )
 
 // Player 是播放器状态机：队列、模式、随机、流解析回退、歌词、收藏。
@@ -254,6 +256,17 @@ type versionReporter interface {
 	Version() string
 }
 
+// outputController 是引擎的可选输出设备控制（Liino 有，mpv 没有）。
+// 设置页的「音频输出」区据此显隐：驱动/设备选择、ALSA 独占与自适应
+// 采样率都走这里，切换不重建引擎、不打断当前曲目。
+type outputController interface {
+	Devices(driver string) ([]audio.OutputDevice, error)
+	SetOutput(driver, deviceID string, exclusive bool) error
+	OutputConfig() (driver, deviceID string, exclusive bool)
+	SetAdaptiveRate(on bool)
+	SampleRate() int
+}
+
 // EngineVersion 返回播放引擎的版本串（不可用时为空）。
 func (p *Player) EngineVersion() string {
 	p.mu.RLock()
@@ -264,6 +277,70 @@ func (p *Player) EngineVersion() string {
 		return ""
 	}
 	return vr.Version()
+}
+
+// OutputDevices 枚举输出驱动的可用设备（设置页设备菜单）。引擎不支持
+// 设备控制（mpv）时返回 false。调用会触碰系统设备表，放后台 goroutine。
+func (p *Player) OutputDevices(driver string) ([]audio.OutputDevice, bool) {
+	p.mu.RLock()
+	e := p.eng
+	p.mu.RUnlock()
+	oc, ok := e.(outputController)
+	if !ok {
+		return nil, false
+	}
+	devs, err := oc.Devices(driver)
+	if err != nil {
+		return nil, true
+	}
+	return devs, true
+}
+
+// SetOutput 切换输出驱动/设备。exclusive 仅 ALSA 生效；引擎不支持时
+// 返回 false。切换保持当前曲目与进度。
+func (p *Player) SetOutput(driver, deviceID string, exclusive bool) bool {
+	p.mu.RLock()
+	e := p.eng
+	p.mu.RUnlock()
+	oc, ok := e.(outputController)
+	if !ok {
+		return false
+	}
+	return oc.SetOutput(driver, deviceID, exclusive) == nil
+}
+
+// OutputConfig 报告当前输出配置；引擎不支持时 ok=false。
+func (p *Player) OutputConfig() (driver, deviceID string, exclusive, ok bool) {
+	p.mu.RLock()
+	e := p.eng
+	p.mu.RUnlock()
+	oc, has := e.(outputController)
+	if !has {
+		return "", "", false, false
+	}
+	driver, deviceID, exclusive = oc.OutputConfig()
+	return driver, deviceID, exclusive, true
+}
+
+// SetAdaptiveRate 切换自适应采样率（引擎不支持时静默忽略）。
+func (p *Player) SetAdaptiveRate(on bool) {
+	p.mu.RLock()
+	e := p.eng
+	p.mu.RUnlock()
+	if oc, ok := e.(outputController); ok {
+		oc.SetAdaptiveRate(on)
+	}
+}
+
+// OutputSampleRate 报告管线当前采样率；引擎不支持时为 0。
+func (p *Player) OutputSampleRate() int {
+	p.mu.RLock()
+	e := p.eng
+	p.mu.RUnlock()
+	if oc, ok := e.(outputController); ok {
+		return oc.SampleRate()
+	}
+	return 0
 }
 
 // Preferences 是持久化配置读写接口。

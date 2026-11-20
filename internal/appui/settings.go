@@ -23,6 +23,9 @@ type settingsState struct {
 	mpvInfo   mpvaudio.MPVInfo
 	mpvInfoAt time.Time
 
+	// 音频输出设备枚举的后台缓存（PipeWire registry / ALSA hints）。
+	audioDevices audioDeviceCache
+
 	// 本地音乐缓存面板的状态（占用/上限/回执），见 localcache.go。
 	localCache localCacheState
 
@@ -315,6 +318,9 @@ func (a *App) settingsPlayback(c *ui.Context, t *ui.Theme) {
 				ui.Text(c, info.Detail).FontSize(fz(11.5)).TextColor(t.TextMuted).MaxLines(2)
 			}
 		}
+
+		// 音频输出：Liino 后端的驱动/设备/独占/自适应采样率。
+		a.settingsAudioOutput(c, t)
 
 		ui.Divider(c)
 
