@@ -249,6 +249,13 @@ type startVolumeSetter interface {
 	SetStartVolume(v float64)
 }
 
+// ratePolicySetter 是 Liino 原生引擎的可选能力：跟随源采样率 / 切换设备
+// 时钟。mpv 子进程没有这两个开关，设置页只会在 Liino 模式展示它们。
+type ratePolicySetter interface {
+	SetAdaptiveRate(on bool)
+	SetSwitchDeviceRate(on bool)
+}
+
 // versionReporter 是引擎的可选版本自报；设置页用它展示引擎版本。
 type versionReporter interface {
 	Version() string
@@ -1282,6 +1289,18 @@ func (p *Player) SetEngine(e Engine) {
 	p.notifyChange()
 	if has && wasPlaying {
 		p.playFrom(pos, true, "")
+	}
+}
+
+// SetRatePolicy 把采样率策略交给当前音频后端。Liino 只在下一次 Open 时
+// 生效，所以切歌不会中断当前曲目；当前后端不支持该能力时静默忽略。
+func (p *Player) SetRatePolicy(adaptive, switchDevice bool) {
+	p.mu.RLock()
+	e := p.eng
+	p.mu.RUnlock()
+	if s, ok := e.(ratePolicySetter); ok {
+		s.SetAdaptiveRate(adaptive)
+		s.SetSwitchDeviceRate(switchDevice)
 	}
 }
 

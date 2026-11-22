@@ -320,7 +320,7 @@ func (a *App) homeRecommendations(c *ui.Context, st *homeState) {
 				st.loaded, st.loading = false, false
 			})
 		})
-		a.playlistGrid(c, st.recs)
+		a.playlistGridWidth(c, contentWidth(c, homePagePad), st.recs)
 	})
 }
 
@@ -361,7 +361,7 @@ func (a *App) homeAI(c *ui.Context, st *homeState) {
 			ui.Text(c, "AI 暂时没有生成内容").FontSize(fz(12.5)).TextColor(c.Theme().TextMuted).Padding(16)
 			return
 		}
-		a.playlistGrid(c, st.ai)
+		a.playlistGridWidth(c, contentWidth(c, homePagePad), st.ai)
 	})
 }
 
@@ -415,7 +415,7 @@ func (a *App) homeToplists(c *ui.Context, st *homeState) {
 				}
 			})
 		})
-		a.toplistGrid(c, st.topGroups[st.topGroup].Toplists)
+		a.toplistGridWidth(c, contentWidth(c, homePagePad), st.topGroups[st.topGroup].Toplists)
 	})
 }
 
@@ -577,30 +577,64 @@ func (a *App) openPlaylistAndPlay(id int64) {
 	}()
 }
 
+// homePagePad 是首页内容区的左右内边距。
+const homePagePad = 28
+
+// contentWidth 返回页面内容区在左右内边距之内可用的宽度。
+func contentWidth(c *ui.Context, pad float32) float32 {
+	w, _ := c.Size()
+	return w - 2*pad
+}
+
 // playlistGrid 是歌单卡片的自适应换行网格。
 //
-// 卡片宽度统一由 playlistCardWidth 决定，末行数量不足时也不会被 flex 拉宽；
-// 标题区与元信息区固定高度，一/两行标题都不会把同排卡片的后续内容顶歪。
+// 列数只由最小卡宽决定，卡宽再按整行铺满的结果统一放大；末行数量不足时
+// 仍沿用同一宽度，不会被 flex 拉宽。标题区与元信息区固定高度，一/两行
+// 标题都不会把同排卡片的后续内容顶歪。
 func (a *App) playlistGrid(c *ui.Context, lists []backend.SonglistSummary, cardMenu ...func(m *ui.Menu, pl backend.SonglistSummary)) {
-	ui.Row(c).FillWidth().Wrap().GapX(18).GapY(24).AlignItems(ui.Start).Children(func() {
+	a.playlistGridWidth(c, contentWidth(c, 24), lists, cardMenu...)
+}
+
+// playlistGridWidth 按调用方页面内容区的实际宽度排歌单卡片。
+func (a *App) playlistGridWidth(c *ui.Context, width float32, lists []backend.SonglistSummary, cardMenu ...func(m *ui.Menu, pl backend.SonglistSummary)) {
+	cardWidth := playlistGridCardWidth(width)
+	ui.Row(c).FillWidth().Wrap().GapX(playlistGridGapX).GapY(24).AlignItems(ui.Start).Children(func() {
 		for i := range lists {
-			a.playlistCard(c, lists[i], cardMenu...)
+			a.playlistCard(c, cardWidth, lists[i], cardMenu...)
 		}
 	})
 }
 
-// playlistCardWidth 是歌单卡片的统一宽度。
+// playlistCardWidth 是歌单卡片的最小宽度，也是决定列数的基准。
 //
 // 网格卡片必须跨行保持同宽；如果让最后一行继续 Grow，末行只有两三张时
-// 会把卡片拉宽，看起来就像“后面几张突然变大”。
+// 会把卡片拉宽，看起来就像“后面几张突然变大”。因此这里只用来定列数，
+// 实际卡宽由 playlistGridCardWidth 在整行内均分剩余空间得到。
 const playlistCardWidth = 172
+
+const playlistGridGapX = 18
+
+// playlistGridCardWidth 返回在 width 内铺满一整行的统一卡宽。
+//
+// 列数与固定卡宽换行时相同，余下的宽度均分给每一列，所以宽窗口不会再在
+// 右侧留下接近一张卡的空洞；所有行（包括末行）都只使用这一个宽度。
+func playlistGridCardWidth(width float32) float32 {
+	if width <= 0 {
+		return playlistCardWidth
+	}
+	cols := int((width + playlistGridGapX) / (playlistCardWidth + playlistGridGapX))
+	if cols < 1 {
+		cols = 1
+	}
+	return (width - float32(cols-1)*playlistGridGapX) / float32(cols)
+}
 
 // playlistCard 歌单卡片：封面 1:1，文字区占高固定，所有行使用同一宽度。
 // cardMenu 让调用方给卡片追加右键菜单（如收藏页的「取消收藏」）。
-func (a *App) playlistCard(c *ui.Context, pl backend.SonglistSummary, cardMenu ...func(m *ui.Menu, pl backend.SonglistSummary)) {
+func (a *App) playlistCard(c *ui.Context, width float32, pl backend.SonglistSummary, cardMenu ...func(m *ui.Menu, pl backend.SonglistSummary)) {
 	t := c.Theme()
 	art := a.Covers.Get(pl.Picurl, a.invalidate)
-	card := ui.Column(c).Width(playlistCardWidth).Shrink(0).Gap(7).Label(pl.Title)
+	card := ui.Column(c).Width(width).Shrink(0).Gap(7).Label(pl.Title)
 	card.Children(func() {
 		box := ui.Box(c).FillWidth().AspectRatio(1).Clip().Radius(10).Background(t.SurfaceHover).
 			Transition(hoverFade)

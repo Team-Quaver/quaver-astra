@@ -837,6 +837,14 @@ func (a *App) ApplyThemeSource() {
 // 默认打开 MPV，避免其严重问题影响播放体验。
 const mpvBackendKey = "Playing.MPVBackend"
 
+// PipeWire 自适应采样率：Liino 默认固定 48 kHz；打开 AdaptiveRate 后
+// 解码、DSP、环形缓冲与输出流都跟随曲目采样率。SwitchDeviceRate 再让
+// PipeWire 把 graph 时钟切到该采样率（node.rate）。
+const (
+	adaptiveRateKey     = "Playing.AdaptiveRate"
+	switchDeviceRateKey = "Playing.SwitchDeviceRate"
+)
+
 // mpvBackendDefault 返回「使用 MPV 作为播放后端」的平台默认值。
 func mpvBackendDefault() bool {
 	return runtime.GOOS == "darwin"
@@ -857,7 +865,31 @@ func (a *App) newPlaybackEngine() player.Engine {
 	if a.mpvBackendEnabled() {
 		return mpvaudio.New()
 	}
-	return audio.New()
+	return audio.NewWithOptions(a.audioOptions())
+}
+
+// audioOptions 读取当前采样率策略。没有配置存储时退回 Liino 默认值
+// （固定 48 kHz），方便测试直接构造 App。
+func (a *App) audioOptions() audio.Options {
+	if a.Conf == nil {
+		return audio.Options{}
+	}
+	return audio.Options{
+		AdaptiveRate:     a.Conf.Bool(adaptiveRateKey, false),
+		SwitchDeviceRate: a.Conf.Bool(switchDeviceRateKey, false),
+	}
+}
+
+// applyRatePolicy 把设置推给正在使用的引擎。Liino 在下一首生效；mpv
+// 后端不支持时由 player 的可选接口静默忽略。
+func (a *App) applyRatePolicy() {
+	if a.PL == nil || a.Conf == nil {
+		return
+	}
+	a.PL.SetRatePolicy(
+		a.Conf.Bool(adaptiveRateKey, false),
+		a.Conf.Bool(switchDeviceRateKey, false),
+	)
 }
 
 // setMPVBackend 切换播放后端并立即生效：正在播放时从当前进度重新取流，

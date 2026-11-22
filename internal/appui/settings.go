@@ -318,6 +318,36 @@ func (a *App) settingsPlayback(c *ui.Context, t *ui.Theme) {
 
 		ui.Divider(c)
 
+		// PipeWire 自适应采样率只属于 Liino 的 Linux 输出；mpv 走自己的
+		// 重采样配置，不在这里展示互不相干的开关。
+		if runtime.GOOS == "linux" && !a.mpvBackendEnabled() {
+			ui.Text(c, "PipeWire 采样率").FontSize(fz(14)).FontWeight(700)
+			a.prefRow(c, "跟随曲目采样率（自适应）", func() bool {
+				return a.Conf.Bool(adaptiveRateKey, false)
+			}, func(v bool) {
+				a.Conf.Set(adaptiveRateKey, v)
+				a.applyRatePolicy()
+				a.invalidate()
+			})
+			ui.Text(c, "开启后不再固定重采样到 48 kHz，解码、DSP、缓冲与 PipeWire 流都跟随当前曲目"+
+				"采样率；切换在下一首生效，不会打断正在播放的声音。").
+				FontSize(fz(11.5)).TextColor(t.TextMuted).MaxLines(3)
+			if a.Conf.Bool(adaptiveRateKey, false) {
+				a.prefRow(c, "同时切换声卡时钟（node.rate）", func() bool {
+					return a.Conf.Bool(switchDeviceRateKey, false)
+				}, func(v bool) {
+					a.Conf.Set(switchDeviceRateKey, v)
+					a.applyRatePolicy()
+					a.invalidate()
+				})
+				ui.Text(c, "让 PipeWire 把硬件时钟切到曲目采样率（需 default.clock.allowed-rates 允许）；"+
+					"部分设备切换时会短暂停顿，关闭则由 PipeWire 重采样。").
+					FontSize(fz(11.5)).TextColor(t.TextMuted).MaxLines(3)
+			}
+
+			ui.Divider(c)
+		}
+
 		// 默认音质：id 与展示标签平行数组
 		ids := []string{"auto"}
 		labels := []string{"自动（最高可播）"}

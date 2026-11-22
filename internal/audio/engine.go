@@ -64,17 +64,34 @@ type Engine struct {
 	done   chan struct{}
 }
 
-// New 构造原生引擎。它不打开音频设备：Liino 在首次真正出声时才建立输出
-// 会话，因此无声卡的机器也能正常构造（载入时报错并走降档/停止逻辑）。
-func New() *Engine { return newEngine(defaultConfig()) }
+// Options 是音频输出时钟策略。
+type Options struct {
+	// AdaptiveRate 保留解码器的源采样率，不再固定重采样到 48 kHz。
+	// Liino 会在换曲时按新采样率重建输出会话。
+	AdaptiveRate bool
+	// SwitchDeviceRate 进一步请求 PipeWire 把图/硬件时钟切到源采样率
+	// （node.rate）。只有 AdaptiveRate 开启时才有意义；关闭时由 PipeWire
+	// 负责重采样，启动更快、兼容性更好。
+	SwitchDeviceRate bool
+}
 
-func defaultConfig() liino.Config {
+// New 构造原生引擎（默认固定 48 kHz）。它不打开音频设备：Liino 在首次
+// 真正出声时才建立输出会话，因此无声卡的机器也能正常构造（载入时报错并
+// 走降档/停止逻辑）。
+func New() *Engine { return NewWithOptions(Options{}) }
+
+// NewWithOptions 按给定的采样率策略构造原生引擎。
+func NewWithOptions(opts Options) *Engine { return newEngine(defaultConfig(opts)) }
+
+func defaultConfig(opts Options) liino.Config {
 	cfg := liino.Config{
 		// Decoder 留空 = 按源自动选择：Linux 的 native（ffgo）、Windows 的
 		// WinRT/WMF、macOS 的 AVF，OS 解不了的容器再回退 ffgo。显式写
 		// "ffgo" 可把整条链钉死在 native 后端（见 liino.decode.native）。
-		AppName:    appName,
-		StreamName: appName,
+		AppName:          appName,
+		StreamName:       appName,
+		AdaptiveRate:     opts.AdaptiveRate,
+		SwitchDeviceRate: opts.SwitchDeviceRate,
 		// 切歌时 120ms 淡出，避免设备回调里的硬切。
 		FadeOut: liino.DefaultFadeOut,
 	}
@@ -404,6 +421,30 @@ func (e *Engine) OnObserve(fn func()) {
 
 // Version 返回 Liino 库版本（设置页展示用）。
 func (e *Engine) Version() string { return liino.Version }
+
+// SetAdaptiveRate 切换「跟随源采样率」。与 Liino 的语义一致，设置只影响
+// 下一次 Open：正在播放的曲目不会被重定时，避免在解码/设备回调之下换时钟。
+func (e *Engine) SetAdaptiveRate(on bool) {
+	e.mu.Lock()
+	p, closed := e.p, e.closed
+	e.mu.Unlock()
+	if closed || p == nil {
+		return
+	}
+	p.SetAdaptiveRate(on)
+}
+
+// SetSwitchDeviceRate 切换「同时移动 PipeWire 硬件时钟」。同样在下一首
+// 生效；关闭后仍保留源采样率，由 PipeWire 图重采样。
+func (e *Engine) SetSwitchDeviceRate(on bool) {
+	e.mu.Lock()
+	p, closed := e.p, e.closed
+	e.mu.Unlock()
+	if closed || p == nil {
+		return
+	}
+	p.SetSwitchDeviceRate(on)
+}
 
 // Available 报告引擎是否可用（构造成功且未关闭）。
 func (e *Engine) Available() bool {
