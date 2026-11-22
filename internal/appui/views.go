@@ -27,6 +27,12 @@ type homeState struct {
 	loading bool
 	err     string
 
+	// 首页滚动位置与右侧快捷跳转的展开/激活态。
+	scroll    ui.ScrollState
+	navShown  bool
+	navHideAt time.Time
+	navActive int
+
 	recs    []backend.SonglistSummary
 	newsong []player.Song
 	newsErr string
@@ -49,19 +55,35 @@ func (a *App) homeView(c *ui.Context) {
 	st := &a.home
 	a.ensureHome()
 
-	a.pageEnter(c, ui.Scroll(c).Fill().Padding(24, 28, 30, 28).Gap(28)).Children(func() {
-		a.homeHeader(c)
+	root := a.pageEnter(c, ui.Box(c).Fill())
+	var items []homeNavItem
+	root.Children(func() {
+		ui.Scroll(c).Fill().Padding(24, 28, 30, 28).Gap(28).
+			TrackScroll(&st.scroll).Children(func() {
+			a.homeHeader(c)
 
-		// 快速开始 + 新歌速递。宽屏双栏，窄屏自动换行。
-		lead := ui.Row(c).FillWidth().Wrap().GapX(18).GapY(18).AlignItems(ui.Stretch)
-		lead.Children(func() {
-			a.homeRadioCard(c, st)
-			a.homeNewSongs(c, st)
+			// 无限电台 + 新歌速递。宽屏双栏，窄屏自动换行。
+			var radio, news ui.Element
+			lead := ui.Row(c).FillWidth().Wrap().GapX(18).GapY(18).AlignItems(ui.Stretch)
+			lead.Children(func() {
+				radio = a.homeRadioCard(c, st)
+				news = a.homeNewSongs(c, st)
+			})
+
+			recs := a.homeRecommendations(c, st)
+			ai := a.homeAI(c, st)
+			tops := a.homeToplists(c, st)
+
+			items = []homeNavItem{
+				{label: "无限电台", anchor: radio},
+				{label: "新歌速递", anchor: news},
+				{label: "推荐歌单", anchor: recs},
+				{label: "AI 歌单", anchor: ai},
+				{label: "排行榜", anchor: tops},
+			}
 		})
 
-		a.homeRecommendations(c, st)
-		a.homeAI(c, st)
-		a.homeToplists(c, st)
+		a.homeQuickNav(c, items, a.homeActiveSection(items))
 	})
 }
 
@@ -117,7 +139,7 @@ func homeGreeting(h int) string {
 // homeRadioCard 是首页的无限电台入口：未开始时负责开台，播放中则直接
 // 展示当前曲并给出播放/暂停、下一首、收藏。进入详情页只恢复主舞台，
 // 不会打断队列——这正是电台的「退出页面保留」语义。
-func (a *App) homeRadioCard(c *ui.Context, st *homeState) {
+func (a *App) homeRadioCard(c *ui.Context, st *homeState) ui.Element {
 	cur, hasCur := a.PL.Current()
 	active := a.PL.RadioActive()
 	busy := a.PL.RadioLoading()
@@ -233,9 +255,10 @@ func (a *App) homeRadioCard(c *ui.Context, st *homeState) {
 				FontSize(fz(9)).FontWeight(700).TextColor(heroMuted)
 		})
 	})
+	return card
 }
 
-func (a *App) homeNewSongs(c *ui.Context, st *homeState) {
+func (a *App) homeNewSongs(c *ui.Context, st *homeState) ui.Element {
 	t := c.Theme()
 	panel := ui.Column(c).Grow(1).Basis(370).MinWidth(340).Height(236).
 		Padding(14).Radius(16).Background(t.Surface).Border(1, t.Border)
@@ -269,6 +292,7 @@ func (a *App) homeNewSongs(c *ui.Context, st *homeState) {
 			a.compactSongRow(c, st.newsong, i)
 		}
 	})
+	return panel
 }
 
 // heroBtn is the in-hero action style: one warm paper button, the rest
@@ -294,17 +318,16 @@ func heroBtn(c *ui.Context, label string, primary bool, ink, ground, line ui.Col
 	}
 }
 
-func (a *App) homeRecommendations(c *ui.Context, st *homeState) {
+func (a *App) homeRecommendations(c *ui.Context, st *homeState) ui.Element {
 	if st.loading && len(st.recs) == 0 {
-		ui.Column(c).FillWidth().Gap(10).Children(func() {
+		return ui.Column(c).FillWidth().Gap(10).Children(func() {
 			sectionHeader(c, "推荐歌单", nil)
 			ui.Row(c).FillWidth().Center().Padding(28).Children(func() { ui.Spinner(c) })
 		})
-		return
 	}
 	if len(st.recs) == 0 {
 		if st.err != "" {
-			ui.Column(c).FillWidth().Gap(10).Children(func() {
+			return ui.Column(c).FillWidth().Gap(10).Children(func() {
 				sectionHeader(c, "推荐歌单", nil)
 				ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(10).Children(func() {
 					ui.Text(c, st.err).FontSize(fz(12.5)).TextColor(c.Theme().TextMuted).Grow(1)
@@ -312,9 +335,9 @@ func (a *App) homeRecommendations(c *ui.Context, st *homeState) {
 				})
 			})
 		}
-		return
+		return ui.Element{}
 	}
-	ui.Column(c).FillWidth().Gap(12).Children(func() {
+	return ui.Column(c).FillWidth().Gap(12).Children(func() {
 		sectionHeader(c, "推荐歌单", func() {
 			linkButton(c, "刷新", func() {
 				st.loaded, st.loading = false, false
@@ -324,20 +347,19 @@ func (a *App) homeRecommendations(c *ui.Context, st *homeState) {
 	})
 }
 
-func (a *App) homeAI(c *ui.Context, st *homeState) {
+func (a *App) homeAI(c *ui.Context, st *homeState) ui.Element {
 	if st.aiErr != "" {
-		ui.Column(c).FillWidth().Gap(10).Children(func() {
+		return ui.Column(c).FillWidth().Gap(10).Children(func() {
 			sectionHeader(c, "AI 歌单", func() {
 				linkButton(c, "重试", func() { a.loadHomeAI(1) })
 			})
 			ui.Text(c, st.aiErr).FontSize(fz(12.5)).TextColor(c.Theme().TextMuted)
 		})
-		return
 	}
 	if !st.aiLoaded && !st.aiBusy {
-		return
+		return ui.Element{}
 	}
-	ui.Column(c).FillWidth().Gap(12).Children(func() {
+	return ui.Column(c).FillWidth().Gap(12).Children(func() {
 		sectionHeader(c, "AI 歌单", func() {
 			label := "换一批"
 			if st.aiBusy {
@@ -365,9 +387,9 @@ func (a *App) homeAI(c *ui.Context, st *homeState) {
 	})
 }
 
-func (a *App) homeToplists(c *ui.Context, st *homeState) {
+func (a *App) homeToplists(c *ui.Context, st *homeState) ui.Element {
 	if st.topErr != "" {
-		ui.Column(c).FillWidth().Gap(10).Children(func() {
+		return ui.Column(c).FillWidth().Gap(10).Children(func() {
 			sectionHeader(c, "排行榜", func() {
 				linkButton(c, "重试", func() {
 					st.topErr = ""
@@ -376,22 +398,20 @@ func (a *App) homeToplists(c *ui.Context, st *homeState) {
 			})
 			ui.Text(c, st.topErr).FontSize(fz(12.5)).TextColor(c.Theme().TextMuted)
 		})
-		return
 	}
 	if st.topBusy && len(st.topGroups) == 0 {
-		ui.Column(c).FillWidth().Gap(10).Children(func() {
+		return ui.Column(c).FillWidth().Gap(10).Children(func() {
 			sectionHeader(c, "排行榜", nil)
 			ui.Row(c).FillWidth().Center().Padding(28).Children(func() { ui.Spinner(c) })
 		})
-		return
 	}
 	if len(st.topGroups) == 0 {
-		return
+		return ui.Element{}
 	}
 	if st.topGroup < 0 || st.topGroup >= len(st.topGroups) {
 		st.topGroup = 0
 	}
-	ui.Column(c).FillWidth().Gap(12).Children(func() {
+	return ui.Column(c).FillWidth().Gap(12).Children(func() {
 		sectionHeader(c, "排行榜", func() {
 			ui.Row(c).Wrap().Gap(6).Children(func() {
 				for i, g := range st.topGroups {
