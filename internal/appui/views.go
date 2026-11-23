@@ -1259,7 +1259,11 @@ func (a *App) searchView(c *ui.Context, kw string) {
 		if st.tab == 0 {
 			st.list.songs = st.songs
 			a.songList(c, &st.list, func(page int) { a.loadSearchPage(st, page) },
-				func(i int) { a.playListNow(st.songs, i) })
+				func(i int) {
+					// 双击只播当前这首：搜索结果是临时列表，整页塞进队列会把
+					// 队列换成搜索结果，并让「下一首」继续播搜索页里的歌。
+					a.PL.PlayList([]player.Song{st.songs[i]}, 0)
+				})
 		} else {
 			a.playlistGrid(c, st.songlists)
 			if st.nextpage > 0 {
