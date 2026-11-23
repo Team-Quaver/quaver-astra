@@ -78,6 +78,16 @@ type App struct {
 	npBlurKey string
 	npBlurAt  time.Time
 
+	// 正在播放页封面的换曲蒙版。npCoverKey 是当前曲目；npCoverShown 是
+	// 上一帧显示的封面，换曲时留作旧底；npCoverWipeDir 为 +1（下一首：
+	// 左下 → 右上）或 -1（上一首：右上 → 左下），0 表示不播；wipeAt 是
+	// 新封面就绪后开始擦入的时刻（零值 = 等图）。
+	npCoverKey     string
+	npCoverShown   *ui.Bitmap
+	npCoverPrev    *ui.Bitmap
+	npCoverWipeDir int
+	npCoverWipeAt  time.Time
+
 	// splashAt/splashDone 是启动画面的时钟：Attach 时起算，淡出结束置
 	// Done，此后不再建层。splashAt 零值（测试直构 App）= 不播，见 splash.go。
 	splashAt   time.Time
@@ -352,6 +362,8 @@ func (a *App) View(c *ui.Context) {
 			a.mainRow(c)
 			if a.npOpen {
 				a.nowPlaying(c, t)
+			} else {
+				a.npCoverIdle()
 			}
 		})
 		a.playerBar(c, t)

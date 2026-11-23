@@ -20,8 +20,12 @@ type Player struct {
 	eng  Engine
 	conf Preferences
 
-	queue     []Song
-	index     int
+	queue []Song
+	index int
+	// navDir 是最近一次换曲的语义方向：+1 下一首，-1 上一首，0 无方向
+	// （整队替换、恢复会话等）。界面用它决定封面蒙版从哪一边擦入，
+	// 不能只看下标差：随机播放、列表回绕时下标的方向与听感并不一致。
+	navDir    int
 	mode      string // off | all | one
 	shuf      bool
 	shufOrder []int
@@ -518,6 +522,14 @@ func (p *Player) Index() int {
 	return p.index
 }
 
+// NavDirection 返回最近一次换曲的语义方向：+1 下一首，-1 上一首，
+// 0 表示没有可继承的方向（整队替换、恢复会话等）。
+func (p *Player) NavDirection() int {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.navDir
+}
+
 func (p *Player) Current() (Song, bool) {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
@@ -640,6 +652,7 @@ func (p *Player) PlayList(songs []Song, i int) {
 		i = 0
 	}
 	p.index = i
+	p.navDir = 0
 	p.shufOrder = nil
 	p.mu.Unlock()
 	p.sessionSaveSoon(true)
@@ -653,6 +666,14 @@ func (p *Player) Jump(i int) {
 	if i < 0 || i >= len(p.queue) {
 		p.mu.Unlock()
 		return
+	}
+	switch {
+	case i > p.index:
+		p.navDir = 1
+	case i < p.index:
+		p.navDir = -1
+	default:
+		p.navDir = 0
 	}
 	p.index = i
 	p.mu.Unlock()
@@ -700,6 +721,7 @@ func (p *Player) PlayNextNow(s Song) {
 	copy(p.queue[at+1:], p.queue[at:])
 	p.queue[at] = s
 	p.index = at
+	p.navDir = 1
 	p.mu.Unlock()
 	p.sessionSaveSoon(true)
 	p.notifyChange()
@@ -722,6 +744,7 @@ func (p *Player) PlayNow(s Song) {
 	copy(p.queue[at+1:], p.queue[at:])
 	p.queue[at] = s
 	p.index = at
+	p.navDir = 1
 	p.mu.Unlock()
 	p.sessionSaveSoon(true)
 	p.notifyChange()
@@ -749,6 +772,7 @@ func (p *Player) RemoveAt(i int) {
 	wasCurrent := i == p.index
 	p.queue = append(p.queue[:i], p.queue[i+1:]...)
 	if wasCurrent {
+		p.navDir = 1
 		if p.index >= len(p.queue) {
 			p.index = len(p.queue) - 1
 		}
@@ -1220,6 +1244,7 @@ func (p *Player) Next(auto bool) {
 		}
 		next := p.index + 1
 		p.index = next
+		p.navDir = 1
 		p.mu.Unlock()
 		p.sessionSaveSoon(true)
 		p.notifyChange()
@@ -1235,6 +1260,7 @@ func (p *Player) Next(auto bool) {
 		return
 	}
 	p.index = next
+	p.navDir = 1
 	p.mu.Unlock()
 	p.sessionSaveSoon(true)
 	p.notifyChange()
@@ -1260,6 +1286,7 @@ func (p *Player) Prev() {
 		return
 	}
 	p.index = prev
+	p.navDir = -1
 	p.mu.Unlock()
 	p.sessionSaveSoon(true)
 	p.notifyChange()
@@ -2109,6 +2136,7 @@ func (p *Player) failWithErr(seq uint64, err error) {
 	if next >= 0 {
 		p.mu.Lock()
 		p.index = next
+		p.navDir = 1
 		p.mu.Unlock()
 		// 注意：这里不能用 playFrom——连跳计数是这条链自己的刹车，
 		// 每次自动重试都清零的话，上限就永远不会生效了。
