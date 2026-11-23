@@ -70,6 +70,202 @@ func TestWheelMomentumReachesInput(t *testing.T) {
 	}
 }
 
+// TestWheelHighResGlides guards a high-resolution wheel: its smooth
+// events are precise, but they are still a wheel, and glide as its
+// notches do.
+func TestWheelHighResGlides(t *testing.T) {
+	var s ScrollState
+	tt := coreNewTester(func(c *context) {
+		coreScroll(c).Fill().TrackScroll(&s).Children(func() {
+			coreBox(c).Height(1000).Shrink(0)
+		})
+	}, 200, 200)
+	tt.Move(100, 100)
+	tt.send(platform.SurfaceEvent{Kind: platform.PointerScroll, X: 100, Y: 100, DY: 40, Precise: true, Wheel: true})
+	tt.Frame()
+	if s.Y != 0 {
+		t.Errorf("a high-resolution wheel scrolled at once, to %v", s.Y)
+	}
+	tt.Advance(50 * time.Millisecond)
+	if s.Y <= 0 || s.Y >= 40 {
+		t.Errorf("a high-resolution wheel on its way: at %v", s.Y)
+	}
+	tt.Advance(time.Second)
+	if s.Y != 40 {
+		t.Errorf("a high-resolution wheel settled at %v, want 40", s.Y)
+	}
+}
+
+// TestTrackpadFlingCoasts guards the inertia of a touchpad: its precise
+// moves follow the fingers, and the content coasts on once they leave.
+func TestTrackpadFlingCoasts(t *testing.T) {
+	var s ScrollState
+	tt := coreNewTester(func(c *context) {
+		coreScroll(c).Fill().TrackScroll(&s).Children(func() {
+			coreBox(c).Height(1000).Shrink(0)
+		})
+	}, 200, 200)
+	tt.Move(100, 100)
+	// Four quick moves of 20 DIPs follow the fingers at once.
+	for range 4 {
+		tt.Scroll(100, 100, 0, 20)
+		tt.Advance(16 * time.Millisecond)
+	}
+	if s.Y != 80 {
+		t.Fatalf("the moves are at %v, want 80", s.Y)
+	}
+	// Once the fingers stop, the content coasts on.
+	tt.Advance(100 * time.Millisecond)
+	coasting := s.Y
+	if coasting <= 80 {
+		t.Fatalf("after the fingers left: at %v, want past 80", coasting)
+	}
+	tt.Advance(100 * time.Millisecond)
+	if s.Y <= coasting {
+		t.Errorf("the fling stopped at once: at %v, was %v", s.Y, coasting)
+	}
+	// It settles without frames pending.
+	tt.Advance(3 * time.Second)
+	if s.Y <= coasting || s.Y >= 800 {
+		t.Errorf("the fling settled at %v, was %v at its start", s.Y, coasting)
+	}
+	if tt.FramePending() {
+		t.Error("frames are pending after the fling settled")
+	}
+}
+
+// TestTrackpadMomentumTakesOver keeps MyGo from adding a second inertia to
+// the momentum that the platform sends itself, as macOS does.
+func TestTrackpadMomentumTakesOver(t *testing.T) {
+	var s ScrollState
+	tt := coreNewTester(func(c *context) {
+		coreScroll(c).Fill().TrackScroll(&s).Children(func() {
+			coreBox(c).Height(1000).Shrink(0)
+		})
+	}, 200, 200)
+	tt.Move(100, 100)
+	for range 4 {
+		tt.Scroll(100, 100, 0, 20)
+		tt.Advance(16 * time.Millisecond)
+	}
+	// The platform's momentum carries on from the fingers: MyGo follows
+	// its moves rather than flinging on its own.
+	tt.send(platform.SurfaceEvent{Kind: platform.PointerScroll, X: 100, Y: 100, DY: 20, Precise: true, Momentum: true})
+	if s.Y != 100 {
+		t.Fatalf("the momentum moved to %v, want 100", s.Y)
+	}
+	tt.Advance(time.Second)
+	if s.Y != 100 {
+		t.Errorf("MyGo flung after the momentum: at %v, want 100", s.Y)
+	}
+}
+
+// TestTrackpadSlowDoesNotFling keeps a touchpad moved slowly, or a pause
+// between moves, from drifting on.
+func TestTrackpadSlowDoesNotFling(t *testing.T) {
+	var s ScrollState
+	tt := coreNewTester(func(c *context) {
+		coreScroll(c).Fill().TrackScroll(&s).Children(func() {
+			coreBox(c).Height(1000).Shrink(0)
+		})
+	}, 200, 200)
+	tt.Move(100, 100)
+	for i := range 3 {
+		tt.Scroll(100, 100, 0, 20)
+		tt.Advance(200 * time.Millisecond)
+		if want := float32(20 * (i + 1)); s.Y != want {
+			t.Fatalf("move %d settled at %v, want %v", i, s.Y, want)
+		}
+	}
+}
+
+// TestWheelMomentumCoasts guards the inertia of the wheel: notches turned
+// fast keep the content going once they stop, slowing as they go.
+func TestWheelMomentumCoasts(t *testing.T) {
+	var s ScrollState
+	tt := coreNewTester(func(c *context) {
+		coreScroll(c).Fill().TrackScroll(&s).Children(func() {
+			coreBox(c).Height(1000).Shrink(0)
+		})
+	}, 200, 200)
+	tt.Move(100, 100)
+	// Three notches close together build up the speed.
+	for range 3 {
+		tt.Wheel(100, 100, 0, 100)
+		tt.Advance(30 * time.Millisecond)
+	}
+	if s.Y >= 300 {
+		t.Fatalf("the notches already reached %v", s.Y)
+	}
+	// Once they stop, the content coasts on past them.
+	tt.Advance(100 * time.Millisecond)
+	coasting := s.Y
+	if coasting <= 300 {
+		t.Fatalf("after the notches: at %v, want past their 300", coasting)
+	}
+	tt.Advance(100 * time.Millisecond)
+	if s.Y <= coasting {
+		t.Errorf("the coast stopped at once: at %v, was %v", s.Y, coasting)
+	}
+	// It settles before the end of the content, without frames pending.
+	tt.Advance(time.Second)
+	if s.Y <= coasting || s.Y >= 800 {
+		t.Errorf("the coast settled at %v, was %v at its start", s.Y, coasting)
+	}
+	if tt.FramePending() {
+		t.Error("frames are pending after the coast settled")
+	}
+}
+
+// TestWheelSlowDoesNotCoast keeps a wheel turned a notch at a time from
+// drifting on, as a touchpad's fling does.
+func TestWheelSlowDoesNotCoast(t *testing.T) {
+	var s ScrollState
+	tt := coreNewTester(func(c *context) {
+		coreScroll(c).Fill().TrackScroll(&s).Children(func() {
+			coreBox(c).Height(1000).Shrink(0)
+		})
+	}, 200, 200)
+	tt.Move(100, 100)
+	for i := range 2 {
+		tt.Wheel(100, 100, 0, 100)
+		tt.Advance(200 * time.Millisecond)
+		if want := float32(100 * (i + 1)); s.Y != want {
+			t.Fatalf("notch %d settled at %v, want %v", i, s.Y, want)
+		}
+	}
+}
+
+// TestWheelReverseStopsCoast turns the wheel back while the notches coast:
+// the content follows at once, rather than finishing the old fling.
+func TestWheelReverseStopsCoast(t *testing.T) {
+	var s ScrollState
+	tt := coreNewTester(func(c *context) {
+		coreScroll(c).Fill().TrackScroll(&s).Children(func() {
+			coreBox(c).Height(1000).Shrink(0)
+		})
+	}, 200, 200)
+	tt.Move(100, 100)
+	for range 3 {
+		tt.Wheel(100, 100, 0, 100)
+		tt.Advance(30 * time.Millisecond)
+	}
+	tt.Advance(100 * time.Millisecond)
+	from := s.Y
+	if from <= 300 {
+		t.Fatalf("setup: at %v, want the notches coasting", from)
+	}
+	tt.Wheel(100, 100, 0, -100)
+	tt.Advance(40 * time.Millisecond)
+	if s.Y >= from {
+		t.Errorf("the wheel turned back at %v, still at %v", from, s.Y)
+	}
+	tt.Advance(time.Second)
+	if s.Y >= from {
+		t.Errorf("the old coast carried on to %v, was %v when it turned", s.Y, from)
+	}
+}
+
 func TestWheelReducedMotion(t *testing.T) {
 	var s ScrollState
 	tt := coreNewTester(func(c *context) {
