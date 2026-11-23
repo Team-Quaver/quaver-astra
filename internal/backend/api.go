@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -1148,6 +1149,46 @@ func (c *Client) SearchHotkey() ([]string, error) {
 		}
 	}
 	return out, nil
+}
+
+// SearchComplete 返回搜索词补全建议（/search/complete 的 hint 列表）。
+// 上游同一建议可能重复出现，这里按大小写不敏感去重并保持原顺序。
+func (c *Client) SearchComplete(keyword string) ([]string, error) {
+	raw, err := c.get("/search/complete", q("keyword", keyword))
+	if err != nil {
+		return nil, err
+	}
+	var out struct {
+		Items []struct {
+			Hint  string `json:"hint"`
+			Query string `json:"query"`
+			Name  string `json:"name"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return nil, nil
+	}
+	seen := make(map[string]bool, len(out.Items))
+	suggestions := make([]string, 0, len(out.Items))
+	for _, it := range out.Items {
+		hint := strings.TrimSpace(it.Hint)
+		if hint == "" {
+			hint = strings.TrimSpace(it.Query)
+		}
+		if hint == "" {
+			hint = strings.TrimSpace(it.Name)
+		}
+		if hint == "" {
+			continue
+		}
+		key := strings.ToLower(hint)
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		suggestions = append(suggestions, hint)
+	}
+	return suggestions, nil
 }
 
 func (c *Client) RecommendSonglists(page, num int) (RecommendSonglists, error) {

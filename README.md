@@ -64,7 +64,7 @@ go test ./internal/...
 
 ## 与主项目（Quaver Music）的差异
 
-Astra 缺少以下内容：搜索联想、 本地音乐。 
+Astra 缺少以下内容：本地音乐。
 
 ## 许可
 

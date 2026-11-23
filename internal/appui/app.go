@@ -6,7 +6,6 @@ import (
 	"os"
 	"runtime"
 	"strconv"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -146,6 +145,7 @@ type App struct {
 	playlist    map[int64]*playlistState
 	playlistRec []int64
 	search      searchState
+	searchHint  searchHintState
 	login       loginState
 	profile     profileState
 	settings    settingsState
@@ -535,6 +535,7 @@ func (a *App) searchButton(c *ui.Context, t *ui.Theme) {
 	if a.searchOpen {
 		b.Background(t.Accent.Alpha(0.13))
 		b.TextColor(t.Accent)
+		a.syncSearchHints(c)
 	}
 	ui.PopoverBase(c, b, &a.searchOpen, func(panel ui.Element) {
 		// 右缘对齐搜索按钮，320 宽的浮窗才不会被窗口右缘裁掉。
@@ -545,12 +546,10 @@ func (a *App) searchButton(c *ui.Context, t *ui.Theme) {
 			sf := ui.SearchField(c, &a.searchDraft).FillWidth().AutoFocus()
 			sf.Label("搜索音乐")
 			sf.Placeholder("搜索音乐")
-			if sf.Submitted() {
-				kw := strings.TrimSpace(a.searchDraft)
-				if kw != "" {
-					a.searchOpen = false
-					a.Router.Push("/search?kw=" + kw)
-				}
+			items := a.visibleSearchHints()
+			a.searchHintInput(sf, items)
+			if len(items) > 0 {
+				a.searchHintList(c, items)
 			}
 		})
 	})

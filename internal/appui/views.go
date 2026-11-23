@@ -1239,7 +1239,7 @@ func (a *App) searchView(c *ui.Context, kw string) {
 							chip.Background(c.Theme().SurfaceHover)
 						}
 						if chip.Clicked() {
-							a.Router.Push("/search?kw=" + hk)
+							a.openSearch(hk)
 						}
 					}
 				})
