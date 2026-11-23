@@ -3,14 +3,15 @@ package appui
 import (
 	"time"
 
+	"github.com/egoist/mygo/plugins/glass"
 	"github.com/egoist/mygo/ui"
 )
 
 // 首页右侧快捷跳转：一份悬浮在内容之上的区块目录。
 //
 // 它只在指针靠近右侧中部时展开，离开后自动收回，避免与首页的封面和卡片
-// 抢注意力。跳转本身交给 ScrollIntoView，滚动容器会按页面的平滑动画滚到
-// 对应区块，不会打断正在播放的电台。
+// 抢注意力。跳转交给滚动容器平滑滚到对应区块；无限电台一项回到整页顶部，
+// 不会打断正在播放的电台。
 const (
 	homeNavWidth  = 148
 	homeNavEdge   = 16
@@ -18,12 +19,27 @@ const (
 	homeNavFade   = 180 * time.Millisecond
 	homeGripWidth = 26
 	homeGripH     = 96
+	homeNavBlur   = 10
 )
 
 // homeNavItem 是快捷跳转的一项：显示名 + 目标区块。
 type homeNavItem struct {
 	label  string
 	anchor ui.Element
+	// top 表示这一项跳回页面顶部，而不是把某个区块顶到顶部。
+	top bool
+}
+
+// navFrost 是按钮自己的磨砂背景：先把按钮下方的页面内容糊掉，再罩一层
+// 随状态变化的主题色。底色和边框仍在同一层里画，文字不会被一起糊掉。
+type navFrost struct {
+	blur float32
+	tint ui.Color
+}
+
+func (f navFrost) PaintMaterial(p *ui.Painter, box ui.Rect, radii [4]float32) {
+	glass.Blur{Radius: f.blur}.PaintMaterial(p, box, radii)
+	p.FillRadii(box, radii, f.tint)
 }
 
 // homeQuickNav 构建右侧快捷跳转。navShown 由前几帧的指针位置维护：
@@ -110,21 +126,26 @@ func (a *App) homeNavButton(c *ui.Context, t *ui.Theme, it homeNavItem, index in
 		})
 	})
 
+	tint := t.Surface.Alpha(0.62)
 	switch {
 	case active:
-		b.Background(t.Accent.Alpha(0.15))
+		tint = t.Accent.Alpha(0.24)
 		b.Border(1, t.Accent.Alpha(0.35))
 	case b.Hovered():
-		b.Background(t.SurfaceHover)
+		tint = t.SurfaceHover.Alpha(0.78)
 		b.Border(1, t.Border)
-	default:
-		b.Background(t.Surface.Alpha(0.88))
 	}
+	tint = b.AnimateColor("home-nav-fill", tint, ui.Animation{Duration: hoverFade.Duration})
+	b.Material(navFrost{blur: homeNavBlur, tint: tint})
 	b.Shadow(0, 6, 18, 0, ui.RGBA(0, 0, 0, 0.16))
 
 	if b.Clicked() {
 		a.home.navActive = index
-		if it.anchor.Valid() {
+		if it.top {
+			// 无限电台是首页第一块内容，点它看的是整页开头（问候和日期），
+			// 不是把电台卡片顶到最上面。
+			a.home.scroll.ScrollTo(0, 0, ui.Smooth)
+		} else if it.anchor.Valid() {
 			it.anchor.ScrollIntoView(ui.ScrollIntoViewOptions{
 				Block:     ui.ScrollStart,
 				Animation: &ui.Smooth,

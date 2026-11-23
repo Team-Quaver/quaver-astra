@@ -384,14 +384,14 @@ func (p *Player) Playlists() []PlaylistRef {
 // 未就绪、网络抖一下这一小段，不做无限重试。（var 而非 const：测试要压缩等待。）
 var likedRetryDelay = 2 * time.Second
 
-// LoadLoved 分页拉取我喜欢（最多 2 页 × 500）。
+// LoadLoved 分页拉取我喜欢。
 //
 // 这份集合决定每一行画空心还是实心红心，所以原则是「拿到多少落多少、落不下
 // 就什么都不动」：
 //   - 第 1 页失败：隔 likedRetryDelay 重试一次（冷启动时后端可能还没就绪、
 //     网络抖一下），仍失败就整份保留上一次的结果。拿空集去覆盖，满屏红心会
 //     一起消失，看起来就像「收藏渲染不出来」。
-//   - 第 2 页失败：把手里的第 1 页照样落地。少几首红心远好于所有红心都不显示。
+//   - 后半程失败：把已经拿到的页照样落地。少几首红心远好于所有红心都不显示。
 func (p *Player) LoadLoved() {
 	p.mu.Lock()
 	p.likedSeq++
@@ -400,9 +400,9 @@ func (p *Player) LoadLoved() {
 
 	go func() {
 		all := map[string]struct{}{}
-		var first []Song
+		liked := []Song{}
 		total := int64(0)
-		for page := 1; page <= 2; page++ {
+		for page := 1; ; page++ {
 			songs, tot, hasmore, err := p.api.LikedPage(page, 500)
 			if err != nil && page == 1 && p.likedFresh(seq) {
 				time.Sleep(likedRetryDelay)
@@ -412,17 +412,18 @@ func (p *Player) LoadLoved() {
 				if page == 1 {
 					return // 一首都没拿到：什么都不改
 				}
-				break // 第 2 页没拿到：已有的部分照样落地
+				break // 后半程没拉到：已有的部分照样落地
 			}
 			if !p.likedFresh(seq) {
 				return // 已经有更新的一轮在跑，这轮的结论作废
 			}
 			total = tot
-			if page == 1 {
-				first = songs
-			}
+			liked = append(liked, songs...)
 			for _, s := range songs {
 				all[s.Mid] = struct{}{}
+			}
+			if len(songs) == 0 {
+				break
 			}
 			if !hasmore {
 				break
@@ -434,7 +435,7 @@ func (p *Player) LoadLoved() {
 			return
 		}
 		p.loved = all
-		p.likedCache = first
+		p.likedCache = liked
 		p.likedTotal = total
 		p.mu.Unlock()
 		p.notifyChange()

@@ -66,7 +66,7 @@ func (a *App) homeView(c *ui.Context) {
 			var radio, news ui.Element
 			lead := ui.Row(c).FillWidth().Wrap().GapX(18).GapY(18).AlignItems(ui.Stretch)
 			lead.Children(func() {
-				radio = a.homeRadioCard(c, st)
+				radio = a.homeRadioCard(c)
 				news = a.homeNewSongs(c, st)
 			})
 
@@ -75,7 +75,7 @@ func (a *App) homeView(c *ui.Context) {
 			tops := a.homeToplists(c, st)
 
 			items = []homeNavItem{
-				{label: "无限电台", anchor: radio},
+				{label: "无限电台", anchor: radio, top: true},
 				{label: "新歌速递", anchor: news},
 				{label: "推荐歌单", anchor: recs},
 				{label: "AI 歌单", anchor: ai},
@@ -104,12 +104,6 @@ func (a *App) homeHeader(c *ui.Context) {
 
 	ui.Row(c).FillWidth().AlignItems(ui.End).Gap(18).Children(func() {
 		ui.Column(c).Grow(1).Gap(5).Children(func() {
-			ui.Row(c).AlignItems(ui.Center).Gap(10).Children(func() {
-				ui.Text(c, "ASTRA / SIGNAL DESK").Font("monospace").FontSize(fz(9.5)).
-					FontWeight(700).TextColor(t.Accent)
-				ui.Box(c).Width(24).Height(1).Background(t.Accent.Alpha(0.55))
-				ui.Text(c, "从今天的推荐开始").FontSize(fz(10.5)).TextColor(t.TextMuted)
-			})
 			ui.Text(c, greeting).FontSize(fz(30)).FontWeight(800).SingleLine().Ellipsis("…")
 		})
 		ui.Column(c).AlignItems(ui.End).Gap(1).Children(func() {
@@ -139,15 +133,13 @@ func homeGreeting(h int) string {
 // homeRadioCard 是首页的无限电台入口：未开始时负责开台，播放中则直接
 // 展示当前曲并给出播放/暂停、下一首、收藏。进入详情页只恢复主舞台，
 // 不会打断队列——这正是电台的「退出页面保留」语义。
-func (a *App) homeRadioCard(c *ui.Context, st *homeState) ui.Element {
+func (a *App) homeRadioCard(c *ui.Context) ui.Element {
 	cur, hasCur := a.PL.Current()
 	active := a.PL.RadioActive()
 	busy := a.PL.RadioLoading()
 	artURL := ""
 	if active && hasCur {
 		artURL = a.songCoverURL(cur, 300)
-	} else if len(st.recs) > 0 {
-		artURL = st.recs[0].Picurl
 	}
 	art := a.Covers.Get(artURL, a.invalidate)
 
@@ -176,8 +168,6 @@ func (a *App) homeRadioCard(c *ui.Context, st *homeState) ui.Element {
 			ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(6).Children(func() {
 				ui.Text(c, "∞").FontSize(fz(16)).FontWeight(800).TextColor(ui.Hex("#19c2d8"))
 				ui.Text(c, "无限电台").FontSize(fz(11.5)).FontWeight(700).TextColor(ui.Hex("#19c2d8"))
-				ui.Text(c, "PICKED FOR YOU").Font("monospace").FontSize(fz(9)).
-					TextColor(heroMuted)
 				ui.Spacer(c)
 				if active && busy {
 					ui.Text(c, "正在续歌…").FontSize(fz(10.5)).TextColor(heroMuted)
@@ -241,6 +231,8 @@ func (a *App) homeRadioCard(c *ui.Context, st *homeState) ui.Element {
 			box.Children(func() {
 				if art != nil {
 					ui.Image(c, art).Fill().Fit(ui.Cover)
+				} else if !active {
+					a.radioIdleCover(c, fz(58))
 				} else {
 					ui.Box(c).Fill().Center().Children(func() {
 						ui.Text(c, "∞").FontSize(fz(64)).FontWeight(800).TextColor(ui.Hex("#19c2d8"))
@@ -258,6 +250,32 @@ func (a *App) homeRadioCard(c *ui.Context, st *homeState) ui.Element {
 	return card
 }
 
+// radioIdleCover fills the radio sleeve while it is off air: the theme accent
+// glows from the middle into the theme's black (dark) or white (light) ground.
+// The infinity mark is a vector icon, not a font glyph, so it stays crisp and
+// matches the navigation icon. On air, the current track's cover takes over.
+func (a *App) radioIdleCover(c *ui.Context, iconSize float32) ui.Element {
+	t := c.Theme()
+	ground := ui.Hex("#f7f1e4")
+	if a.appearance(c) {
+		ground = ui.Hex("#080b09")
+	}
+	sleeve := ui.Box(c).Fill().Center().Label("无限电台封面")
+	sleeve.RadialGradient(ui.RadialGradient{
+		Stops: []ui.GradientStop{
+			{Color: t.Accent, At: 0},
+			{Color: t.Accent.Mix(ground, 0.55), At: 0.5},
+			{Color: ground, At: 1},
+		},
+		Oklab: true,
+	})
+	sleeve.Children(func() {
+		ui.Icon(c, Icons["guess"]).FontSize(iconSize).TextColor(t.AccentText).
+			AlignSelf(ui.Center)
+	})
+	return sleeve
+}
+
 func (a *App) homeNewSongs(c *ui.Context, st *homeState) ui.Element {
 	t := c.Theme()
 	panel := ui.Column(c).Grow(1).Basis(370).MinWidth(340).Height(236).
@@ -266,8 +284,6 @@ func (a *App) homeNewSongs(c *ui.Context, st *homeState) ui.Element {
 		ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(8).Children(func() {
 			ui.Column(c).Grow(1).Gap(0).Children(func() {
 				ui.Text(c, "新歌速递").FontSize(fz(15)).FontWeight(800)
-				ui.Text(c, "NEW RELEASES / DAILY").Font("monospace").FontSize(fz(8.5)).
-					TextColor(t.TextMuted)
 			})
 			if len(st.newsong) > 0 {
 				linkButton(c, "播放全部", func() { a.playListNow(st.newsong, 0) })
@@ -823,6 +839,8 @@ func (a *App) guessView(c *ui.Context) {
 			cover.Children(func() {
 				if art != nil {
 					ui.Image(c, art).Fill().Fit(ui.Cover)
+				} else if !active {
+					a.radioIdleCover(c, fz(92))
 				} else {
 					ui.Box(c).Fill().Center().Children(func() {
 						ui.Text(c, "∞").FontSize(fz(92)).FontWeight(800).TextColor(t.Accent)

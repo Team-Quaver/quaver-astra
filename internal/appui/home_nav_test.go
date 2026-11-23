@@ -95,3 +95,37 @@ func TestHomeQuickNavJumpsToSection(t *testing.T) {
 		t.Fatalf("快捷跳转把路由切到了 %q", app.Router.Path())
 	}
 }
+
+// TestHomeQuickNavRadioReturnsToTop 点无限电台应回到整页开头（问候与日期），
+// 而不是把电台卡片贴到顶栏下面。
+func TestHomeQuickNavRadioReturnsToTop(t *testing.T) {
+	app, tester := homeNavApp(t)
+
+	gripX := float32(testWinW) - 4 - homeGripWidth/2
+	gripY := float32(topBarH + (testWinH-topBarH-barH)/2)
+	tester.Move(gripX, gripY)
+	tester.Advance(220 * time.Millisecond)
+
+	if err := tester.Click("跳转到排行榜"); err != nil {
+		t.Fatalf("点击排行榜入口失败：%v", err)
+	}
+	tester.Advance(1500 * time.Millisecond)
+	if app.home.scroll.Y <= 0 {
+		t.Fatal("点击排行榜后首页没有滚动")
+	}
+
+	if err := tester.Click("跳转到无限电台"); err != nil {
+		t.Fatalf("点击无限电台入口失败：%v", err)
+	}
+	tester.Advance(1500 * time.Millisecond)
+
+	if app.home.scroll.Y > 0.5 {
+		t.Fatalf("点击无限电台后滚动位置是 %.1f，想回到 0", app.home.scroll.Y)
+	}
+	if app.home.navActive != 0 {
+		t.Fatalf("点击无限电台后激活项是 %d，想看到 0", app.home.navActive)
+	}
+	if app.Router.Path() != "/" {
+		t.Fatalf("回到顶部时路由被切到了 %q", app.Router.Path())
+	}
+}
