@@ -1260,9 +1260,9 @@ func (a *App) searchView(c *ui.Context, kw string) {
 			st.list.songs = st.songs
 			a.songList(c, &st.list, func(page int) { a.loadSearchPage(st, page) },
 				func(i int) {
-					// 双击只播当前这首：搜索结果是临时列表，整页塞进队列会把
-					// 队列换成搜索结果，并让「下一首」继续播搜索页里的歌。
-					a.PL.PlayList([]player.Song{st.songs[i]}, 0)
+					// 搜索结果是临时列表：双击只立即播放这一首，不把整页
+					// 结果塞进队列，原来的播放队列保持不动。
+					a.PL.PlayNow(st.songs[i])
 				})
 		} else {
 			a.playlistGrid(c, st.songlists)

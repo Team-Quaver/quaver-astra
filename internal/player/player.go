@@ -706,6 +706,28 @@ func (p *Player) PlayNextNow(s Song) {
 	p.playFrom(0, true, "")
 }
 
+// PlayNow 立即播放一首歌，同时保留原来的队列。
+//
+// 新歌插在当前曲之后并切过去：当前曲之前的已播记录、之后的待播队列都
+// 不动，只是把「下一首」让给了它。电台会话会先退出，否则播放器只向前
+// 消费电台队列，插进来的歌播完就会被电台续上的歌覆盖。
+func (p *Player) PlayNow(s Song) {
+	p.mu.Lock()
+	p.exitRadioLocked()
+	at := p.index + 1
+	if p.index < 0 {
+		at = len(p.queue)
+	}
+	p.queue = append(p.queue, Song{})
+	copy(p.queue[at+1:], p.queue[at:])
+	p.queue[at] = s
+	p.index = at
+	p.mu.Unlock()
+	p.sessionSaveSoon(true)
+	p.notifyChange()
+	p.playFrom(0, true, "")
+}
+
 // EnqueueMany 追加到队列尾部。
 func (p *Player) EnqueueMany(songs []Song) {
 	p.mu.Lock()
