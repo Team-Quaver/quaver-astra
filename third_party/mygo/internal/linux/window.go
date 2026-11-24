@@ -948,6 +948,23 @@ func (w *window) checkDragStart(event ptr) {
 	gtkWindowBeginMoveDrag(w.win, w.press.button, int32(w.press.rootX), int32(w.press.rootY), w.press.time)
 }
 
+// edgeTakesPointer reports whether a pointer move at a frameless window's
+// edge belongs to the window manager's resize rather than the page.
+//
+// It does while no button is held, so that the edge cursor shows and a
+// press there resizes the window. While a button is held, the press began
+// on the page and owns the pointer: its moves must reach the page even at
+// the very edge, or a slider dragged to a border freezes before its end.
+// GDK's state mask holds the buttons in bits 8 to 12 (GDK_BUTTON1_MASK
+// on).
+func edgeTakesPointer(edge int32, state uint32) bool {
+	if edge < 0 {
+		return false
+	}
+	const buttons = 1<<8 | 1<<9 | 1<<10 | 1<<11 | 1<<12
+	return state&buttons == 0
+}
+
 // GTK gives windows without decorations no resize edges, so the outer
 // pixels of the page resize frameless windows, as in Electron. Those GTK
 // decorates itself (useCSD) resize at its edges, around the page.
@@ -1883,10 +1900,15 @@ func initWindowCallbacks() {
 		if w == nil {
 			return false
 		}
-		edge := w.resizeEdge(event)
-		w.showResizeCursor(edge)
 		w.checkDragStart(event)
-		return edge >= 0
+		// GdkEventMotion: state 48.
+		edge := w.resizeEdge(event)
+		if edgeTakesPointer(edge, field[uint32](event, 48)) {
+			w.showResizeCursor(edge)
+			return true
+		}
+		w.showResizeCursor(-1)
+		return false
 	})
 	// WebKit asks for the data of a drag while it moves over the page,
 	// before the drop; the uri-list of files gives their paths.
