@@ -4,6 +4,7 @@ import (
 	"archive/tar"
 	"archive/zip"
 	"compress/gzip"
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -52,10 +53,11 @@ func (f InstallForm) String() string {
 	}
 }
 
-// SelfUpdatable 报告该形态能否原地升级。
+// SelfUpdatable 报告该形态能否自行升级。系统包由包管理器安装，具体能否
+// 升级还取决于是否识别出了 deb/rpm/pacman 格式。
 func (f InstallForm) SelfUpdatable() bool {
 	switch f {
-	case FormAppImage, FormBinary, FormWindowsZip:
+	case FormAppImage, FormBinary, FormWindowsZip, FormSystemPackage:
 		return true
 	default:
 		return false
@@ -108,6 +110,11 @@ func underSystemPrefix(exe string) bool {
 // Apply 用已下载到 assetPath 的产物原地升级目标可执行文件。该安装形态不
 // 支持原地升级时返回 ErrManualInstall。
 func Apply(form InstallForm, exe, assetPath string, a Asset) error {
+	return ApplyContext(context.Background(), form, exe, assetPath, a)
+}
+
+// ApplyContext 与 Apply 相同，但允许取消系统包管理器的安装过程。
+func ApplyContext(ctx context.Context, form InstallForm, exe, assetPath string, a Asset) error {
 	if exe == "" || assetPath == "" {
 		return errors.New("更新路径为空")
 	}
@@ -126,6 +133,12 @@ func Apply(form InstallForm, exe, assetPath string, a Asset) error {
 		return swapExecutable(assetPath, exe)
 	case FormWindowsZip:
 		return applyWindowsZip(assetPath, exe)
+	case FormSystemPackage:
+		kind := PackageKindFromAsset(a.Name)
+		if kind == PackageNone {
+			kind = PackageKindFromAsset(assetPath)
+		}
+		return installSystemPackage(ctx, assetPath, kind)
 	default:
 		return ErrManualInstall
 	}

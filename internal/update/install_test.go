@@ -5,6 +5,7 @@ import (
 	"archive/zip"
 	"bytes"
 	"compress/gzip"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -123,9 +124,16 @@ func TestApplyWindowsZip(t *testing.T) {
 }
 
 func TestApplyUnsupportedReturnsManual(t *testing.T) {
-	err := Apply(FormSystemPackage, "/usr/bin/quaver-astra", "/tmp/x", Asset{Name: "x.deb"})
+	err := Apply(FormDarwinApp, "/Applications/Quaver Astra.app/Contents/MacOS/quaver-astra", "/tmp/x", Asset{Name: "x.dmg"})
 	if err != ErrManualInstall {
 		t.Fatalf("err = %v, want ErrManualInstall", err)
+	}
+}
+
+func TestApplySystemPackageRejectsUnknownAsset(t *testing.T) {
+	err := Apply(FormSystemPackage, "/usr/bin/quaver-astra", "/tmp/x.tar.gz", Asset{Name: "x.tar.gz"})
+	if err == nil || errors.Is(err, ErrManualInstall) {
+		t.Fatalf("err = %v, want package format error", err)
 	}
 }
 
