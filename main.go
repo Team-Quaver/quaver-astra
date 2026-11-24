@@ -5,6 +5,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"sync/atomic"
 	"time"
 	_ "unsafe"
@@ -96,7 +97,13 @@ func main() {
 			MinWidth:  940,
 			MinHeight: 600,
 			Frameless: true,
-			Hidden:    true,
+			// Linux Wayland 下 GTK 会给无边框窗口套一层 CSD 阴影/边框，
+			// 表现为窗口周围一圈透明、可拖拽缩放的外壳。应用自己绘制
+			// 完整界面，不要这层装饰；DisableShadow 也会让窗口保持
+			// 无边框（仍可从内容边缘缩放）。macOS/Windows 的系统窗口
+			// 阴影与这层 CSD 无关，保留。
+			DisableShadow: runtime.GOOS == "linux",
+			Hidden:        true,
 			// 首帧前不能是一块纯白：Windows 的 DWM/显卡驱动初始化与
 			// macOS 的 Metal drawable 都可能晚于窗口创建。按配置直接
 			// 铺主题底色，系统明暗则跟随 MyGo 的 light-dark 选项。

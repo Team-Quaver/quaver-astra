@@ -156,6 +156,10 @@ func TestUIShots(t *testing.T) {
 		topLoaded: true,
 	}
 	shot(ui.NewTester(homeApp.View, 1280, 1400), "home.png")
+	navTester := ui.NewTester(homeApp.View, 1280, 1400)
+	navTester.Move(1263, 681)
+	navTester.Advance(260 * time.Millisecond)
+	shot(navTester, "home-quick-nav.png")
 
 	// 猜你喜欢：无限电台主舞台。
 	radioBackend := shotRadioBackend{}

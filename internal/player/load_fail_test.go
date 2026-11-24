@@ -255,6 +255,78 @@ func TestLoadLovedPartialPage(t *testing.T) {
 	}
 }
 
+// TestLoadLovedAllPages 大收藏不能在 500 首处截断：完整列表是「播放全部」
+// 的数据源，漏掉任何一页都会让播放队列被拦腰截断。
+func TestLoadLovedAllPages(t *testing.T) {
+	page1 := make([]Song, 500)
+	page2 := make([]Song, 500)
+	page3 := make([]Song, 100)
+	for i := range page1 {
+		page1[i] = Song{Mid: fmt.Sprintf("p1-%d", i), SongID: int64(i + 1), SongType: 1}
+	}
+	for i := range page2 {
+		page2[i] = Song{Mid: fmt.Sprintf("p2-%d", i), SongID: int64(i + 501), SongType: 1}
+	}
+	for i := range page3 {
+		page3[i] = Song{Mid: fmt.Sprintf("p3-%d", i), SongID: int64(i + 1001), SongType: 1}
+	}
+	stub := &likedStub{
+		pages: map[int][]Song{1: page1, 2: page2, 3: page3},
+	}
+	p := New(stub, &fakeEngine{}, fakePrefs{})
+	p.OnNotify(func() {})
+
+	p.LoadLoved()
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) && !p.IsLoved("p3-0") {
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	liked := p.LikedCache()
+	if len(liked) != 1100 {
+		t.Fatalf("LikedCache 长度 = %d，应拉齐全部 1100 首", len(liked))
+	}
+	if liked[499].Mid != "p1-499" || liked[500].Mid != "p2-0" || liked[1000].Mid != "p3-0" {
+		t.Fatalf("跨页顺序不对：%q, %q, %q", liked[499].Mid, liked[500].Mid, liked[1000].Mid)
+	}
+	if !p.IsLoved("p2-0") || !p.IsLoved("p3-0") {
+		t.Fatal("红心集合也应包含后续页")
+	}
+	if n := p.LikedTotal(); n != 1100 {
+		t.Fatalf("总数 = %d，应为 1100", n)
+	}
+}
+
+// TestLoadLovedLaterPageFailure 后半程失败时保留已拿到的前缀，而不是整轮丢弃。
+func TestLoadLovedLaterPageFailure(t *testing.T) {
+	stub := &likedStub{
+		pages: map[int][]Song{
+			1: {{Mid: "l1", SongID: 11, SongType: 1}, {Mid: "l2", SongID: 12, SongType: 1}},
+			2: {{Mid: "l3", SongID: 13, SongType: 1}},
+			3: {{Mid: "l4", SongID: 14, SongType: 1}},
+		},
+		fail: map[int]int{3: 99},
+	}
+	p := New(stub, &fakeEngine{}, fakePrefs{})
+	p.OnNotify(func() {})
+
+	p.LoadLoved()
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) && !p.IsLoved("l3") {
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	if got := p.LikedCache(); len(got) != 3 {
+		t.Fatalf("第 3 页失败后应保留前两页 3 首，实际 %d 首", len(got))
+	}
+	if p.IsLoved("l4") {
+		t.Error("第 3 页没拉到，不该有 l4")
+	}
+	if n := p.LikedTotal(); n != 4 {
+		t.Fatalf("总数应保留后端报的 4，实际 %d", n)
+	}
+}
+
 // TestLoadLovedKeepsOldOnTotalFailure 第 1 页重试后仍失败时保留上一次的结果，
 // 成功过一次之后再次全失败也不该把红心清空。
 func TestLoadLovedKeepsOldOnTotalFailure(t *testing.T) {

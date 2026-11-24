@@ -130,6 +130,46 @@ func TestPlaylistGridIncompleteRowKeepsCardWidth(t *testing.T) {
 	}
 }
 
+// TestPlaylistGridCardWidthFillsRow：宽窗口不能只按最小卡宽排完就收工，
+// 否则右侧会留下接近一整张卡的空洞。列数不变，余量均分给每张卡。
+func TestPlaylistGridCardWidthFillsRow(t *testing.T) {
+	for _, width := range []float32{932, 1092, 1144, 1452, 2048} {
+		cardWidth := playlistGridCardWidth(width)
+		cols := int((width + playlistGridGapX) / (playlistCardWidth + playlistGridGapX))
+		filled := float32(cols)*cardWidth + float32(cols-1)*playlistGridGapX
+		if math.Abs(float64(filled-width)) > 1e-3 {
+			t.Errorf("宽度 %.1f 下排满后为 %.1f，未铺满整行", width, filled)
+		}
+		if cardWidth < playlistCardWidth-1e-3 {
+			t.Errorf("宽度 %.1f 下卡宽 %.1f 小于最小值 %d", width, cardWidth, playlistCardWidth)
+		}
+	}
+}
+
+// TestPlaylistGridWideWindowFillsRow：整行最后一张卡的右缘要贴到内容区
+// 右缘，而不是停在旧固定卡宽算出的位置。
+func TestPlaylistGridWideWindowFillsRow(t *testing.T) {
+	app := loggedApp(t)
+	const windowWidth = 1500
+	titles := []string{
+		"宽屏 01", "宽屏 02", "宽屏 03", "宽屏 04", "宽屏 05", "宽屏 06",
+		"宽屏 07", "宽屏 08",
+	}
+	lists := make([]backend.SonglistSummary, len(titles))
+	for i, title := range titles {
+		lists[i] = backend.SonglistSummary{ID: int64(i + 1), Title: title}
+	}
+	app.favLists = favListsState{loaded: true, lists: lists, total: int64(len(lists))}
+	tester := ui.NewTester(app.favListsView, windowWidth, 800)
+
+	last := mustFind(t, tester, titles[6])
+	const pagePad = 24.0
+	wantRight := float32(windowWidth) - pagePad
+	if got := last.X + last.W; math.Abs(float64(got-wantRight)) > 0.5 {
+		t.Errorf("首行最后一张卡右缘 %.1f，应贴住内容区右缘 %.1f", got, wantRight)
+	}
+}
+
 func TestHomeExtendedSections(t *testing.T) {
 	app := loggedApp(t)
 	app.Router = ui.NewRouter("/")

@@ -176,6 +176,9 @@ func (a *App) barTrack(c *ui.Context, t *ui.Theme, cur player.Song, hasCur bool)
 			a.npMoreOpen = false
 			a.npQInfoOpen = false
 		}
+		if hasCur {
+			info.ContextMenu(func(m *ui.Menu) { a.barTrackMenu(m, cur) })
+		}
 		hits = append(hits, info)
 		if hasCur && cur.CloudFileID == "" {
 			hits = append(hits, a.loveBtn(c, cur, hasCur, t))
@@ -184,6 +187,41 @@ func (a *App) barTrack(c *ui.Context, t *ui.Theme, cur player.Song, hasCur bool)
 		}
 	})
 	return hits
+}
+
+// barTrackMenu 是播放条歌曲信息区的右键菜单：跳转歌手 / 跳转专辑 / 同名搜索。
+// 跳转前走 npJump，正在播放页开着时先收起，否则换了路由仍被整页浮层盖住。
+// 多歌手时「跳转歌手」收进子菜单，避免菜单被三四个歌手名撑长。
+func (a *App) barTrackMenu(m *ui.Menu, cur player.Song) {
+	singers := singersWithMid(cur)
+	switch len(singers) {
+	case 0:
+		m.Item("跳转歌手").Disabled(true)
+	case 1:
+		g := singers[0]
+		if m.Item("跳转歌手").Chosen() {
+			a.npJump(singerJumpRoute(g))
+		}
+	default:
+		m.Submenu("跳转歌手", func(m *ui.Menu) {
+			for _, g := range singers {
+				g := g
+				if m.Item(g.Name).Chosen() {
+					a.npJump(singerJumpRoute(g))
+				}
+			}
+		})
+	}
+
+	album, hasAlbum := albumJumpRoute(cur)
+	if m.Item("跳转专辑").Disabled(!hasAlbum).Chosen() {
+		a.npJump(album)
+	}
+
+	search, hasSearch := sameNameSearchRoute(cur)
+	if m.Item("同名搜索").Disabled(!hasSearch).Chosen() {
+		a.npJump(search)
+	}
 }
 
 // barTransport keeps the five transport controls together above the time.
@@ -258,6 +296,11 @@ func (a *App) barSeekInput(ev ui.InputEvent, bar ui.Rect, hits barHits) bool {
 			return false
 		}
 		a.seekDragging = false
+		if ev.Canceled {
+			// 系统收走了这次按压（窗口失焦、抓取被打断），这不是一次
+			// 完成的拖动：不提交预览值，进度回到播放器自己的位置。
+			return true
+		}
 		a.seekFrac = seekFracAt(ev.X, width)
 		if a.PL.Duration() > 0 {
 			a.PL.SeekTo(float64(a.seekFrac))

@@ -383,10 +383,14 @@ type SurfaceEvent struct {
 	Button int
 	Clicks int
 	// DX and DY are scroll distances in DIPs; Precise marks touchpads and
-	// other devices that scroll by pixels rather than by lines. Momentum
-	// marks scrolling that continues after the fingers leave a touchpad.
+	// other devices that scroll by pixels rather than by lines. Wheel
+	// marks a mouse wheel's, a high-resolution one's smooth events too:
+	// a scroll container glides them, as it does a wheel's notches, where
+	// a touchpad's precise ones follow the fingers. Momentum marks
+	// scrolling that continues after the fingers leave a touchpad.
 	DX, DY   float64
 	Precise  bool
+	Wheel    bool
 	Momentum bool
 	// Scale is PointerZoom's.
 	Scale float64

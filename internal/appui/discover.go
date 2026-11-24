@@ -210,17 +210,23 @@ func (a *App) loadToplistPage(st *toplistState, id int64, page int) {
 
 // toplistGrid 与歌单网格同宽同节奏，只是落地页换成榜单详情。
 func (a *App) toplistGrid(c *ui.Context, lists []backend.ToplistSummary) {
-	ui.Row(c).FillWidth().Wrap().GapX(18).GapY(24).AlignItems(ui.Start).Children(func() {
+	a.toplistGridWidth(c, contentWidth(c, 24), lists)
+}
+
+// toplistGridWidth 按页面内容区宽度排榜单卡片，和歌单网格共用卡宽算法。
+func (a *App) toplistGridWidth(c *ui.Context, width float32, lists []backend.ToplistSummary) {
+	cardWidth := playlistGridCardWidth(width)
+	ui.Row(c).FillWidth().Wrap().GapX(playlistGridGapX).GapY(24).AlignItems(ui.Start).Children(func() {
 		for i := range lists {
-			a.toplistCard(c, lists[i])
+			a.toplistCard(c, cardWidth, lists[i])
 		}
 	})
 }
 
-func (a *App) toplistCard(c *ui.Context, pl backend.ToplistSummary) {
+func (a *App) toplistCard(c *ui.Context, width float32, pl backend.ToplistSummary) {
 	t := c.Theme()
 	art := a.Covers.Get(pl.Picurl, a.invalidate)
-	card := ui.Column(c).Width(playlistCardWidth).Shrink(0).Gap(7).Label(pl.Title)
+	card := ui.Column(c).Width(width).Shrink(0).Gap(7).Label(pl.Title)
 	card.Children(func() {
 		box := ui.Box(c).FillWidth().AspectRatio(1).Clip().Radius(10).Background(t.SurfaceHover).
 			Transition(hoverFade)

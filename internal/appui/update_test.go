@@ -59,8 +59,8 @@ func TestSettingsUpdateShowsWindowEntry(t *testing.T) {
 	}
 }
 
-// TestSettingsUpdateSystemPackageOpensRelease 断言系统包安装形态下只提供
-// 发行页入口，不做原地替换。
+// TestSettingsUpdateSystemPackageOpensRelease 断言无法识别包格式的系统包
+// 安装形态仍回落到发行页入口。
 func TestSettingsUpdateSystemPackageOpensRelease(t *testing.T) {
 	app, tester := testApp(t)
 	app.settings.tab = aboutTab
@@ -71,6 +71,30 @@ func TestSettingsUpdateSystemPackageOpensRelease(t *testing.T) {
 	}
 	if tester.HasText("查看更新") {
 		t.Fatalf("system package must not offer the in-place updater window")
+	}
+}
+
+// TestSettingsUpdateSystemPackageUsesManager 断言识别出 deb 的系统包可以
+// 通过更新窗口交给包管理器安装。
+func TestSettingsUpdateSystemPackageUsesManager(t *testing.T) {
+	app, tester := testApp(t)
+	app.settings.tab = aboutTab
+	app.Version = "1.4.0"
+	app.upd = updateState{
+		form:      update.FormSystemPackage,
+		pkg:       update.PackageDeb,
+		available: "1.5.0",
+		lastCheck: time.Now(),
+	}
+	tester.Frame()
+	if !tester.HasText("查看更新") {
+		t.Fatalf("deb system package should offer the updater window; texts=%v", tester.Texts())
+	}
+	if tester.HasText("打开发行页") {
+		t.Fatalf("recognized system package should not fall back to release page")
+	}
+	if !tester.HasText("apt / oma") {
+		t.Fatalf("about page should name the package manager; texts=%v", tester.Texts())
 	}
 }
 

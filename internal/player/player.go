@@ -20,8 +20,12 @@ type Player struct {
 	eng  Engine
 	conf Preferences
 
-	queue     []Song
-	index     int
+	queue []Song
+	index int
+	// navDir 是最近一次换曲的语义方向：+1 下一首，-1 上一首，0 无方向
+	// （整队替换、恢复会话等）。界面用它决定封面蒙版从哪一边擦入，
+	// 不能只看下标差：随机播放、列表回绕时下标的方向与听感并不一致。
+	navDir    int
 	mode      string // off | all | one
 	shuf      bool
 	shufOrder []int
@@ -249,6 +253,13 @@ type startVolumeSetter interface {
 	SetStartVolume(v float64)
 }
 
+// ratePolicySetter 是 Liino 原生引擎的可选能力：跟随源采样率 / 切换设备
+// 时钟。mpv 子进程没有这两个开关，设置页只会在 Liino 模式展示它们。
+type ratePolicySetter interface {
+	SetAdaptiveRate(on bool)
+	SetSwitchDeviceRate(on bool)
+}
+
 // versionReporter 是引擎的可选版本自报；设置页用它展示引擎版本。
 type versionReporter interface {
 	Version() string
@@ -377,14 +388,14 @@ func (p *Player) Playlists() []PlaylistRef {
 // 未就绪、网络抖一下这一小段，不做无限重试。（var 而非 const：测试要压缩等待。）
 var likedRetryDelay = 2 * time.Second
 
-// LoadLoved 分页拉取我喜欢（最多 2 页 × 500）。
+// LoadLoved 分页拉取我喜欢。
 //
 // 这份集合决定每一行画空心还是实心红心，所以原则是「拿到多少落多少、落不下
 // 就什么都不动」：
 //   - 第 1 页失败：隔 likedRetryDelay 重试一次（冷启动时后端可能还没就绪、
 //     网络抖一下），仍失败就整份保留上一次的结果。拿空集去覆盖，满屏红心会
 //     一起消失，看起来就像「收藏渲染不出来」。
-//   - 第 2 页失败：把手里的第 1 页照样落地。少几首红心远好于所有红心都不显示。
+//   - 后半程失败：把已经拿到的页照样落地。少几首红心远好于所有红心都不显示。
 func (p *Player) LoadLoved() {
 	p.mu.Lock()
 	p.likedSeq++
@@ -393,9 +404,9 @@ func (p *Player) LoadLoved() {
 
 	go func() {
 		all := map[string]struct{}{}
-		var first []Song
+		liked := []Song{}
 		total := int64(0)
-		for page := 1; page <= 2; page++ {
+		for page := 1; ; page++ {
 			songs, tot, hasmore, err := p.api.LikedPage(page, 500)
 			if err != nil && page == 1 && p.likedFresh(seq) {
 				time.Sleep(likedRetryDelay)
@@ -405,17 +416,18 @@ func (p *Player) LoadLoved() {
 				if page == 1 {
 					return // 一首都没拿到：什么都不改
 				}
-				break // 第 2 页没拿到：已有的部分照样落地
+				break // 后半程没拉到：已有的部分照样落地
 			}
 			if !p.likedFresh(seq) {
 				return // 已经有更新的一轮在跑，这轮的结论作废
 			}
 			total = tot
-			if page == 1 {
-				first = songs
-			}
+			liked = append(liked, songs...)
 			for _, s := range songs {
 				all[s.Mid] = struct{}{}
+			}
+			if len(songs) == 0 {
+				break
 			}
 			if !hasmore {
 				break
@@ -427,7 +439,7 @@ func (p *Player) LoadLoved() {
 			return
 		}
 		p.loved = all
-		p.likedCache = first
+		p.likedCache = liked
 		p.likedTotal = total
 		p.mu.Unlock()
 		p.notifyChange()
@@ -508,6 +520,14 @@ func (p *Player) Index() int {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 	return p.index
+}
+
+// NavDirection 返回最近一次换曲的语义方向：+1 下一首，-1 上一首，
+// 0 表示没有可继承的方向（整队替换、恢复会话等）。
+func (p *Player) NavDirection() int {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.navDir
 }
 
 func (p *Player) Current() (Song, bool) {
@@ -632,6 +652,7 @@ func (p *Player) PlayList(songs []Song, i int) {
 		i = 0
 	}
 	p.index = i
+	p.navDir = 0
 	p.shufOrder = nil
 	p.mu.Unlock()
 	p.sessionSaveSoon(true)
@@ -645,6 +666,14 @@ func (p *Player) Jump(i int) {
 	if i < 0 || i >= len(p.queue) {
 		p.mu.Unlock()
 		return
+	}
+	switch {
+	case i > p.index:
+		p.navDir = 1
+	case i < p.index:
+		p.navDir = -1
+	default:
+		p.navDir = 0
 	}
 	p.index = i
 	p.mu.Unlock()
@@ -692,6 +721,30 @@ func (p *Player) PlayNextNow(s Song) {
 	copy(p.queue[at+1:], p.queue[at:])
 	p.queue[at] = s
 	p.index = at
+	p.navDir = 1
+	p.mu.Unlock()
+	p.sessionSaveSoon(true)
+	p.notifyChange()
+	p.playFrom(0, true, "")
+}
+
+// PlayNow 立即播放一首歌，同时保留原来的队列。
+//
+// 新歌插在当前曲之后并切过去：当前曲之前的已播记录、之后的待播队列都
+// 不动，只是把「下一首」让给了它。电台会话会先退出，否则播放器只向前
+// 消费电台队列，插进来的歌播完就会被电台续上的歌覆盖。
+func (p *Player) PlayNow(s Song) {
+	p.mu.Lock()
+	p.exitRadioLocked()
+	at := p.index + 1
+	if p.index < 0 {
+		at = len(p.queue)
+	}
+	p.queue = append(p.queue, Song{})
+	copy(p.queue[at+1:], p.queue[at:])
+	p.queue[at] = s
+	p.index = at
+	p.navDir = 1
 	p.mu.Unlock()
 	p.sessionSaveSoon(true)
 	p.notifyChange()
@@ -719,6 +772,7 @@ func (p *Player) RemoveAt(i int) {
 	wasCurrent := i == p.index
 	p.queue = append(p.queue[:i], p.queue[i+1:]...)
 	if wasCurrent {
+		p.navDir = 1
 		if p.index >= len(p.queue) {
 			p.index = len(p.queue) - 1
 		}
@@ -1190,6 +1244,7 @@ func (p *Player) Next(auto bool) {
 		}
 		next := p.index + 1
 		p.index = next
+		p.navDir = 1
 		p.mu.Unlock()
 		p.sessionSaveSoon(true)
 		p.notifyChange()
@@ -1205,6 +1260,7 @@ func (p *Player) Next(auto bool) {
 		return
 	}
 	p.index = next
+	p.navDir = 1
 	p.mu.Unlock()
 	p.sessionSaveSoon(true)
 	p.notifyChange()
@@ -1230,6 +1286,7 @@ func (p *Player) Prev() {
 		return
 	}
 	p.index = prev
+	p.navDir = -1
 	p.mu.Unlock()
 	p.sessionSaveSoon(true)
 	p.notifyChange()
@@ -1282,6 +1339,18 @@ func (p *Player) SetEngine(e Engine) {
 	p.notifyChange()
 	if has && wasPlaying {
 		p.playFrom(pos, true, "")
+	}
+}
+
+// SetRatePolicy 把采样率策略交给当前音频后端。Liino 只在下一次 Open 时
+// 生效，所以切歌不会中断当前曲目；当前后端不支持该能力时静默忽略。
+func (p *Player) SetRatePolicy(adaptive, switchDevice bool) {
+	p.mu.RLock()
+	e := p.eng
+	p.mu.RUnlock()
+	if s, ok := e.(ratePolicySetter); ok {
+		s.SetAdaptiveRate(adaptive)
+		s.SetSwitchDeviceRate(switchDevice)
 	}
 }
 
@@ -2067,6 +2136,7 @@ func (p *Player) failWithErr(seq uint64, err error) {
 	if next >= 0 {
 		p.mu.Lock()
 		p.index = next
+		p.navDir = 1
 		p.mu.Unlock()
 		// 注意：这里不能用 playFrom——连跳计数是这条链自己的刹车，
 		// 每次自动重试都清零的话，上限就永远不会生效了。

@@ -27,6 +27,12 @@ type homeState struct {
 	loading bool
 	err     string
 
+	// 首页滚动位置与右侧快捷跳转的展开/激活态。
+	scroll    ui.ScrollState
+	navShown  bool
+	navHideAt time.Time
+	navActive int
+
 	recs    []backend.SonglistSummary
 	newsong []player.Song
 	newsErr string
@@ -49,19 +55,35 @@ func (a *App) homeView(c *ui.Context) {
 	st := &a.home
 	a.ensureHome()
 
-	a.pageEnter(c, ui.Scroll(c).Fill().Padding(24, 28, 30, 28).Gap(28)).Children(func() {
-		a.homeHeader(c)
+	root := a.pageEnter(c, ui.Box(c).Fill())
+	var items []homeNavItem
+	root.Children(func() {
+		ui.Scroll(c).Fill().Padding(24, 28, 30, 28).Gap(28).
+			TrackScroll(&st.scroll).Children(func() {
+			a.homeHeader(c)
 
-		// 快速开始 + 新歌速递。宽屏双栏，窄屏自动换行。
-		lead := ui.Row(c).FillWidth().Wrap().GapX(18).GapY(18).AlignItems(ui.Stretch)
-		lead.Children(func() {
-			a.homeRadioCard(c, st)
-			a.homeNewSongs(c, st)
+			// 无限电台 + 新歌速递。宽屏双栏，窄屏自动换行。
+			var radio, news ui.Element
+			lead := ui.Row(c).FillWidth().Wrap().GapX(18).GapY(18).AlignItems(ui.Stretch)
+			lead.Children(func() {
+				radio = a.homeRadioCard(c)
+				news = a.homeNewSongs(c, st)
+			})
+
+			recs := a.homeRecommendations(c, st)
+			ai := a.homeAI(c, st)
+			tops := a.homeToplists(c, st)
+
+			items = []homeNavItem{
+				{label: "无限电台", anchor: radio, top: true},
+				{label: "新歌速递", anchor: news},
+				{label: "推荐歌单", anchor: recs},
+				{label: "AI 歌单", anchor: ai},
+				{label: "排行榜", anchor: tops},
+			}
 		})
 
-		a.homeRecommendations(c, st)
-		a.homeAI(c, st)
-		a.homeToplists(c, st)
+		a.homeQuickNav(c, items, a.homeActiveSection(items))
 	})
 }
 
@@ -82,12 +104,6 @@ func (a *App) homeHeader(c *ui.Context) {
 
 	ui.Row(c).FillWidth().AlignItems(ui.End).Gap(18).Children(func() {
 		ui.Column(c).Grow(1).Gap(5).Children(func() {
-			ui.Row(c).AlignItems(ui.Center).Gap(10).Children(func() {
-				ui.Text(c, "ASTRA / SIGNAL DESK").Font("monospace").FontSize(fz(9.5)).
-					FontWeight(700).TextColor(t.Accent)
-				ui.Box(c).Width(24).Height(1).Background(t.Accent.Alpha(0.55))
-				ui.Text(c, "从今天的推荐开始").FontSize(fz(10.5)).TextColor(t.TextMuted)
-			})
 			ui.Text(c, greeting).FontSize(fz(30)).FontWeight(800).SingleLine().Ellipsis("…")
 		})
 		ui.Column(c).AlignItems(ui.End).Gap(1).Children(func() {
@@ -117,15 +133,13 @@ func homeGreeting(h int) string {
 // homeRadioCard 是首页的无限电台入口：未开始时负责开台，播放中则直接
 // 展示当前曲并给出播放/暂停、下一首、收藏。进入详情页只恢复主舞台，
 // 不会打断队列——这正是电台的「退出页面保留」语义。
-func (a *App) homeRadioCard(c *ui.Context, st *homeState) {
+func (a *App) homeRadioCard(c *ui.Context) ui.Element {
 	cur, hasCur := a.PL.Current()
 	active := a.PL.RadioActive()
 	busy := a.PL.RadioLoading()
 	artURL := ""
 	if active && hasCur {
 		artURL = a.songCoverURL(cur, 300)
-	} else if len(st.recs) > 0 {
-		artURL = st.recs[0].Picurl
 	}
 	art := a.Covers.Get(artURL, a.invalidate)
 
@@ -154,8 +168,6 @@ func (a *App) homeRadioCard(c *ui.Context, st *homeState) {
 			ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(6).Children(func() {
 				ui.Text(c, "∞").FontSize(fz(16)).FontWeight(800).TextColor(ui.Hex("#19c2d8"))
 				ui.Text(c, "无限电台").FontSize(fz(11.5)).FontWeight(700).TextColor(ui.Hex("#19c2d8"))
-				ui.Text(c, "PICKED FOR YOU").Font("monospace").FontSize(fz(9)).
-					TextColor(heroMuted)
 				ui.Spacer(c)
 				if active && busy {
 					ui.Text(c, "正在续歌…").FontSize(fz(10.5)).TextColor(heroMuted)
@@ -219,6 +231,8 @@ func (a *App) homeRadioCard(c *ui.Context, st *homeState) {
 			box.Children(func() {
 				if art != nil {
 					ui.Image(c, art).Fill().Fit(ui.Cover)
+				} else if !active {
+					a.radioIdleCover(c, fz(58))
 				} else {
 					ui.Box(c).Fill().Center().Children(func() {
 						ui.Text(c, "∞").FontSize(fz(64)).FontWeight(800).TextColor(ui.Hex("#19c2d8"))
@@ -233,9 +247,36 @@ func (a *App) homeRadioCard(c *ui.Context, st *homeState) {
 				FontSize(fz(9)).FontWeight(700).TextColor(heroMuted)
 		})
 	})
+	return card
 }
 
-func (a *App) homeNewSongs(c *ui.Context, st *homeState) {
+// radioIdleCover fills the radio sleeve while it is off air: the theme accent
+// glows from the middle into the theme's black (dark) or white (light) ground.
+// The infinity mark is a vector icon, not a font glyph, so it stays crisp and
+// matches the navigation icon. On air, the current track's cover takes over.
+func (a *App) radioIdleCover(c *ui.Context, iconSize float32) ui.Element {
+	t := c.Theme()
+	ground := ui.Hex("#f7f1e4")
+	if a.appearance(c) {
+		ground = ui.Hex("#080b09")
+	}
+	sleeve := ui.Box(c).Fill().Center().Label("无限电台封面")
+	sleeve.RadialGradient(ui.RadialGradient{
+		Stops: []ui.GradientStop{
+			{Color: t.Accent, At: 0},
+			{Color: t.Accent.Mix(ground, 0.55), At: 0.5},
+			{Color: ground, At: 1},
+		},
+		Oklab: true,
+	})
+	sleeve.Children(func() {
+		ui.Icon(c, Icons["guess"]).FontSize(iconSize).TextColor(t.AccentText).
+			AlignSelf(ui.Center)
+	})
+	return sleeve
+}
+
+func (a *App) homeNewSongs(c *ui.Context, st *homeState) ui.Element {
 	t := c.Theme()
 	panel := ui.Column(c).Grow(1).Basis(370).MinWidth(340).Height(236).
 		Padding(14).Radius(16).Background(t.Surface).Border(1, t.Border)
@@ -243,8 +284,6 @@ func (a *App) homeNewSongs(c *ui.Context, st *homeState) {
 		ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(8).Children(func() {
 			ui.Column(c).Grow(1).Gap(0).Children(func() {
 				ui.Text(c, "新歌速递").FontSize(fz(15)).FontWeight(800)
-				ui.Text(c, "NEW RELEASES / DAILY").Font("monospace").FontSize(fz(8.5)).
-					TextColor(t.TextMuted)
 			})
 			if len(st.newsong) > 0 {
 				linkButton(c, "播放全部", func() { a.playListNow(st.newsong, 0) })
@@ -269,6 +308,7 @@ func (a *App) homeNewSongs(c *ui.Context, st *homeState) {
 			a.compactSongRow(c, st.newsong, i)
 		}
 	})
+	return panel
 }
 
 // heroBtn is the in-hero action style: one warm paper button, the rest
@@ -294,17 +334,16 @@ func heroBtn(c *ui.Context, label string, primary bool, ink, ground, line ui.Col
 	}
 }
 
-func (a *App) homeRecommendations(c *ui.Context, st *homeState) {
+func (a *App) homeRecommendations(c *ui.Context, st *homeState) ui.Element {
 	if st.loading && len(st.recs) == 0 {
-		ui.Column(c).FillWidth().Gap(10).Children(func() {
+		return ui.Column(c).FillWidth().Gap(10).Children(func() {
 			sectionHeader(c, "推荐歌单", nil)
 			ui.Row(c).FillWidth().Center().Padding(28).Children(func() { ui.Spinner(c) })
 		})
-		return
 	}
 	if len(st.recs) == 0 {
 		if st.err != "" {
-			ui.Column(c).FillWidth().Gap(10).Children(func() {
+			return ui.Column(c).FillWidth().Gap(10).Children(func() {
 				sectionHeader(c, "推荐歌单", nil)
 				ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(10).Children(func() {
 					ui.Text(c, st.err).FontSize(fz(12.5)).TextColor(c.Theme().TextMuted).Grow(1)
@@ -312,32 +351,31 @@ func (a *App) homeRecommendations(c *ui.Context, st *homeState) {
 				})
 			})
 		}
-		return
+		return ui.Element{}
 	}
-	ui.Column(c).FillWidth().Gap(12).Children(func() {
+	return ui.Column(c).FillWidth().Gap(12).Children(func() {
 		sectionHeader(c, "推荐歌单", func() {
 			linkButton(c, "刷新", func() {
 				st.loaded, st.loading = false, false
 			})
 		})
-		a.playlistGrid(c, st.recs)
+		a.playlistGridWidth(c, contentWidth(c, homePagePad), st.recs)
 	})
 }
 
-func (a *App) homeAI(c *ui.Context, st *homeState) {
+func (a *App) homeAI(c *ui.Context, st *homeState) ui.Element {
 	if st.aiErr != "" {
-		ui.Column(c).FillWidth().Gap(10).Children(func() {
+		return ui.Column(c).FillWidth().Gap(10).Children(func() {
 			sectionHeader(c, "AI 歌单", func() {
 				linkButton(c, "重试", func() { a.loadHomeAI(1) })
 			})
 			ui.Text(c, st.aiErr).FontSize(fz(12.5)).TextColor(c.Theme().TextMuted)
 		})
-		return
 	}
 	if !st.aiLoaded && !st.aiBusy {
-		return
+		return ui.Element{}
 	}
-	ui.Column(c).FillWidth().Gap(12).Children(func() {
+	return ui.Column(c).FillWidth().Gap(12).Children(func() {
 		sectionHeader(c, "AI 歌单", func() {
 			label := "换一批"
 			if st.aiBusy {
@@ -361,13 +399,13 @@ func (a *App) homeAI(c *ui.Context, st *homeState) {
 			ui.Text(c, "AI 暂时没有生成内容").FontSize(fz(12.5)).TextColor(c.Theme().TextMuted).Padding(16)
 			return
 		}
-		a.playlistGrid(c, st.ai)
+		a.playlistGridWidth(c, contentWidth(c, homePagePad), st.ai)
 	})
 }
 
-func (a *App) homeToplists(c *ui.Context, st *homeState) {
+func (a *App) homeToplists(c *ui.Context, st *homeState) ui.Element {
 	if st.topErr != "" {
-		ui.Column(c).FillWidth().Gap(10).Children(func() {
+		return ui.Column(c).FillWidth().Gap(10).Children(func() {
 			sectionHeader(c, "排行榜", func() {
 				linkButton(c, "重试", func() {
 					st.topErr = ""
@@ -376,22 +414,20 @@ func (a *App) homeToplists(c *ui.Context, st *homeState) {
 			})
 			ui.Text(c, st.topErr).FontSize(fz(12.5)).TextColor(c.Theme().TextMuted)
 		})
-		return
 	}
 	if st.topBusy && len(st.topGroups) == 0 {
-		ui.Column(c).FillWidth().Gap(10).Children(func() {
+		return ui.Column(c).FillWidth().Gap(10).Children(func() {
 			sectionHeader(c, "排行榜", nil)
 			ui.Row(c).FillWidth().Center().Padding(28).Children(func() { ui.Spinner(c) })
 		})
-		return
 	}
 	if len(st.topGroups) == 0 {
-		return
+		return ui.Element{}
 	}
 	if st.topGroup < 0 || st.topGroup >= len(st.topGroups) {
 		st.topGroup = 0
 	}
-	ui.Column(c).FillWidth().Gap(12).Children(func() {
+	return ui.Column(c).FillWidth().Gap(12).Children(func() {
 		sectionHeader(c, "排行榜", func() {
 			ui.Row(c).Wrap().Gap(6).Children(func() {
 				for i, g := range st.topGroups {
@@ -415,7 +451,7 @@ func (a *App) homeToplists(c *ui.Context, st *homeState) {
 				}
 			})
 		})
-		a.toplistGrid(c, st.topGroups[st.topGroup].Toplists)
+		a.toplistGridWidth(c, contentWidth(c, homePagePad), st.topGroups[st.topGroup].Toplists)
 	})
 }
 
@@ -577,30 +613,64 @@ func (a *App) openPlaylistAndPlay(id int64) {
 	}()
 }
 
+// homePagePad 是首页内容区的左右内边距。
+const homePagePad = 28
+
+// contentWidth 返回页面内容区在左右内边距之内可用的宽度。
+func contentWidth(c *ui.Context, pad float32) float32 {
+	w, _ := c.Size()
+	return w - 2*pad
+}
+
 // playlistGrid 是歌单卡片的自适应换行网格。
 //
-// 卡片宽度统一由 playlistCardWidth 决定，末行数量不足时也不会被 flex 拉宽；
-// 标题区与元信息区固定高度，一/两行标题都不会把同排卡片的后续内容顶歪。
+// 列数只由最小卡宽决定，卡宽再按整行铺满的结果统一放大；末行数量不足时
+// 仍沿用同一宽度，不会被 flex 拉宽。标题区与元信息区固定高度，一/两行
+// 标题都不会把同排卡片的后续内容顶歪。
 func (a *App) playlistGrid(c *ui.Context, lists []backend.SonglistSummary, cardMenu ...func(m *ui.Menu, pl backend.SonglistSummary)) {
-	ui.Row(c).FillWidth().Wrap().GapX(18).GapY(24).AlignItems(ui.Start).Children(func() {
+	a.playlistGridWidth(c, contentWidth(c, 24), lists, cardMenu...)
+}
+
+// playlistGridWidth 按调用方页面内容区的实际宽度排歌单卡片。
+func (a *App) playlistGridWidth(c *ui.Context, width float32, lists []backend.SonglistSummary, cardMenu ...func(m *ui.Menu, pl backend.SonglistSummary)) {
+	cardWidth := playlistGridCardWidth(width)
+	ui.Row(c).FillWidth().Wrap().GapX(playlistGridGapX).GapY(24).AlignItems(ui.Start).Children(func() {
 		for i := range lists {
-			a.playlistCard(c, lists[i], cardMenu...)
+			a.playlistCard(c, cardWidth, lists[i], cardMenu...)
 		}
 	})
 }
 
-// playlistCardWidth 是歌单卡片的统一宽度。
+// playlistCardWidth 是歌单卡片的最小宽度，也是决定列数的基准。
 //
 // 网格卡片必须跨行保持同宽；如果让最后一行继续 Grow，末行只有两三张时
-// 会把卡片拉宽，看起来就像“后面几张突然变大”。
+// 会把卡片拉宽，看起来就像“后面几张突然变大”。因此这里只用来定列数，
+// 实际卡宽由 playlistGridCardWidth 在整行内均分剩余空间得到。
 const playlistCardWidth = 172
+
+const playlistGridGapX = 18
+
+// playlistGridCardWidth 返回在 width 内铺满一整行的统一卡宽。
+//
+// 列数与固定卡宽换行时相同，余下的宽度均分给每一列，所以宽窗口不会再在
+// 右侧留下接近一张卡的空洞；所有行（包括末行）都只使用这一个宽度。
+func playlistGridCardWidth(width float32) float32 {
+	if width <= 0 {
+		return playlistCardWidth
+	}
+	cols := int((width + playlistGridGapX) / (playlistCardWidth + playlistGridGapX))
+	if cols < 1 {
+		cols = 1
+	}
+	return (width - float32(cols-1)*playlistGridGapX) / float32(cols)
+}
 
 // playlistCard 歌单卡片：封面 1:1，文字区占高固定，所有行使用同一宽度。
 // cardMenu 让调用方给卡片追加右键菜单（如收藏页的「取消收藏」）。
-func (a *App) playlistCard(c *ui.Context, pl backend.SonglistSummary, cardMenu ...func(m *ui.Menu, pl backend.SonglistSummary)) {
+func (a *App) playlistCard(c *ui.Context, width float32, pl backend.SonglistSummary, cardMenu ...func(m *ui.Menu, pl backend.SonglistSummary)) {
 	t := c.Theme()
 	art := a.Covers.Get(pl.Picurl, a.invalidate)
-	card := ui.Column(c).Width(playlistCardWidth).Shrink(0).Gap(7).Label(pl.Title)
+	card := ui.Column(c).Width(width).Shrink(0).Gap(7).Label(pl.Title)
 	card.Children(func() {
 		box := ui.Box(c).FillWidth().AspectRatio(1).Clip().Radius(10).Background(t.SurfaceHover).
 			Transition(hoverFade)
@@ -769,6 +839,8 @@ func (a *App) guessView(c *ui.Context) {
 			cover.Children(func() {
 				if art != nil {
 					ui.Image(c, art).Fill().Fit(ui.Cover)
+				} else if !active {
+					a.radioIdleCover(c, fz(92))
 				} else {
 					ui.Box(c).Fill().Center().Children(func() {
 						ui.Text(c, "∞").FontSize(fz(92)).FontWeight(800).TextColor(t.Accent)
@@ -1167,7 +1239,7 @@ func (a *App) searchView(c *ui.Context, kw string) {
 							chip.Background(c.Theme().SurfaceHover)
 						}
 						if chip.Clicked() {
-							a.Router.Push("/search?kw=" + hk)
+							a.openSearch(hk)
 						}
 					}
 				})
@@ -1187,7 +1259,11 @@ func (a *App) searchView(c *ui.Context, kw string) {
 		if st.tab == 0 {
 			st.list.songs = st.songs
 			a.songList(c, &st.list, func(page int) { a.loadSearchPage(st, page) },
-				func(i int) { a.playListNow(st.songs, i) })
+				func(i int) {
+					// 搜索结果是临时列表：双击只立即播放这一首，不把整页
+					// 结果塞进队列，原来的播放队列保持不动。
+					a.PL.PlayNow(st.songs[i])
+				})
 		} else {
 			a.playlistGrid(c, st.songlists)
 			if st.nextpage > 0 {

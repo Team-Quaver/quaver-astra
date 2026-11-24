@@ -28,6 +28,7 @@ const (
 type updateState struct {
 	form update.InstallForm
 	exe  string
+	pkg  update.PackageKind
 
 	ready     bool
 	autoCheck bool
@@ -43,13 +44,16 @@ func (a *App) initUpdate() {
 		a.Upd = update.NewClient()
 	}
 	a.upd.form, a.upd.exe = update.Detect(runtime.GOOS)
+	if a.upd.form == update.FormSystemPackage {
+		a.upd.pkg = update.DetectPackageKind(a.upd.exe)
+	}
 	update.CleanupStale(a.upd.exe)
 	a.upd.autoCheck = a.Conf.Bool(updateAutoCheckKey, true)
 }
 
 // EnableUpdater 注册 MyGo 原生 updater 插件。检查与安装仍走 Astra 自己的
-// GitHub Release 客户端，因此 AppImage、便携目录与 Windows zip 的原有升级
-// 路径不变；插件负责 Sparkle 风格窗口、跳过/稍后提醒和下载进度。
+// GitHub Release 客户端：AppImage、便携目录与 Windows zip 原地替换，系统包
+// 交给 apt/oma、zypper/dnf 或 pacman；插件负责窗口、提醒和下载进度。
 func (a *App) EnableUpdater() {
 	mygo.Use(updaternative.New(updater.Options{
 		Icon:      AppIconPNG(),
@@ -78,11 +82,20 @@ func (a *App) refreshUpdatePreferences() {
 	a.invalidate()
 }
 
-// updaterEnabled 只在能够原地替换当前构建时启用插件。开发构建与系统包
-// 安装不检查，插件窗口会说明原因。
+// selfUpdatable 报告当前实例能否自行升级。系统包必须识别出包格式，才能
+// 选出对应产物并交给包管理器安装。
+func (s *updateState) selfUpdatable() bool {
+	if s.form == update.FormSystemPackage {
+		return s.pkg != update.PackageNone
+	}
+	return s.form.SelfUpdatable()
+}
+
+// updaterEnabled 只在能够自行升级当前构建时启用插件。开发构建与无法识别
+// 包格式的系统包安装不检查，插件窗口会说明原因。
 func (a *App) updaterEnabled() bool {
 	version := strings.TrimSpace(a.Version)
-	return version != "" && version != "dev" && a.upd.form.SelfUpdatable()
+	return version != "" && version != "dev" && a.upd.selfUpdatable()
 }
 
 // updaterCheck 把 Astra 的 GitHub Release 渠道适配成插件的一次检查。
@@ -97,7 +110,13 @@ func (a *App) updaterCheck(ctx context.Context) (*updater.Release, error) {
 	if !update.Relate(a.Version, rel).Available() {
 		return nil, nil
 	}
-	asset, ok := rel.AssetFor(runtime.GOOS, runtime.GOARCH)
+	var asset update.Asset
+	var ok bool
+	if a.upd.form == update.FormSystemPackage {
+		asset, ok = rel.SystemAssetFor(runtime.GOARCH, a.upd.pkg)
+	} else {
+		asset, ok = rel.AssetFor(runtime.GOOS, runtime.GOARCH)
+	}
 	if !ok {
 		return nil, update.ErrNoAsset
 	}
@@ -121,7 +140,7 @@ func (a *App) installUpdate(ctx context.Context, rel *update.Release, asset upda
 	if err := a.Upd.Download(ctx, asset, dst, progress); err != nil {
 		return err
 	}
-	return update.Apply(a.upd.form, a.upd.exe, dst, asset)
+	return update.ApplyContext(ctx, a.upd.form, a.upd.exe, dst, asset)
 }
 
 func (a *App) updateChannel() update.Channel {
@@ -222,7 +241,7 @@ func (a *App) settingsUpdate(c *ui.Context, t *ui.Theme) {
 				updater.CheckForUpdates()
 			}
 		}
-		if !st.form.SelfUpdatable() {
+		if !st.selfUpdatable() {
 			if ui.Button(c, "打开发行页").Clicked() {
 				a.openReleasePage()
 			}
@@ -235,7 +254,11 @@ func (a *App) settingsUpdate(c *ui.Context, t *ui.Theme) {
 		ui.Text(c, "更新窗口会显示 Release Notes；Markdown 与图片会按原格式渲染。").
 			FontSize(fz(11.5)).TextColor(t.TextMuted).MaxLines(2)
 	}
-	if !st.form.SelfUpdatable() {
+	if st.form == update.FormSystemPackage && st.pkg != update.PackageNone {
+		ui.Text(c, "系统包更新会通过 pkexec 提权，使用 "+st.pkg.ManagerHint()+" 安装下载的更新包。").
+			FontSize(fz(11.5)).TextColor(t.TextMuted).MaxLines(2)
+	}
+	if !st.selfUpdatable() {
 		ui.Text(c, "当前为"+st.form.String()+"安装，请通过包管理器或手动下载更新。").
 			FontSize(fz(11.5)).TextColor(t.TextMuted).MaxLines(2)
 	}

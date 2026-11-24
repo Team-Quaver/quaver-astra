@@ -27,6 +27,11 @@ const (
 	// 插值，换句与进出静默期时才是淡入淡出，而不是硬切。
 	npLyricBlur    = 1.6
 	npLyricBlurDur = 260 * time.Millisecond
+
+	// 换曲封面蒙版：0.64s 擦过整张封套，边缘留一条约 16% 的软渐变。
+	// 方向由 npCoverWipeDir 决定（见 npCoverMask）。
+	npCoverWipeDur     = 640 * time.Millisecond
+	npCoverWipeFeather = 0.16
 )
 
 var debugBlurHook func(index int, isCur bool, v float32)
@@ -376,22 +381,136 @@ func (a *App) npLeft(c *ui.Context, t *ui.Theme, cur player.Song, hasCur bool) {
 
 // npCover is the sleeve: a rounded square over the tinted backdrop, with a
 // floating shadow. A missing cover keeps the layout stable with a note.
+//
+// Changing songs wipes the incoming sleeve over the outgoing one with a
+// diagonal gradient mask: 下一首从左下擦到右上，上一首从右上擦回左下。
+// The old bitmap stays underneath until the new one has loaded and the
+// wipe begins, so a slow CDN never flashes the background through.
 func (a *App) npCover(c *ui.Context, cur player.Song, hasCur bool, size float32) {
+	var urls []string
 	var art *ui.Bitmap
 	if hasCur {
-		art = a.Covers.GetBest(a.songCoverURLs(cur, npCoverSizes), a.invalidate)
+		urls = a.songCoverURLs(cur, npCoverSizes)
+		art = a.Covers.GetBest(urls, a.invalidate)
 	}
-	if art != nil {
-		ui.Image(c, art).Size(size, size).Fit(ui.Cover).Radius(18).
-			Shadow(0, 24, 70, 0, ui.RGBA(0, 0, 0, 0.52))
+	old, dir, k := a.npCoverTransition(c, cur, art, len(urls) > 0)
+	if art == nil && old == nil {
+		ui.Box(c).Size(size, size).Radius(18).
+			Background(ui.RGBA(255, 255, 255, 0.07)).
+			Border(1, ui.RGBA(255, 255, 255, 0.10)).Center().Children(func() {
+			ui.Icon(c, Icons["note"]).FontSize(fz(size * 0.22)).
+				TextColor(ui.RGBA(255, 255, 255, 0.35)).AlignSelf(ui.Center)
+		})
 		return
 	}
-	ui.Box(c).Size(size, size).Radius(18).
-		Background(ui.RGBA(255, 255, 255, 0.07)).
-		Border(1, ui.RGBA(255, 255, 255, 0.10)).Center().Children(func() {
-		ui.Icon(c, Icons["note"]).FontSize(fz(size * 0.22)).
-			TextColor(ui.RGBA(255, 255, 255, 0.35)).AlignSelf(ui.Center)
+
+	// 两张图必须叠在同一个圆角框里：阴影只画一次，蒙版只作用在新图上，
+	// 旧图才不会被一起擦掉。
+	frame := ui.Box(c).Size(size, size).Radius(18).Clip().
+		Shadow(0, 24, 70, 0, ui.RGBA(0, 0, 0, 0.52))
+	frame.Children(func() {
+		if old != nil {
+			ui.Image(c, old).Absolute().Fill().Fit(ui.Cover)
+		}
+		if art != nil {
+			img := ui.Image(c, art).Absolute().Fill().Fit(ui.Cover)
+			if dir != 0 {
+				img.MaskLinearGradient(npCoverMask(k, dir))
+			}
+		}
 	})
+}
+
+// npCoverMask 是对角擦入的蒙版。dir 为 +1 时角度 45°（左下 → 右上），
+// -1 时 225°（右上 → 左下）；k 是缓动后的进度。
+//
+// 进度把软边也算进来：k=0 时整张透明，k=1 时整张不透明，所以两端都
+// 不会在动画首尾留下半格渐变。MyGo 的渐变会把第一个 stop 之前铺成第一个
+// 颜色、最后一个之后铺成最后一个颜色，因此这里可以把 stops 放到 0..1 外。
+func npCoverMask(k float32, dir int) ui.LinearGradient {
+	angle := float32(45)
+	if dir < 0 {
+		angle = 225
+	}
+	f := float32(npCoverWipeFeather)
+	at := -f + clampF32(k)*(1+2*f)
+	return ui.LinearGradient{
+		Angle: angle,
+		Stops: []ui.GradientStop{
+			{ui.RGBA(0, 0, 0, 1), at - f},
+			{ui.RGBA(0, 0, 0, 0), at + f},
+		},
+	}
+}
+
+// npCoverTransition 维护换曲封面的擦入状态。返回旧封面、方向与进度：
+// dir=0 表示本帧不播（首次出现、等新图、或已结束），此时旧图若存在就
+// 继续铺满，等新图到了再起表。
+func (a *App) npCoverTransition(c *ui.Context, cur player.Song, art *ui.Bitmap, hasURL bool) (*ui.Bitmap, int, float32) {
+	key := cur.Mid
+	if key == "" {
+		key = cur.CloudKey
+	}
+	if key != a.npCoverKey {
+		if a.npCoverKey == "" {
+			// 首次出现或重新打开播放页：直接落位，不补一次换曲动画。
+			a.npCoverPrev = nil
+			a.npCoverWipeDir = 0
+			a.npCoverWipeAt = time.Time{}
+		} else {
+			a.npCoverPrev = a.npCoverShown
+			a.npCoverWipeDir = 1
+			if a.PL.NavDirection() < 0 {
+				a.npCoverWipeDir = -1
+			}
+			a.npCoverWipeAt = time.Time{}
+		}
+		a.npCoverKey = key
+	}
+	if art != nil {
+		a.npCoverShown = art
+	}
+
+	if a.npCoverWipeDir != 0 && !hasURL {
+		// 新曲根本没有封面，别把上一首的图一直挂在这里。
+		a.npCoverPrev = nil
+		a.npCoverWipeDir = 0
+		a.npCoverWipeAt = time.Time{}
+	}
+	if a.npCoverWipeDir == 0 {
+		return nil, 0, 1
+	}
+	if art == nil {
+		// 新图还在路上：旧图先铺满，等它到了再开始擦入。
+		return a.npCoverPrev, 0, 1
+	}
+	if a.npCoverWipeAt.IsZero() {
+		a.npCoverWipeAt = c.Now()
+	}
+	k, moving := motion{
+		start: a.npCoverWipeAt,
+		dur:   npCoverWipeDur,
+		ease:  easePage,
+	}.at(c.Now())
+	if moving {
+		c.AnimationFrame()
+	}
+	if k >= 1 {
+		a.npCoverPrev = nil
+		a.npCoverWipeDir = 0
+		a.npCoverWipeAt = time.Time{}
+		return nil, 0, 1
+	}
+	return a.npCoverPrev, a.npCoverWipeDir, k
+}
+
+// npCoverIdle 在正在播放页收起时清掉换曲状态：期间切过的歌不该在下次
+// 打开时补播一次蒙版动画。
+func (a *App) npCoverIdle() {
+	a.npCoverKey = ""
+	a.npCoverPrev = nil
+	a.npCoverWipeDir = 0
+	a.npCoverWipeAt = time.Time{}
 }
 
 // npLove is the sleeve's favourite control, drawn for the dark page rather

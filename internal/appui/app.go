@@ -6,7 +6,6 @@ import (
 	"os"
 	"runtime"
 	"strconv"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -79,6 +78,16 @@ type App struct {
 	npBlurKey string
 	npBlurAt  time.Time
 
+	// 正在播放页封面的换曲蒙版。npCoverKey 是当前曲目；npCoverShown 是
+	// 上一帧显示的封面，换曲时留作旧底；npCoverWipeDir 为 +1（下一首：
+	// 左下 → 右上）或 -1（上一首：右上 → 左下），0 表示不播；wipeAt 是
+	// 新封面就绪后开始擦入的时刻（零值 = 等图）。
+	npCoverKey     string
+	npCoverShown   *ui.Bitmap
+	npCoverPrev    *ui.Bitmap
+	npCoverWipeDir int
+	npCoverWipeAt  time.Time
+
 	// splashAt/splashDone 是启动画面的时钟：Attach 时起算，淡出结束置
 	// Done，此后不再建层。splashAt 零值（测试直构 App）= 不播，见 splash.go。
 	splashAt   time.Time
@@ -146,6 +155,7 @@ type App struct {
 	playlist    map[int64]*playlistState
 	playlistRec []int64
 	search      searchState
+	searchHint  searchHintState
 	login       loginState
 	profile     profileState
 	settings    settingsState
@@ -352,6 +362,8 @@ func (a *App) View(c *ui.Context) {
 			a.mainRow(c)
 			if a.npOpen {
 				a.nowPlaying(c, t)
+			} else {
+				a.npCoverIdle()
 			}
 		})
 		a.playerBar(c, t)
@@ -535,6 +547,7 @@ func (a *App) searchButton(c *ui.Context, t *ui.Theme) {
 	if a.searchOpen {
 		b.Background(t.Accent.Alpha(0.13))
 		b.TextColor(t.Accent)
+		a.syncSearchHints(c)
 	}
 	ui.PopoverBase(c, b, &a.searchOpen, func(panel ui.Element) {
 		// 右缘对齐搜索按钮，320 宽的浮窗才不会被窗口右缘裁掉。
@@ -545,12 +558,10 @@ func (a *App) searchButton(c *ui.Context, t *ui.Theme) {
 			sf := ui.SearchField(c, &a.searchDraft).FillWidth().AutoFocus()
 			sf.Label("搜索音乐")
 			sf.Placeholder("搜索音乐")
-			if sf.Submitted() {
-				kw := strings.TrimSpace(a.searchDraft)
-				if kw != "" {
-					a.searchOpen = false
-					a.Router.Push("/search?kw=" + kw)
-				}
+			items := a.visibleSearchHints()
+			a.searchHintInput(sf, items)
+			if len(items) > 0 {
+				a.searchHintList(c, items)
 			}
 		})
 	})
@@ -837,6 +848,14 @@ func (a *App) ApplyThemeSource() {
 // 默认打开 MPV，避免其严重问题影响播放体验。
 const mpvBackendKey = "Playing.MPVBackend"
 
+// PipeWire 自适应采样率：Liino 默认固定 48 kHz；打开 AdaptiveRate 后
+// 解码、DSP、环形缓冲与输出流都跟随曲目采样率。SwitchDeviceRate 再让
+// PipeWire 把 graph 时钟切到该采样率（node.rate）。
+const (
+	adaptiveRateKey     = "Playing.AdaptiveRate"
+	switchDeviceRateKey = "Playing.SwitchDeviceRate"
+)
+
 // mpvBackendDefault 返回「使用 MPV 作为播放后端」的平台默认值。
 func mpvBackendDefault() bool {
 	return runtime.GOOS == "darwin"
@@ -857,7 +876,31 @@ func (a *App) newPlaybackEngine() player.Engine {
 	if a.mpvBackendEnabled() {
 		return mpvaudio.New()
 	}
-	return audio.New()
+	return audio.NewWithOptions(a.audioOptions())
+}
+
+// audioOptions 读取当前采样率策略。没有配置存储时退回 Liino 默认值
+// （固定 48 kHz），方便测试直接构造 App。
+func (a *App) audioOptions() audio.Options {
+	if a.Conf == nil {
+		return audio.Options{}
+	}
+	return audio.Options{
+		AdaptiveRate:     a.Conf.Bool(adaptiveRateKey, false),
+		SwitchDeviceRate: a.Conf.Bool(switchDeviceRateKey, false),
+	}
+}
+
+// applyRatePolicy 把设置推给正在使用的引擎。Liino 在下一首生效；mpv
+// 后端不支持时由 player 的可选接口静默忽略。
+func (a *App) applyRatePolicy() {
+	if a.PL == nil || a.Conf == nil {
+		return
+	}
+	a.PL.SetRatePolicy(
+		a.Conf.Bool(adaptiveRateKey, false),
+		a.Conf.Bool(switchDeviceRateKey, false),
+	)
 }
 
 // setMPVBackend 切换播放后端并立即生效：正在播放时从当前进度重新取流，

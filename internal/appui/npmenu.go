@@ -3,8 +3,6 @@ package appui
 import (
 	"fmt"
 	"math"
-	"net/url"
-	"strings"
 	"sync"
 
 	"github.com/Team-Quaver/quaver-astra/internal/player"
@@ -67,20 +65,12 @@ func (a *App) npMoreMenu(c *ui.Context, anchor ui.Element) {
 
 // npMenuJumps 是三组跳转项：同名搜索、跳转歌手（多歌手逐项）、跳转专辑。
 func (a *App) npMenuJumps(c *ui.Context, cur player.Song) {
-	name := cur.Name
-	if name == "" {
-		name = cur.DisplayName()
-	}
-	npMenuItem(c, "同名搜索", name == "", func() {
-		a.npJump("/search?kw=" + url.QueryEscape(name))
+	search, hasSearch := sameNameSearchRoute(cur)
+	npMenuItem(c, "同名搜索", !hasSearch, func() {
+		a.npJump(search)
 	})
 
-	singers := make([]player.Singer, 0, len(cur.Singers))
-	for _, g := range cur.Singers {
-		if g.Mid != "" {
-			singers = append(singers, g)
-		}
-	}
+	singers := singersWithMid(cur)
 	if len(singers) == 0 {
 		npMenuItem(c, "跳转歌手", true, nil)
 	}
@@ -92,21 +82,13 @@ func (a *App) npMenuJumps(c *ui.Context, cur player.Song) {
 		}
 		g := g
 		npMenuItem(c, label, false, func() {
-			a.npJump("/singer/" + g.Mid + "?name=" + url.QueryEscape(g.Name))
+			a.npJump(singerJumpRoute(g))
 		})
 	}
 
-	amid := cur.AlbumMid
-	if amid == "" {
-		// 有些条目只有 pmid（形如 004xxx_1），接口吃基名。
-		amid = strings.SplitN(cur.AlbumPmid, "_", 2)[0]
-	}
-	albName := cur.Album
-	if albName == "" {
-		albName = "专辑"
-	}
-	npMenuItem(c, "跳转专辑", amid == "", func() {
-		a.npJump("/album/" + amid + "?name=" + url.QueryEscape(albName))
+	album, hasAlbum := albumJumpRoute(cur)
+	npMenuItem(c, "跳转专辑", !hasAlbum, func() {
+		a.npJump(album)
 	})
 }
 

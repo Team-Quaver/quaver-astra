@@ -101,7 +101,7 @@ func (rt *engine) event(ev platform.SurfaceEvent) (taken bool) {
 		}
 	case platform.PointerScroll:
 		rt.pointerMove(x, y)
-		rt.scroll(float32(ev.DX), float32(ev.DY), Modifiers(ev.Mods), ev.Precise, ev.Momentum)
+		rt.scroll(float32(ev.DX), float32(ev.DY), Modifiers(ev.Mods), ev.Precise, ev.Wheel, ev.Momentum)
 	case platform.PointerZoom:
 		rt.pointerMove(x, y)
 		rt.zoom(float32(ev.Scale), Modifiers(ev.Mods))
@@ -722,7 +722,7 @@ func (s *state) click(mods Modifiers) {
 	s.clickMods = mods
 }
 
-func (rt *engine) scroll(dx, dy float32, mods Modifiers, precise, momentum bool) {
+func (rt *engine) scroll(dx, dy float32, mods Modifiers, precise, wheel, momentum bool) {
 	chain := rt.appendHitChain(rt.chain[:0], rt.pointerX, rt.pointerY)
 	rt.chain = chain[:0]
 	// From the innermost element out, the first handling its input to
@@ -743,9 +743,13 @@ func (rt *engine) scroll(dx, dy float32, mods Modifiers, precise, momentum bool)
 	if sideways {
 		dx, dy = dy, 0
 	}
-	// A wheel's notches glide, as browsers scroll them; a touchpad's
+	// A wheel's notches glide, as browsers scroll them, and so does a
+	// high-resolution wheel's smooth, precise scrolling; a touchpad's
 	// small moves already follow the fingers.
-	glide := !precise && !rt.preferences().ReduceMotion
+	glide := (!precise || wheel) && !rt.preferences().ReduceMotion
+	// A touchpad or a touchscreen coasts after the fingers leave, unless
+	// the platform sends the momentum itself, as macOS does.
+	fling := precise && !wheel && !momentum && !rt.preferences().ReduceMotion
 	for _, id := range chain {
 		s := rt.states[id]
 		if s == nil {
@@ -771,12 +775,16 @@ func (rt *engine) scroll(dx, dy float32, mods Modifiers, precise, momentum bool)
 			}
 			continue
 		}
+		old := s.wheel
 		s.wheel = nil
 		if scrollBy(s, sx, sy) {
 			if s.snap != nil {
 				// It rests at a place once the fingers, and the momentum
 				// of their fling, settle.
 				s.snap.scrolled(rt, s, snapSettle)
+			}
+			if fling && s.snap == nil {
+				rt.trackpadScroll(s, old, sx, sy)
 			}
 			rt.requestFrame()
 			return

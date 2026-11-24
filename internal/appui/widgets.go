@@ -19,6 +19,52 @@ func fmtTime(s float64) string {
 	return fmt.Sprintf("%d:%02d", int(s)/60, int(s)%60)
 }
 
+// singersWithMid 过滤掉没有 mid 的歌手条目：没有 mid 就无法跳转，
+// 菜单与列表行都不该把它算作可选项。
+func singersWithMid(s player.Song) []player.Singer {
+	out := make([]player.Singer, 0, len(s.Singers))
+	for _, g := range s.Singers {
+		if g.Mid != "" {
+			out = append(out, g)
+		}
+	}
+	return out
+}
+
+// singerJumpRoute 是歌手页路由（name 只用于页面标题的即时展示）。
+func singerJumpRoute(g player.Singer) string {
+	return "/singer/" + g.Mid + "?name=" + url.QueryEscape(g.Name)
+}
+
+// albumJumpRoute 返回专辑页路由。有些条目只有 pmid（形如 004xxx_1），
+// 接口吃基名；amid 与 pmid 都为空时返回 ok=false。
+func albumJumpRoute(s player.Song) (string, bool) {
+	amid := s.AlbumMid
+	if amid == "" {
+		amid = strings.SplitN(s.AlbumPmid, "_", 2)[0]
+	}
+	if amid == "" {
+		return "", false
+	}
+	name := s.Album
+	if name == "" {
+		name = "专辑"
+	}
+	return "/album/" + amid + "?name=" + url.QueryEscape(name), true
+}
+
+// sameNameSearchRoute 返回按歌名搜索的路由；没有歌名时返回 ok=false。
+func sameNameSearchRoute(s player.Song) (string, bool) {
+	kw := s.Name
+	if kw == "" {
+		kw = s.DisplayName()
+	}
+	if kw == "" {
+		return "", false
+	}
+	return "/search?kw=" + url.QueryEscape(kw), true
+}
+
 // songListState 是“一列歌”的通用状态：数据 + 分页 + 虚拟列表。
 type songListState struct {
 	songs    []player.Song
@@ -205,14 +251,11 @@ func (a *App) songRow(c *ui.Context, st *songListState, i int, doubleClick func(
 		m.Submenu("跳转至", func(m *ui.Menu) {
 			m.Submenu("歌手", func(m *ui.Menu) {
 				shown := false
-				for _, g := range s.Singers {
-					if g.Mid == "" {
-						continue
-					}
+				for _, g := range singersWithMid(s) {
 					shown = true
 					g := g
 					if m.Item(g.Name).Chosen() {
-						a.Router.Push("/singer/" + g.Mid + "?name=" + url.QueryEscape(g.Name))
+						a.Router.Push(singerJumpRoute(g))
 					}
 				}
 				if !shown {
@@ -220,25 +263,21 @@ func (a *App) songRow(c *ui.Context, st *songListState, i int, doubleClick func(
 				}
 			})
 			m.Submenu("专辑", func(m *ui.Menu) {
-				amid := s.AlbumMid
-				if amid == "" {
-					// 有些条目只有 pmid（形如 004xxx_1），接口吃基名。
-					amid = strings.SplitN(s.AlbumPmid, "_", 2)[0]
-				}
+				target, ok := albumJumpRoute(s)
 				name := s.Album
 				if name == "" {
 					name = "专辑"
 				}
-				if m.Item(name).Disabled(amid == "").Chosen() {
-					a.Router.Push("/album/" + amid + "?name=" + url.QueryEscape(name))
+				if m.Item(name).Disabled(!ok).Chosen() {
+					a.Router.Push(target)
 				}
 			})
-			kw := s.Name
-			if kw == "" {
-				kw = s.DisplayName()
-			}
-			if m.Item("同名搜索").Disabled(kw == "").Chosen() {
-				a.Router.Push("/search?kw=" + url.QueryEscape(kw))
+			if target, ok := sameNameSearchRoute(s); ok {
+				if m.Item("同名搜索").Chosen() {
+					a.Router.Push(target)
+				}
+			} else {
+				m.Item("同名搜索").Disabled(true)
 			}
 		})
 		m.Submenu("更多操作", func(m *ui.Menu) {

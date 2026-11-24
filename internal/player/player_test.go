@@ -222,6 +222,44 @@ func TestEnqueueNextSemantics(t *testing.T) {
 	}
 }
 
+// TestPlayNowKeepsQueue 钉住搜索页「双击立即播放」的语义：只把这一首插到
+// 当前曲之后并切过去，原来的已播记录和待播队列都保留。
+func TestPlayNowKeepsQueue(t *testing.T) {
+	p := New(stubBackend{}, &fakeEngine{}, fakePrefs{})
+	p.queue = []Song{{Mid: "a"}, {Mid: "b"}, {Mid: "c"}}
+	p.index = 1
+
+	p.PlayNow(Song{Mid: "x"})
+
+	q := p.Queue()
+	if len(q) != 4 || q[0].Mid != "a" || q[1].Mid != "b" || q[2].Mid != "x" || q[3].Mid != "c" {
+		t.Fatalf("队列 = %v，期望 [a b x c]", q)
+	}
+	if p.Index() != 2 {
+		t.Errorf("index = %d，期望切到插入曲", p.Index())
+	}
+	if cur, ok := p.Current(); !ok || cur.Mid != "x" {
+		t.Errorf("当前曲 = %v/%v，期望 x", cur, ok)
+	}
+	if len(p.Queue()) != 4 {
+		t.Error("PlayNow 不应丢弃原队列")
+	}
+
+	// 电台队列同样只向前消费；立即播放要先退出电台，否则插进来的歌播完
+	// 就会被续上的猜测覆盖。
+	p2 := New(stubBackend{}, &fakeEngine{}, fakePrefs{})
+	p2.queue = []Song{{Mid: "r1"}, {Mid: "r2"}}
+	p2.index = 0
+	p2.radioOn = true
+	p2.PlayNow(Song{Mid: "y"})
+	if p2.RadioActive() {
+		t.Error("PlayNow 之后电台应当已退出")
+	}
+	if q := p2.Queue(); len(q) != 3 || q[1].Mid != "y" {
+		t.Errorf("电台队列 = %v，期望 [r1 y r2]", q)
+	}
+}
+
 func (fakePrefs) String(key, def string) string { return def }
 func (fakePrefs) Float(key string, def float64) float64 {
 	return def

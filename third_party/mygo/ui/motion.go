@@ -194,6 +194,13 @@ func (ch *channel) shift(d float64) {
 	ch.pendingTo += d
 }
 
+// halt stops the value where it is, dropping where it was going, as a
+// coast taking over from it does.
+func (ch *channel) halt() {
+	ch.target, ch.velocity = ch.value, 0
+	ch.moving, ch.pending, ch.jumped = false, false, false
+}
+
 // scale scales the value, where it goes and how fast, from was to to, as
 // what it is a part of grows or shrinks: it goes on as it went, in
 // proportion. A value at was goes exactly to to.

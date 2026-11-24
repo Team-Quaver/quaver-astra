@@ -954,20 +954,38 @@ func (s *surface) emulated(event ptr) bool {
 // delta_y 80.
 func scrollEvent(event ptr, ox, oy float64) platform.SurfaceEvent {
 	ev := platform.SurfaceEvent{Kind: platform.PointerScroll, X: ox + field[float64](event, 24), Y: oy + field[float64](event, 32), Mods: gdkMods(field[uint32](event, 40))}
+	source := -1
+	if d := gdkEventGetSourceDevice(event); d != 0 {
+		source = int(gdkDeviceGetSource(d))
+	}
 	const step = 50
 	switch field[int32](event, 44) {
 	case 0:
 		ev.DY = -step
+		ev.Wheel = true
 	case 1:
 		ev.DY = step
+		ev.Wheel = true
 	case 2:
 		ev.DX = -step
+		ev.Wheel = true
 	case 3:
 		ev.DX = step
+		ev.Wheel = true
 	case 4: // smooth
 		dx, dy := field[float64](event, 72), field[float64](event, 80)
 		ev.DX, ev.DY = dx*step, dy*step
 		ev.Precise = dx != float64(int64(dx)) || dy != float64(int64(dy))
+		switch source {
+		case sourceMouse, sourcePen, sourceEraser, sourceCursor, sourceTrackpoint:
+			// A high-resolution wheel scrolls smoothly too, one pixel
+			// at a time; it is still a wheel.
+			ev.Wheel = true
+		case sourceTouchpad:
+			// Its precise moves follow the fingers.
+		default:
+			ev.Wheel = !ev.Precise
+		}
 	}
 	return ev
 }

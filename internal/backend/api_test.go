@@ -146,6 +146,33 @@ func TestHotkeyParse(t *testing.T) {
 	}
 }
 
+func TestSearchCompleteParse(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/search/complete" {
+			t.Errorf("path = %q", r.URL.Path)
+		}
+		if got := r.URL.Query().Get("keyword"); got != "周杰伦" {
+			t.Errorf("keyword = %q", got)
+		}
+		_, _ = w.Write([]byte(`{"code":0,"msg":"ok","data":{"items":[
+			{"hint":"周杰伦 晴天","res_type":"search"},
+			{"hint":"周杰伦 发如雪","res_type":"search"},
+			{"hint":"周杰伦 晴天","res_type":"search"},
+			{"hint":"  ","res_type":"search"}
+		]}}`))
+	}))
+	defer srv.Close()
+
+	got, err := NewClient(srv.URL).SearchComplete("周杰伦")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"周杰伦 晴天", "周杰伦 发如雪"}
+	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+		t.Fatalf("suggestions = %v, want %v", got, want)
+	}
+}
+
 func TestLyricRequestsTranslationRomanizationAndQRC(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/song/m1/lyric" {
