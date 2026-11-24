@@ -169,6 +169,72 @@ type Song struct {
 	Interval int         `json:"interval"`
 }
 
+// SongFile 是歌曲详情里的可用文件大小表。某个档位大小为 0 表示该曲没有
+// 这一档；size_new 是臻品系列/OGG 高档位的数组（索引语义见 AvailableTiers）。
+type SongFile struct {
+	Size96Ogg  int64   `json:"size_96ogg"`
+	Size192Ogg int64   `json:"size_192ogg"`
+	Size128MP3 int64   `json:"size_128mp3"`
+	Size320MP3 int64   `json:"size_320mp3"`
+	SizeFlac   int64   `json:"size_flac"`
+	SizeNew    []int64 `json:"size_new"`
+}
+
+// SongDetail 是 GET /song/{mid}/detail 的响应中歌曲详情页需要的部分。
+type SongDetail struct {
+	TrackInfo struct {
+		File SongFile `json:"file"`
+	} `json:"track_info"`
+}
+
+// AvailableTiers 按档位表顺序返回该曲实际拥有的音质档位。
+//
+// file.size_new 的上游下标与 QQ 音乐文件类型一致：
+//
+//	[0] master  [1] atmos2  [2] atmos51  [3] 320ogg
+//	[4] vinyl   [5] 640ogg  [6] atmos71  [7] nac
+//
+// 这里只映射本播放器支持的档位；其它档位（如黑胶/DTS）即使有文件也不返回。
+func (f SongFile) AvailableTiers() []string {
+	has := make(map[string]bool, 11)
+	add := func(id string, size int64) {
+		if size > 0 {
+			has[id] = true
+		}
+	}
+	add("96ogg", f.Size96Ogg)
+	add("128", f.Size128MP3)
+	add("192ogg", f.Size192Ogg)
+	add("320", f.Size320MP3)
+	add("flac", f.SizeFlac)
+	if n := f.SizeNew; len(n) > 0 {
+		add("master", n[0])
+		if len(n) > 1 {
+			add("atmos2", n[1])
+		}
+		if len(n) > 2 {
+			add("atmos51", n[2])
+		}
+		if len(n) > 3 {
+			add("320ogg", n[3])
+		}
+		if len(n) > 5 {
+			add("640ogg", n[5])
+		}
+		if len(n) > 6 {
+			add("atmos71", n[6])
+		}
+	}
+	order := []string{"96ogg", "128", "192ogg", "320", "320ogg", "640ogg", "flac", "atmos2", "atmos51", "atmos71", "master"}
+	out := make([]string, 0, len(has))
+	for _, id := range order {
+		if has[id] {
+			out = append(out, id)
+		}
+	}
+	return out
+}
+
 func (s Song) DisplayName() string {
 	if s.Title != "" {
 		return s.Title
@@ -708,6 +774,13 @@ func (c *Client) FavSonglists(page, num int) (FavSonglists, error) {
 func (c *Client) StreamTiers() (Tiers, error) {
 	var out Tiers
 	err := c.getJSON("/stream/tiers", nil, &out)
+	return out, err
+}
+
+// SongDetail 读取歌曲详情（用于按曲目筛出真实可用的音质档位）。
+func (c *Client) SongDetail(mid string) (SongDetail, error) {
+	var out SongDetail
+	err := c.getJSON("/song/"+mid+"/detail", nil, &out)
 	return out, err
 }
 

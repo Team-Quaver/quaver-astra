@@ -288,6 +288,36 @@ func (stubBackend) ReportListenTime(ListenReport) (ListenReportResult, error) {
 func (stubBackend) LikeSong(int64, int64, bool) error               { return nil }
 func (stubBackend) StreamOpen(string, int64) (io.ReadCloser, error) { return nil, nil }
 
+// TestQualityDefaultsToHighestAllowed 默认音质不再是隐式的「自动」：
+// 没有显式选择时直接落到当前权限可用的最高档位。
+func TestQualityDefaultsToHighestAllowed(t *testing.T) {
+	p := New(stubBackend{}, &fakeEngine{}, fakePrefs{})
+	p.tiers = &TierTable{
+		Max: "master",
+		Tiers: []Tier{
+			{ID: "128", Rank: 10},
+			{ID: "flac", Rank: 40},
+			{ID: "master", Rank: 60},
+		},
+	}
+	if got := p.Quality(); got != "master" {
+		t.Fatalf("Quality() = %q, want master", got)
+	}
+	if got := p.HighestAllowedQuality(); got != "master" {
+		t.Fatalf("HighestAllowedQuality() = %q, want master", got)
+	}
+
+	// 后端没给 Max 时按未锁定档位的 rank 取最高。
+	p.tiers = &TierTable{Tiers: []Tier{
+		{ID: "128", Rank: 10},
+		{ID: "flac", Rank: 40},
+		{ID: "master", Rank: 60, Locked: true},
+	}}
+	if got := p.Quality(); got != "flac" {
+		t.Fatalf("Quality() = %q, want flac", got)
+	}
+}
+
 // TestFallbackOnLoadError 验证降级链：mpv 异步载入失败（LoadError 非空）
 // 时自动换下一档重试，而不是把失败暴露给用户。
 //

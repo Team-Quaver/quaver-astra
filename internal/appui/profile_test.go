@@ -142,15 +142,50 @@ func waitText(t *testing.T, tester *ui.Tester, substr string) {
 	t.Fatalf("等不到 %q；当前帧文本：%v", substr, tester.Texts())
 }
 
-// TestTopBarAvatarOpensProfile 头像点击的落点：个人中心，不是设置。
-func TestTopBarAvatarOpensProfile(t *testing.T) {
+// TestTopBarAvatarOpensProfilePopover 头像点击展开个人中心浮窗，不打断当前页面；
+// 浮窗里的「独立页面」入口再跳到 /profile。
+func TestTopBarAvatarOpensProfilePopover(t *testing.T) {
 	app := loggedApp(t)
 	tester := ui.NewTester(app.View, testWinW, testWinH)
 	if err := tester.Click("个人中心"); err != nil {
 		t.Fatalf("顶栏用户区应当可点（锚点 = 个人中心）：%v", err)
 	}
+	tester.Frame()
+	if !app.profileOpen {
+		t.Fatal("点头像应展开个人中心浮窗")
+	}
+	if got := app.Router.Path(); got != "/settings" {
+		t.Errorf("浮窗不该改路由，实得 %q", got)
+	}
+	for _, want := range []string{"会员权益", "退出登录", "独立页面"} {
+		if !tester.HasText(want) {
+			t.Errorf("浮窗里缺少 %q；当前帧文本：%v", want, tester.Texts())
+		}
+	}
+
+	// Escape 收起浮窗，不离开当前页面。
+	tester.Key(0, ui.KeyEscape)
+	tester.Frame()
+	if app.profileOpen {
+		t.Error("Escape 应收起个人中心浮窗")
+	}
+	if got := app.Router.Path(); got != "/settings" {
+		t.Errorf("收起浮窗不该改路由，实得 %q", got)
+	}
+
+	if err := tester.Click("个人中心"); err != nil {
+		t.Fatalf("再次点击头像应能重开浮窗：%v", err)
+	}
+	tester.Frame()
+	if err := tester.Click("独立页面"); err != nil {
+		t.Fatalf("浮窗里应有独立页面入口：%v", err)
+	}
+	tester.Frame()
 	if got := app.Router.Path(); got != "/profile" {
-		t.Errorf("头像应跳 /profile，实得 %q", got)
+		t.Errorf("「独立页面」应跳 /profile，实得 %q", got)
+	}
+	if app.profileOpen {
+		t.Error("跳独立页面后浮窗应关闭")
 	}
 }
 

@@ -1,6 +1,7 @@
 package appui
 
 import (
+	"sync"
 	"time"
 
 	"github.com/Team-Quaver/quaver-astra/internal/player"
@@ -573,6 +574,11 @@ func (a *App) qualityPill(c *ui.Context, t *ui.Theme) ui.Element {
 	if cur, ok := a.PL.Current(); ok && cur.CloudFileID != "" {
 		return pill
 	}
+	// 提前按当前曲目取一次可播档位；点开菜单时通常已经就位，未就位则先退回
+	// 完整档位表，探测回来后再重绘。
+	if cur, ok := a.PL.Current(); ok {
+		a.qualTiers.lookup(cur.Mid, a.loadSongTiers, a.invalidate)
+	}
 	if pill.Clicked() {
 		a.qualityOpen = !a.qualityOpen
 	}
@@ -601,8 +607,16 @@ func (a *App) qualityMenu(c *ui.Context, anchor ui.Element, fg ui.Color, activeB
 			Background(t.Surface).Radius(12).Border(1, t.Border).
 			Shadow(0, 10, 32, 0, ui.RGBA(0, 0, 0, 0.18))
 		panel.Children(func() {
-			ids, labels := tierLabels(a.PL.TierTable())
-			cur := a.PL.Quality()
+			var available []string
+			if cur, ok := a.PL.Current(); ok {
+				available = a.qualTiers.lookup(cur.Mid, a.loadSongTiers, a.invalidate)
+			}
+			cur := playingQualityTier(a.PL.Quality(), a.PL.Stream())
+			if available != nil && cur != "" && cur != "auto" && !tierAllowed(available, cur) {
+				// 实际播出档位一定得在菜单里，否则降档后没有任何高亮项。
+				available = append(append([]string{}, available...), cur)
+			}
+			ids, labels := tierLabels(a.PL.TierTable(), available)
 			for i, id := range ids {
 				item := ui.ButtonBase(c).FillWidth().Padding(7, 10).Radius(8).Transition(hoverFade)
 				sel := cur == id
@@ -620,13 +634,80 @@ func (a *App) qualityMenu(c *ui.Context, anchor ui.Element, fg ui.Color, activeB
 				if item.Clicked() {
 					a.qualityOpen = false
 					a.PL.SwitchQuality(id)
-					if id == "auto" {
-						a.Conf.Set("Quality.DefaultQuality", "auto")
-					}
 				}
 			}
 		})
 	})
+}
+
+// playingQualityTier 是切档菜单要高亮的档位：有实际播出流时以流档位为准
+// （请求 master 但回退到 flac，就要高亮 flac），没有流时才用请求档位。
+func playingQualityTier(requested string, st *player.StreamInfo) string {
+	if st != nil && st.Tier != "" {
+		return st.Tier
+	}
+	return requested
+}
+
+func tierAllowed(ids []string, id string) bool {
+	for _, v := range ids {
+		if v == id {
+			return true
+		}
+	}
+	return false
+}
+
+// songTierProbe 缓存每首歌实际拥有的档位。nil = 详情尚未返回或请求失败
+// （调用方退回完整档位表）；非 nil 空切片 = 详情确认没有任何已知档位。
+type songTierProbe struct {
+	mu    sync.Mutex
+	mid   string
+	tiers []string
+}
+
+// lookup 返回 mid 对应曲目的档位；首次遇到该 mid 时在后台拉一次详情。
+func (q *songTierProbe) lookup(mid string, load func(string) []string, redraw func()) []string {
+	if mid == "" {
+		return nil
+	}
+	q.mu.Lock()
+	if q.mid == mid {
+		tiers := q.tiers
+		q.mu.Unlock()
+		return tiers
+	}
+	q.mid, q.tiers = mid, nil
+	q.mu.Unlock()
+
+	go func() {
+		tiers := load(mid)
+		q.mu.Lock()
+		if q.mid == mid {
+			q.tiers = tiers
+		}
+		q.mu.Unlock()
+		if redraw != nil {
+			redraw()
+		}
+	}()
+	return nil
+}
+
+// loadSongTiers 拉取歌曲详情并映射成播放器档位 id。请求失败返回 nil，
+// 让菜单退回完整档位表而不是露出空列表。
+func (a *App) loadSongTiers(mid string) []string {
+	if a.API == nil {
+		return nil
+	}
+	var tiers []string
+	a.withAPILimit(func() {
+		detail, err := a.API.SongDetail(mid)
+		if err == nil {
+			tiers = detail.TrackInfo.File.AvailableTiers()
+		}
+	})
+	return tiers
 }
 
 // loveBtn 是播放条上的红心。

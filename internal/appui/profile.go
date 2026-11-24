@@ -12,9 +12,10 @@ import (
 
 // ===== 个人中心 =====
 //
-// 顶栏头像的落点。以前点头像跳「设置」，于是两件事挤在一个入口里：想看自己
-// 账号的人被丢进一堆偏好开关，想退出登录的人反而找不到按钮（它藏在
-// 「设置 → 关于」最底下）。这一页只管账号：我是谁、买到什么时候、怎么退出。
+// 顶栏头像的落点有两种形态：默认展开浮窗，看一眼昵称/权益就能退出登录；
+// 浮窗页脚的「独立页面」进入本页，完整展示账号信息。以前点头像跳「设置」，
+// 想看账号的人被丢进一堆偏好开关，想退出登录的人反而找不到按钮（它藏在
+// 「设置 → 关于」最底下）。两种形态都只管账号：我是谁、买到什么时候、怎么退出。
 
 // profileState 是「个人中心」页的数据态。
 //
@@ -50,25 +51,8 @@ func (a *App) profileView(c *ui.Context) {
 	t := c.Theme()
 	loggedIn := a.PL.LoggedIn()
 
-	// 首帧取数：未登录不发请求（/user/vip 会 401），测试里 API 可能为 nil，同样跳过。
-	if loggedIn && a.API != nil && !st.loaded && !st.loading && !st.logging && !st.logoutPending {
-		a.loadProfile(st)
-	}
-
-	me := a.PL.Me()
-	name, avatar, uid := me.Name, me.Avatar, ""
-	tier := me.VipLabel
-	if st.loaded && st.me.BaseInfo.Name != "" {
-		// 取数失败时 st.me 是空壳，别拿它盖掉顶栏已经有的昵称。
-		name, avatar, uid = st.me.BaseInfo.Name, st.me.BaseInfo.Avatar, st.me.BaseInfo.EncryptedUin
-	}
-	if st.vipOK {
-		tier = vipLabel(st.vip)
-	}
-	if !loggedIn {
-		// 退出登录后 player 里的 me 还是上一位账号的缓存，不能继续顶在页面上。
-		name, avatar, uid, tier = "", "", "", ""
-	}
+	a.profileEnsure(st, loggedIn)
+	name, avatar, uid, tier := a.profileWho(st, loggedIn)
 
 	a.pageEnter(c, ui.Scroll(c).Fill().Padding(20, 24, 28, 24).Gap(16)).Children(func() {
 		ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(10).Children(func() {
@@ -85,28 +69,127 @@ func (a *App) profileView(c *ui.Context) {
 
 		ui.Column(c).FillWidth().Gap(14).MaxWidth(560).Children(func() {
 			// —— 身份卡 ——
-			ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(14).Children(func() {
-				ui.Avatar(c, name, a.Covers.Get(avatar, a.invalidate)).Size(56, 56)
-				ui.Column(c).Grow(1).Gap(5).Children(func() {
-					ui.Text(c, displayName(name, loggedIn)).FontSize(fz(18)).FontWeight(800).
-						SingleLine().Ellipsis("…")
-					ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(8).Children(func() {
-						badge := ui.Badge(c, tierBadgeText(loggedIn, tier))
-						if loggedIn && tier != "" {
-							badge.Background(t.Accent.Alpha(0.14)).TextColor(t.Accent)
-						}
-						if uid != "" {
-							ui.Text(c, "UID "+uid).FontSize(fz(11.5)).TextColor(t.TextMuted).
-								SingleLine().Ellipsis("…")
-						}
-					})
-				})
-			})
+			a.profileIdentity(c, t, name, avatar, uid, tier, loggedIn, 56, 18)
 
 			ui.Divider(c)
 			a.profileVip(c, t, st, loggedIn)
 			ui.Divider(c)
 			a.profileAccount(c, t, st, loggedIn)
+		})
+	})
+}
+
+// profilePopover 是顶栏头像的下拉浮窗（个人中心的「浮窗模式」）。
+//
+// 它和独立页面共用 profileState：浮窗里看到的名字、档位与到期时间和
+// /profile 页完全一致，退出登录也走同一条路径。浮窗只保留「看一眼」
+// 需要的内容；完整说明（凭证去向等）留给独立页面，页脚入口一键跳转。
+func (a *App) profilePopover(c *ui.Context, t *ui.Theme, anchor ui.Element) {
+	st := &a.profile
+	loggedIn := a.PL.LoggedIn()
+	if a.profileOpen {
+		a.profileEnsure(st, loggedIn)
+	}
+	ui.PopoverBase(c, anchor, &a.profileOpen, func(panel ui.Element) {
+		// 右缘对齐头像，340 宽的浮窗在窗口右缘也不会被裁掉。
+		panel.AttachTo(anchor, ui.AnchorBottomRight, ui.AnchorTopRight).Margin(6, 0, 0, 0)
+		panel.Width(340).Padding(14).Gap(12).Background(t.Surface).Radius(14).
+			Border(1, t.Border).Shadow(0, 12, 36, 0, ui.RGBA(0, 0, 0, 0.20))
+		panel.Children(func() {
+			ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(8).Children(func() {
+				ui.Text(c, "账号信息").FontSize(fz(13)).FontWeight(700)
+				ui.Spacer(c)
+				if loggedIn && !st.logoutPending {
+					linkButton(c, "刷新", func() { a.loadProfile(st) })
+				}
+			})
+			if st.err != "" {
+				ui.Text(c, st.err).FontSize(fz(11.5)).TextColor(t.TextMuted).MaxLines(2)
+			}
+			name, avatar, uid, tier := a.profileWho(st, loggedIn)
+			a.profileIdentity(c, t, name, avatar, uid, tier, loggedIn, 40, 15)
+			ui.Divider(c)
+			a.profileVip(c, t, st, loggedIn)
+			ui.Divider(c)
+			a.profilePopoverActions(c, st, loggedIn)
+		})
+	})
+}
+
+// profileEnsure 是取数闸门，页面与浮窗共用：未登录不发请求（/user/vip
+// 会 401），测试里 API 可能为 nil，同样跳过。loaded 失败也置位，重试只
+// 由「刷新」显式触发。
+func (a *App) profileEnsure(st *profileState, loggedIn bool) {
+	if loggedIn && a.API != nil && !st.loaded && !st.loading && !st.logging && !st.logoutPending {
+		a.loadProfile(st)
+	}
+}
+
+// profileWho 汇总身份卡上的四个值：昵称、头像、UID、会员档位。
+func (a *App) profileWho(st *profileState, loggedIn bool) (name, avatar, uid, tier string) {
+	me := a.PL.Me()
+	name, avatar, tier = me.Name, me.Avatar, me.VipLabel
+	if st.loaded && st.me.BaseInfo.Name != "" {
+		// 取数失败时 st.me 是空壳，别拿它盖掉顶栏已经有的昵称。
+		name, avatar, uid = st.me.BaseInfo.Name, st.me.BaseInfo.Avatar, st.me.BaseInfo.EncryptedUin
+	}
+	if st.vipOK {
+		tier = vipLabel(st.vip)
+	}
+	if !loggedIn {
+		// 退出登录后 player 里的 me 还是上一位账号的缓存，不能继续顶在页面上。
+		name, avatar, uid, tier = "", "", "", ""
+	}
+	return name, avatar, uid, tier
+}
+
+// profileIdentity 是身份卡：头像、昵称、档位徽标与 UID。
+// avatarSize/nameSize 让浮窗用更小的一号字，页面保持原尺寸。
+func (a *App) profileIdentity(c *ui.Context, t *ui.Theme, name, avatar, uid, tier string, loggedIn bool, avatarSize, nameSize float32) {
+	ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(14).Children(func() {
+		ui.Avatar(c, name, a.Covers.Get(avatar, a.invalidate)).Size(avatarSize, avatarSize)
+		ui.Column(c).Grow(1).Gap(5).Children(func() {
+			ui.Text(c, displayName(name, loggedIn)).FontSize(fz(nameSize)).FontWeight(800).
+				SingleLine().Ellipsis("…")
+			ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(8).Children(func() {
+				badge := ui.Badge(c, tierBadgeText(loggedIn, tier))
+				if loggedIn && tier != "" {
+					badge.Background(t.Accent.Alpha(0.14)).TextColor(t.Accent)
+				}
+				if uid != "" {
+					ui.Text(c, "UID "+uid).FontSize(fz(11.5)).TextColor(t.TextMuted).
+						SingleLine().Ellipsis("…")
+				}
+			})
+		})
+	})
+}
+
+// profilePopoverActions 是浮窗页脚：退出登录与「独立页面」入口。
+func (a *App) profilePopoverActions(c *ui.Context, st *profileState, loggedIn bool) {
+	ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(8).Children(func() {
+		if loggedIn {
+			out := ui.Button(c, "退出登录")
+			out.Disabled(st.logging)
+			if out.Clicked() {
+				// 登录态一跳变，头像就换回「登录」图标；浮窗没有必要继续挂着。
+				a.profileOpen = false
+				a.profileLogout(st)
+			}
+			if st.logging {
+				ui.Spinner(c)
+			}
+		} else {
+			primaryBtn(c, "去登录", func() {
+				a.profileOpen = false
+				a.Router.Push("/login")
+			})
+		}
+		ui.Spacer(c)
+		linkButton(c, "独立页面", func() {
+			a.profileOpen = false
+			a.searchOpen = false
+			a.Router.Push("/profile")
 		})
 	})
 }

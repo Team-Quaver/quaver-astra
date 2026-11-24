@@ -73,6 +73,16 @@ func TestUIShots(t *testing.T) {
 	waitText(t, profTester, "到期（还剩")
 	shot(profTester, "profile.png")
 
+	// 个人中心浮窗（头像下拉：身份、权益、退出登录、独立页面入口）。
+	popApp, popTester, _ := profileApp(t, `{"svip":1,"svip_start":"2024-06-01","svip_end":"2027-01-01",`+
+		`"identity":{"vip":1,"vip_end":"2026-10-24","huge_vip":0,"level":12}}`)
+	popApp.Router = ui.NewRouter("/settings")
+	if err := popTester.Click("个人中心"); err != nil {
+		t.Fatal(err)
+	}
+	waitText(t, popTester, "到期（还剩")
+	shot(popTester, "profile-popover.png")
+
 	// 正在播放页（歌词跟随态，默认右栏）。
 	base, baseTester := npTestApp(t, color.RGBA{R: 96, G: 148, B: 210, A: 255})
 	base.PL.SeekTo(2.0 / 269)

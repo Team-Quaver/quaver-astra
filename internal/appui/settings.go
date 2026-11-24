@@ -349,23 +349,15 @@ func (a *App) settingsPlayback(c *ui.Context, t *ui.Theme) {
 		}
 
 		// 默认音质：id 与展示标签平行数组
-		ids := []string{"auto"}
-		labels := []string{"自动（最高可播）"}
-		if tt := a.PL.TierTable(); tt != nil {
-			for _, tier := range tt.Tiers {
-				ids = append(ids, tier.ID)
-				label := tier.ID + " " + tier.Label
-				if tier.Locked {
-					label += " 🔒"
-				}
-				labels = append(labels, label)
-			}
-		} else {
-			ids = append(ids, "flac", "320", "128")
-			labels = append(labels, "flac FLAC 无损", "320 320K MP3", "128 128K MP3")
+		ids, labels := tierLabels(a.PL.TierTable(), nil)
+		cur := a.Conf.String("Quality.DefaultQuality", "")
+		if cur == "" || cur == "auto" {
+			cur = a.PL.HighestAllowedQuality()
 		}
-		cur := a.Conf.String("Quality.DefaultQuality", "auto")
-		curLabel := labels[0]
+		curLabel := ""
+		if len(labels) > 0 {
+			curLabel = labels[0]
+		}
 		for i, id := range ids {
 			if id == cur {
 				curLabel = labels[i]
@@ -555,20 +547,38 @@ func (a *App) setTheme(c *ui.Context, key string) {
 	a.invalidate()
 }
 
-// tierLabels 把档位表摊平成「id 列表 + 展示标签列表」，供选择器与
+// tierLabels 把档位表摊平成「id 列表 + 展示标签列表」，供默认音质选择器与
 // 档位弹出菜单共用。
-func tierLabels(tt *player.TierTable) ([]string, []string) {
-	ids := []string{"auto"}
-	labels := []string{"自动（最高可播）"}
-	if tt != nil {
-		for _, tier := range tt.Tiers {
-			ids = append(ids, tier.ID)
-			label := tier.ID + " " + tier.Label
-			if tier.Locked {
-				label += " 🔒"
-			}
-			labels = append(labels, label)
+// available 非 nil 时只保留该曲实际拥有的档位；nil 表示详情还没拿到，
+// 先退回完整档位表。
+func tierLabels(tt *player.TierTable, available []string) ([]string, []string) {
+	tiers := []player.Tier{
+		{ID: "flac", Label: "FLAC 无损", Rank: 40},
+		{ID: "320", Label: "320K MP3", Rank: 20},
+		{ID: "128", Label: "128K MP3", Rank: 10},
+	}
+	if tt != nil && len(tt.Tiers) > 0 {
+		tiers = tt.Tiers
+	}
+	ids := make([]string, 0, len(tiers))
+	labels := make([]string, 0, len(tiers))
+	var allowed map[string]bool
+	if available != nil {
+		allowed = make(map[string]bool, len(available))
+		for _, id := range available {
+			allowed[id] = true
 		}
+	}
+	for _, tier := range tiers {
+		if allowed != nil && !allowed[tier.ID] {
+			continue
+		}
+		ids = append(ids, tier.ID)
+		label := tier.ID + " " + tier.Label
+		if tier.Locked {
+			label += " 🔒"
+		}
+		labels = append(labels, label)
 	}
 	return ids, labels
 }

@@ -1738,7 +1738,20 @@ func (p *Player) Quality() string {
 	if p.sessionQ != "" {
 		return p.sessionQ
 	}
-	return p.conf.String("Quality.DefaultQuality", "auto")
+	// 旧配置里的 auto 仅作兼容哨兵：界面已不再提供该选项，读到就换算成
+	// 当前权限可用的最高档位。
+	want := p.conf.String("Quality.DefaultQuality", "")
+	if want == "" || want == "auto" {
+		return highestQuality(p.tiers)
+	}
+	return want
+}
+
+// HighestAllowedQuality 当前权限可用的最高档位（默认设置的兜底值）。
+func (p *Player) HighestAllowedQuality() string {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return highestQuality(p.tiers)
 }
 
 func (p *Player) SwitchQuality(tier string) {
@@ -1805,6 +1818,17 @@ func pickTier(table *TierTable, want string, allowAtmos bool) string {
 	return best
 }
 
+// highestQuality 取后端标注的最高可播档位；没有 Max 时按未锁定档位 rank 取最高。
+func highestQuality(table *TierTable) string {
+	if table == nil {
+		return "320"
+	}
+	if table.Max != "" {
+		return table.Max
+	}
+	return pickTier(table, "auto", false)
+}
+
 // ===== 内部：起播 =====
 
 // qmAtmosFallbackTiers 是「回退到全景声」开关降权的全部档位。
@@ -1856,15 +1880,15 @@ func (p *Player) startCurrent(resumeTo float64, autoplay bool, overrideTier stri
 		want = p.sessionQ
 	}
 	if want == "" {
-		want = p.conf.String("Quality.DefaultQuality", "auto")
+		want = p.conf.String("Quality.DefaultQuality", "")
+	}
+	if want == "" || want == "auto" {
+		want = highestQuality(p.tiers)
 	}
 	// 开关关闭（默认）时全景声不参与自动选档与回退；只有用户显式
 	// 点了 7.1 / 5.1 才允许。开关打开时把两档压到回退链尾部——
 	// 只在常规档位都不可播时才回退到全景声，而不是优先选它。
 	allowAtmos := p.conf.Bool("Quality.FallbackToQMAtmos", false) || qmAtmosTier(want)
-	if want == "auto" {
-		want = pickTier(p.tiers, "auto", allowAtmos)
-	}
 	dep := []string{}
 	if allowAtmos {
 		// 显式列出两档全景声：7.1 与 5.1 都属于「Fallback Atmos」，

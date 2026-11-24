@@ -43,10 +43,13 @@ type App struct {
 	// glowNow 是本帧使用的辅色（进度条/氛围），由 buildTheme 刷新。
 	glowNow ui.Color
 
-	npOpen       bool
-	npQueue      bool // 正在播放页右栏显示队列（默认显示歌词）
-	queueOpen    bool
-	searchOpen   bool
+	npOpen     bool
+	npQueue    bool // 正在播放页右栏显示队列（默认显示歌词）
+	queueOpen  bool
+	searchOpen bool
+	// profileOpen 是顶栏头像的下拉浮窗。个人中心同时保留独立页面（/profile）：
+	// 浮窗负责「看一眼/退出登录」，独立页面负责完整展示，两者共用一份数据态。
+	profileOpen  bool
 	searchDraft  string
 	pendingToast string
 	volOpen      bool
@@ -57,7 +60,9 @@ type App struct {
 	npMoreOpen  bool
 	npQInfoOpen bool
 	// npQInfo 是音质胶囊浮窗的流参数探测缓存（后台探测、回填重绘）。
-	npQInfo       qinfoProbe
+	npQInfo qinfoProbe
+	// qualTiers 是按曲目缓存的可播档位：切档菜单只列这首歌实际拥有的音质。
+	qualTiers     songTierProbe
 	seekDragging  bool
 	seekFrac      float32
 	probedMid     string
@@ -567,7 +572,7 @@ func (a *App) searchButton(c *ui.Context, t *ui.Theme) {
 	})
 }
 
-// avatarButton 是右上角的用户入口：登录后进个人中心，未登录进登录页。
+// avatarButton 是右上角的用户入口：登录后展开个人中心浮窗，未登录进登录页。
 func (a *App) avatarButton(c *ui.Context, t *ui.Theme) {
 	me := a.PL.Me()
 	b := ui.ButtonBase(c).Size(topNavSize, topNavSize).Radius(999).Center().Transition(hoverFade)
@@ -592,15 +597,16 @@ func (a *App) avatarButton(c *ui.Context, t *ui.Theme) {
 	})
 	b.Tooltip("个人中心")
 	b.Label("个人中心")
-	if a.Router.Path() == "/profile" {
+	if a.profileOpen || a.Router.Path() == "/profile" {
 		b.Background(t.Accent.Alpha(0.13))
 	} else if b.Hovered() {
 		b.Background(t.SurfaceHover)
 	}
 	if b.Clicked() {
 		a.searchOpen = false
-		a.Router.Push("/profile")
+		a.profileOpen = !a.profileOpen
 	}
+	a.profilePopover(c, t, b)
 }
 
 // macWindowButtons 按 macOS HIG 把交通灯放在左上：关、最小化、缩放。
