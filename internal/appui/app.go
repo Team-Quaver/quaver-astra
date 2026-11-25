@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/Team-Quaver/quaver-astra/internal/audio"
-	"github.com/Team-Quaver/quaver-astra/internal/audio/fade"
 	mpvaudio "github.com/Team-Quaver/quaver-astra/internal/audio/mpv"
 	"github.com/Team-Quaver/quaver-astra/internal/backend"
 	"github.com/Team-Quaver/quaver-astra/internal/colorprobe"
@@ -905,16 +904,6 @@ func (a *App) applyRatePolicy() {
 		a.Conf.Bool(adaptiveRateKey, false),
 		a.Conf.Bool(switchDeviceRateKey, false),
 	)
-}
-
-// applyFadePolicy 把「淡入淡出」档位推给当前播放引擎。两个后端都在引擎
-// 内部做振幅包络；切换后端时 player 会重新下发。
-func (a *App) applyFadePolicy() {
-	if a.PL == nil || a.Conf == nil {
-		return
-	}
-	in, out := fade.Durations(a.Conf.String(fade.ConfigKey, fade.DefaultPreset))
-	a.PL.SetFadePolicy(in, out)
 }
 
 // setMPVBackend 切换播放后端并立即生效：正在播放时从当前进度重新取流，
