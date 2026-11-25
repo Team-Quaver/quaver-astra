@@ -24,6 +24,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Team-Quaver/quaver-astra/internal/audio/fade"
 	"github.com/team-quaver/liino"
 	"github.com/team-quaver/liino/decode"
 )
@@ -58,6 +59,8 @@ type Engine struct {
 	volume       float64
 	closed       bool
 	obs          func()
+	fade         *fade.Envelope
+	fadeStarted  bool // 本次载入是否已经触发过起播淡入
 
 	events <-chan liino.Event
 	cancel func()
@@ -92,8 +95,9 @@ func defaultConfig(opts Options) liino.Config {
 		StreamName:       appName,
 		AdaptiveRate:     opts.AdaptiveRate,
 		SwitchDeviceRate: opts.SwitchDeviceRate,
-		// 切歌时 120ms 淡出，避免设备回调里的硬切。
-		FadeOut: liino.DefaultFadeOut,
+		// 淡入淡出由适配层统一做（与 mpv 同一套包络）。Liino 自己的
+		// Stop 淡出会让 0s 档位仍然淡出 120ms，所以这里关掉。
+		FadeOut: 0,
 	}
 	if os.Getenv("QAA_AUDIO_LOG") != "" {
 		// 排障开关：把 Liino/FFmpeg 的诊断原样打到 stderr。
@@ -111,9 +115,11 @@ func defaultConfig(opts Options) liino.Config {
 // newEngine 是测试钩子：允许换成 null 输出或无网络配置。
 func newEngine(cfg liino.Config) *Engine {
 	e := &Engine{volume: 1, done: make(chan struct{})}
+	e.fade = fade.New(e.applyFadeLevel)
 	p, err := liino.New(cfg)
 	if err != nil {
 		e.initErr = fmt.Errorf("liino: %w", err)
+		e.fade.Close()
 		close(e.done)
 		return e
 	}
@@ -145,20 +151,33 @@ func (e *Engine) handle(ev liino.Event) {
 		e.gen = ev.Gen
 	}
 	notify := false
+	startFade := false
 	switch ev.Kind {
 	case liino.KindLoaded:
 		e.loaded = true
 		e.loadErr, e.loadErrFatal = "", false
 		notify = true
+		// 解码器打开即开始淡入；真正的设备出声只比这晚一个 preroll。
+		if !e.wantPaused && !e.fadeStarted {
+			e.fadeStarted = true
+			startFade = true
+		}
 	case liino.KindFailed:
 		e.loadErr = ev.Err
 		e.loadErrFatal = fatalError(ev.Err)
 		notify = true
 	case liino.KindPlaying, liino.KindPaused, liino.KindReady, liino.KindEnded, liino.KindDeviceChanged:
+		if ev.Kind == liino.KindPlaying && !e.wantPaused && !e.fadeStarted {
+			e.fadeStarted = true
+			startFade = true
+		}
 		notify = true
 	}
 	fn := e.obs
 	e.mu.Unlock()
+	if startFade {
+		e.fade.RampTo(1, e.fade.In(), nil)
+	}
 	if notify && fn != nil {
 		fn()
 	}
@@ -222,12 +241,16 @@ func (e *Engine) OpenURL(url string, startFrac, dur float64, autoplay bool) erro
 	e.loaded = false
 	e.loadErr, e.loadErrFatal = "", false
 	e.wantPaused = !autoplay
+	e.fadeStarted = false
 	e.mu.Unlock()
 
 	at := startFrac * dur
 	if at < 0.5 {
 		at = 0
 	}
+	// 新流从静音起步；同时作废上一首排队中的「淡出后 stop」，否则它
+	// 会在新歌挂上之后把会话拆掉。
+	e.fade.BeginLoad()
 	err := p.Open(context.Background(), decode.Source{URI: url}, liino.OpenOptions{
 		StartAt:  time.Duration(at * float64(time.Second)),
 		AutoPlay: autoplay,
@@ -251,12 +274,15 @@ func (e *Engine) Play() {
 		return
 	}
 	e.wantPaused = false
+	e.fadeStarted = true
 	p := e.p
 	e.mu.Unlock()
+	e.fade.RampTo(1, e.fade.In(), nil)
 	_ = p.Play()
 }
 
-// Pause 暂停，但保留设备会话（恢复无缺口）。
+// Pause 暂停，但保留设备会话（恢复无缺口）。与主项目一致：先把输出
+// 淡出，到 0 再真正冻结设备；期间按播放会取消这次暂停并淡回来。
 func (e *Engine) Pause() {
 	e.mu.Lock()
 	if e.closed || e.initErr != nil {
@@ -264,9 +290,17 @@ func (e *Engine) Pause() {
 		return
 	}
 	e.wantPaused = true
-	p := e.p
+	e.fadeStarted = false
 	e.mu.Unlock()
-	_ = p.Pause()
+	e.fade.RampTo(0, e.fade.Out(), func() {
+		e.mu.Lock()
+		still := !e.closed && e.wantPaused
+		cur := e.p
+		e.mu.Unlock()
+		if still && cur != nil {
+			_ = cur.Pause()
+		}
+	})
 }
 
 // Paused 报告是否暂停（本地意图与播放器状态取或）。
@@ -338,6 +372,7 @@ func (e *Engine) Duration(fallback float64) float64 {
 // SeekTo 跳到 frac（0..1）× dur 秒。Liino 的 seek 是异步的，失败会自行
 // 在目标位置重建解码器（见 liino.rebuildAfterSeek）。
 func (e *Engine) SeekTo(frac, dur float64) {
+	e.fade.FinishFadeOut()
 	e.mu.Lock()
 	p, closed := e.p, e.closed
 	e.mu.Unlock()
@@ -362,31 +397,66 @@ func (e *Engine) SetVolume(v float64) {
 	e.volume = v
 	p := e.p
 	e.mu.Unlock()
-	p.SetVolume(v)
+	p.SetVolume(v * e.fade.Level())
+}
+
+// applyFadeLevel 是包络回调：用户音量 × 当前包络才是真正送到设备的增益。
+func (e *Engine) applyFadeLevel(level float64) {
+	e.mu.Lock()
+	p, vol, closed := e.p, e.volume, e.closed
+	e.mu.Unlock()
+	if closed || p == nil {
+		return
+	}
+	p.SetVolume(vol * level)
+}
+
+// SetFade 设置起播淡入 / 淡出时长。立即生效：淡入途中改成关闭会马上
+// 回到满音量，淡出途中不打断 pending 动作。
+func (e *Engine) SetFade(in, out time.Duration) {
+	if e.fade == nil {
+		return
+	}
+	e.fade.SetDurations(in, out)
 }
 
 // SetStartVolume 是 player 的启动期快路径：Liino 在构造时就持有 Player，
 // 不需要等后台启动握手，直接落到输出增益即可。
 func (e *Engine) SetStartVolume(v float64) { e.SetVolume(v) }
 
-// Stop 停止当前曲目并卸载数据源。
+// Stop 停止当前曲目并卸载数据源。先淡出再真正 Stop；这段窗口里若已经
+// 来了新的 OpenURL，新流会把这次 Stop 作废（见 BeginLoad），否则延迟的
+// stop 会把刚挂好的新歌拆掉。
 func (e *Engine) Stop() {
 	// 与 OpenURL 共用一把锁：停止期间旧代的 loaded/failed 事件一律不采纳。
 	e.openMu.Lock()
-	defer e.openMu.Unlock()
 
 	e.mu.Lock()
 	if e.closed || e.initErr != nil {
 		e.mu.Unlock()
+		e.openMu.Unlock()
 		return
 	}
 	e.active = false
 	e.loaded = false
 	e.loadErr, e.loadErrFatal = "", false
 	e.wantPaused = false
-	p := e.p
+	e.fadeStarted = false
+	stopGen := e.gen
 	e.mu.Unlock()
-	_ = p.Stop()
+	e.openMu.Unlock()
+
+	e.fade.RampTo(0, e.fade.Out(), func() {
+		e.openMu.Lock()
+		e.mu.Lock()
+		same := !e.closed && !e.active && e.gen == stopGen
+		cur := e.p
+		e.mu.Unlock()
+		if same && cur != nil {
+			_ = cur.Stop()
+		}
+		e.openMu.Unlock()
+	})
 }
 
 // Loaded 报告本次载入是否已成形（解码器成功打开）。这是「这一档能不能播」
@@ -465,6 +535,9 @@ func (e *Engine) Close() {
 	p, cancel := e.p, e.cancel
 	e.mu.Unlock()
 
+	if e.fade != nil {
+		e.fade.Close()
+	}
 	if cancel != nil {
 		cancel() // 关闭事件通道，loop 退出（done 随之关闭）
 	}

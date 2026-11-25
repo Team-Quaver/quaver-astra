@@ -24,6 +24,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/Team-Quaver/quaver-astra/internal/audio/fade"
 )
 
 // Engine 通过 mpv 子进程播放一路音频。全部方法并发安全。
@@ -34,6 +36,7 @@ import (
 type Engine struct {
 	mu       sync.Mutex // 保护进程/连接/本地状态
 	readMu   sync.Mutex // 串行化对 socket 的读（握手命令与观察协程共用）
+	loadMu   sync.Mutex // 串行化 loadfile 与「淡出后 stop」，避免旧 stop 卸掉新歌
 	cmd      *exec.Cmd
 	done     chan struct{} // cmd.Wait 完成；Close 等它确认子进程已回收
 	doneOnce sync.Once
@@ -87,6 +90,9 @@ type Engine struct {
 	// 不能让应用启动跟着一起卡住。
 	readTimeout time.Duration
 
+	fade        *fade.Envelope
+	fadeStarted bool // 本次载入是否已经触发过起播淡入
+
 	obs   func()
 	obsCh chan struct{}
 }
@@ -138,6 +144,7 @@ func New() *Engine {
 		volume: 0.8, obsCh: make(chan struct{}, 1), done: make(chan struct{}),
 		started: make(chan struct{}), readTimeout: ipcReadTimeout,
 	}
+	e.fade = fade.New(e.applyFadeLevel)
 	go e.start()
 	return e
 }
@@ -150,6 +157,7 @@ func NewCompatIf(want bool) *Engine {
 		started: make(chan struct{}), readTimeout: ipcReadTimeout,
 		pcmCompat: want,
 	}
+	e.fade = fade.New(e.applyFadeLevel)
 	go e.start()
 	return e
 }
@@ -670,6 +678,7 @@ func (e *Engine) observe() {
 func (e *Engine) applyEvent(resp *ipcResp) {
 	e.mu.Lock()
 	changed := false
+	startFade := false
 	switch resp.Event {
 	case "property-change":
 		// property-change 的形状是 {"event":"property-change","name":..,"data":..}
@@ -719,6 +728,10 @@ func (e *Engine) applyEvent(resp *ipcResp) {
 		}
 		e.eof, e.loadErr, e.loadErrFatal = false, "", false
 		e.loadedGen = e.loadGen
+		if !e.wantPaused && !e.fadeStarted {
+			e.fadeStarted = true
+			startFade = true
+		}
 		changed = true
 	case "end-file":
 		// mpv 在播放结束或载入失败时都推 end-file。只认归属于本次载入的那
@@ -746,6 +759,9 @@ func (e *Engine) applyEvent(resp *ipcResp) {
 	}
 	cb := e.obs
 	e.mu.Unlock()
+	if startFade {
+		e.fade.RampTo(1, e.fade.In(), nil)
+	}
 	if changed && cb != nil {
 		e.signal()
 	}
@@ -849,17 +865,24 @@ func (e *Engine) OpenURL(url string, startFrac, dur float64, autoplay bool) erro
 		return errors.New("mpv 未运行，无法播放")
 	}
 	e.wantPaused = !autoplay
+	e.fadeStarted = false
 	e.eof, e.pos, e.dur = false, 0, 0
 	// 开新的一代：上一首的 start-file/file-loaded/end-file 与回包从此不作数。
 	e.loadGen++
 	e.startGen, e.loadedGen = 0, 0
 	e.loadErr, e.loadErrGen, e.loadErrFatal = "", 0, false
 	e.lastLoad = cmd
-	if e.pcm != nil {
-		// 兼容模式：把续播起点钉进 PCM 时间轴；start-file 到来时代次生效。
-		e.pcm.beginPending(startFrac * dur)
-	}
+	pcm := e.pcm
 	e.mu.Unlock()
+
+	// 新流从静音起步（已经在淡出就沿用剩余时间继续降）。同时作废
+	// 上一首排队中的「淡出后 stop」，否则它会把刚 load 的新歌卸掉。
+	e.loadMu.Lock()
+	e.fade.BeginLoad()
+	if pcm != nil {
+		// 兼容模式：把续播起点钉进 PCM 时间轴；start-file 到来时代次生效。
+		pcm.beginPending(startFrac * dur)
+	}
 
 	// loadfile 异步下发（async:true）。异步有两个理由：
 	//  1. mpv 的命令同步执行期间不服务 socket，loadfile 要等文件打开、
@@ -872,6 +895,7 @@ func (e *Engine) OpenURL(url string, startFrac, dur float64, autoplay bool) erro
 		e.loadReq = id
 		e.mu.Unlock()
 	}
+	e.loadMu.Unlock()
 
 	if autoplay {
 		e.commandQuiet("set_property", "pause", false)
@@ -885,16 +909,27 @@ func (e *Engine) OpenURL(url string, startFrac, dur float64, autoplay bool) erro
 func (e *Engine) Play() {
 	e.mu.Lock()
 	e.wantPaused = false
+	e.fadeStarted = true
 	e.mu.Unlock()
+	e.fade.RampTo(1, e.fade.In(), nil)
 	e.commandQuiet("set_property", "pause", false)
 }
 
-// Pause 暂停。
+// Pause 暂停。先淡出到 0 再真正让 mpv 暂停；淡出期间按播放会取消这次
+// 暂停。Paused 仍会立刻返回 true（意图先落地，UI/MPRIS 不等淡出）。
 func (e *Engine) Pause() {
 	e.mu.Lock()
 	e.wantPaused = true
+	e.fadeStarted = false
 	e.mu.Unlock()
-	e.commandQuiet("set_property", "pause", true)
+	e.fade.RampTo(0, e.fade.Out(), func() {
+		e.mu.Lock()
+		still := !e.closed && e.wantPaused
+		e.mu.Unlock()
+		if still {
+			e.commandQuiet("set_property", "pause", true)
+		}
+	})
 }
 
 // Paused 报告是否暂停（本地意图与 mpv 观测取或）。
@@ -984,6 +1019,9 @@ func (e *Engine) Duration(fallback float64) float64 {
 
 // SeekTo 跳到 frac（0..1）× dur 秒。
 func (e *Engine) SeekTo(frac, dur float64) {
+	// 淡出途中 seek（MPRIS Stop = pause + seek(0)）：马上收尾，
+	// 别先听见一小段歌头再静音。
+	e.fade.FinishFadeOut()
 	e.seekAbs(clamp01(frac) * dur)
 }
 
@@ -1034,11 +1072,24 @@ func (e *Engine) seekAbs(sec float64) {
 	}
 }
 
-// SetVolume 0..1（mpv 的 volume 单位是百分制）。
+// SetVolume 0..1（mpv 的 volume 单位是百分制）。用户音量不改包络：
+// 实际音量始终是「用户目标 × 淡入淡出包络」。
 func (e *Engine) SetVolume(v float64) {
 	v = clamp01(v)
 	e.mu.Lock()
 	e.volume = v
+	e.mu.Unlock()
+	e.applyFadeLevel(e.fade.Level())
+}
+
+// applyFadeLevel 把「用户音量 × 包络」落到当前输出。
+func (e *Engine) applyFadeLevel(level float64) {
+	e.mu.Lock()
+	if e.closed {
+		e.mu.Unlock()
+		return
+	}
+	v := e.volume * level
 	pcm := e.pcm
 	e.mu.Unlock()
 	if pcm != nil {
@@ -1047,7 +1098,17 @@ func (e *Engine) SetVolume(v float64) {
 		pcm.setVolume(v)
 		return
 	}
-	e.commandQuiet("set_property", "volume", strconv.FormatFloat(v*100, 'f', 0, 64))
+	// 淡入淡出 30ms 一步；百分制保留两位小数，避免整数步进的拉链声。
+	e.commandQuiet("set_property", "volume", strconv.FormatFloat(v*100, 'f', 2, 64))
+}
+
+// SetFade 设置起播淡入 / 淡出时长。立即生效：淡入途中改成关闭会马上
+// 回到满音量，淡出途中不打断 pending 动作。
+func (e *Engine) SetFade(in, out time.Duration) {
+	if e.fade == nil {
+		return
+	}
+	e.fade.SetDurations(in, out)
 }
 
 // SetStartVolume 设置后台启动握手时要同步给 mpv 的音量。它不发 IPC：
@@ -1059,19 +1120,35 @@ func (e *Engine) SetStartVolume(v float64) {
 	e.mu.Unlock()
 }
 
-// Stop 停止当前曲目，回到空闲态。
+// Stop 停止当前曲目，回到空闲态。先淡出再真正 stop；淡出窗口里若来了
+// 新的 OpenURL，新流会作废这次 stop（见 BeginLoad）。
 func (e *Engine) Stop() {
 	e.mu.Lock()
 	e.wantPaused, e.eof, e.pos, e.dur = false, false, 0, 0
+	e.fadeStarted = false
 	// 停止同样翻页：之前那次载入的 Loaded/LoadError 不再代表现在。
 	e.loadGen++
 	e.startGen, e.loadedGen = 0, 0
 	e.loadErr, e.loadErrGen, e.loadErrFatal = "", 0, false
-	if e.pcm != nil {
-		e.pcm.stop() // mpv 侧 stop 后 FIFO 不再有新数据，会话即刻作废
-	}
+	stopGen := e.loadGen
 	e.mu.Unlock()
-	e.commandQuiet("stop")
+	e.fade.RampTo(0, e.fade.Out(), func() {
+		e.loadMu.Lock()
+		e.mu.Lock()
+		still := !e.closed && e.loadGen == stopGen
+		pcm := e.pcm
+		e.mu.Unlock()
+		if !still {
+			e.loadMu.Unlock()
+			return
+		}
+		if pcm != nil {
+			// mpv 侧 stop 后 FIFO 不再有新数据，会话即刻作废。
+			pcm.stop()
+		}
+		e.commandQuiet("stop")
+		e.loadMu.Unlock()
+	})
 }
 
 // markDone 只关闭一次退出信号；spawn 失败与 Wait 回收可能同时收口。
@@ -1096,6 +1173,9 @@ func (e *Engine) Close() {
 	pcm := e.pcm
 	e.pcm = nil
 	e.mu.Unlock()
+	if e.fade != nil {
+		e.fade.Close()
+	}
 	if pcm != nil {
 		pcm.stop()
 		pcm.speaker.Close()

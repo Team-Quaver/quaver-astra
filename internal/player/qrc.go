@@ -125,9 +125,10 @@ func (l QrcLine) WordFills(t float64, out []float32) []float32 {
 var (
 	// 行：[start,dur]正文
 	reQrcLine = regexp.MustCompile(`^\[(\d+),(\d+)\](.*)$`)
-	// 词：正文(start,dur)——括号里必须是两个整数，才不会把歌词里的
-	// 普通括号（如「(Live)」）误判成时间标签。
-	reQrcWord = regexp.MustCompile(`([^()]*)\((\d+),(\d+)\)`)
+	// 词时间标签：(start,dur)。括号里必须是两个整数，才不会把歌词里的
+	// 普通括号（如「(Live)」）误判成时间标签。标签之外的文字（包括
+	// 「(Yeah)」「Composer(s)」这种半角括号）都属于词文本，不能丢。
+	reQrcWord = regexp.MustCompile(`\((\d+),(\d+)\)`)
 	// 元信息行：[ti:…] [ar:…] [al:…] [by:…] [offset:…]
 	reQrcTag = regexp.MustCompile(`^\[[a-zA-Z]+:`)
 )
@@ -373,21 +374,26 @@ func parseQRCBody(body string) []QrcLine {
 
 // qrcPlainText 去掉正文里的词级时间标签，只留歌词文字。
 func qrcPlainText(content string) string {
-	return reQrcWord.ReplaceAllString(content, "$1")
+	return reQrcWord.ReplaceAllString(content, "")
 }
 
 // qrcWords 抽出正文里的词级时间轴。lineStartMS 是所在行的起始毫秒。
 func qrcWords(content string, lineStartMS float64) []QrcWord {
-	ms := reQrcWord.FindAllStringSubmatch(content, -1)
-	if len(ms) == 0 {
+	locs := reQrcWord.FindAllStringSubmatchIndex(content, -1)
+	if len(locs) == 0 {
 		return nil
 	}
-	words := make([]QrcWord, 0, len(ms))
+	words := make([]QrcWord, 0, len(locs))
 	maxEnd := 0.0
-	for _, m := range ms {
-		t, _ := strconv.ParseFloat(m[2], 64)
-		d, _ := strconv.ParseFloat(m[3], 64)
-		words = append(words, QrcWord{Time: t / 1000, Dur: d / 1000, Text: m[1]})
+	prev := 0
+	for _, loc := range locs {
+		// 标签前的全部文字都属于这个词，而不是只取括号外的片段：
+		// 否则「(Yeah) Who want the (yeah)」会被拆成「Who want the」。
+		text := content[prev:loc[0]]
+		prev = loc[1]
+		t, _ := strconv.ParseFloat(content[loc[2]:loc[3]], 64)
+		d, _ := strconv.ParseFloat(content[loc[4]:loc[5]], 64)
+		words = append(words, QrcWord{Time: t / 1000, Dur: d / 1000, Text: text})
 		if e := t + d; e > maxEnd {
 			maxEnd = e
 		}

@@ -5,6 +5,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/Team-Quaver/quaver-astra/internal/audio/fade"
 )
 
 func TestParseLrc(t *testing.T) {
@@ -177,8 +179,6 @@ func TestNextIndexModes(t *testing.T) {
 	}
 }
 
-type fakePrefs struct{}
-
 // TestEnqueueNextSemantics 钉住「下一首播放」的两分支语义（对齐主项目
 //
 //  1. 队列非空：插到当前曲之后（index+1），index 与当前曲不动，引擎不再
@@ -260,12 +260,64 @@ func TestPlayNowKeepsQueue(t *testing.T) {
 	}
 }
 
-func (fakePrefs) String(key, def string) string { return def }
-func (fakePrefs) Float(key string, def float64) float64 {
+// fakePrefs 的零值等价于「所有键都使用默认值」；需要指定配置的测试
+// 往 vals 里塞值。
+type fakePrefs struct{ vals map[string]any }
+
+func (p fakePrefs) String(key, def string) string {
+	if v, ok := p.vals[key].(string); ok {
+		return v
+	}
 	return def
 }
-func (fakePrefs) Bool(key string, def bool) bool { return def }
-func (fakePrefs) Set(key string, val any)        {}
+func (p fakePrefs) Float(key string, def float64) float64 {
+	return def
+}
+func (p fakePrefs) Bool(key string, def bool) bool {
+	if v, ok := p.vals[key].(bool); ok {
+		return v
+	}
+	return def
+}
+func (p fakePrefs) Set(key string, val any) {
+	if p.vals != nil {
+		p.vals[key] = val
+	}
+}
+
+// fadeEngine 记录引擎收到的淡入淡出档位。
+type fadeEngine struct {
+	fakeEngine
+	in, out time.Duration
+}
+
+func (e *fadeEngine) SetFade(in, out time.Duration) {
+	e.in, e.out = in, out
+}
+
+func TestFadePresetAppliedToEngine(t *testing.T) {
+	eng := &fadeEngine{}
+	New(stubBackend{}, eng, fakePrefs{vals: map[string]any{fade.ConfigKey: "long"}})
+	if eng.in != 800*time.Millisecond || eng.out != 500*time.Millisecond {
+		t.Fatalf("构造时下发的淡入淡出 = (%v, %v)，期望 (800ms, 500ms)", eng.in, eng.out)
+	}
+
+	prefs := fakePrefs{vals: map[string]any{fade.ConfigKey: "normal"}}
+	p := New(stubBackend{}, eng, prefs)
+	if eng.in != 400*time.Millisecond || eng.out != 250*time.Millisecond {
+		t.Fatalf("默认档位 = (%v, %v)，期望 (400ms, 250ms)", eng.in, eng.out)
+	}
+	p.SetFadePreset("off")
+	if eng.in != 0 || eng.out != 0 {
+		t.Fatalf("关闭档位 = (%v, %v)，期望 (0, 0)", eng.in, eng.out)
+	}
+
+	next := &fadeEngine{}
+	p.SetEngine(next)
+	if next.in != 0 || next.out != 0 {
+		t.Fatalf("切换引擎后未继承淡入淡出设置：(%v, %v)", next.in, next.out)
+	}
+}
 
 // stubBackend 不触网的空后端（只测队列/模式逻辑）。
 type stubBackend struct{}

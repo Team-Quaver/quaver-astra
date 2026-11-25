@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/Team-Quaver/quaver-astra/internal/audio"
+	"github.com/Team-Quaver/quaver-astra/internal/audio/fade"
 	mpvaudio "github.com/Team-Quaver/quaver-astra/internal/audio/mpv"
 	"github.com/Team-Quaver/quaver-astra/internal/player"
 
@@ -315,6 +316,28 @@ func (a *App) settingsPlayback(c *ui.Context, t *ui.Theme) {
 				ui.Text(c, info.Detail).FontSize(fz(11.5)).TextColor(t.TextMuted).MaxLines(2)
 			}
 		}
+
+		// 淡入淡出：起播淡入 + 暂停/停止/切歌淡出。mpv 与 Liino 共用同一套
+		// 振幅包络（0s 档位就是真正的硬切）。
+		ui.Text(c, "淡入淡出").FontSize(fz(14)).FontWeight(700)
+		curFade := fade.Lookup(a.Conf.String(fade.ConfigKey, fade.DefaultPreset))
+		fadeLabels := make([]string, 0, len(fade.Presets))
+		for _, preset := range fade.Presets {
+			fadeLabels = append(fadeLabels, preset.Label)
+		}
+		fadeLabel := curFade.Label
+		fs := ui.Select(c, &fadeLabel, fadeLabels).Width(280)
+		if fs.Changed() {
+			for _, preset := range fade.Presets {
+				if preset.Label == fadeLabel {
+					a.PL.SetFadePreset(preset.Key)
+					a.invalidate()
+					break
+				}
+			}
+		}
+		ui.Text(c, "起播从静音升到当前音量；切歌、暂停与停止时先淡出。MPV 与 Liino 均生效。").
+			FontSize(fz(11.5)).TextColor(t.TextMuted).MaxLines(2)
 
 		ui.Divider(c)
 

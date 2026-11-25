@@ -168,28 +168,35 @@ type pcmOutput struct {
 	eof       bool // mpv 已写完 FIFO（end-file eof）
 	fed       bool // 已经往设备写过数据（音量包络/清理用）
 
-	mu       sync.Mutex
-	vol      pcmVolume
-	lastTick time.Time
+	mu  sync.Mutex
+	vol pcmVolume
+	// appliedVol 是上一块 PCM 实际使用的增益。块与块之间线性过渡，
+	// 30ms 一步的淡入淡出在 50ms 的 ao_pcm 块里也不会变成台阶。
+	appliedVol float64
+	lastTick   time.Time
 }
 
 // beginGen 开新会话（start-file 到来时调用）。gen=0 表示无会话：
 // 所有在途 PCM 都会被丢弃。pos 由 OpenURL 预先写入（续播起点）。
 func (o *pcmOutput) beginPending(pos float64) {
+	vol := o.vol.get()
 	o.mu.Lock()
 	o.gen = 0 // start-file 到来前在途数据全部作废
 	o.pos = pos
 	o.sentSec, o.playedSec = 0, 0
 	o.eof, o.fed = false, false
+	o.appliedVol = vol
 	o.lastTick = time.Time{}
 	o.mu.Unlock()
 }
 
 func (o *pcmOutput) beginGen(gen uint64) {
+	vol := o.vol.get()
 	o.mu.Lock()
 	o.gen = gen
 	o.sentSec, o.playedSec = 0, 0
 	o.eof, o.fed = false, false
+	o.appliedVol = vol
 	o.lastTick = time.Time{}
 	o.mu.Unlock()
 }
@@ -253,6 +260,7 @@ func (o *pcmOutput) onData(chunk []byte) {
 	o.mu.Lock()
 	gen := o.gen
 	vol := o.vol.get()
+	prev := o.appliedVol
 	o.mu.Unlock()
 	if gen == 0 {
 		return
@@ -262,17 +270,25 @@ func (o *pcmOutput) onData(chunk []byte) {
 	if n <= 0 {
 		return
 	}
+	frames := n / (pcmChannels * 4)
 	samples := make([]float32, n/4)
 	for i := 0; i < n/4; i++ {
 		off := i * 4
 		bits := uint32(chunk[off]) | uint32(chunk[off+1])<<8 | uint32(chunk[off+2])<<16 | uint32(chunk[off+3])<<24
-		samples[i] = float32FromBits(bits) * float32(vol)
+		// 以帧为单位插值，左右声道共享同一个增益。
+		k := float64(i/pcmChannels+1) / float64(frames)
+		if frames <= 0 {
+			k = 1
+		}
+		gain := prev + (vol-prev)*k
+		samples[i] = float32FromBits(bits) * float32(gain)
 	}
 	o.mu.Lock()
 	if o.gen != gen {
 		o.mu.Unlock()
 		return // 旧会话在途尾巴：直接丢弃
 	}
+	o.appliedVol = vol
 	if err := o.speaker.Play(samples); err != nil {
 		o.mu.Unlock()
 		fmt.Fprintf(os.Stderr, "audio: pcm 输出失败: %v\n", err)

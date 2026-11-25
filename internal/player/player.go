@@ -7,6 +7,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/Team-Quaver/quaver-astra/internal/audio/fade"
 )
 
 // Player 是播放器状态机：队列、模式、随机、流解析回退、歌词、收藏。
@@ -260,6 +262,12 @@ type ratePolicySetter interface {
 	SetSwitchDeviceRate(on bool)
 }
 
+// fadeSetter 是音频引擎的可选淡入淡出能力：起播淡入 + 暂停/停止/切歌
+// 淡出。两个后端（Liino / mpv）都实现它。
+type fadeSetter interface {
+	SetFade(in, out time.Duration)
+}
+
 // versionReporter 是引擎的可选版本自报；设置页用它展示引擎版本。
 type versionReporter interface {
 	Version() string
@@ -298,7 +306,41 @@ func New(b Backend, e Engine, prefs Preferences) *Player {
 		lyricAux:   readLyricAux(prefs),
 		mprisLrc:   readMprisLrc(prefs),
 	}
+	p.applyFadePolicy(e)
 	return p
+}
+
+// applyFadePolicy 把当前配置的淡入淡出档位下发给引擎。引擎不支持时
+// 静默忽略（测试假引擎、旧后端）。
+func (p *Player) applyFadePolicy(e Engine) {
+	if e == nil || p.conf == nil {
+		return
+	}
+	key := fade.Normalize(p.conf.String(fade.ConfigKey, fade.DefaultPreset))
+	in, out := fade.Durations(key)
+	if fs, ok := e.(fadeSetter); ok {
+		fs.SetFade(in, out)
+	}
+}
+
+// SetFadePreset 立即把某个档位应用到当前引擎（设置页用）。
+func (p *Player) SetFadePreset(preset string) {
+	key := fade.Normalize(preset)
+	if p.conf != nil {
+		p.conf.Set(fade.ConfigKey, key)
+	}
+	in, out := fade.Durations(key)
+	p.SetFadePolicy(in, out)
+}
+
+// SetFadePolicy 直接以时长下发淡入淡出；关闭档位传 0。
+func (p *Player) SetFadePolicy(in, out time.Duration) {
+	p.mu.RLock()
+	e := p.eng
+	p.mu.RUnlock()
+	if fs, ok := e.(fadeSetter); ok {
+		fs.SetFade(in, out)
+	}
 }
 
 // readLyricAux 兼容旧配置：先读三档 Style.LyricAux；没有就按布尔
@@ -1335,6 +1377,7 @@ func (p *Player) SetEngine(e Engine) {
 	if muted {
 		e.SetVolume(0)
 	}
+	p.applyFadePolicy(e)
 	e.OnObserve(p.notifyChange)
 	p.notifyChange()
 	if has && wasPlaying {
@@ -1895,7 +1938,16 @@ func (p *Player) startCurrent(resumeTo float64, autoplay bool, overrideTier stri
 		// 不能只降权 5.1 而让 7.1 仍按普通高档位优先。
 		dep = append([]string(nil), qmAtmosFallbackTiers...)
 	}
+	// 手动切歌 / 换音质时，旧曲先走引擎的淡出曲线；新流挂上后会作废
+	// 那次延迟 stop（见引擎的 BeginLoad）。自然播完的旧曲已经没声音，
+	// 不再多此一举。
+	fadeOld := p.playing && p.stream != nil && p.eng != nil
+	oldEng := p.eng
 	p.mu.Unlock()
+
+	if fadeOld && !oldEng.Ended() {
+		oldEng.Stop()
+	}
 	p.notifyChange()
 
 	// 会话局部回退集合：只被本次起播的协程链访问，避免跨会话共享竞争

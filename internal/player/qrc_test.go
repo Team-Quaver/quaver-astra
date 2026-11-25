@@ -42,6 +42,47 @@ func TestParseQRCPlainText(t *testing.T) {
 	}
 }
 
+// 歌词正文里的半角括号不是时间标签：词级时间轴必须原样保留括号里的
+// 文字，否则当前句的逐字渲染会把「(Yeah)」「(s)」整段吞掉。
+func TestParseQRCPreservesLiteralParenthesesInWords(t *testing.T) {
+	lines := ParseQRC("" +
+		"[0,4200](Yeah) (0,350)Who(350,300) want(650,300) the(950,400) (yeah)(1350,350)\n" +
+		"[5000,4000]Composer(s): (5000,400)Weilin(5400,300) Miao/John Lock(5700,2500)")
+	if len(lines) != 2 {
+		t.Fatalf("应解析出 2 行，实测 %d：%+v", len(lines), lines)
+	}
+	for _, tc := range []struct {
+		line  int
+		text  string
+		first string
+		last  string
+	}{
+		{0, "(Yeah) Who want the (yeah)", "(Yeah) ", " (yeah)"},
+		{1, "Composer(s): Weilin Miao/John Lock", "Composer(s): ", " Miao/John Lock"},
+	} {
+		l := lines[tc.line]
+		if l.Text != tc.text {
+			t.Errorf("第 %d 行正文应为 %q，实测 %q", tc.line, tc.text, l.Text)
+		}
+		if len(l.Words) == 0 {
+			t.Fatalf("第 %d 行应带词级时间轴", tc.line)
+		}
+		var joined strings.Builder
+		for _, w := range l.Words {
+			joined.WriteString(w.Text)
+		}
+		if got := joined.String(); got != tc.text {
+			t.Errorf("第 %d 行词文本拼起来应为 %q，实测 %q", tc.line, tc.text, got)
+		}
+		if l.Words[0].Text != tc.first {
+			t.Errorf("第 %d 行首词应为 %q，实测 %q", tc.line, tc.first, l.Words[0].Text)
+		}
+		if got := l.Words[len(l.Words)-1].Text; got != tc.last {
+			t.Errorf("第 %d 行末词应为 %q，实测 %q", tc.line, tc.last, got)
+		}
+	}
+}
+
 func TestParseQRCXMLEnvelope(t *testing.T) {
 	lines := ParseQRC(qrcXMLSample)
 	if len(lines) != 2 {
