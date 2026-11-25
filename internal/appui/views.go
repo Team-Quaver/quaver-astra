@@ -720,31 +720,44 @@ func (a *App) playlistCard(c *ui.Context, width float32, pl backend.SonglistSumm
 
 func (a *App) likedView(c *ui.Context) {
 	t := c.Theme()
-	a.pageEnter(c, ui.Column(c).Fill().Padding(20, 24, 24, 24).Gap(14)).Children(func() {
-		ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(10).Children(func() {
-			ui.Text(c, "我喜欢").FontSize(fz(24)).FontWeight(800)
-			if n := a.PL.LikedTotal(); n > 0 {
-				ui.Textf(c, "%d 首", n).FontSize(fz(13)).TextColor(t.TextMuted)
-			}
-		})
-		if !a.PL.LoggedIn() {
-			ui.Column(c).FillWidth().Center().Gap(10).Padding(48).Children(func() {
-				ui.Text(c, "登录后同步你收藏的音乐").FontSize(fz(13)).TextColor(t.TextMuted)
-				plainBtn(c, "去登录", func() { a.Router.Push("/login") })
-			})
-			return
-		}
-		liked := a.PL.LikedCache()
-		if len(liked) == 0 {
-			ui.Column(c).FillWidth().Center().Padding(48).Children(func() {
-				ui.Spinner(c)
-			})
-			return
-		}
-		st := &a.liked
+	liked := a.PL.LikedCache()
+	st := &a.liked
+	if len(liked) > 0 {
 		st.songs = liked
-		a.enableSongReorder(st, func(rows []int, to int) { a.reorderLiked(st, rows, to) })
-		a.songList(c, st, nil, func(i int) { a.playListNow(st.songs, i) })
+	}
+	root := a.pageEnter(c, ui.Box(c).Fill())
+	root.Children(func() {
+		// 浮钮先建：点击落在本帧时，后面的 List 才能在同一帧消费滚动请求。
+		if a.PL.LoggedIn() && len(liked) > 0 {
+			idx := a.songRowIndex(st.songs)
+			first, _ := st.list.Visible()
+			a.songListActions(c, idx, first <= 0,
+				func() { a.scrollSongListToRow(c, st, idx) },
+				func() { a.scrollSongListToTop(c, st) })
+		}
+		ui.Column(c).Fill().Padding(20, 24, 24, 24).Gap(14).Children(func() {
+			ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(10).Children(func() {
+				ui.Text(c, "我喜欢").FontSize(fz(24)).FontWeight(800)
+				if n := a.PL.LikedTotal(); n > 0 {
+					ui.Textf(c, "%d 首", n).FontSize(fz(13)).TextColor(t.TextMuted)
+				}
+			})
+			if !a.PL.LoggedIn() {
+				ui.Column(c).FillWidth().Center().Gap(10).Padding(48).Children(func() {
+					ui.Text(c, "登录后同步你收藏的音乐").FontSize(fz(13)).TextColor(t.TextMuted)
+					plainBtn(c, "去登录", func() { a.Router.Push("/login") })
+				})
+				return
+			}
+			if len(liked) == 0 {
+				ui.Column(c).FillWidth().Center().Padding(48).Children(func() {
+					ui.Spinner(c)
+				})
+				return
+			}
+			a.enableSongReorder(st, func(rows []int, to int) { a.reorderLiked(st, rows, to) })
+			a.songList(c, st, nil, func(i int) { a.playListNow(st.songs, i) })
+		})
 	})
 }
 
@@ -911,6 +924,11 @@ type playlistState struct {
 	prefetchTried bool
 	list          songListState
 	scroll        ui.ScrollState
+	// reveal/revealRow 是「定位到正在播放」的一次性请求。整页滚动由外层
+	// Scroll 接管，内层 List 自己不会滚，所以只能让目标行在下一趟 build 时
+	// 调 ScrollIntoView；发完即清，否则用户再也滚不开这一行。
+	reveal    bool
+	revealRow int
 }
 
 func (a *App) playlistView(c *ui.Context, id int64) {
@@ -921,111 +939,136 @@ func (a *App) playlistView(c *ui.Context, id int64) {
 	a.ensurePlaylist(st, id)
 	t := c.Theme()
 
-	a.pageEnter(c, ui.Scroll(c).Fill().Padding(20, 24, 24, 24).Gap(16).TrackScroll(&st.scroll)).Children(func() {
-		if st.err != "" {
-			ui.Text(c, st.err).FontSize(fz(13)).TextColor(t.TextMuted)
-			return
+	root := a.pageEnter(c, ui.Box(c).Fill())
+	root.Children(func() {
+		// 浮钮先建：点击落在本帧时，后面铺开的行才能在同一帧挂上
+		// ScrollIntoView 请求。
+		if st.err == "" && st.info.Title != "" && len(st.songs) > 0 {
+			idx := a.songRowIndex(st.songs)
+			a.songListActions(c, idx, st.scroll.Y <= 1,
+				func() {
+					if idx >= 0 {
+						st.reveal, st.revealRow = true, idx
+					}
+				},
+				func() { st.scroll.ScrollTo(0, 0, ui.Smooth) })
 		}
-		if st.info.Title == "" {
-			ui.Column(c).FillWidth().Center().Padding(48).Children(func() { ui.Spinner(c) })
-			return
-		}
-		// 头部
-		art := a.Covers.Get(st.info.Picurl, a.invalidate)
-		ui.Row(c).FillWidth().Gap(20).AlignItems(ui.Center).Children(func() {
-			if art != nil {
-				ui.Image(c, art).Size(168, 168).Fit(ui.Cover).Radius(14)
-			} else {
-				ui.Box(c).Size(168, 168).Radius(14).Background(t.SurfaceHover).Center().Children(func() {
-					ui.Icon(c, Icons["note"]).FontSize(fz(48)).TextColor(t.TextMuted).AlignSelf(ui.Center)
-				})
+		ui.Scroll(c).Fill().Padding(20, 24, 24, 24).Gap(16).TrackScroll(&st.scroll).Children(func() {
+			if st.err != "" {
+				ui.Text(c, st.err).FontSize(fz(13)).TextColor(t.TextMuted)
+				return
 			}
-			ui.Column(c).Grow(1).Gap(8).Children(func() {
-				ui.Text(c, st.info.Title).FontSize(fz(26)).FontWeight(800).MaxLines(2).Ellipsis("…")
-				created := a.isCreatedPlaylist(id)
-				meta := ""
-				if !created {
-					meta = st.creator.Nick
-					if meta == "" {
-						meta = st.info.Nickname
-					}
+			if st.info.Title == "" {
+				ui.Column(c).FillWidth().Center().Padding(48).Children(func() { ui.Spinner(c) })
+				return
+			}
+			// 头部
+			art := a.Covers.Get(st.info.Picurl, a.invalidate)
+			ui.Row(c).FillWidth().Gap(20).AlignItems(ui.Center).Children(func() {
+				if art != nil {
+					ui.Image(c, art).Size(168, 168).Fit(ui.Cover).Radius(14)
+				} else {
+					ui.Box(c).Size(168, 168).Radius(14).Background(t.SurfaceHover).Center().Children(func() {
+						ui.Icon(c, Icons["note"]).FontSize(fz(48)).TextColor(t.TextMuted).AlignSelf(ui.Center)
+					})
 				}
-				if n := st.info.Songnum; n > 0 {
-					if meta != "" {
-						meta += " · "
-					}
-					meta += strconv.FormatInt(n, 10) + " 首"
-				}
-				ui.Text(c, meta).FontSize(fz(13)).TextColor(t.TextMuted)
-				if st.info.Desc != "" {
-					lines := 2
-					toggle := "展开"
-					if st.expanded {
-						lines = 0
-						toggle = "收起"
-					}
-					body := ui.Text(c, st.info.Desc).FontSize(fz(12.5)).TextColor(t.TextMuted)
-					if lines > 0 {
-						body = body.MaxLines(lines).Ellipsis("…")
-					}
-					linkButton(c, toggle, func() { st.expanded = !st.expanded })
-				}
-				ui.Row(c).Gap(8).Margin(4, 0, 0, 0).Children(func() {
-					primaryBtn(c, "播放全部", func() { a.playListNow(st.songs, 0) })
-					// 自建歌单不显示收藏按钮：收藏是收藏别人的歌单。
-					if !a.isCreatedPlaylist(id) {
-						favLabel := "收藏歌单"
-						if st.faved {
-							favLabel = "已收藏"
+				ui.Column(c).Grow(1).Gap(8).Children(func() {
+					ui.Text(c, st.info.Title).FontSize(fz(26)).FontWeight(800).MaxLines(2).Ellipsis("…")
+					created := a.isCreatedPlaylist(id)
+					meta := ""
+					if !created {
+						meta = st.creator.Nick
+						if meta == "" {
+							meta = st.info.Nickname
 						}
-						plainBtn(c, favLabel, func() { a.togglePlaylistFav(st, id) })
 					}
+					if n := st.info.Songnum; n > 0 {
+						if meta != "" {
+							meta += " · "
+						}
+						meta += strconv.FormatInt(n, 10) + " 首"
+					}
+					ui.Text(c, meta).FontSize(fz(13)).TextColor(t.TextMuted)
+					if st.info.Desc != "" {
+						lines := 2
+						toggle := "展开"
+						if st.expanded {
+							lines = 0
+							toggle = "收起"
+						}
+						body := ui.Text(c, st.info.Desc).FontSize(fz(12.5)).TextColor(t.TextMuted)
+						if lines > 0 {
+							body = body.MaxLines(lines).Ellipsis("…")
+						}
+						linkButton(c, toggle, func() { st.expanded = !st.expanded })
+					}
+					ui.Row(c).Gap(8).Margin(4, 0, 0, 0).Children(func() {
+						primaryBtn(c, "播放全部", func() { a.playListNow(st.songs, 0) })
+						// 自建歌单不显示收藏按钮：收藏是收藏别人的歌单。
+						if !a.isCreatedPlaylist(id) {
+							favLabel := "收藏歌单"
+							if st.faved {
+								favLabel = "已收藏"
+							}
+							plainBtn(c, favLabel, func() { a.togglePlaylistFav(st, id) })
+						}
+					})
 				})
 			})
-		})
 
-		// 歌曲行：整页滚动（原版行为），触底翻页
-		//
-		// 行必须交给 ui.List 铺：拖拽换序是列表自己消费 ListState.Reorder 的，
-		// 拿 Column 直接循环 songRow 的话回调挂上了也永远不会被调用（自建歌单
-		// 「拖不动」就是这么来的）。不给 List 尺寸，它就和原来的 Column 一样
-		// 按全部行的高度撑开，滚动仍由整页的 Scroll 负责。
-		//
-		// 末尾那段 Padding 是落点：无尺寸列表的底边就是最后一行的底边，指针压
-		// 在那条线上已经算列表外，「拖到最后一首之后」会被判成丢在外面。
-		st.list.songs = st.songs
-		if a.canReorderPlaylist(st, id) {
-			a.enableSongReorder(&st.list, func(rows []int, to int) { a.reorderCreatedPlaylist(st, id, rows, to) })
-		} else {
-			st.list.list.Reorder = nil
-			st.list.list.Key = nil
-		}
-		// 打开页面时用户歌单可能还没同步上来（冷启动直接进歌单页），
-		// ensurePlaylist 那会儿认不出自建歌单；认出后在这里补一次。
-		if a.isCreatedPlaylist(id) && st.loaded && st.hasMore && !st.prefetching && !st.loadingMore && !st.prefetchTried {
-			st.prefetching, st.prefetchTried = true, true
-			go a.prefetchPlaylistPages(st, id, st.page+1)
-		}
-		ui.List(c, &st.list.list, len(st.songs), func(i int) {
-			a.songRow(c, &st.list, i, func(i int) { a.playListNow(st.songs, i) }, func(m *ui.Menu, s player.Song, row int) {
-				// 自建歌单的歌曲可以删除。
-				if a.isCreatedPlaylist(id) {
-					if m.Item("从歌单删除").Chosen() {
-						a.deleteFromPlaylist(st, row, s)
+			// 歌曲行：整页滚动（原版行为），触底翻页
+			//
+			// 行必须交给 ui.List 铺：拖拽换序是列表自己消费 ListState.Reorder 的，
+			// 拿 Column 直接循环 songRow 的话回调挂上了也永远不会被调用（自建歌单
+			// 「拖不动」就是这么来的）。不给 List 尺寸，它就和原来的 Column 一样
+			// 按全部行的高度撑开，滚动仍由整页的 Scroll 负责。
+			//
+			// 末尾那段 Padding 是落点：无尺寸列表的底边就是最后一行的底边，指针压
+			// 在那条线上已经算列表外，「拖到最后一首之后」会被判成丢在外面。
+			reveal := -1
+			if st.reveal {
+				reveal, st.reveal = st.revealRow, false
+			}
+			st.list.songs = st.songs
+			if a.canReorderPlaylist(st, id) {
+				a.enableSongReorder(&st.list, func(rows []int, to int) { a.reorderCreatedPlaylist(st, id, rows, to) })
+			} else {
+				st.list.list.Reorder = nil
+				st.list.list.Key = nil
+			}
+			// 打开页面时用户歌单可能还没同步上来（冷启动直接进歌单页），
+			// ensurePlaylist 那会儿认不出自建歌单；认出后在这里补一次。
+			if a.isCreatedPlaylist(id) && st.loaded && st.hasMore && !st.prefetching && !st.loadingMore && !st.prefetchTried {
+				st.prefetching, st.prefetchTried = true, true
+				go a.prefetchPlaylistPages(st, id, st.page+1)
+			}
+			ui.List(c, &st.list.list, len(st.songs), func(i int) {
+				row := a.songRow(c, &st.list, i, func(i int) { a.playListNow(st.songs, i) }, func(m *ui.Menu, s player.Song, row int) {
+					// 自建歌单的歌曲可以删除。
+					if a.isCreatedPlaylist(id) {
+						if m.Item("从歌单删除").Chosen() {
+							a.deleteFromPlaylist(st, row, s)
+						}
 					}
+				})
+				if i == reveal {
+					row.ScrollIntoView(ui.ScrollIntoViewOptions{
+						Block:     ui.ScrollCenter,
+						Animation: &ui.Smooth,
+					})
 				}
-			})
-		}).FillWidth().Padding(0, 0, 24, 0)
-		if st.loadingMore {
-			ui.Row(c).FillWidth().Center().Padding(14).Children(func() { ui.Spinner(c) })
-		}
+			}).FillWidth().Padding(0, 0, 24, 0)
+			if st.loadingMore {
+				ui.Row(c).FillWidth().Center().Padding(14).Children(func() { ui.Spinner(c) })
+			}
 
-		// 接近底部：翻页（自建歌单后台补齐期间不重复拉）
-		if st.hasMore && !st.loadingMore && !st.prefetching && st.scroll.MaxY > 0 && st.scroll.Y >= st.scroll.MaxY-300 {
-			st.loadingMore = true
-			st.page++
-			go a.loadPlaylistPage(st, id, st.page)
-		}
+			// 接近底部：翻页（自建歌单后台补齐期间不重复拉）
+			if st.hasMore && !st.loadingMore && !st.prefetching && st.scroll.MaxY > 0 && st.scroll.Y >= st.scroll.MaxY-300 {
+				st.loadingMore = true
+				st.page++
+				go a.loadPlaylistPage(st, id, st.page)
+			}
+		})
 	})
 }
 

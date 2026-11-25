@@ -75,15 +75,21 @@ type songListState struct {
 	err      string
 	fetching bool // 防并发重复拉
 	list     ui.ListState
+	viewport float32
+	// scrollAnim 是本页自己驱动的平滑滚动：ListState.ScrollTo 按行瞬跳，
+	// 定位/回顶要按像素缓动，见 listactions.go。
+	scrollAnim listScrollAnim
 }
 
 // songList 渲染歌曲列表（虚拟化 + 滚到尾部自动翻页）。
 // loadMore(page) 由调用方实现（在 goroutine 里拉数据后回填）。
 func (a *App) songList(c *ui.Context, st *songListState, loadMore func(page int), doubleClick func(i int)) {
 	t := c.Theme()
+	a.advanceSongListScroll(c, st)
 	lst := ui.List(c, &st.list, len(st.songs), func(i int) {
 		a.songRow(c, st, i, doubleClick)
 	}).Grow(1)
+	st.viewport = lst.Bounds().H
 
 	if len(st.songs) == 0 {
 		lst.Children(func() {
@@ -114,7 +120,7 @@ func (a *App) songList(c *ui.Context, st *songListState, loadMore func(page int)
 
 // songRow 单行歌（54px）：序号/♪、封面、标题、歌手·专辑、红心、时长。
 // extraMenu 让调用方追加菜单项（如歌单详情页的「从歌单删除」）。
-func (a *App) songRow(c *ui.Context, st *songListState, i int, doubleClick func(i int), extraMenu ...func(m *ui.Menu, s player.Song, i int)) {
+func (a *App) songRow(c *ui.Context, st *songListState, i int, doubleClick func(i int), extraMenu ...func(m *ui.Menu, s player.Song, i int)) ui.Element {
 	t := c.Theme()
 	s := st.songs[i]
 	cur, _ := a.PL.Current()
@@ -122,7 +128,7 @@ func (a *App) songRow(c *ui.Context, st *songListState, i int, doubleClick func(
 	playing := a.PL.Playing() && isCur
 	loved := a.PL.IsLoved(s.Mid)
 
-	row := ui.Row(c).FillWidth().Height(54).PaddingX(10).Gap(12).AlignItems(ui.Center).Radius(8).
+	row := ui.Row(c).FillWidth().Height(songRowHeight).PaddingX(10).Gap(12).AlignItems(ui.Center).Radius(8).
 		Label(s.DisplayName()).
 		Transition(hoverFade)
 	row.Children(func() {
@@ -295,6 +301,7 @@ func (a *App) songRow(c *ui.Context, st *songListState, i int, doubleClick func(
 			}
 		})
 	})
+	return row
 }
 
 // loveLabel 是红心的无障碍名（也供 UI 测试定位）：图标本身对读屏是隐形的。

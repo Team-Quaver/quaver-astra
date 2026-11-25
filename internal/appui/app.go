@@ -47,8 +47,8 @@ type App struct {
 	npQueue    bool // 正在播放页右栏显示队列（默认显示歌词）
 	queueOpen  bool
 	searchOpen bool
-	// profileOpen 是顶栏头像的下拉浮窗。个人中心同时保留独立页面（/profile）：
-	// 浮窗负责「看一眼/退出登录」，独立页面负责完整展示，两者共用一份数据态。
+	// profileOpen 是顶栏头像的下拉浮窗：个人中心只以浮窗形态存在，
+	// 负责身份、权益与退出登录，不再占用一条独立路由。
 	profileOpen  bool
 	searchDraft  string
 	pendingToast string
@@ -450,9 +450,6 @@ func (a *App) routeArea(c *ui.Context) {
 		case r.Match("/settings"):
 			r.Title("设置")
 			a.settingsView(c)
-		case r.Match("/profile"):
-			r.Title("个人中心")
-			a.profileView(c)
 		default:
 			ui.Text(c, "页面不存在").TextColor(c.Theme().TextMuted).Padding(24)
 		}
@@ -597,7 +594,7 @@ func (a *App) avatarButton(c *ui.Context, t *ui.Theme) {
 	})
 	b.Tooltip("个人中心")
 	b.Label("个人中心")
-	if a.profileOpen || a.Router.Path() == "/profile" {
+	if a.profileOpen {
 		b.Background(t.Accent.Alpha(0.13))
 	} else if b.Hovered() {
 		b.Background(t.SurfaceHover)

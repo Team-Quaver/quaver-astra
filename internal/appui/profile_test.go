@@ -18,8 +18,8 @@ import (
 
 // profileStub 是「个人中心」依赖的假后端。
 //
-// 页面的会员明细走 HTTP（profileView 自己调 a.API），登录态却由 player.Backend
-// 的桩件提供 —— 两条路都指向同一个 logged 标志，logout 之后顶栏与页面才会一起
+// 浮窗的会员明细走 HTTP（profilePopover 自己调 a.API），登录态却由 player.Backend
+// 的桩件提供 —— 两条路都指向同一个 logged 标志，logout 之后顶栏与浮窗才会一起
 // 回到未登录形态，这正是退出登录后最容易留下残影的地方。
 type profileStub struct {
 	t       *testing.T
@@ -94,7 +94,7 @@ func (b profileBackend) FetchLyric(string, bool, bool) (string, string, string, 
 }
 func (b profileBackend) LikeSong(int64, int64, bool) error { return nil }
 
-// profileApp 造一个停在 /profile、已登录的 App。
+// profileApp 造一个停在设置页、已登录且已展开个人中心浮窗的 App。
 func profileApp(t *testing.T, vipData string) (*App, *ui.Tester, *profileStub) {
 	t.Helper()
 	return profileAppWith(t, &profileStub{
@@ -120,12 +120,17 @@ func profileAppWith(t *testing.T, stub *profileStub) (*App, *ui.Tester, *profile
 		API:           backend.NewClient(srv.URL),
 		Conf:          conf.Open(t.TempDir()),
 		Vault:         vault.Open(t.TempDir()),
-		Router:        ui.NewRouter("/profile"),
+		Router:        ui.NewRouter("/settings"),
 		Covers:        NewCoverCache(),
 		playlist:      map[int64]*playlistState{},
 		lastLyricLine: -2,
 	}
-	return app, ui.NewTester(app.View, testWinW, testWinH), stub
+	tester := ui.NewTester(app.View, testWinW, testWinH)
+	if err := tester.Click("个人中心"); err != nil {
+		t.Fatalf("应能从顶栏头像展开个人中心浮窗：%v", err)
+	}
+	tester.Frame()
+	return app, tester, stub
 }
 
 // waitText 等后台取数回填并重绘，直到页面上出现某段文字。
@@ -142,8 +147,7 @@ func waitText(t *testing.T, tester *ui.Tester, substr string) {
 	t.Fatalf("等不到 %q；当前帧文本：%v", substr, tester.Texts())
 }
 
-// TestTopBarAvatarOpensProfilePopover 头像点击展开个人中心浮窗，不打断当前页面；
-// 浮窗里的「独立页面」入口再跳到 /profile。
+// TestTopBarAvatarOpensProfilePopover 头像点击展开个人中心浮窗，不打断当前页面。
 func TestTopBarAvatarOpensProfilePopover(t *testing.T) {
 	app := loggedApp(t)
 	tester := ui.NewTester(app.View, testWinW, testWinH)
@@ -157,10 +161,13 @@ func TestTopBarAvatarOpensProfilePopover(t *testing.T) {
 	if got := app.Router.Path(); got != "/settings" {
 		t.Errorf("浮窗不该改路由，实得 %q", got)
 	}
-	for _, want := range []string{"会员权益", "退出登录", "独立页面"} {
+	for _, want := range []string{"会员权益", "退出登录"} {
 		if !tester.HasText(want) {
 			t.Errorf("浮窗里缺少 %q；当前帧文本：%v", want, tester.Texts())
 		}
+	}
+	if tester.HasText("独立页面") {
+		t.Errorf("独立页面入口应随页面一起删除；当前帧文本：%v", tester.Texts())
 	}
 
 	// Escape 收起浮窗，不离开当前页面。
@@ -177,15 +184,22 @@ func TestTopBarAvatarOpensProfilePopover(t *testing.T) {
 		t.Fatalf("再次点击头像应能重开浮窗：%v", err)
 	}
 	tester.Frame()
-	if err := tester.Click("独立页面"); err != nil {
-		t.Fatalf("浮窗里应有独立页面入口：%v", err)
+	if !app.profileOpen {
+		t.Fatal("再次点击头像应展开浮窗")
 	}
+	if got := app.Router.Path(); got != "/settings" {
+		t.Errorf("重开浮窗不该改路由，实得 %q", got)
+	}
+}
+
+// TestProfileRouteRemoved 个人中心只保留浮窗形态，独立路由不再存在。
+func TestProfileRouteRemoved(t *testing.T) {
+	app := loggedApp(t)
+	app.Router.Push("/profile")
+	tester := ui.NewTester(app.View, testWinW, testWinH)
 	tester.Frame()
-	if got := app.Router.Path(); got != "/profile" {
-		t.Errorf("「独立页面」应跳 /profile，实得 %q", got)
-	}
-	if app.profileOpen {
-		t.Error("跳独立页面后浮窗应关闭")
+	if !tester.HasText("页面不存在") {
+		t.Fatalf("/profile 应已删除；当前帧文本：%v", tester.Texts())
 	}
 }
 
@@ -228,45 +242,57 @@ func TestProfileVipErrorKeepsIdentity(t *testing.T) {
 	}
 }
 
-// TestProfileLogout 退出登录：打后端、作废本页缓存、页面回到未登录形态。
+// TestProfileLogout 退出登录：打后端、作废浮窗缓存、顶栏回到未登录形态。
 func TestProfileLogout(t *testing.T) {
 	const vip = `{"svip":1,"svip_end":"2099-01-01","identity":{"vip":0,"huge_vip":0}}`
 	app, tester, stub := profileApp(t, vip)
 	waitText(t, tester, "2099-01-01 到期")
 
+	// 「清除已保存的凭证」是独立入口：只清凭证，不影响登录态。
+	if err := app.Vault.Save([]byte(`{"uin":"1"}`)); err != nil {
+		t.Fatal(err)
+	}
+	tester.Frame()
+	if err := tester.Click("清除已保存的凭证"); err != nil {
+		t.Fatalf("浮窗里应能清除保存的凭证：%v", err)
+	}
+	tester.Frame()
+	if app.Vault.HasSaved() {
+		t.Error("凭证没被清除")
+	}
+
 	// 已保存的凭证与登录态是两回事：退出登录不该顺手删掉它。
 	if err := app.Vault.Save([]byte(`{"uin":"1"}`)); err != nil {
 		t.Fatal(err)
 	}
+	tester.Frame()
+
 	meHits := stub.meHits.Load()
 	if meHits == 0 {
-		t.Fatal("页面应当自己取过一次 /user/me")
+		t.Fatal("浮窗应当自己取过一次 /user/me")
 	}
 	if err := tester.Click("退出登录"); err != nil {
 		t.Fatal(err)
 	}
-	waitText(t, tester, "未登录")
+	for i := 0; i < 300 && app.PL.LoggedIn(); i++ {
+		tester.Frame()
+		time.Sleep(10 * time.Millisecond)
+	}
 	if got := stub.logoutHits.Load(); got != 1 {
 		t.Errorf("logout 应命中 1 次，实得 %d", got)
+	}
+	if app.PL.LoggedIn() {
+		t.Error("退出后顶栏应回到未登录形态")
 	}
 	time.Sleep(80 * time.Millisecond)
 	if got := stub.meHits.Load(); got != meHits {
 		t.Errorf("退出登录后不该再拿没了凭证的会话取数：%d → %d", meHits, got)
 	}
 	if app.profile.loaded || app.profile.vipOK {
-		t.Errorf("退出后本页缓存应作废：loaded=%v vipOK=%v", app.profile.loaded, app.profile.vipOK)
+		t.Errorf("退出后浮窗缓存应作废：loaded=%v vipOK=%v", app.profile.loaded, app.profile.vipOK)
 	}
 	if !app.Vault.HasSaved() {
 		t.Error("退出登录不该清除已保存的凭证")
-	}
-
-	// 「清除已保存的凭证」是独立入口。
-	if err := tester.Click("清除已保存的凭证"); err != nil {
-		t.Fatalf("未登录时也要能清掉保存的凭证：%v", err)
-	}
-	tester.Frame()
-	if app.Vault.HasSaved() {
-		t.Error("凭证没被清除")
 	}
 }
 

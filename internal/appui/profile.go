@@ -12,15 +12,15 @@ import (
 
 // ===== 个人中心 =====
 //
-// 顶栏头像的落点有两种形态：默认展开浮窗，看一眼昵称/权益就能退出登录；
-// 浮窗页脚的「独立页面」进入本页，完整展示账号信息。以前点头像跳「设置」，
-// 想看账号的人被丢进一堆偏好开关，想退出登录的人反而找不到按钮（它藏在
-// 「设置 → 关于」最底下）。两种形态都只管账号：我是谁、买到什么时候、怎么退出。
+// 顶栏头像的下拉浮窗，也是个人中心唯一的形态：看一眼昵称/权益就能退出登录。
+// 以前点头像跳「设置」，想看账号的人被丢进一堆偏好开关，想退出登录的人反而
+// 找不到按钮（它藏在「设置 → 关于」最底下）。浮窗只管账号：我是谁、
+// 买到什么时候、怎么退出。
 
-// profileState 是「个人中心」页的数据态。
+// profileState 是「个人中心」浮窗的数据态。
 //
 // 会员权益不塞进 player.UserInfo：那份状态顶栏每帧都要读，字段只够一个档位
-// 标签；到期明细是打开这一页才需要的东西，按其它页面的惯例由页面自己后台取、
+// 标签；到期明细是打开浮窗才需要的东西，按其它页面的惯例由浮窗自己后台取、
 // 自己缓存，退出登录时整块作废。
 type profileState struct {
 	// loaded 表示「这一批取数已经跑完一次」，不管成败。它同时是自动取数的
@@ -28,62 +28,28 @@ type profileState struct {
 	// 后端一抖就变成自我 DoS。要重来由「刷新」按钮显式触发。
 	loaded  bool
 	loading bool
-	err     string // 整页级失败（连 /user/me 都拿不到）
+	err     string // 整块失败（连 /user/me 都拿不到）
 	me      backend.UserMe
 	vip     backend.VIPInfo
 	// vipOK 表示 vip 里是刚取到的真数据；失败时 vipErr 给一句话原因，
-	// 页面照常渲染身份卡，不把整页划红。
+	// 浮窗照常渲染身份卡，不把整块划红。
 	vipOK   bool
 	vipErr  string
 	logging bool // 退出登录在途：按钮禁用，避免连点发两次 logout
 	// logoutPending 是「logout 已经打成功、但 player 还没把登录态确认下来」的窗口期。
-	// 这期间不许自动重取：凭证已经没了，请求只会撞回 401，页面上闪过一条
+	// 这期间不许自动重取：凭证已经没了，请求只会撞回 401，浮窗里闪过一条
 	// 「登录已过期」——而几百毫秒后登录态就落地，这句话本来就是多余的。
-	// 登录态一跳变，New 里注册的 OnNotify 便整块作废本页状态，标志随之清掉。
+	// 登录态一跳变，New 里注册的 OnNotify 便整块作废浮窗状态，标志随之清掉。
 	logoutPending bool
 	// gen 是取数批次号。刷新/退出都会推进它，迟到的旧响应发现自己过期就直接丢弃，
 	// 不会把上一位账号的权益写回新状态。
 	gen uint64
 }
 
-func (a *App) profileView(c *ui.Context) {
-	st := &a.profile
-	t := c.Theme()
-	loggedIn := a.PL.LoggedIn()
-
-	a.profileEnsure(st, loggedIn)
-	name, avatar, uid, tier := a.profileWho(st, loggedIn)
-
-	a.pageEnter(c, ui.Scroll(c).Fill().Padding(20, 24, 28, 24).Gap(16)).Children(func() {
-		ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(10).Children(func() {
-			ui.Text(c, "个人中心").FontSize(fz(24)).FontWeight(800)
-			ui.Spacer(c)
-			if loggedIn && !st.logoutPending {
-				plainBtn(c, "刷新", func() { a.loadProfile(st) })
-			}
-		})
-
-		if st.err != "" {
-			ui.Text(c, st.err).FontSize(fz(12.5)).TextColor(t.TextMuted)
-		}
-
-		ui.Column(c).FillWidth().Gap(14).MaxWidth(560).Children(func() {
-			// —— 身份卡 ——
-			a.profileIdentity(c, t, name, avatar, uid, tier, loggedIn, 56, 18)
-
-			ui.Divider(c)
-			a.profileVip(c, t, st, loggedIn)
-			ui.Divider(c)
-			a.profileAccount(c, t, st, loggedIn)
-		})
-	})
-}
-
-// profilePopover 是顶栏头像的下拉浮窗（个人中心的「浮窗模式」）。
+// profilePopover 是顶栏头像的下拉浮窗，也是个人中心唯一的形态。
 //
-// 它和独立页面共用 profileState：浮窗里看到的名字、档位与到期时间和
-// /profile 页完全一致，退出登录也走同一条路径。浮窗只保留「看一眼」
-// 需要的内容；完整说明（凭证去向等）留给独立页面，页脚入口一键跳转。
+// 浮窗只保留「看一眼」需要的内容：身份、会员权益与退出登录。数据态由
+// profileState 独立缓存，退出登录后整块作废。
 func (a *App) profilePopover(c *ui.Context, t *ui.Theme, anchor ui.Element) {
 	st := &a.profile
 	loggedIn := a.PL.LoggedIn()
@@ -116,7 +82,7 @@ func (a *App) profilePopover(c *ui.Context, t *ui.Theme, anchor ui.Element) {
 	})
 }
 
-// profileEnsure 是取数闸门，页面与浮窗共用：未登录不发请求（/user/vip
+// profileEnsure 是取数闸门：未登录不发请求（/user/vip
 // 会 401），测试里 API 可能为 nil，同样跳过。loaded 失败也置位，重试只
 // 由「刷新」显式触发。
 func (a *App) profileEnsure(st *profileState, loggedIn bool) {
@@ -137,14 +103,13 @@ func (a *App) profileWho(st *profileState, loggedIn bool) (name, avatar, uid, ti
 		tier = vipLabel(st.vip)
 	}
 	if !loggedIn {
-		// 退出登录后 player 里的 me 还是上一位账号的缓存，不能继续顶在页面上。
+		// 退出登录后 player 里的 me 还是上一位账号的缓存，不能继续顶在浮窗上。
 		name, avatar, uid, tier = "", "", "", ""
 	}
 	return name, avatar, uid, tier
 }
 
 // profileIdentity 是身份卡：头像、昵称、档位徽标与 UID。
-// avatarSize/nameSize 让浮窗用更小的一号字，页面保持原尺寸。
 func (a *App) profileIdentity(c *ui.Context, t *ui.Theme, name, avatar, uid, tier string, loggedIn bool, avatarSize, nameSize float32) {
 	ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(14).Children(func() {
 		ui.Avatar(c, name, a.Covers.Get(avatar, a.invalidate)).Size(avatarSize, avatarSize)
@@ -165,7 +130,7 @@ func (a *App) profileIdentity(c *ui.Context, t *ui.Theme, name, avatar, uid, tie
 	})
 }
 
-// profilePopoverActions 是浮窗页脚：退出登录与「独立页面」入口。
+// profilePopoverActions 是浮窗页脚：退出登录与清除本机保存的凭证。
 func (a *App) profilePopoverActions(c *ui.Context, st *profileState, loggedIn bool) {
 	ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(8).Children(func() {
 		if loggedIn {
@@ -186,11 +151,15 @@ func (a *App) profilePopoverActions(c *ui.Context, st *profileState, loggedIn bo
 			})
 		}
 		ui.Spacer(c)
-		linkButton(c, "独立页面", func() {
-			a.profileOpen = false
-			a.searchOpen = false
-			a.Router.Push("/profile")
-		})
+		if a.Vault != nil && a.Vault.HasSaved() {
+			linkButton(c, "清除已保存的凭证", func() {
+				if err := a.Vault.Clear(); err != nil {
+					a.pendingToast = "清除凭证失败：" + err.Error()
+					return
+				}
+				a.pendingToast = "已清除保存的凭证"
+			})
+		}
 	})
 }
 
@@ -230,39 +199,7 @@ func (a *App) profileVip(c *ui.Context, t *ui.Theme, st *profileState, loggedIn 
 	}
 }
 
-// profileAccount 是登录态与出口：退出登录、清除本机保存的凭证、去登录。
-func (a *App) profileAccount(c *ui.Context, t *ui.Theme, st *profileState, loggedIn bool) {
-	ui.Text(c, "登录状态").FontSize(fz(14)).FontWeight(700)
-	if loggedIn {
-		ui.Text(c, "凭证只驻留在本机后端，退出即清空").FontSize(fz(12.5)).TextColor(t.TextMuted)
-	}
-	ui.Row(c).FillWidth().Gap(8).Children(func() {
-		if loggedIn {
-			out := ui.Button(c, "退出登录")
-			out.Disabled(st.logging)
-			if st.logging {
-				ui.Spacer(c)
-				ui.Spinner(c)
-			}
-			if out.Clicked() {
-				a.profileLogout(st)
-			}
-		} else {
-			primaryBtn(c, "去登录", func() { a.Router.Push("/login") })
-		}
-		if a.Vault != nil && a.Vault.HasSaved() {
-			plainBtn(c, "清除已保存的凭证", func() {
-				if err := a.Vault.Clear(); err != nil {
-					a.pendingToast = "清除凭证失败：" + err.Error()
-					return
-				}
-				a.pendingToast = "已清除保存的凭证"
-			})
-		}
-	})
-}
-
-// loadProfile 后台取个人信息与会员权益。两个请求分开判错：名字拿不到才整页
+// loadProfile 后台取个人信息与会员权益。两个请求分开判错：名字拿不到才整块
 // 报错，权益拿不到只在权益区块里说明——身份卡该照常显示。
 func (a *App) loadProfile(st *profileState) {
 	st.gen++
@@ -296,7 +233,7 @@ func (a *App) loadProfile(st *profileState) {
 	}()
 }
 
-// profileLogout 退出登录：清掉本页缓存，并让 player 重新确认登录态（顶栏、
+// profileLogout 退出登录：清掉浮窗缓存，并让 player 重新确认登录态（顶栏、
 // 我喜欢、歌单都跟着回到未登录形态）。
 func (a *App) profileLogout(st *profileState) {
 	if st.logging {
@@ -313,7 +250,7 @@ func (a *App) profileLogout(st *profileState) {
 			if gen != st.gen {
 				return
 			}
-			// 整块作废：未登录的页面不许残留上一位账号的档位与到期时间。
+			// 整块作废：未登录的浮窗不许残留上一位账号的档位与到期时间。
 			// gen 归零后本回调之后的旧批次一律失效；重新取数交给 OnNotify 在
 			// 登录态落地时接管（那时 logoutPending 也一起被清掉）。
 			*st = profileState{}
@@ -337,7 +274,7 @@ func profileErrText(err error) string {
 	return err.Error()
 }
 
-// displayName 给未登录/昵称为空的账号一个兜底标题，避免整页只剩一个空徽标。
+// displayName 给未登录/昵称为空的账号一个兜底标题，避免整块只剩一个空徽标。
 func displayName(name string, loggedIn bool) string {
 	if name != "" {
 		return name
