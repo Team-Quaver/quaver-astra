@@ -19,7 +19,7 @@ func TestTierLabelsFiltersByAvailableTiers(t *testing.T) {
 	if want := []string{"128", "flac"}; !reflect.DeepEqual(ids, want) {
 		t.Fatalf("ids = %v, want %v", ids, want)
 	}
-	if want := []string{"128 标准音质", "flac 无损 SQ"}; !reflect.DeepEqual(labels, want) {
+	if want := []string{"标准音质", "无损 SQ"}; !reflect.DeepEqual(labels, want) {
 		t.Fatalf("labels = %v, want %v", labels, want)
 	}
 
@@ -40,7 +40,7 @@ func TestTierLabelsFiltersByAvailableTiers(t *testing.T) {
 	if want := []string{"flac", "320", "128"}; !reflect.DeepEqual(ids, want) {
 		t.Fatalf("nil table ids = %v, want %v", ids, want)
 	}
-	if want := []string{"flac FLAC 无损", "320 320K MP3", "128 128K MP3"}; !reflect.DeepEqual(labels, want) {
+	if want := []string{"FLAC 无损", "320K MP3", "128K MP3"}; !reflect.DeepEqual(labels, want) {
 		t.Fatalf("nil table labels = %v, want %v", labels, want)
 	}
 }

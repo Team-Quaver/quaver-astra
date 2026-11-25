@@ -574,7 +574,7 @@ func tierLabels(tt *player.TierTable, available []string) ([]string, []string) {
 			continue
 		}
 		ids = append(ids, tier.ID)
-		label := tier.ID + " " + tier.Label
+		label := tier.Label
 		if tier.Locked {
 			label += " 🔒"
 		}

@@ -133,7 +133,7 @@ func TestNowPlayingMoreMenuStructure(t *testing.T) {
 	if tester.HasText("显示翻译") {
 		t.Error("旧右键菜单的「显示翻译」不该回来")
 	}
-	if tester.HasText("flac 无损 SQ") {
+	if tester.HasText("无损 SQ") {
 		t.Error("⋮ 菜单里混进了音质切换菜单的内容")
 	}
 }
@@ -293,7 +293,7 @@ func TestNowPlayingQualityInfoRows(t *testing.T) {
 	if app.qualityOpen {
 		t.Error("音质胶囊浮窗不该动播放条的切档状态")
 	}
-	if tester.HasText("flac 无损 SQ") {
+	if tester.HasText("无损 SQ") {
 		t.Error("音质胶囊浮窗里不该出现音质切换项")
 	}
 	for _, want := range []string{
@@ -389,7 +389,7 @@ func TestNowPlayingQualityPillIndependentFromPlayerBar(t *testing.T) {
 	if !tester.HasText("音频流信息") {
 		t.Error("正在播放页的音质胶囊应弹出音频流信息浮窗")
 	}
-	if tester.HasText("flac 无损 SQ") {
+	if tester.HasText("无损 SQ") {
 		t.Error("切档菜单不该被带到正在播放页")
 	}
 
@@ -409,7 +409,7 @@ func TestNowPlayingQualityPillIndependentFromPlayerBar(t *testing.T) {
 	if app.npQInfoOpen {
 		t.Error("播放条胶囊不该动正在播放页浮窗的状态")
 	}
-	if !tester.HasText("flac FLAC 无损") {
+	if !tester.HasText("FLAC 无损") {
 		t.Error("播放条胶囊应弹出切档菜单")
 	}
 	if tester.HasText("音频流信息") {
