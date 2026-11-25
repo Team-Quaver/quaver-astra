@@ -26,7 +26,8 @@ three showing, while older ones wait hidden, their time running. The time
 of the toasts stops while the pointer rests on them or the keyboard focus is
 in them, and runs on while the window is in the background (see
 [below](#in-the-background)). Escape closes the toast the focus is in.
-Toasts fade in and out.
+Toasts have a slightly translucent fill, which the window shows through, and
+fade in and out.
 
 A toast takes the theme's `Inverse` and `InverseText` colors, its text and
 background turned over unless the theme sets them (see
@@ -53,7 +54,7 @@ c.CloseToast(id)
 | `ID` | names the toast: adding one with the ID of a toast showing changes that toast, which shows anew; one is made up when empty |
 | `Title`, `Description` | what it says, which screen readers read out as it shows |
 | `Type` | what kind of toast it is, as `"error"`, for the look to tell |
-| `Timeout` | how long it shows: 4 seconds when zero, until closed when negative |
+| `Timeout` | how long it shows: 2.5 seconds when zero, until closed when negative |
 | `Action`, `OnAction` | a button that runs `OnAction` and closes the toast |
 | `OnClose` | runs as it closes: its time over, or the user, its action or `CloseToast` closed it |
 | `Data` | what else the look needs |

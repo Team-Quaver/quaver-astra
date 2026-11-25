@@ -516,9 +516,29 @@ type SoundPowerResult struct {
 // SearchResults 归一化搜索结果。
 type SearchResults struct {
 	Song      []Song            `json:"song"`
+	Singer    []SearchSinger    `json:"singer"`
+	Album     []SearchAlbum     `json:"album"`
 	Songlists []SonglistSummary `json:"songlist"`
 	TotalNum  int64             `json:"total_num"`
 	Nextpage  int64             `json:"nextpage"`
+}
+
+// SearchSinger 是搜索接口返回的歌手条目。
+type SearchSinger struct {
+	Mid     string `json:"mid"`
+	Name    string `json:"name"`
+	Pic     string `json:"pic"`
+	SongNum int64  `json:"song_num"`
+}
+
+// SearchAlbum 是搜索接口返回的专辑条目。
+type SearchAlbum struct {
+	Mid        string `json:"mid"`
+	Name       string `json:"name"`
+	Pic        string `json:"pic"`
+	Singer     string `json:"singer"`
+	TimePublic string `json:"time_public"`
+	SongNum    int64  `json:"song_num"`
 }
 
 // SingerBase 歌手主页基本信息（/singer/{mid}/info 的 base_info）。

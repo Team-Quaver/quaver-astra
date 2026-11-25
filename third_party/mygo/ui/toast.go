@@ -9,8 +9,11 @@ const (
 	// toastTime is how long a toast shows unless it says, and
 	// actionToastTime one of ToastAction, which the user needs time to
 	// reach.
-	toastTime       = 4 * time.Second
+	toastTime       = 2500 * time.Millisecond
 	actionToastTime = 8 * time.Second
+	// toastFillAlpha leaves the toast's fill a little translucent, so the
+	// window shows through; its text stays opaque.
+	toastFillAlpha = 0.92
 	// toastLimit is how many toasts show at once, the newest; older ones
 	// wait hidden, their time running, as with Base UI's limit.
 	toastLimit = 3
@@ -29,7 +32,7 @@ type Toast struct {
 	// Type tells what kind of toast it is, as "error" or "success", for
 	// the look to tell.
 	Type string
-	// Timeout is how long the toast shows: 4 seconds when zero, until it
+	// Timeout is how long the toast shows: 2.5 seconds when zero, until it
 	// is closed when negative. The time stops while the pointer rests on
 	// the toasts or the keyboard focus is in them, and runs on while the
 	// window is in the background or hidden: a toast whose time is over by
@@ -353,7 +356,7 @@ func (rt *engine) buildToasts(c *context) {
 		for _, ts := range toasts {
 			p := coreToastBase(c, ts)
 			box := p.Root.Row().AlignItems(Center).Gap(t.Space(4)).Padding(t.Space(2.5), t.Space(4)).Radius(t.Space(2)).MaxWidth(c.w - t.Space(12)).
-				Background(fill).TextColor(text)
+				Background(fill.Alpha(toastFillAlpha)).TextColor(text)
 			box.Shadow(0, 6, 20, 0, RGBA(0, 0, 0, 0.25))
 			// It fades in, and out at the end.
 			const fade = 200 * time.Millisecond

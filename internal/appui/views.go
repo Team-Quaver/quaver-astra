@@ -1,7 +1,9 @@
 package appui
 
 import (
+	"net/url"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -1222,17 +1224,41 @@ func (a *App) deleteFromPlaylist(st *playlistState, idx int, s player.Song) {
 
 // ===== 搜索 =====
 
+const (
+	searchTabSongs = iota
+	searchTabSingers
+	searchTabAlbums
+	searchTabSonglists
+	searchTabCount
+
+	searchPageSize = 30
+	// 歌手/专辑卡与歌单卡同一套自适应网格：只定最小宽度，实际卡宽按
+	// 当前内容区均分，避免固定 150 宽在右侧留下一条空洞。
+	searchCardMinWidth = 150
+	searchCardGapX     = 16
+)
+
+// searchTabData 是单个分类的结果。分页游标各存一份，切换标签不会串页。
+type searchTabData struct {
+	loaded      bool
+	loading     bool
+	loadingMore bool
+	err         string
+	page        int
+	total       int64
+	nextpage    int64
+	songs       []player.Song
+	singers     []backend.SearchSinger
+	albums      []backend.SearchAlbum
+	songlists   []backend.SonglistSummary
+}
+
 type searchState struct {
 	kw         string
 	requestSeq uint64
-	tab        int // 0 歌曲 1 歌单
-	songs      []player.Song
-	songlists  []backend.SonglistSummary
-	total      int64
-	page       int
-	nextpage   int64
-	loading    bool
-	err        string
+	tab        int // 0 歌曲 1 歌手 2 专辑 3 歌单
+	loadedTab  int // 已触发过加载的标签；-1 表示需要重新加载
+	tabs       [searchTabCount]searchTabData
 	hot        []string
 	hotLoaded  bool
 	list       songListState
@@ -1240,15 +1266,13 @@ type searchState struct {
 
 func (a *App) searchView(c *ui.Context, kw string) {
 	st := &a.search
-	if kw != "" && kw != st.kw {
+	if kw != st.kw {
 		st.kw = kw
-		st.songs = nil
-		st.songlists = nil
-		st.page = 0
-		st.err = ""
-		st.list.songs = nil
 		st.requestSeq++
-		a.ensureSearch(st)
+		st.tab = 0
+		st.loadedTab = -1
+		st.tabs = [searchTabCount]searchTabData{}
+		st.list = songListState{}
 	}
 	if kw == "" && !st.hotLoaded {
 		st.hotLoaded = true
@@ -1268,7 +1292,7 @@ func (a *App) searchView(c *ui.Context, kw string) {
 		ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(10).Children(func() {
 			ui.Text(c, "搜索").FontSize(fz(24)).FontWeight(800)
 			ui.Spacer(c)
-			ui.Tabs(c, &st.tab, "歌曲", "歌单")
+			ui.Tabs(c, &st.tab, "歌曲", "歌手", "专辑", "歌单")
 		})
 		if st.kw == "" {
 			// 热搜词
@@ -1291,90 +1315,304 @@ func (a *App) searchView(c *ui.Context, kw string) {
 			}
 			return
 		}
-		if st.err != "" {
-			ui.Text(c, st.err).FontSize(fz(13)).TextColor(c.Theme().TextMuted)
+		if st.loadedTab != st.tab {
+			st.loadedTab = st.tab
+			a.ensureSearchTab(st, st.tab)
+		}
+		sd := &st.tabs[st.tab]
+		if sd.err != "" {
+			ui.Row(c).Gap(10).AlignItems(ui.Center).Children(func() {
+				ui.Text(c, sd.err).FontSize(fz(13)).TextColor(c.Theme().TextMuted)
+				linkButton(c, "重试", func() {
+					sd.err = ""
+					st.loadedTab = -1
+				})
+			})
 			return
 		}
-		if st.loading && len(st.songs) == 0 && len(st.songlists) == 0 {
+		if sd.loading && !sd.loaded {
 			ui.Column(c).FillWidth().Center().Padding(48).Children(func() { ui.Spinner(c) })
 			return
 		}
-		if st.tab == 0 {
-			st.list.songs = st.songs
-			a.songList(c, &st.list, func(page int) { a.loadSearchPage(st, page) },
+		switch st.tab {
+		case searchTabSongs:
+			st.list.songs = sd.songs
+			st.list.loading = sd.loading
+			st.list.err = sd.err
+			a.songList(c, &st.list, nil,
 				func(i int) {
 					// 搜索结果是临时列表：双击只立即播放这一首，不把整页
 					// 结果塞进队列，原来的播放队列保持不动。
-					a.PL.PlayNow(st.songs[i])
+					a.PL.PlayNow(sd.songs[i])
 				})
-		} else {
-			a.playlistGrid(c, st.songlists)
-			if st.nextpage > 0 {
-				linkButton(c, "加载更多", func() { a.loadSearchPage(st, st.page+1) })
-			}
+		default:
+			a.searchResultGrid(c, st, st.tab)
 		}
 	})
 }
 
-func (a *App) ensureSearch(st *searchState) {
-	if st.loading {
+// searchResultGrid 渲染歌手/专辑/歌单三块卡片结果，并负责触底之外的
+// 「加载更多」。歌曲仍走虚拟列表，不套这层滚动容器。
+func (a *App) searchResultGrid(c *ui.Context, st *searchState, tab int) {
+	sd := &st.tabs[tab]
+	cardWidth := searchCardGridWidth(contentWidth(c, 24))
+	empty := map[int]string{
+		searchTabSingers:   "没有找到相关歌手",
+		searchTabAlbums:    "没有找到相关专辑",
+		searchTabSonglists: "没有找到相关歌单",
+	}[tab]
+
+	ui.Scroll(c).Grow(1).FillWidth().Children(func() {
+		ui.Column(c).FillWidth().Gap(16).Children(func() {
+			switch tab {
+			case searchTabSingers:
+				if len(sd.singers) == 0 {
+					ui.Text(c, empty).FontSize(fz(13)).TextColor(c.Theme().TextMuted).Padding(24)
+					return
+				}
+				ui.Row(c).FillWidth().Wrap().GapX(searchCardGapX).GapY(24).
+					AlignItems(ui.Start).Children(func() {
+					for i := range sd.singers {
+						a.searchSingerCard(c, cardWidth, sd.singers[i])
+					}
+				})
+			case searchTabAlbums:
+				if len(sd.albums) == 0 {
+					ui.Text(c, empty).FontSize(fz(13)).TextColor(c.Theme().TextMuted).Padding(24)
+					return
+				}
+				ui.Row(c).FillWidth().Wrap().GapX(searchCardGapX).GapY(24).
+					AlignItems(ui.Start).Children(func() {
+					for i := range sd.albums {
+						a.searchAlbumCard(c, cardWidth, sd.albums[i])
+					}
+				})
+			default:
+				if len(sd.songlists) == 0 {
+					ui.Text(c, empty).FontSize(fz(13)).TextColor(c.Theme().TextMuted).Padding(24)
+					return
+				}
+				a.playlistGrid(c, sd.songlists)
+			}
+			if sd.nextpage > 0 {
+				if sd.loadingMore {
+					ui.Row(c).FillWidth().Center().Padding(14).Children(func() { ui.Spinner(c) })
+				} else {
+					linkButton(c, "加载更多", func() {
+						a.loadSearchPage(st, tab, sd.page+1)
+					})
+				}
+			}
+		})
+	})
+}
+
+// searchCardGridWidth 与 playlistGridCardWidth 同一算法：先按最小宽度定
+// 列数，再把整行剩余宽度均分给每列，末行也不会突然被拉宽。
+func searchCardGridWidth(width float32) float32 {
+	if width <= 0 {
+		return searchCardMinWidth
+	}
+	cols := int((width + searchCardGapX) / (searchCardMinWidth + searchCardGapX))
+	if cols < 1 {
+		cols = 1
+	}
+	return (width - float32(cols-1)*searchCardGapX) / float32(cols)
+}
+
+// searchSingerCard 歌手卡：圆形头像 + 名称 + 歌曲数，落点是歌手页。
+func (a *App) searchSingerCard(c *ui.Context, width float32, g backend.SearchSinger) {
+	t := c.Theme()
+	name := strings.TrimSpace(stripSearchHighlight(g.Name))
+	if name == "" {
+		name = "歌手"
+	}
+	art := a.Covers.Get(singerPicURL(g.Mid, g.Pic), a.invalidate)
+	card := ui.Column(c).Width(width).Shrink(0).Gap(6)
+	card.Children(func() {
+		box := ui.Box(c).FillWidth().AspectRatio(1).Clip().Radius(width / 2).Background(t.SurfaceHover).
+			Transition(hoverFade)
+		box.Children(func() {
+			if art != nil {
+				ui.Image(c, art).Fill().Fit(ui.Cover)
+			} else {
+				ui.Box(c).Fill().Center().Children(func() {
+					ui.Icon(c, Icons["user"]).FontSize(fz(34)).TextColor(t.TextMuted).AlignSelf(ui.Center)
+				})
+			}
+		})
+		ui.Text(c, name).FontSize(fz(12.5)).SingleLine().Ellipsis("…")
+		sub := ""
+		if g.SongNum > 0 {
+			sub = strconv.FormatInt(g.SongNum, 10) + " 首"
+		}
+		ui.Text(c, sub).FontSize(fz(11)).TextColor(t.TextMuted).SingleLine().Ellipsis("…")
+	})
+	if card.Clicked() && g.Mid != "" {
+		a.Router.Push("/singer/" + g.Mid + "?name=" + url.QueryEscape(name))
+	}
+}
+
+// searchAlbumCard 专辑卡：方形封面 + 名称 + 歌手/发行时间，落点是专辑页。
+func (a *App) searchAlbumCard(c *ui.Context, width float32, al backend.SearchAlbum) {
+	t := c.Theme()
+	name := strings.TrimSpace(stripSearchHighlight(al.Name))
+	if name == "" {
+		name = "专辑"
+	}
+	pic := strings.TrimSpace(al.Pic)
+	if strings.HasPrefix(pic, "http:") {
+		pic = "https:" + strings.TrimPrefix(pic, "http:")
+	}
+	if pic == "" {
+		pic = coverURL("", al.Mid, 300)
+	}
+	art := a.Covers.Get(pic, a.invalidate)
+	card := ui.Column(c).Width(width).Shrink(0).Gap(6)
+	card.Children(func() {
+		box := ui.Box(c).FillWidth().AspectRatio(1).Clip().Radius(10).Background(t.SurfaceHover).
+			Transition(hoverFade)
+		box.Children(func() {
+			if art != nil {
+				ui.Image(c, art).Fill().Fit(ui.Cover)
+			} else {
+				ui.Box(c).Fill().Center().Children(func() {
+					ui.Icon(c, Icons["note"]).FontSize(fz(34)).TextColor(t.TextMuted).AlignSelf(ui.Center)
+				})
+			}
+		})
+		ui.Text(c, name).FontSize(fz(12.5)).SingleLine().Ellipsis("…").LineHeight(1.35)
+		ui.Text(c, joinParts(stripSearchHighlight(al.Singer), al.TimePublic)).
+			FontSize(fz(11)).TextColor(t.TextMuted).SingleLine().Ellipsis("…")
+	})
+	if card.Clicked() && al.Mid != "" {
+		a.Router.Push("/album/" + al.Mid + "?name=" + url.QueryEscape(name))
+	}
+}
+
+// ensureSearchTab 首次切到某个分类时拉第一页；各分类独立缓存。
+func (a *App) ensureSearchTab(st *searchState, tab int) {
+	sd := &st.tabs[tab]
+	if sd.loaded || sd.loading {
 		return
 	}
-	st.loading = true
-	st.tab = 0
+	if a.API == nil {
+		sd.err = "后端未连接"
+		return
+	}
+	sd.loading = true
 	kw := st.kw
-	st.requestSeq++
 	seq := st.requestSeq
 	go func() {
 		var res backend.SearchResults
 		var err error
-		a.withAPILimit(func() { res, err = a.API.Search(kw, 0, 1, 30) })
+		a.withAPILimit(func() { res, err = a.API.Search(kw, tab, 1, searchPageSize) })
 		a.update(func() {
 			if st.requestSeq != seq || st.kw != kw {
 				return
 			}
-			st.loading = false
+			sd.loading = false
 			if err != nil {
-				st.err = err.Error()
+				sd.err = err.Error()
 				return
 			}
-			st.songs = toPlayerSongs(res.Song)
-			st.page = 1
-			st.total = res.TotalNum
-			st.nextpage = res.Nextpage
-			st.list.songs = st.songs
-			st.list.fetching = false
+			sd.loaded = true
+			sd.page = 1
+			applySearchResults(sd, tab, res, false)
+			if tab == searchTabSongs {
+				st.list.songs = sd.songs
+				st.list.fetching = false
+			}
 		})
 	}()
 }
 
-func (a *App) loadSearchPage(st *searchState, page int) {
-	if page <= st.page {
+// loadSearchPage 追加下一页。分页请求不能改动 kw 的代际号，否则会把
+// 其它分类已经发起的首屏请求误判成过期。
+func (a *App) loadSearchPage(st *searchState, tab, page int) {
+	sd := &st.tabs[tab]
+	if page <= sd.page || sd.loadingMore {
 		return
 	}
-	st.page = page
-	typ := 0
-	if st.tab == 1 {
-		typ = 3
+	if a.API == nil {
+		return
 	}
+	sd.loadingMore = true
 	kw := st.kw
-	st.requestSeq++
 	seq := st.requestSeq
 	go func() {
 		var res backend.SearchResults
 		var err error
-		a.withAPILimit(func() { res, err = a.API.Search(kw, typ, page, 30) })
+		a.withAPILimit(func() { res, err = a.API.Search(kw, tab, page, searchPageSize) })
 		a.update(func() {
 			if st.requestSeq != seq || st.kw != kw {
 				return
 			}
-			st.list.fetching = false
+			sd.loadingMore = false
+			if tab == searchTabSongs {
+				st.list.fetching = false
+			}
 			if err != nil {
 				return
 			}
-			st.songs = append(st.songs, toPlayerSongs(res.Song)...)
-			st.nextpage = res.Nextpage
-			st.list.songs = st.songs
+			sd.page = page
+			applySearchResults(sd, tab, res, true)
+			if tab == searchTabSongs {
+				st.list.songs = sd.songs
+			}
 		})
 	}()
+}
+
+// applySearchResults 把一页响应写回对应分类。
+func applySearchResults(sd *searchTabData, tab int, res backend.SearchResults, appendMode bool) {
+	switch tab {
+	case searchTabSingers:
+		if appendMode {
+			sd.singers = append(sd.singers, res.Singer...)
+		} else {
+			sd.singers = res.Singer
+		}
+	case searchTabAlbums:
+		if appendMode {
+			sd.albums = append(sd.albums, res.Album...)
+		} else {
+			sd.albums = res.Album
+		}
+	case searchTabSonglists:
+		if appendMode {
+			sd.songlists = append(sd.songlists, res.Songlists...)
+		} else {
+			sd.songlists = res.Songlists
+		}
+	default:
+		songs := toPlayerSongs(res.Song)
+		for i := range songs {
+			songs[i].Name = stripSearchHighlight(songs[i].Name)
+			songs[i].Title = stripSearchHighlight(songs[i].Title)
+			songs[i].Artists = stripSearchHighlight(songs[i].Artists)
+			songs[i].Album = stripSearchHighlight(songs[i].Album)
+			for j := range songs[i].Singers {
+				songs[i].Singers[j].Name = stripSearchHighlight(songs[i].Singers[j].Name)
+			}
+		}
+		if appendMode {
+			sd.songs = append(sd.songs, songs...)
+		} else {
+			sd.songs = songs
+		}
+	}
+	sd.total = res.TotalNum
+	sd.nextpage = res.Nextpage
+}
+
+// stripSearchHighlight 去掉上游 highlight=1 在名称里插的 <em> 标签。
+// UI 文本按纯文本绘制，不去掉会把标签原样显示出来。
+func stripSearchHighlight(s string) string {
+	if !strings.Contains(s, "<") {
+		return s
+	}
+	s = strings.ReplaceAll(s, "<em>", "")
+	s = strings.ReplaceAll(s, "</em>", "")
+	return s
 }

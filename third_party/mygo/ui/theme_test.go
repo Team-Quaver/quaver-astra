@@ -130,11 +130,13 @@ func inverseFills(t *testing.T, th *Theme) (tooltip, toast Color) {
 
 func TestInverseFillsTooltipsAndToasts(t *testing.T) {
 	th := *DarkTheme()
-	if tooltip, toast := inverseFills(t, &th); tooltip != th.Text || toast != th.Text {
-		t.Errorf("a dark theme fills a tooltip with %v and a toast with %v, not its text color %v", tooltip, toast, th.Text)
+	wantToast := th.Text.Alpha(toastFillAlpha).Over(th.Background)
+	if tooltip, toast := inverseFills(t, &th); tooltip != th.Text || toast != wantToast {
+		t.Errorf("a dark theme fills a tooltip with %v and a toast with %v, not its text color %v", tooltip, toast, wantToast)
 	}
 	th.Inverse, th.InverseText = Hex("#3a3a40"), Hex("#f2f2f7")
-	if tooltip, toast := inverseFills(t, &th); tooltip != th.Inverse || toast != th.Inverse {
-		t.Errorf("a theme fills a tooltip with %v and a toast with %v, not its Inverse %v", tooltip, toast, th.Inverse)
+	wantToast = th.Inverse.Alpha(toastFillAlpha).Over(th.Background)
+	if tooltip, toast := inverseFills(t, &th); tooltip != th.Inverse || toast != wantToast {
+		t.Errorf("a theme fills a tooltip with %v and a toast with %v, not its Inverse %v", tooltip, toast, wantToast)
 	}
 }

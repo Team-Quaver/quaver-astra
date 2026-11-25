@@ -173,6 +173,53 @@ func TestSearchCompleteParse(t *testing.T) {
 	}
 }
 
+func TestSearchParsesSingerAndAlbum(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/search" {
+			t.Errorf("path = %q", r.URL.Path)
+		}
+		if got := r.URL.Query().Get("type"); got != "1" {
+			t.Errorf("type = %q, want 1", got)
+		}
+		_, _ = w.Write([]byte(`{"code":0,"msg":"ok","data":{
+			"song":[],
+			"singer":[
+				{"mid":"s1","name":"周杰伦","pic":"https://img/s1.jpg","song_num":128},
+				{"mid":"s2","name":"方文山","pic":"","song_num":0}
+			],
+			"album":[
+				{"mid":"a1","name":"叶惠美","pic":"https://img/a1.jpg","singer":"周杰伦","time_public":"2003-07-31","song_num":11}
+			],
+			"songlist":[],
+			"total_num":3,
+			"nextpage":2
+		}}`))
+	}))
+	defer srv.Close()
+
+	got, err := NewClient(srv.URL).Search("周杰伦", 1, 1, 30)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Singer) != 2 {
+		t.Fatalf("singers = %+v", got.Singer)
+	}
+	if got.Singer[0].Mid != "s1" || got.Singer[0].Name != "周杰伦" || got.Singer[0].SongNum != 128 {
+		t.Errorf("singer[0] = %+v", got.Singer[0])
+	}
+	if len(got.Album) != 1 {
+		t.Fatalf("albums = %+v", got.Album)
+	}
+	al := got.Album[0]
+	if al.Mid != "a1" || al.Name != "叶惠美" || al.Singer != "周杰伦" ||
+		al.TimePublic != "2003-07-31" || al.SongNum != 11 {
+		t.Errorf("album = %+v", al)
+	}
+	if got.TotalNum != 3 || got.Nextpage != 2 {
+		t.Errorf("paging = %d/%d", got.TotalNum, got.Nextpage)
+	}
+}
+
 func TestLyricRequestsTranslationRomanizationAndQRC(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/song/m1/lyric" {
