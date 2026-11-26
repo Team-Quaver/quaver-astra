@@ -37,6 +37,13 @@ body:
       description: 选择你实际使用的版本（Tag）。如果列表中没有对应版本，请选择「其他（手动填写）」，并在下一项补充。
       options:
         # >>> auto-generated-options (refresh-issue-versions 维护，勿手改) >>>
+        - v11.1
+        - v11
+        - v10.90
+        - v10.81
+        - v10.80
+        - v10.1
+        - v10
         - v9.1
         - v9
         - v8
