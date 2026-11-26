@@ -404,6 +404,7 @@ jobs:
             else
               gh release create "$RELEASE_TAG" out/* \
                 -R "$GITHUB_REPOSITORY" \
+                --draft \
                 --target "$GITHUB_SHA" \
                 --title "Quaver Astra $VERSION" \
                 --generate-notes
