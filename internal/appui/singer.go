@@ -2,9 +2,11 @@ package appui
 
 import (
 	"net/url"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/Team-Quaver/quaver-astra/internal/backend"
 	"github.com/Team-Quaver/quaver-astra/internal/player"
@@ -235,7 +237,7 @@ func (a *App) singerAlbumPanel(c *ui.Context, st *singerState, mid string) {
 	ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(8).Children(func() {
 		ui.Text(c, "共 "+strconv.FormatInt(st.albumN, 10)+" 张").FontSize(fz(12)).TextColor(t.TextMuted)
 	})
-	ui.Row(c).FillWidth().Wrap().Gap(16).Children(func() {
+	ui.Row(c).FillWidth().Wrap().Gap(16).AlignItems(ui.Start).Children(func() {
 		for i := range st.albums {
 			a.albumCard(c, st.albums[i])
 		}
@@ -243,6 +245,7 @@ func (a *App) singerAlbumPanel(c *ui.Context, st *singerState, mid string) {
 }
 
 // albumCard 专辑卡（150 宽，同 playlistCard 卡面；落点是专辑页）。
+// 标题必须单行省略：两行标题会把同排卡片撑高，垂直对齐后封面就高低不齐。
 func (a *App) albumCard(c *ui.Context, al backend.SingerAlbum) {
 	t := c.Theme()
 	art := a.Covers.Get(coverURL(al.Pmid, al.Mid, 300), a.invalidate)
@@ -259,7 +262,7 @@ func (a *App) albumCard(c *ui.Context, al backend.SingerAlbum) {
 				})
 			}
 		})
-		ui.Text(c, al.Name).FontSize(fz(12.5)).MaxLines(2).Ellipsis("…").LineHeight(1.35)
+		ui.Text(c, al.Name).FontSize(fz(12.5)).SingleLine().Ellipsis("…").LineHeight(1.35)
 		ui.Text(c, joinParts(al.AlbumType, al.TimePublic)).
 			FontSize(fz(11)).TextColor(t.TextMuted).SingleLine().Ellipsis("…")
 	})
@@ -278,7 +281,10 @@ type singerAlbumPageFunc func(page, num int) (backend.SingerAlbums, error)
 // fetchAllSingerAlbums 按页拉取完整歌手专辑列表。优先用响应 total 判断终点，
 // total 缺失时继续请求，遇到空页或不再增加新专辑的页面即停止。
 // 后续分页失败时保留已经取到的专辑，避免网络抖动把整个「专辑」标签清空。
-func fetchAllSingerAlbums(fetch singerAlbumPageFunc, pageSize int) (backend.SingerAlbums, error) {
+// 返回前统一按发行日期倒序重排：上游分页顺序并不是发行时间顺序，主项目
+// albumCardsHtml 也是在拉全分页后再排序。
+func fetchAllSingerAlbums(fetch singerAlbumPageFunc, pageSize int) (out backend.SingerAlbums, err error) {
+	defer func() { sortSingerAlbumsNewestFirst(out.AlbumList) }()
 	if pageSize <= 0 {
 		pageSize = singerAlbumPageSize
 	}
@@ -287,7 +293,7 @@ func fetchAllSingerAlbums(fetch singerAlbumPageFunc, pageSize int) (backend.Sing
 		return first, err
 	}
 
-	out := first
+	out = first
 	out.AlbumList = append([]backend.SingerAlbum(nil), first.AlbumList...)
 	seen := make(map[string]struct{}, len(out.AlbumList))
 	for _, album := range out.AlbumList {
@@ -322,6 +328,49 @@ func fetchAllSingerAlbums(fetch singerAlbumPageFunc, pageSize int) (backend.Sing
 		}
 	}
 	return out, nil
+}
+
+// sortSingerAlbumsNewestFirst 按发行日期从新到旧归一化专辑顺序。
+// 没有可解析日期的条目保持原有相对顺序并沉到最后，避免脏数据扰乱整排。
+func sortSingerAlbumsNewestFirst(albums []backend.SingerAlbum) {
+	if len(albums) < 2 {
+		return
+	}
+	type rankedAlbum struct {
+		album backend.SingerAlbum
+		at    int64
+		known bool
+	}
+	ranked := make([]rankedAlbum, len(albums))
+	for i := range albums {
+		ranked[i].album = albums[i]
+		if t, ok := singerAlbumReleaseTime(albums[i].TimePublic); ok {
+			ranked[i].at, ranked[i].known = t.Unix(), true
+		}
+	}
+	sort.SliceStable(ranked, func(i, j int) bool {
+		if ranked[i].known != ranked[j].known {
+			return ranked[i].known
+		}
+		if !ranked[i].known {
+			return false
+		}
+		return ranked[i].at > ranked[j].at
+	})
+	for i := range ranked {
+		albums[i] = ranked[i].album
+	}
+}
+
+// singerAlbumReleaseTime 解析接口的 time_public（通常为 2006-01-02，
+// 也兼容带时分秒的写法）。解析失败时交由调用方把该条目排到最后。
+func singerAlbumReleaseTime(raw string) (time.Time, bool) {
+	s := strings.TrimSpace(raw)
+	if len(s) > len("2006-01-02") {
+		s = s[:len("2006-01-02")]
+	}
+	t, err := time.Parse("2006-01-02", s)
+	return t, err == nil
 }
 
 // singerAlbumKey 跨页去重。mid 是稳定标识；极少数条目缺 mid 时退化为专辑
