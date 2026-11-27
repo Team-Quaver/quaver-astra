@@ -6,7 +6,7 @@
 
 现代、美观的跨平台第三方 Q 音客户端，现已轻装上阵
 
-[![Listed on Awesome MyGo](https://awesomemygo.dev/badge.svg)](https://awesomemygo.dev/apps/quaver-astra)
+[![Listed on Awesome MyGo](img/astra-intro.webp)](https://awesomemygo.dev/apps/quaver-astra)
 
 <p align="center">
   <img src="img/astra.png" width="480">
