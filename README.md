@@ -1,12 +1,10 @@
-<p align="center">
-  <img src="img/quaver-astra.svg" width="96">
-</p>
+
+
+[![Listed on Awesome MyGo](img/astra-intro.webp)](https://awesomemygo.dev/apps/quaver-astra)
 
 # Quaver Music Astra
 
 现代、美观的跨平台第三方 Q 音客户端，现已轻装上阵
-
-[![Listed on Awesome MyGo](img/astra-intro.webp)](https://awesomemygo.dev/apps/quaver-astra)
 
 <p align="center">
   <img src="img/astra.png" width="480">
