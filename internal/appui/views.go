@@ -152,19 +152,6 @@ func (a *App) homeRadioCard(c *ui.Context) ui.Element {
 
 	card := ui.Row(c).Grow(2).Basis(500).MinWidth(440).Height(236).Padding(22, 24).
 		Gap(22).Radius(16).Background(heroBg).Clip().AlignItems(ui.Center)
-	card.Draw(func(p *ui.Painter, r ui.Rect) {
-		// Orbital geometry gives the hero a Quaver/Astra signature without
-		// borrowing the traffic-light, glass and floating-pill language of
-		// the reference desktop shell.
-		cx, cy := r.X+r.W*0.8, r.Y+r.H*0.5
-		for _, rad := range []float32{58, 88, 118} {
-			var orbit ui.Path
-			orbit.Circle(cx, cy, rad)
-			p.StrokePath(&orbit, 1, ui.RGBA(25, 194, 216, 0.13))
-		}
-		p.Line(cx-96, cy, cx+96, cy, 1, ui.RGBA(247, 241, 228, 0.07))
-		p.Line(cx, cy-96, cx, cy+96, 1, ui.RGBA(247, 241, 228, 0.07))
-	})
 	card.Children(func() {
 		ui.Column(c).Grow(1).Basis(0).MinWidth(220).Gap(7).Children(func() {
 			ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(6).Children(func() {
@@ -216,17 +203,8 @@ func (a *App) homeRadioCard(c *ui.Context) ui.Element {
 		})
 
 		// The cover is a physical sleeve rather than a dashboard thumbnail.
-		// Two offset cards behind it imply a stack without making the page
-		// look like an Apple Music shelf.
 		visual := ui.Box(c).Width(212).Height(188).Shrink(0)
 		visual.Children(func() {
-			ui.Text(c, time.Now().Format("02")).Absolute().Right(2).Bottom(-42).
-				Font("monospace").FontSize(fz(126)).FontWeight(800).
-				TextColor(ui.RGBA(247, 241, 228, 0.045))
-			ui.Box(c).Absolute().Top(28).Right(32).Size(142, 142).Radius(12).
-				Background(ui.RGBA(25, 194, 216, 0.13)).Rotate(5)
-			ui.Box(c).Absolute().Top(24).Right(48).Size(142, 142).Radius(12).
-				Background(ui.RGBA(247, 241, 228, 0.08)).Rotate(-3)
 			box := ui.Box(c).Absolute().Top(20).Right(38).Size(146, 146).Radius(12).
 				Clip().Background(ui.RGBA(247, 241, 228, 0.1)).
 				Shadow(0, 14, 38, 0, ui.RGBA(0, 0, 0, 0.38))
@@ -241,12 +219,6 @@ func (a *App) homeRadioCard(c *ui.Context) ui.Element {
 					})
 				}
 			})
-			status := "READY / 01"
-			if active && hasCur {
-				status = "ON AIR / 01"
-			}
-			ui.Text(c, status).Absolute().Left(2).Bottom(4).Font("monospace").
-				FontSize(fz(9)).FontWeight(700).TextColor(heroMuted)
 		})
 	})
 	return card
@@ -579,6 +551,7 @@ func (a *App) startRadioFromUI(autoplay bool) {
 func (a *App) compactSongRow(c *ui.Context, songs []player.Song, i int) {
 	t := c.Theme()
 	s := songs[i]
+	loved := a.PL.IsLoved(s.Mid)
 	row := ui.Row(c).FillWidth().Height(34).PaddingX(4).Gap(10).AlignItems(ui.Center).Radius(7).
 		Transition(hoverFade)
 	row.Children(func() {
@@ -599,6 +572,9 @@ func (a *App) compactSongRow(c *ui.Context, songs []player.Song, i int) {
 	if row.DoubleClicked() {
 		a.playListNow(songs, i)
 	}
+	row.ContextMenu(func(m *ui.Menu) {
+		a.songContextMenu(c, m, s, loved, i)
+	})
 }
 
 func (a *App) openPlaylistAndPlay(id int64) {
@@ -1038,6 +1014,16 @@ func (a *App) playlistView(c *ui.Context, id int64) {
 				st.list.list.Reorder = nil
 				st.list.list.Key = nil
 			}
+			// 只有自建歌单才有「从歌单删除」；非自建歌单传 nil，菜单不会
+			// 因为空追加项多出一条分隔线。
+			var extraMenu func(m *ui.Menu, s player.Song, row int)
+			if a.isCreatedPlaylist(id) {
+				extraMenu = func(m *ui.Menu, s player.Song, row int) {
+					if m.Item("从歌单删除").Chosen() {
+						a.deleteFromPlaylist(st, row, s)
+					}
+				}
+			}
 			// 打开页面时用户歌单可能还没同步上来（冷启动直接进歌单页），
 			// ensurePlaylist 那会儿认不出自建歌单；认出后在这里补一次。
 			if a.isCreatedPlaylist(id) && st.loaded && st.hasMore && !st.prefetching && !st.loadingMore && !st.prefetchTried {
@@ -1045,14 +1031,7 @@ func (a *App) playlistView(c *ui.Context, id int64) {
 				go a.prefetchPlaylistPages(st, id, st.page+1)
 			}
 			ui.List(c, &st.list.list, len(st.songs), func(i int) {
-				row := a.songRow(c, &st.list, i, func(i int) { a.playListNow(st.songs, i) }, func(m *ui.Menu, s player.Song, row int) {
-					// 自建歌单的歌曲可以删除。
-					if a.isCreatedPlaylist(id) {
-						if m.Item("从歌单删除").Chosen() {
-							a.deleteFromPlaylist(st, row, s)
-						}
-					}
-				})
+				row := a.songRow(c, &st.list, i, func(i int) { a.playListNow(st.songs, i) }, extraMenu)
 				if i == reveal {
 					row.ScrollIntoView(ui.ScrollIntoViewOptions{
 						Block:     ui.ScrollCenter,

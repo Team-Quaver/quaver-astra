@@ -195,113 +195,123 @@ func (a *App) songRow(c *ui.Context, st *songListState, i int, doubleClick func(
 		doubleClick(i)
 	}
 	row.ContextMenu(func(m *ui.Menu) {
-		// 下一首播放：排到当前曲之后等着，不打断当前播放（主项目
-		// enqueueNext 的语义）。队列还空着时 EnqueueNext 会直接起播，
-		// toast 文案跟着分叉，否则「什么都没发生」。
-		if m.Item("下一首播放").Chosen() {
-			name := s.DisplayName()
-			if name == "" {
-				name = "这首歌"
-			}
-			_, playing := a.PL.Current()
-			a.PL.EnqueueNext(s)
-			if playing {
-				c.Toast("已插队：" + name + "（下一首播放）")
-			} else {
-				c.Toast("开始播放：" + name)
-			}
-		}
-		if m.Item("添加到队列").Chosen() {
-			a.PL.EnqueueMany([]player.Song{s})
-			c.Toast("已加入队列")
-		}
-		m.Separator()
-		label := "收藏"
-		if loved {
-			label = "取消收藏"
-		}
-		if m.Item(label).Chosen() {
-			a.PL.ToggleLove(s)
-		}
-		// 添加到歌单：列出用户自建歌单。
-		m.Submenu("添加到歌单", func(m *ui.Menu) {
-			pls := a.PL.Playlists()
-			if len(pls) == 0 {
-				m.Item("没有创建的歌单").Disabled(true)
-			}
-			for _, pl := range pls {
-				pl := pl
-				if m.Item(pl.Title).Chosen() {
-					go func() {
-						var err error
-						a.withAPILimit(func() {
-							err = a.API.SonglistAddSong(pl.DirID, pl.ID, s.SongID, backend.SonglistWriteType(s.SongType))
-						})
-						a.update(func() {
-							if err != nil {
-								a.pendingToast = "添加失败：" + err.Error()
-							} else {
-								a.pendingToast = "已添加到：" + pl.Title
-							}
-						})
-					}()
-				}
-			}
-		})
-		// 调用方追加的菜单项（歌单详情页的「从歌单删除」等）。
-		if len(extraMenu) > 0 && extraMenu[0] != nil {
-			m.Separator()
-			extraMenu[0](m, s, i)
-		}
-		m.Separator()
-		m.Submenu("跳转至", func(m *ui.Menu) {
-			m.Submenu("歌手", func(m *ui.Menu) {
-				shown := false
-				for _, g := range singersWithMid(s) {
-					shown = true
-					g := g
-					if m.Item(g.Name).Chosen() {
-						a.Router.Push(singerJumpRoute(g))
-					}
-				}
-				if !shown {
-					m.Item("没有歌手信息").Disabled(true)
-				}
-			})
-			m.Submenu("专辑", func(m *ui.Menu) {
-				target, ok := albumJumpRoute(s)
-				name := s.Album
-				if name == "" {
-					name = "专辑"
-				}
-				if m.Item(name).Disabled(!ok).Chosen() {
-					a.Router.Push(target)
-				}
-			})
-			if target, ok := sameNameSearchRoute(s); ok {
-				if m.Item("同名搜索").Chosen() {
-					a.Router.Push(target)
-				}
-			} else {
-				m.Item("同名搜索").Disabled(true)
-			}
-		})
-		m.Submenu("更多操作", func(m *ui.Menu) {
-			if m.Item("复制歌曲链接").Disabled(s.Mid == "").Chosen() {
-				c.WriteClipboard("https://y.qq.com/n/ryqq/songDetail/" + s.Mid)
-				c.Toast("已复制歌曲链接")
-			}
-			if m.Item("复制歌曲名称").Chosen() {
-				text := s.DisplayName()
-				if s.Subtitle != "" {
-					text += " " + s.Subtitle
-				}
-				c.WriteClipboard(text)
-				c.Toast("已复制：" + s.DisplayName())
-			}
-		})
+		a.songContextMenu(c, m, s, loved, i, extraMenu...)
 	})
 	return row
+}
+
+// songContextMenu 填充歌曲的右键菜单。歌单/榜单的完整行与首页「新歌速递」
+// 的紧凑行共用它，两处能力不会各自漂移。
+//
+// extraMenu 是页面专属的追加项。只有调用方确实有追加项时才传回调；
+// 传 nil 时这里不会再补前置分隔线，避免「添加到歌单」后面出现两条
+// 紧挨着的分隔线（从首页进入非自建歌单时曾触发）。
+func (a *App) songContextMenu(c *ui.Context, m *ui.Menu, s player.Song, loved bool, row int, extraMenu ...func(m *ui.Menu, s player.Song, row int)) {
+	// 下一首播放：排到当前曲之后等着，不打断当前播放（主项目
+	// enqueueNext 的语义）。队列还空着时 EnqueueNext 会直接起播，
+	// toast 文案跟着分叉，否则「什么都没发生」。
+	if m.Item("下一首播放").Chosen() {
+		name := s.DisplayName()
+		if name == "" {
+			name = "这首歌"
+		}
+		_, playing := a.PL.Current()
+		a.PL.EnqueueNext(s)
+		if playing {
+			c.Toast("已插队：" + name + "（下一首播放）")
+		} else {
+			c.Toast("开始播放：" + name)
+		}
+	}
+	if m.Item("添加到队列").Chosen() {
+		a.PL.EnqueueMany([]player.Song{s})
+		c.Toast("已加入队列")
+	}
+	m.Separator()
+	label := "收藏"
+	if loved {
+		label = "取消收藏"
+	}
+	if m.Item(label).Chosen() {
+		a.PL.ToggleLove(s)
+	}
+	// 添加到歌单：列出用户自建歌单。
+	m.Submenu("添加到歌单", func(m *ui.Menu) {
+		pls := a.PL.Playlists()
+		if len(pls) == 0 {
+			m.Item("没有创建的歌单").Disabled(true)
+		}
+		for _, pl := range pls {
+			pl := pl
+			if m.Item(pl.Title).Chosen() {
+				go func() {
+					var err error
+					a.withAPILimit(func() {
+						err = a.API.SonglistAddSong(pl.DirID, pl.ID, s.SongID, backend.SonglistWriteType(s.SongType))
+					})
+					a.update(func() {
+						if err != nil {
+							a.pendingToast = "添加失败：" + err.Error()
+						} else {
+							a.pendingToast = "已添加到：" + pl.Title
+						}
+					})
+				}()
+			}
+		}
+	})
+	// 调用方追加的菜单项（歌单详情页的「从歌单删除」等）。
+	if len(extraMenu) > 0 && extraMenu[0] != nil {
+		m.Separator()
+		extraMenu[0](m, s, row)
+	}
+	m.Separator()
+	m.Submenu("跳转至", func(m *ui.Menu) {
+		m.Submenu("歌手", func(m *ui.Menu) {
+			shown := false
+			for _, g := range singersWithMid(s) {
+				shown = true
+				g := g
+				if m.Item(g.Name).Chosen() {
+					a.Router.Push(singerJumpRoute(g))
+				}
+			}
+			if !shown {
+				m.Item("没有歌手信息").Disabled(true)
+			}
+		})
+		m.Submenu("专辑", func(m *ui.Menu) {
+			target, ok := albumJumpRoute(s)
+			name := s.Album
+			if name == "" {
+				name = "专辑"
+			}
+			if m.Item(name).Disabled(!ok).Chosen() {
+				a.Router.Push(target)
+			}
+		})
+		if target, ok := sameNameSearchRoute(s); ok {
+			if m.Item("同名搜索").Chosen() {
+				a.Router.Push(target)
+			}
+		} else {
+			m.Item("同名搜索").Disabled(true)
+		}
+	})
+	m.Submenu("更多操作", func(m *ui.Menu) {
+		if m.Item("复制歌曲链接").Disabled(s.Mid == "").Chosen() {
+			c.WriteClipboard("https://y.qq.com/n/ryqq/songDetail/" + s.Mid)
+			c.Toast("已复制歌曲链接")
+		}
+		if m.Item("复制歌曲名称").Chosen() {
+			text := s.DisplayName()
+			if s.Subtitle != "" {
+				text += " " + s.Subtitle
+			}
+			c.WriteClipboard(text)
+			c.Toast("已复制：" + s.DisplayName())
+		}
+	})
 }
 
 // loveLabel 是红心的无障碍名（也供 UI 测试定位）：图标本身对读屏是隐形的。

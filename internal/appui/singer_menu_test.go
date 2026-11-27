@@ -3,6 +3,7 @@ package appui
 import (
 	"slices"
 	"testing"
+	"time"
 
 	"github.com/Team-Quaver/quaver-astra/internal/backend"
 	"github.com/Team-Quaver/quaver-astra/internal/conf"
@@ -273,5 +274,149 @@ func TestContextMenuCopyAndSearch(t *testing.T) {
 	}
 	if got, want := tester.Clipboard(), "七里香 演唱会版"; got != want {
 		t.Errorf("复制名称 = %q，期望 %q", got, want)
+	}
+}
+
+// TestHomeNewSongRowHasSongMenu 首页新歌速递的紧凑行也要有歌单歌曲的
+// 完整右键菜单，而不是只能双击播放。
+func TestHomeNewSongRowHasSongMenu(t *testing.T) {
+	app, tester := homeNavApp(t)
+	app.API = backend.NewClient("http://127.0.0.1:1")
+	app.singers = map[string]*singerState{}
+	app.albums = map[string]*albumState{}
+	seedSinger(app)
+	seedAlbum(app)
+	app.home.newsong[0] = player.Song{
+		Mid: "n1", Name: "新歌一号", Title: "新歌一号",
+		Artists: "周杰伦", Album: "叶惠美", AlbumMid: "al1",
+		Singers: []player.Singer{{Mid: "s1", Name: "周杰伦"}},
+	}
+	tester.Frame()
+
+	if err := tester.RightClick("新歌一号"); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"下一首播放", "添加到队列", "-", "收藏", "添加到歌单", "-", "跳转至", "更多操作"}
+	if got := tester.Menu(); !slices.Equal(got, want) {
+		t.Fatalf("新歌速递右键菜单 = %v，期望 %v", got, want)
+	}
+
+	if err := tester.ChooseMenuItem("下一首播放"); err != nil {
+		t.Fatal(err)
+	}
+	if q := app.PL.Queue(); len(q) != 1 || q[0].Mid != "n1" {
+		t.Errorf("「下一首播放」后队列 = %v，期望只有新歌一号", q)
+	}
+	if err := tester.RightClick("新歌一号"); err != nil {
+		t.Fatal(err)
+	}
+	if err := tester.ChooseMenuItem("添加到队列"); err != nil {
+		t.Fatal(err)
+	}
+	if q := app.PL.Queue(); len(q) != 2 || q[1].Mid != "n1" {
+		t.Errorf("「添加到队列」后队列 = %v，期望追加新歌一号", q)
+	}
+
+	// 跳转动作使用这一行的歌手/专辑数据，而不是复用别的页面状态。
+	if err := tester.RightClick("新歌一号"); err != nil {
+		t.Fatal(err)
+	}
+	if err := tester.ChooseMenuItem("跳转至", "歌手", "周杰伦"); err != nil {
+		t.Fatal(err)
+	}
+	tester.Frame()
+	if got := app.Router.Path(); got != "/singer/s1" {
+		t.Errorf("跳转歌手路由 = %q，期望 /singer/s1", got)
+	}
+
+	app.Router.Push("/")
+	tester.Frame()
+	if err := tester.RightClick("新歌一号"); err != nil {
+		t.Fatal(err)
+	}
+	if err := tester.ChooseMenuItem("跳转至", "专辑", "叶惠美"); err != nil {
+		t.Fatal(err)
+	}
+	tester.Frame()
+	if got := app.Router.Path(); got != "/album/al1" {
+		t.Errorf("跳转专辑路由 = %q，期望 /album/al1", got)
+	}
+
+	app.Router.Push("/")
+	tester.Frame()
+	if err := tester.RightClick("新歌一号"); err != nil {
+		t.Fatal(err)
+	}
+	if err := tester.ChooseMenuItem("跳转至", "同名搜索"); err != nil {
+		t.Fatal(err)
+	}
+	tester.Frame()
+	if got := app.Router.Path(); got != "/search" {
+		t.Errorf("同名搜索路由 = %q，期望 /search", got)
+	}
+	if got := app.Router.Query("kw"); got != "新歌一号" {
+		t.Errorf("同名搜索词 = %q，期望 新歌一号", got)
+	}
+}
+
+// TestNonCreatedPlaylistMenuSingleSeparator 从首页进入他人歌单时没有
+// 「从歌单删除」可追加，菜单不能在「添加到歌单」和「跳转至」之间留下
+// 两条紧挨着的分隔线。
+func TestNonCreatedPlaylistMenuSingleSeparator(t *testing.T) {
+	app, _, _ := menuTestApp(t)
+	songs := []player.Song{menuSongs[0]}
+	app.playlist[88] = &playlistState{
+		loaded: true,
+		info:   backend.SonglistSummary{ID: 88, Title: "推荐歌单", Songnum: 1},
+		songs:  songs,
+		list:   songListState{songs: songs, loaded: true},
+	}
+	app.Router = ui.NewRouter("/playlist/88")
+	tester := ui.NewTester(app.View, testWinW, testWinH)
+	tester.Frame()
+
+	if err := tester.RightClick("稻香"); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"下一首播放", "添加到队列", "-", "收藏", "添加到歌单", "-", "跳转至", "更多操作"}
+	if got := tester.Menu(); !slices.Equal(got, want) {
+		t.Fatalf("非自建歌单右键菜单 = %v，期望 %v", got, want)
+	}
+}
+
+// TestCreatedPlaylistMenuKeepsDelete 自建歌单仍有「从歌单删除」，并且
+// 它与「添加到歌单」之间保留一条独立分隔线。
+func TestCreatedPlaylistMenuKeepsDelete(t *testing.T) {
+	p := player.New(fixtureWithPlaylist{}, loadEngine{}, &nullPrefs{})
+	p.RefreshUser()
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) && len(p.Playlists()) == 0 {
+		time.Sleep(10 * time.Millisecond)
+	}
+	songs := []player.Song{menuSongs[0]}
+	app := &App{
+		PL:            p,
+		API:           backend.NewClient("http://127.0.0.1:1"),
+		Conf:          conf.Open(t.TempDir()),
+		Router:        ui.NewRouter("/playlist/77"),
+		Covers:        NewCoverCache(),
+		playlist:      map[int64]*playlistState{},
+		lastLyricLine: -2,
+	}
+	app.playlist[77] = &playlistState{
+		loaded: true,
+		info:   backend.SonglistSummary{ID: 77, Title: "自建", Songnum: 1},
+		songs:  songs,
+		list:   songListState{songs: songs, loaded: true},
+	}
+	tester := ui.NewTester(app.View, testWinW, testWinH)
+	tester.Frame()
+
+	if err := tester.RightClick("稻香"); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"下一首播放", "添加到队列", "-", "收藏", "添加到歌单", "-", "从歌单删除", "-", "跳转至", "更多操作"}
+	if got := tester.Menu(); !slices.Equal(got, want) {
+		t.Fatalf("自建歌单右键菜单 = %v，期望 %v", got, want)
 	}
 }
