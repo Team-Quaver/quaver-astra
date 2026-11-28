@@ -463,6 +463,24 @@ func TestResizeCursor(handle uintptr) string {
 	return ""
 }
 
+// TestPageCursor returns the name of the cursor the content window of a
+// window's page shows, as the surface set it: "default", "ew-resize", or ""
+// while a resize cursor of the edges, which the surface does not know,
+// shows over it.
+func TestPageCursor(handle uintptr) string {
+	w := windowByHandle(handle)
+	if w == nil {
+		return ""
+	}
+	cur := gdkWindowGetCursor(w.contentWindow())
+	for c, h := range surfaceCursors {
+		if h == cur {
+			return cursorNames[c]
+		}
+	}
+	return ""
+}
+
 // TestUsePortalShortcuts makes global shortcuts bind through the XDG desktop
 // portal, as on Wayland, and reports whether the desktop offers it.
 func TestUsePortalShortcuts(on bool) bool {

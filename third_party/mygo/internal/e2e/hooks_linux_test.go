@@ -167,6 +167,11 @@ func resizeCursor(w *mygo.Window) (name string, supported bool) {
 	return name, true
 }
 
+func pageCursor(w *mygo.Window) (name string, supported bool) {
+	mygo.RunOnMain(func() { name = linux.TestPageCursor(w.NativeHandle()) })
+	return name, true
+}
+
 func menuBarShown(w *mygo.Window) (shown, supported bool) {
 	mygo.RunOnMain(func() { shown, _ = linux.TestMenuBarState(w.NativeHandle()) })
 	return shown, true

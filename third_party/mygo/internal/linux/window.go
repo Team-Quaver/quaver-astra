@@ -1052,6 +1052,17 @@ func (w *window) showResizeCursor(edge int32) {
 	current := gdkWindowGetCursor(page)
 	if edge < 0 {
 		if c.on && current == c.shown {
+			if s := w.surface; s != nil {
+				// The surface puts its page's cursor requests off while
+				// an edge's cursor shows (SetCursor), and in that time the
+				// page may have asked for another, as when the pointer
+				// left the window and the view set the default again:
+				// what the edge's cursor replaced is stale. Show what the
+				// page asked for last.
+				w.releaseCursor()
+				s.SetCursor(s.cursor)
+				return
+			}
 			gdkWindowSetCursor(page, c.saved)
 		}
 		w.releaseCursor()
