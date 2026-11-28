@@ -94,14 +94,13 @@ func TestTrayMenuMatchesQuaverAstra(t *testing.T) {
 		t.Error("曲目行应为纯展示项")
 	}
 	loop := got[4].Submenu
-	if len(loop) != 5 {
-		t.Fatalf("循环模式 = %d 项, want 5", len(loop))
+	if len(loop) != 4 {
+		t.Fatalf("循环模式 = %d 项, want 4", len(loop))
 	}
 	for i, want := range []struct {
 		label string
 		typ   mygo.MenuItemType
 	}{
-		{"顺序播放", mygo.MenuItemRadio},
 		{"列表循环", mygo.MenuItemRadio},
 		{"单曲循环", mygo.MenuItemRadio},
 		{"", mygo.MenuItemSeparator},

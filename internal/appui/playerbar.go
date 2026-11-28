@@ -536,10 +536,7 @@ func (a *App) volumeCtl(c *ui.Context, t *ui.Theme) ui.Element {
 
 func (a *App) modeBtn(c *ui.Context, t *ui.Theme) ui.Element {
 	icon := "loopAll"
-	switch a.PL.Mode() {
-	case "off":
-		icon = "loopOff"
-	case "one":
+	if a.PL.Mode() == "one" {
 		icon = "loopOne"
 	}
 	return a.iconBtn(c, icon, "循环模式", 17, func() { a.PL.CycleMode() })

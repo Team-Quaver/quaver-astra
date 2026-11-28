@@ -44,6 +44,33 @@ func TestMPRISStateSignatureTracksLyrics(t *testing.T) {
 	}
 }
 
+func TestMPRISLoopStatusOnlyTrackOrPlaylist(t *testing.T) {
+	for _, tc := range []struct {
+		loop string
+		want string
+	}{
+		{"one", "Track"},
+		{"all", "Playlist"},
+		{"off", "Playlist"},
+	} {
+		m := &mpris{snap: Snapshot{Loop: tc.loop}}
+		if got := m.loopStatus(); got != tc.want {
+			t.Errorf("Loop=%q 上报 %q，期望 %q", tc.loop, got, tc.want)
+		}
+	}
+}
+
+func TestMPRISNoneLoopFallsBackToPlaylist(t *testing.T) {
+	var got string
+	m := &mpris{cmds: &Commands{SetLoop: func(mode string) { got = mode }}}
+	if err := m.Set(mprisPlyr, "LoopStatus", dbus.MakeVariant("None")); err != nil {
+		t.Fatalf("Set LoopStatus 失败: %v", err)
+	}
+	if got != "all" {
+		t.Fatalf("None 应回落到列表循环，实际 %q", got)
+	}
+}
+
 // TestMPRISTrackPathEscapesCloudMid 守住网盘曲目上报：Mid 里的冒号不是合法
 // object path 字符，不转义会让整条 Metadata（含 xesam:asText 歌词）发送失败。
 func TestMPRISTrackPathEscapesCloudMid(t *testing.T) {

@@ -164,13 +164,10 @@ func (m *mpris) playbackStatus() string {
 }
 
 func (m *mpris) loopStatus() string {
-	switch m.snap.Loop {
-	case "one":
+	if m.snap.Loop == "one" {
 		return "Track"
-	case "all":
-		return "Playlist"
 	}
-	return "None"
+	return "Playlist"
 }
 
 func (m *mpris) metadata() map[string]dbus.Variant {
@@ -399,10 +396,8 @@ func (m *mpris) Set(iface, prop string, val dbus.Variant) *dbus.Error {
 		switch s, _ := val.Value().(string); s {
 		case "Track":
 			m.cmds.SetLoop("one")
-		case "Playlist":
+		case "Playlist", "None":
 			m.cmds.SetLoop("all")
-		case "None":
-			m.cmds.SetLoop("off")
 		}
 	case "Shuffle":
 		if m.cmds.SetShuffle != nil {

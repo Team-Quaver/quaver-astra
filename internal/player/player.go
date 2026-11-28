@@ -1088,22 +1088,19 @@ func (p *Player) CycleMode() {
 		p.mu.Unlock()
 		return
 	}
-	switch p.mode {
-	case "off":
-		p.mode = "all"
-	case "all":
+	if p.mode == "all" {
 		p.mode = "one"
-	default:
-		p.mode = "off"
+	} else {
+		p.mode = "all"
 	}
 	p.mu.Unlock()
 	p.sessionSaveSoon(false)
 	p.notifyChange()
 }
 
-// SetMode 直接设置播放模式（托盘菜单的单选项用；非法值忽略）。
+// SetMode 直接设置播放模式（托盘菜单的单选项用；只接受 all/one，非法值忽略）。
 func (p *Player) SetMode(mode string) {
-	if mode != "off" && mode != "all" && mode != "one" {
+	if mode != "all" && mode != "one" {
 		return
 	}
 	p.mu.Lock()
@@ -1140,7 +1137,7 @@ func (p *Player) SetShuffle(on bool) {
 }
 
 // nextIndexLocked 计算 auto 播完后的下一首（-1 = 停）。手动 next 总回绕；
-// 顺序模式自然播到队尾即停。
+// 单曲循环留在当前曲，其余模式播到队尾后回到开头。
 func (p *Player) nextIndexLocked(auto bool) int {
 	n := len(p.queue)
 	if n == 0 {
@@ -1154,9 +1151,6 @@ func (p *Player) nextIndexLocked(auto bool) int {
 	}
 	next := p.index + 1
 	if next >= n {
-		if auto && p.mode == "off" {
-			return -1
-		}
 		next = 0
 	}
 	return next
@@ -1194,9 +1188,6 @@ func (p *Player) shufNextLocked() int {
 		return p.shufOrder[0]
 	}
 	if at+1 >= len(p.shufOrder) {
-		if p.mode == "off" {
-			return -1
-		}
 		return p.shufOrder[0]
 	}
 	return p.shufOrder[at+1]

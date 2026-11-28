@@ -247,6 +247,14 @@ func TestSessionRestoreRobustness(t *testing.T) {
 	if p2.Mode() != "all" {
 		t.Errorf("非法模式应维持默认，实际 %s", p2.Mode())
 	}
+
+	prefs3 := newMapPrefs()
+	prefs3.Set(sessionQueueKey, `{"songs":[{"mid":"a"}],"index":0,"mode":"off"}`)
+	p3 := New(stubBackend{}, &fakeEngine{}, prefs3)
+	p3.Boot()
+	if p3.Mode() != "all" {
+		t.Errorf("已移除的顺序播放应恢复为列表循环，实际 %s", p3.Mode())
+	}
 }
 
 func (e *fakeEngine) seekCount() int {

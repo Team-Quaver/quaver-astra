@@ -280,9 +280,12 @@ func (p *Player) restoreSession() {
 	p.mu.Lock()
 	p.queue = queue
 	p.index = index
+	// 旧版 session 可能保存已移除的 "off"（顺序播放），统一回落到列表循环。
 	switch snap.Mode {
-	case "off", "all", "one":
-		p.mode = snap.Mode
+	case "one":
+		p.mode = "one"
+	default:
+		p.mode = "all"
 	}
 	p.shuf = snap.Shuffle
 	p.shufOrder = nil

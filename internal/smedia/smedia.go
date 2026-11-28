@@ -22,7 +22,7 @@ type Snapshot struct {
 	Position float64 // 秒
 	Duration float64 // 秒
 	Volume   float64 // 0..1，静音时为 0
-	Loop     string  // off | all | one
+	Loop     string  // all | one
 	Shuffle  bool
 }
 

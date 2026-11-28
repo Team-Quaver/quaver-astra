@@ -503,12 +503,9 @@ func (c *smtc) applyTransport(s Snapshot) {
 	winrtCall(o.smtc, smtcPutIsNextEnabled, boolW(s.HasTrack))
 	winrtCall(o.smtc, smtcPutIsPrevEnabled, boolW(s.HasTrack))
 	if o.smtc2 != 0 {
-		rep := uintptr(repeatNone)
-		switch s.Loop {
-		case "one":
+		rep := uintptr(repeatList)
+		if s.Loop == "one" {
 			rep = repeatTrack
-		case "all":
-			rep = repeatList
 		}
 		winrtCall(o.smtc2, smtc2PutAutoRepeat, rep)
 		winrtCall(o.smtc2, smtc2PutShuffle, boolW(s.Shuffle))
@@ -680,10 +677,8 @@ func (c *smtc) onAutoRepeatRequested(args uintptr) {
 	switch mode {
 	case repeatTrack:
 		cmds.SetLoop("one")
-	case repeatList:
+	case repeatList, repeatNone:
 		cmds.SetLoop("all")
-	default:
-		cmds.SetLoop("off")
 	}
 }
 

@@ -36,7 +36,6 @@ type trayMenu struct {
 	prev   *mygo.MenuItem
 	toggle *mygo.MenuItem
 	next   *mygo.MenuItem
-	off    *mygo.MenuItem
 	all    *mygo.MenuItem
 	one    *mygo.MenuItem
 	shuf   *mygo.MenuItem
@@ -50,7 +49,6 @@ func (a *App) buildTrayMenu() (*mygo.Menu, *trayMenu) {
 		prev:   &mygo.MenuItem{Label: "上一曲", Click: func(*mygo.MenuItem, *mygo.Window) { a.PL.Prev() }},
 		toggle: &mygo.MenuItem{Label: "播放", Click: func(*mygo.MenuItem, *mygo.Window) { a.PL.PlayOrPause() }},
 		next:   &mygo.MenuItem{Label: "下一曲", Click: func(*mygo.MenuItem, *mygo.Window) { a.PL.Next(false) }},
-		off:    &mygo.MenuItem{Label: "顺序播放", Type: mygo.MenuItemRadio, Click: func(*mygo.MenuItem, *mygo.Window) { a.PL.SetMode("off") }},
 		all:    &mygo.MenuItem{Label: "列表循环", Type: mygo.MenuItemRadio, Click: func(*mygo.MenuItem, *mygo.Window) { a.PL.SetMode("all") }},
 		one:    &mygo.MenuItem{Label: "单曲循环", Type: mygo.MenuItemRadio, Click: func(*mygo.MenuItem, *mygo.Window) { a.PL.SetMode("one") }},
 		shuf:   &mygo.MenuItem{Label: "随机播放", Type: mygo.MenuItemCheckbox, Click: func(it *mygo.MenuItem, _ *mygo.Window) { a.PL.SetShuffle(it.IsChecked()) }},
@@ -60,7 +58,7 @@ func (a *App) buildTrayMenu() (*mygo.Menu, *trayMenu) {
 		menu.prev,
 		menu.toggle,
 		menu.next,
-		{Label: "循环模式", Submenu: []*mygo.MenuItem{menu.off, menu.all, menu.one, mygo.Separator(), menu.shuf}},
+		{Label: "循环模式", Submenu: []*mygo.MenuItem{menu.all, menu.one, mygo.Separator(), menu.shuf}},
 		mygo.Separator(),
 		{Label: trayWindowShowLabel, Click: func(*mygo.MenuItem, *mygo.Window) { a.showWindow() }},
 		{Label: "检查更新…", Click: func(*mygo.MenuItem, *mygo.Window) { updater.CheckForUpdates() }},
@@ -156,7 +154,6 @@ func (a *App) syncTray() {
 			it.toggle.SetLabel("播放")
 		}
 		it.toggle.SetEnabled(v.enabled)
-		it.off.SetChecked(v.mode == "off")
 		it.all.SetChecked(v.mode == "all")
 		it.one.SetChecked(v.mode == "one")
 		it.shuf.SetChecked(v.shuf)

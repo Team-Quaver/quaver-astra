@@ -159,16 +159,15 @@ func TestNextIndexModes(t *testing.T) {
 	if got := p.nextIndexLocked(true); got != 0 {
 		t.Errorf("all wrap: got %d", got)
 	}
-	// 顺序播放：末尾即停
-	p = mk()
-	p.mode = "off"
-	p.index = 2
-	if got := p.nextIndexLocked(true); got != -1 {
-		t.Errorf("off auto at end: got %d", got)
-	}
 	// 手动下一首总是回绕
 	if got := p.nextIndexLocked(false); got != 0 {
-		t.Errorf("off manual wrap: got %d", got)
+		t.Errorf("manual wrap: got %d", got)
+	}
+	// 随机播放在末尾同样回绕
+	p.shuf = true
+	p.shufOrder = []int{0, 1, 2}
+	if got := p.nextIndexLocked(true); got != 0 {
+		t.Errorf("shuffle wrap: got %d", got)
 	}
 	// 单曲循环
 	p = mk()
@@ -434,15 +433,32 @@ func TestSetModeAndClose(t *testing.T) {
 		t.Fatalf("SetMode 未生效/未通知: mode=%s notify=%d", p.Mode(), notify)
 	}
 	before := notify
-	p.SetMode("bogus")
-	if p.Mode() != "one" || notify != before {
-		t.Fatalf("非法模式不应生效: mode=%s notify=%d", p.Mode(), notify)
+	for _, mode := range []string{"off", "bogus"} {
+		p.SetMode(mode)
+		if p.Mode() != "one" || notify != before {
+			t.Fatalf("非法模式 %q 不应生效: mode=%s notify=%d", mode, p.Mode(), notify)
+		}
 	}
 
 	p.playing = true
 	p.Close()
 	if p.Playing() || !eng.closed {
 		t.Fatalf("Close 未停止播放引擎: playing=%v closed=%v", p.Playing(), eng.closed)
+	}
+}
+
+func TestCycleModeTogglesAllAndOne(t *testing.T) {
+	p := New(stubBackend{}, &fakeEngine{}, fakePrefs{})
+	if got := p.Mode(); got != "all" {
+		t.Fatalf("默认模式 = %q, want all", got)
+	}
+	p.CycleMode()
+	if got := p.Mode(); got != "one" {
+		t.Fatalf("首次切换 = %q, want one", got)
+	}
+	p.CycleMode()
+	if got := p.Mode(); got != "all" {
+		t.Fatalf("再次切换 = %q, want all", got)
 	}
 }
 
