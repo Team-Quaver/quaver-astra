@@ -185,5 +185,11 @@ func (a *App) followLyricRow(c *ui.Context, row ui.Element, line int) {
 		f.start = c.Now()
 		return
 	}
-	f.to = to
+	// 行与列表的 LayoutBounds 每趟都随滚动轻微变化，float32 相加的舍入让
+	// 重算出的目标在同一份几何上差个万分之几像素。逐帧照抄就是目标每帧
+	// 抖一下，正好是用户看到的歌词抽搐。只有行高/视口变化这类真正的修正
+	// 才更新目标，舍入噪声直接忽略。
+	if d := to - f.to; d > 0.01 || d < -0.01 {
+		f.to = to
+	}
 }
