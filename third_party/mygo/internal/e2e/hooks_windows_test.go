@@ -137,6 +137,7 @@ func setWindowAppearance(*mygo.Window, bool)              {}
 func movePointer(int, int) bool                { return false }
 func pressButton(bool) bool                    { return false }
 func resizeCursor(*mygo.Window) (string, bool) { return "", false }
+func pageCursor(*mygo.Window) (string, bool)   { return "", false }
 
 func menuBarShown(w *mygo.Window) (shown, supported bool) {
 	mygo.RunOnMain(func() { shown = win.TestMenuBarShown(w.NativeHandle()) })

@@ -210,6 +210,7 @@ func setWindowAppearance(w *mygo.Window, dark bool) {
 func movePointer(int, int) bool                { return false }
 func pressButton(bool) bool                    { return false }
 func resizeCursor(*mygo.Window) (string, bool) { return "", false }
+func pageCursor(*mygo.Window) (string, bool)   { return "", false }
 
 // The menu bar belongs to the application on macOS.
 func menuBarShown(*mygo.Window) (bool, bool)                { return false, false }
