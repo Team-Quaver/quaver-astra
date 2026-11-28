@@ -1,6 +1,7 @@
 package appui
 
 import (
+	"fmt"
 	"image/color"
 	"testing"
 	"time"
@@ -134,6 +135,53 @@ func TestQueueDockSlidesInFromRight(t *testing.T) {
 	if start.X <= end.X {
 		t.Errorf("停靠队列出现时 X=%v，落定后 X=%v——没有从右缘滑入", start.X, end.X)
 	}
+}
+
+// TestQueueReopensAtCurrentSong：展开队列时列表落在正在播放的那首上；
+// 用户滚到别处再收起、重新打开，也要回到当前曲，而不是保留旧偏移。
+func TestQueueReopensAtCurrentSong(t *testing.T) {
+	app, tester := npTestApp(t, color.RGBA{R: 255, A: 255})
+	songs := make([]player.Song, 40)
+	for i := range songs {
+		songs[i] = player.Song{
+			Mid:     fmt.Sprintf("q%02d", i),
+			Title:   fmt.Sprintf("队列歌曲 %02d", i),
+			Artists: "测试歌手",
+		}
+	}
+	const current = 25
+	app.PL.PlayList(songs, current)
+	app.npOpen = false
+	tester.Frame()
+	tester.Advance(450 * time.Millisecond)
+	tester.Frame()
+
+	openQueue := func() {
+		t.Helper()
+		if err := tester.Click("播放队列"); err != nil {
+			t.Fatalf("点不到播放队列按钮：%v", err)
+		}
+		tester.Frame()
+		first, last := app.queueList.Visible()
+		if first > current || current > last {
+			t.Fatalf("打开队列后当前曲 %d 不在可见行 %d~%d 里", current, first, last)
+		}
+	}
+
+	openQueue()
+	app.queueList.ScrollToOffset(0)
+	tester.Frame()
+	if first, _ := app.queueList.Visible(); first != 0 {
+		t.Fatalf("列表没有滚回顶部，首行 = %d", first)
+	}
+
+	if err := tester.Click("播放队列"); err != nil {
+		t.Fatalf("点不到收起队列按钮：%v", err)
+	}
+	tester.Frame()
+	tester.Advance(400 * time.Millisecond)
+	tester.Frame()
+	openQueue()
 }
 
 // TestQueueFallsBackToDockWhenNowPlayingCloses：收起正在播放页，队列还在，

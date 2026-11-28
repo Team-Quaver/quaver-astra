@@ -11,8 +11,8 @@ import (
 // 正在播放页的布局常量：内容层与歌词列宽都从它们推导，不能各写一份
 // （逐字高亮要先按歌词列宽量行高，宽度对不上换行的行就会错位）。
 const (
-	npPadY  = 56.0  // 内容层上下内边距
-	npPadX  = 56.0  // 内容层左右内边距
+	npPadY  = 60.0  // 内容层上下内边距
+	npPadX  = 60.0  // 内容层左右内边距
 	npGap   = 56.0  // 歌词列与封面列的间距
 	npSideW = 340.0 // 左侧封面/信息列宽
 
@@ -164,20 +164,20 @@ func (a *App) npLyricPane(c *ui.Context, t *ui.Theme) {
 			Exit:     &ui.Motion{Opacity: 0},
 		})
 	pane.Children(func() {
-		ui.Row(c).FillWidth().Height(26).AlignItems(ui.End).Children(func() {
-			ui.Text(c, "歌词").FontSize(fz(10.5)).FontWeight(800).
-				LetterSpacing(1.4).TextColor(ui.RGBA(255, 255, 255, 0.42))
-			ui.Spacer(c)
-			if len(a.PL.QrcLines()) > 0 {
-				source := "歌词源 · QQ 音乐 QRC"
-				if a.PL.LyricFormat() == "ttml" {
-					source = "歌词源 · TTML"
-				}
-				ui.Text(c, source).FontSize(fz(10.5)).
-					TextColor(ui.RGBA(255, 255, 255, 0.42)).SingleLine()
-			}
-		})
-		ui.Box(c).FillWidth().Height(1).Background(ui.RGBA(255, 255, 255, 0.08))
+		// ui.Row(c).FillWidth().Height(26).AlignItems(ui.End).Children(func() {
+		// 	ui.Text(c, "歌词").FontSize(fz(10.5)).FontWeight(800).
+		// 		LetterSpacing(1.4).TextColor(ui.RGBA(255, 255, 255, 0.42))
+		// 	ui.Spacer(c)
+		// 	if len(a.PL.QrcLines()) > 0 {
+		// 		source := "歌词源 · QQ 音乐 QRC"
+		// 		if a.PL.LyricFormat() == "ttml" {
+		// 			source = "歌词源 · TTML"
+		// 		}
+		// 		ui.Text(c, source).FontSize(fz(10.5)).
+		// 			TextColor(ui.RGBA(255, 255, 255, 0.42)).SingleLine()
+		// 	}
+		// })
+		// ui.Box(c).FillWidth().Height(1).Background(ui.RGBA(255, 255, 255, 0.08))
 		a.lyricColumn(c, t)
 	})
 }
@@ -212,10 +212,12 @@ func (a *App) npTopControls(c *ui.Context) {
 	tabs.Children(func() {
 		a.npTab(c, "歌词", "显示歌词", !queue, func() {
 			a.npQueue = false
+			a.queueJumpPending = false
 		})
 		if !a.PL.RadioActive() {
 			a.npTab(c, "队列", "显示播放队列", queue, func() {
 				a.npQueue = true
+				a.queueJumpPending = true
 				a.npMoreOpen = false
 				a.npQInfoOpen = false
 			})
@@ -796,12 +798,16 @@ const (
 	queueRowH  = 46.0
 )
 
+// queueDockW 是内容区右侧停靠队列栏的宽度。页面网格的可用宽度要按它
+// 收缩，见 App.contentWidth。
+const queueDockW = 300
+
 // queuePanel 是内容区右侧的停靠队列栏（正在播放页未打开时的形态）。
 // 开关时从右缘外侧滑入/滑出：它是从内容区边上「抽出来」的一栏，位移要
 // 和正在播放页右栏的队列一致，不能生硬地闪现。
 func (a *App) queuePanel(c *ui.Context) {
 	s := a.queuePalette(c.Theme(), false)
-	panel := ui.Column(c).Key("queue-dock").Width(300).Background(s.bg).
+	panel := ui.Column(c).Key("queue-dock").Width(queueDockW).Background(s.bg).
 		BorderWidth(1, 0, 0, 1).BorderColor(s.border).
 		Transition(ui.ElementTransition{
 			Duration: 340 * time.Millisecond,
@@ -854,6 +860,7 @@ func (a *App) queueIconBtn(c *ui.Context, s queuePalette, icon, label string, ru
 // queueBody 是队列列表本体：两个落点共用（拖拽换序、当前行高亮、悬停删除）。
 func (a *App) queueBody(c *ui.Context, s queuePalette) {
 	n := a.PL.QueueLen()
+	a.scrollQueueToCurrent(n)
 	a.queueList.Key = nil
 	a.queueList.Reorder = func(rows []int, to int) {
 		a.PL.MoveInQueue(rows, to)
@@ -864,6 +871,29 @@ func (a *App) queueBody(c *ui.Context, s queuePalette) {
 			a.queueRow(c, s, row, i, cur.Mid)
 		}
 	}).Grow(1)
+}
+
+// scrollQueueToCurrent 把队列滚到当前曲目。只在刚打开时发一次请求：
+// 展开后用户自己滚动的位置不能被后续重绘拽回去。请求由列表在布局时
+// 消费，所以面板滑入的第一帧就已经落在当前曲上。
+func (a *App) scrollQueueToCurrent(n int) {
+	if !a.queueJumpPending || n == 0 {
+		return
+	}
+	cur, ok := a.PL.Current()
+	if !ok || cur.Mid == "" {
+		return
+	}
+	for i := 0; i < n; i++ {
+		if row, ok := a.PL.QueueRow(i); ok && row.Mid == cur.Mid {
+			a.queueList.ScrollTo(i, ui.Center)
+			a.queueJumpPending = false
+			return
+		}
+	}
+	// 当前曲不在队列里（理论上只在队列刚被整体替换的瞬间出现）：放弃这次
+	// 定位，避免每帧重新扫一遍长队列。
+	a.queueJumpPending = false
 }
 
 func (a *App) queueRow(c *ui.Context, s queuePalette, r player.QueueRowView, i int, curMid string) {

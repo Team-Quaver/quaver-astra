@@ -43,10 +43,13 @@ type App struct {
 	// glowNow 是本帧使用的辅色（进度条/氛围），由 buildTheme 刷新。
 	glowNow ui.Color
 
-	npOpen     bool
-	npQueue    bool // 正在播放页右栏显示队列（默认显示歌词）
-	queueOpen  bool
-	searchOpen bool
+	npOpen    bool
+	npQueue   bool // 正在播放页右栏显示队列（默认显示歌词）
+	queueOpen bool
+	// queueJumpPending 表示下一次队列列表建出来时要定位到正在播放的歌曲。
+	// 打开停靠栏或正在播放页右栏时置位，列表找到当前曲后清掉。
+	queueJumpPending bool
+	searchOpen       bool
 	// profileOpen 是顶栏头像的下拉浮窗：个人中心只以浮窗形态存在，
 	// 负责身份、权益与退出登录，不再占用一条独立路由。
 	profileOpen  bool
@@ -193,15 +196,16 @@ type App struct {
 func New(base string, store *conf.Store, v *vault.Vault, version string) *App {
 	api := backend.NewClient(base)
 	a := &App{
-		API:           api,
-		Conf:          store,
-		Version:       version,
-		sleep:         newSystemSleepBlocker(),
-		Router:        newAppRouter("/"),
-		Covers:        NewCoverCache(),
-		queueOpen:     store.Bool("Window.QueueOpen", false),
-		playlist:      map[int64]*playlistState{},
-		lastLyricLine: -2,
+		API:              api,
+		Conf:             store,
+		Version:          version,
+		sleep:            newSystemSleepBlocker(),
+		Router:           newAppRouter("/"),
+		Covers:           NewCoverCache(),
+		queueOpen:        store.Bool("Window.QueueOpen", false),
+		queueJumpPending: store.Bool("Window.QueueOpen", false),
+		playlist:         map[int64]*playlistState{},
+		lastLyricLine:    -2,
 	}
 	pl := player.New(newAPIAdapter(api, a.localCacheSeed), a.newPlaybackEngine(), store)
 	a.PL = pl

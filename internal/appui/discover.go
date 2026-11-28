@@ -210,7 +210,7 @@ func (a *App) loadToplistPage(st *toplistState, id int64, page int) {
 
 // toplistGrid 与歌单网格同宽同节奏，只是落地页换成榜单详情。
 func (a *App) toplistGrid(c *ui.Context, lists []backend.ToplistSummary) {
-	a.toplistGridWidth(c, contentWidth(c, 24), lists)
+	a.toplistGridWidth(c, a.contentWidth(c, 24), lists)
 }
 
 // toplistGridWidth 按页面内容区宽度排榜单卡片，和歌单网格共用卡宽算法。

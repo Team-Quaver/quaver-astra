@@ -478,9 +478,13 @@ func (a *App) queueBtn(c *ui.Context, t *ui.Theme) ui.Element {
 				// 开队列时先收掉，不然它们会被压在队列底下点不到。
 				a.npMoreOpen = false
 				a.npQInfoOpen = false
+				a.queueJumpPending = true
 			}
 		} else {
 			a.queueOpen = !a.queueOpen
+			if a.queueOpen {
+				a.queueJumpPending = true
+			}
 			a.Conf.Set("Window.QueueOpen", a.queueOpen)
 		}
 	}

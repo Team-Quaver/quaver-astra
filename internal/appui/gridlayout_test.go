@@ -38,8 +38,8 @@ func assertGridRowAligned(t *testing.T, name string, boxes []ui.Rect) {
 	}
 }
 
-// TestPlaylistGridCardsShareOneRowGeometry 钉住歌单流的两个对齐问题：
-// 标题一/两行不能把同排卡片顶歪；卡片顶到播放量的距离也必须统一。
+// TestPlaylistGridCardsShareOneRowGeometry 钉住歌单流的对齐问题：
+// 标题单行省略后同排卡片不能被顶歪；卡片顶到播放量的距离也必须统一。
 func TestPlaylistGridCardsShareOneRowGeometry(t *testing.T) {
 	app := loggedApp(t)
 	titles := []string{
@@ -69,6 +69,12 @@ func TestPlaylistGridCardsShareOneRowGeometry(t *testing.T) {
 		if math.Abs(float64((metaBoxes[i].Y-titleBoxes[i].Y)-(metaBoxes[0].Y-titleBoxes[0].Y))) > 0.5 {
 			t.Errorf("第 %d 张卡片顶到播放量的垂直距离 %.1f，与首张 %.1f 不一致",
 				i+1, metaBoxes[i].Y-titleBoxes[i].Y, metaBoxes[0].Y-titleBoxes[0].Y)
+		}
+		// 标题固定为单行：卡片总高只比封面多出两段小间距和一行标题，
+		// 长标题不能再预留两行高度，把播放次数推到很下面。
+		if got := metaBoxes[i].Y - titleBoxes[i].Y; got > titleBoxes[i].W+35 {
+			t.Errorf("第 %d 张卡片标题到播放量距离 %.1f，超过单行标题排版（封面宽 %.1f）",
+				i+1, got, titleBoxes[i].W)
 		}
 	}
 }
@@ -102,7 +108,9 @@ func TestHomePlaylistGridAligns(t *testing.T) {
 		"推荐 05｜今晚听什么｜通勤与深夜电台精选",
 	}
 	assertGridRowAligned(t, "首页推荐歌单", gridFindRects(t, tester, titles))
-
+	if tester.HasText("刷新") {
+		t.Error("推荐歌单每天更新，不应再放手动刷新入口")
+	}
 }
 
 // TestPlaylistGridIncompleteRowKeepsCardWidth 末行卡片不能因为数量少而被拉宽。
@@ -167,6 +175,49 @@ func TestPlaylistGridWideWindowFillsRow(t *testing.T) {
 	wantRight := float32(windowWidth) - pagePad
 	if got := last.X + last.W; math.Abs(float64(got-wantRight)) > 0.5 {
 		t.Errorf("首行最后一张卡右缘 %.1f，应贴住内容区右缘 %.1f", got, wantRight)
+	}
+}
+
+// TestPlaylistGridWidthExcludesQueueDock：队列停靠栏打开时，右侧内容区少了
+// 一栏宽度，网格必须按收缩后的宽度重新分列。否则卡片仍按整窗宽度算尺寸，
+// 首行最后一张会停在停靠栏左边，留下一条难看的空带。
+func TestPlaylistGridWidthExcludesQueueDock(t *testing.T) {
+	app := loggedApp(t)
+	titles := []string{"收藏 01", "收藏 02", "收藏 03", "收藏 04", "收藏 05", "收藏 06"}
+	lists := make([]backend.SonglistSummary, len(titles))
+	for i, title := range titles {
+		lists[i] = backend.SonglistSummary{ID: int64(i + 1), Title: title}
+	}
+	app.favLists = favListsState{loaded: true, lists: lists, total: int64(len(lists))}
+	app.queueOpen = true
+	tester := ui.NewTester(app.favListsView, testWinW, testWinH)
+
+	// 1000 宽减去 300 停靠栏、减去页面右侧 24 内边距。
+	last := mustFind(t, tester, titles[2])
+	wantRight := float32(testWinW - queueDockW - 24)
+	if got := last.X + last.W; math.Abs(float64(got-wantRight)) > 0.5 {
+		t.Errorf("停靠栏打开时首行最后一张卡右缘 %.1f，应贴住收缩后的内容区右缘 %.1f", got, wantRight)
+	}
+}
+
+// TestHomePlaylistGridWidthExcludesQueueDock：首页推荐网格同样跟随停靠栏收缩。
+func TestHomePlaylistGridWidthExcludesQueueDock(t *testing.T) {
+	app := loggedApp(t)
+	app.Router = ui.NewRouter("/")
+	titles := []string{"推荐 01", "推荐 02", "推荐 03"}
+	recs := make([]backend.SonglistSummary, len(titles))
+	for i, title := range titles {
+		recs[i] = backend.SonglistSummary{ID: int64(i + 1), Title: title, Listennum: int64(100 + i)}
+	}
+	app.home = homeState{loaded: true, recs: recs}
+	app.queueOpen = true
+	// 取高一点的视口，让推荐区落在可见范围内（列表外的行不会产出文本盒）。
+	tester := ui.NewTester(app.View, testWinW, 1200)
+
+	last := mustFind(t, tester, titles[2])
+	wantRight := float32(testWinW - queueDockW - homePagePad)
+	if got := last.X + last.W; math.Abs(float64(got-wantRight)) > 0.5 {
+		t.Errorf("首页停靠栏打开时首行最后一张卡右缘 %.1f，应贴住收缩后的内容区右缘 %.1f", got, wantRight)
 	}
 }
 

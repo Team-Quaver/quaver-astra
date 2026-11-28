@@ -328,12 +328,8 @@ func (a *App) homeRecommendations(c *ui.Context, st *homeState) ui.Element {
 		return ui.Element{}
 	}
 	return ui.Column(c).FillWidth().Gap(12).Children(func() {
-		sectionHeader(c, "推荐歌单", func() {
-			linkButton(c, "刷新", func() {
-				st.loaded, st.loading = false, false
-			})
-		})
-		a.playlistGridWidth(c, contentWidth(c, homePagePad), st.recs)
+		sectionHeader(c, "推荐歌单", nil)
+		a.playlistGridWidth(c, a.contentWidth(c, homePagePad), st.recs)
 	})
 }
 
@@ -373,7 +369,7 @@ func (a *App) homeAI(c *ui.Context, st *homeState) ui.Element {
 			ui.Text(c, "AI 暂时没有生成内容").FontSize(fz(12.5)).TextColor(c.Theme().TextMuted).Padding(16)
 			return
 		}
-		a.playlistGridWidth(c, contentWidth(c, homePagePad), st.ai)
+		a.playlistGridWidth(c, a.contentWidth(c, homePagePad), st.ai)
 	})
 }
 
@@ -425,7 +421,7 @@ func (a *App) homeToplists(c *ui.Context, st *homeState) ui.Element {
 				}
 			})
 		})
-		a.toplistGridWidth(c, contentWidth(c, homePagePad), st.topGroups[st.topGroup].Toplists)
+		a.toplistGridWidth(c, a.contentWidth(c, homePagePad), st.topGroups[st.topGroup].Toplists)
 	})
 }
 
@@ -595,18 +591,28 @@ func (a *App) openPlaylistAndPlay(id int64) {
 const homePagePad = 28
 
 // contentWidth 返回页面内容区在左右内边距之内可用的宽度。
-func contentWidth(c *ui.Context, pad float32) float32 {
+//
+// ui.Context.Size 给的是窗口内容尺寸，不随队列停靠栏收缩；停靠栏打开时
+// 路由区实际少了 queueDockW，网格必须按收缩后的宽度重新分列，否则卡宽
+// 仍按整窗计算，首行会少一张卡、右侧留下一条空带。
+func (a *App) contentWidth(c *ui.Context, pad float32) float32 {
 	w, _ := c.Size()
+	if a.queueOpen && !a.npOpen {
+		w -= queueDockW
+	}
+	if w < 2*pad {
+		return 0
+	}
 	return w - 2*pad
 }
 
 // playlistGrid 是歌单卡片的自适应换行网格。
 //
 // 列数只由最小卡宽决定，卡宽再按整行铺满的结果统一放大；末行数量不足时
-// 仍沿用同一宽度，不会被 flex 拉宽。标题区与元信息区固定高度，一/两行
-// 标题都不会把同排卡片的后续内容顶歪。
+// 仍沿用同一宽度，不会被 flex 拉宽。标题区与元信息区固定高度，单行标题
+// 不会把同排卡片的后续内容顶歪。
 func (a *App) playlistGrid(c *ui.Context, lists []backend.SonglistSummary, cardMenu ...func(m *ui.Menu, pl backend.SonglistSummary)) {
-	a.playlistGridWidth(c, contentWidth(c, 24), lists, cardMenu...)
+	a.playlistGridWidth(c, a.contentWidth(c, 24), lists, cardMenu...)
 }
 
 // playlistGridWidth 按调用方页面内容区的实际宽度排歌单卡片。
@@ -643,12 +649,13 @@ func playlistGridCardWidth(width float32) float32 {
 	return (width - float32(cols-1)*playlistGridGapX) / float32(cols)
 }
 
-// playlistCard 歌单卡片：封面 1:1，文字区占高固定，所有行使用同一宽度。
+// playlistCard 歌单卡片：封面 1:1，标题单行省略，播放次数紧贴标题下方。
+// 文字区仍用固定高度，保证同排卡片的后续内容不会被长标题顶歪。
 // cardMenu 让调用方给卡片追加右键菜单（如收藏页的「取消收藏」）。
 func (a *App) playlistCard(c *ui.Context, width float32, pl backend.SonglistSummary, cardMenu ...func(m *ui.Menu, pl backend.SonglistSummary)) {
 	t := c.Theme()
 	art := a.Covers.Get(pl.Picurl, a.invalidate)
-	card := ui.Column(c).Width(width).Shrink(0).Gap(7).Label(pl.Title)
+	card := ui.Column(c).Width(width).Shrink(0).Gap(5).Label(pl.Title)
 	card.Children(func() {
 		box := ui.Box(c).FillWidth().AspectRatio(1).Clip().Radius(10).Background(t.SurfaceHover).
 			Transition(hoverFade)
@@ -676,8 +683,8 @@ func (a *App) playlistCard(c *ui.Context, width float32, pl backend.SonglistSumm
 				a.openPlaylistAndPlay(pl.ID)
 			}
 		})
-		ui.Box(c).FillWidth().Height(fz(35)).Children(func() {
-			ui.Text(c, pl.Title).FontSize(fz(12.5)).MaxLines(2).Ellipsis("…").LineHeight(1.35)
+		ui.Box(c).FillWidth().Height(fz(18)).Children(func() {
+			ui.Text(c, pl.Title).FontSize(fz(12.5)).SingleLine().Ellipsis("…")
 		})
 		sub := compactNumber(pl.Listennum) + " 次播放"
 		ui.Box(c).FillWidth().Height(fz(16)).Children(func() {
@@ -1334,7 +1341,7 @@ func (a *App) searchView(c *ui.Context, kw string) {
 // 「加载更多」。歌曲仍走虚拟列表，不套这层滚动容器。
 func (a *App) searchResultGrid(c *ui.Context, st *searchState, tab int) {
 	sd := &st.tabs[tab]
-	cardWidth := searchCardGridWidth(contentWidth(c, 24))
+	cardWidth := searchCardGridWidth(a.contentWidth(c, 24))
 	empty := map[int]string{
 		searchTabSingers:   "没有找到相关歌手",
 		searchTabAlbums:    "没有找到相关专辑",
